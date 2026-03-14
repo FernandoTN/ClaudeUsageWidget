@@ -225,8 +225,9 @@ class ClaudeCodeSyncService {
         resolvedServiceName = nil
     }
 
-    /// Writes Claude Code credentials to system Keychain using Security framework.
-    /// Uses SecItemUpdate/SecItemAdd directly to avoid exposing credentials in process arguments.
+    /// Writes Claude Code credentials to system Keychain AND ~/.claude/.credentials.json.
+    /// Both targets are updated so that readSystemCredentials() (which reads the file first)
+    /// and Claude Code CLI (which also reads the file) stay in sync with profile switches.
     func writeSystemCredentials(_ jsonData: String) throws {
         let serviceName = resolveServiceName()
         LoggingService.shared.log("Writing credentials to keychain via Security framework (service: \(serviceName))")
@@ -264,6 +265,35 @@ class ClaudeCodeSyncService {
         } else {
             LoggingService.shared.log("Failed to write credentials (status: \(status))")
             throw ClaudeCodeError.keychainWriteFailed(status: status)
+        }
+
+        // Also write to ~/.claude/.credentials.json so the file stays in sync.
+        // readSystemCredentials() reads this file first, and Claude Code CLI does too.
+        writeCredentialsFile(jsonData)
+    }
+
+    /// Writes credentials to ~/.claude/.credentials.json (best-effort).
+    /// Keeps the file in sync with the system keychain so that readSystemCredentials()
+    /// and Claude Code CLI both see the active profile's credentials.
+    private func writeCredentialsFile(_ jsonData: String) {
+        let fileURL = Constants.ClaudePaths.credentialsFile
+        let dirURL = Constants.ClaudePaths.claudeDirectory
+
+        // Ensure ~/.claude/ directory exists
+        if !FileManager.default.fileExists(atPath: dirURL.path) {
+            do {
+                try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+            } catch {
+                LoggingService.shared.logError("Failed to create .claude directory: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        do {
+            try jsonData.write(to: fileURL, atomically: true, encoding: .utf8)
+            LoggingService.shared.log("Wrote credentials to \(fileURL.lastPathComponent)")
+        } catch {
+            LoggingService.shared.logError("Failed to write credentials file (non-fatal): \(error.localizedDescription)")
         }
     }
 
