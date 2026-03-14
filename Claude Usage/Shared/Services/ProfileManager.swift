@@ -61,7 +61,7 @@ class ProfileManager: ObservableObject {
 
     func createProfile(name: String? = nil, copySettingsFrom: Profile? = nil) -> Profile {
         let usedNames = profiles.map { $0.name }
-        let profileName = name ?? FunnyNameGenerator.getRandomName(excluding: usedNames)
+        let profileName = name ?? "Profile \(profiles.count + 1)"
 
         let newProfile = Profile(
             id: UUID(),
@@ -487,7 +487,7 @@ class ProfileManager: ObservableObject {
 
     private func createDefaultProfile() -> Profile {
         Profile(
-            name: FunnyNameGenerator.getRandomName(excluding: []),
+            name: "Default Profile",
             iconConfig: .default,
             refreshInterval: 30.0,
             checkOverageLimitEnabled: true,

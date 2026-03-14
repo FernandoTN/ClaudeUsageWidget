@@ -49,7 +49,7 @@ class ProfileMigrationService {
         let dataStore = DataStore.shared
 
         // Generate a funny name for the first profile
-        let profileName = FunnyNameGenerator.getRandomName(excluding: [])
+        let profileName = "Migrated Profile"
 
         // Load existing settings
         let iconConfig = dataStore.loadMenuBarIconConfiguration()

@@ -280,8 +280,6 @@ struct SettingsView: View {
                     AppSettingsView()
                 case .manageProfiles:
                     ManageProfilesView()
-                case .language:
-                    LanguageSettingsView()
                 case .shortcuts:
                     ShortcutsSettingsView()
                 case .popover:
@@ -519,7 +517,6 @@ enum SettingsSection: String, CaseIterable {
     // Shared Settings
     case appSettings
     case manageProfiles
-    case language
     case shortcuts
     case popover
     case about
@@ -533,7 +530,6 @@ enum SettingsSection: String, CaseIterable {
         case .general: return "section.general_title".localized
         case .appSettings: return "section.app_settings_title".localized
         case .manageProfiles: return "section.manage_profiles_title".localized
-        case .language: return "language.title".localized
         case .shortcuts: return "section.shortcuts_title".localized
         case .popover: return "section.popover_title".localized
         case .about: return "settings.about".localized
@@ -549,7 +545,6 @@ enum SettingsSection: String, CaseIterable {
         case .general: return "gearshape.fill"
         case .appSettings: return "gearshape.2.fill"
         case .manageProfiles: return "person.2.fill"
-        case .language: return "globe"
         case .shortcuts: return "keyboard"
         case .popover: return "rectangle.topthird.inset.filled"
         case .about: return "info.circle.fill"
@@ -565,7 +560,6 @@ enum SettingsSection: String, CaseIterable {
         case .general: return "section.general_desc".localized
         case .appSettings: return "section.app_settings_desc".localized
         case .manageProfiles: return "section.manage_profiles_desc".localized
-        case .language: return "language.subtitle".localized
         case .shortcuts: return "section.shortcuts_desc".localized
         case .popover: return "section.popover_desc".localized
         case .about: return "settings.about.description".localized

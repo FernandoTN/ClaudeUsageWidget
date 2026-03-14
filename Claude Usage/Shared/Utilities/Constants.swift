@@ -40,8 +40,6 @@ enum Constants {
         static let apiIconOrder = "apiIconOrder"
         static let apiDisplayMode = "apiDisplayMode"
 
-        // Localization
-        static let appLanguage = "appLanguage"
     }
 
     // Claude Code paths
