@@ -14,9 +14,6 @@ class SharedDataStore {
     private let defaults: UserDefaults
 
     private enum Keys {
-        // Language & Localization
-        static let languageCode = "selectedLanguageCode"
-
         // Setup State
         static let hasCompletedSetup = "hasCompletedSetup"
         static let hasShownWizardOnce = "hasShownWizardOnce"
@@ -43,16 +40,6 @@ class SharedDataStore {
         // Use standard UserDefaults (app container)
         self.defaults = UserDefaults.standard
         LoggingService.shared.log("SharedDataStore: Using standard app container storage")
-    }
-
-    // MARK: - Language & Localization
-
-    func saveLanguageCode(_ code: String) {
-        defaults.set(code, forKey: Keys.languageCode)
-    }
-
-    func loadLanguageCode() -> String? {
-        return defaults.string(forKey: Keys.languageCode)
     }
 
     // MARK: - Setup State

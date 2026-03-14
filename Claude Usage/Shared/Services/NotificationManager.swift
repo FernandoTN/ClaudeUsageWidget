@@ -144,7 +144,6 @@ class NotificationManager: NotificationServiceProtocol {
                 soundName: settings.soundName
             )
 
-            // Note: Auto-start session is handled per-profile but called from elsewhere
         }
 
         // Update previous percentage for this specific profile
@@ -254,40 +253,6 @@ class NotificationManager: NotificationServiceProtocol {
         }
     }
 
-    /// Sends auto-start session notification
-    func sendAutoStartNotification(profileName: String, success: Bool, error: String?) {
-        let content = UNMutableNotificationContent()
-
-        if success {
-            content.title = "\(profileName) - \(AlertType.sessionAutoStarted.title)"
-            content.body = AlertType.sessionAutoStarted.message(percentage: 0, resetTime: nil)
-            content.sound = .default
-            content.categoryIdentifier = "INFO_ALERT"
-        } else {
-            content.title = "\(profileName) - \(AlertType.sessionAutoStartFailed.title)"
-            var message = AlertType.sessionAutoStartFailed.message(percentage: 0, resetTime: nil)
-            if let error = error {
-                message += " Error: \(error)"
-            }
-            content.body = message
-            content.sound = .default
-            content.categoryIdentifier = "ERROR_ALERT"
-        }
-
-        let identifier = success ? "auto_start_\(profileName)_success" : "auto_start_\(profileName)_failed_\(Date().timeIntervalSince1970)"
-        let request = UNNotificationRequest(
-            identifier: identifier,
-            content: content,
-            trigger: nil // Show immediately
-        )
-
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                LoggingService.shared.logError("Failed to send auto-start notification: \(error)")
-            }
-        }
-    }
-
     /// Sends a notification when auto-switching profiles due to session limit
     func sendAutoSwitchNotification(fromProfile: String, toProfile: String) {
         let content = UNMutableNotificationContent()
@@ -367,8 +332,6 @@ extension NotificationManager {
         case sessionWarning = "session_warning"  // 90% threshold
         case sessionCritical = "session_critical"  // 95% threshold
         case sessionReset = "session_reset"
-        case sessionAutoStarted = "session_auto_started"
-        case sessionAutoStartFailed = "session_auto_start_failed"
         case weeklyWarning = "weekly_warning"
         case weeklyCritical = "weekly_critical"
         case opusWarning = "opus_warning"
@@ -386,10 +349,6 @@ extension NotificationManager {
                 return "notification.session_critical.title".localized
             case .sessionReset:
                 return "notification.session_reset.title".localized
-            case .sessionAutoStarted:
-                return "notification.session_auto_started.title".localized
-            case .sessionAutoStartFailed:
-                return "notification.session_auto_start_failed.title".localized
             case .weeklyWarning:
                 return "notification.weekly_warning.title".localized
             case .weeklyCritical:
@@ -418,10 +377,6 @@ extension NotificationManager {
                 return "notification.session_critical.message".localized(with: percentStr, resetStr)
             case .sessionReset:
                 return "notification.session_reset.message".localized
-            case .sessionAutoStarted:
-                return "notification.session_auto_started.message".localized
-            case .sessionAutoStartFailed:
-                return "notification.session_auto_start_failed.message".localized
             case .weeklyWarning:
                 return "notification.weekly_warning.message".localized(with: percentStr, resetStr)
             case .weeklyCritical:
