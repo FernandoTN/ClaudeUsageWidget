@@ -76,7 +76,7 @@ class KeychainMigrationService {
             // Save to Keychain
             try KeychainService.shared.save(trimmedKey, for: .claudeSessionKey)
 
-            // Delete the file (it will be recreated by StatuslineService if statusline is enabled)
+            // Delete the legacy file
             try FileManager.default.removeItem(at: sessionKeyPath)
 
             LoggingService.shared.log("Migrated Claude session key from file to Keychain")

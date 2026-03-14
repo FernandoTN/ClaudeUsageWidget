@@ -69,7 +69,6 @@ class ProfileManager: ObservableObject {
             hasCliAccount: false,
             iconConfig: copySettingsFrom?.iconConfig ?? .default,
             refreshInterval: copySettingsFrom?.refreshInterval ?? 30.0,
-            autoStartSessionEnabled: copySettingsFrom?.autoStartSessionEnabled ?? false,
             checkOverageLimitEnabled: copySettingsFrom?.checkOverageLimitEnabled ?? true,
             notificationSettings: copySettingsFrom?.notificationSettings ?? NotificationSettings(),
             isSelectedForDisplay: true
@@ -110,10 +109,6 @@ class ProfileManager: ObservableObject {
         }
 
         let profileName = profiles.first(where: { $0.id == id })?.name ?? "unknown"
-
-        // Clean up usage history for this profile
-        UsageHistoryService.shared.deleteHistory(for: id)
-        LoggingService.shared.log("Successfully deleted usage history for profile: \(profileName)")
 
         profiles.removeAll { $0.id == id }
 
@@ -238,23 +233,6 @@ class ProfileManager: ObservableObject {
         activeProfile = updated
         profileStore.saveActiveProfileId(id)
         profileStore.saveProfiles(profiles)
-
-        // Update statusline script if the new profile has credentials
-        if updated.claudeSessionKey != nil && updated.organizationId != nil {
-            do {
-                try StatuslineService.shared.updateScriptsIfInstalled()
-                LoggingService.shared.log("✓ Updated statusline for profile: \(updated.name)")
-            } catch {
-                LoggingService.shared.logError("Failed to update statusline (non-fatal)", error: error)
-            }
-        }
-
-        // Update profile name in statusline config
-        do {
-            try StatuslineService.shared.updateProfileNameInConfig(updated.name)
-        } catch {
-            LoggingService.shared.logError("Failed to update statusline profile name (non-fatal)", error: error)
-        }
 
         switchingSemaphore = false
         isSwitchingProfile = false
@@ -417,19 +395,6 @@ class ProfileManager: ObservableObject {
         }
     }
 
-    /// Updates auto-start session setting for a profile
-    func updateAutoStartSessionEnabled(_ enabled: Bool, for profileId: UUID) {
-        if let index = profiles.firstIndex(where: { $0.id == profileId }) {
-            profiles[index].autoStartSessionEnabled = enabled
-
-            if activeProfile?.id == profileId {
-                activeProfile = profiles[index]
-            }
-
-            profileStore.saveProfiles(profiles)
-        }
-    }
-
     /// Updates check overage limit setting for a profile
     func updateCheckOverageLimitEnabled(_ enabled: Bool, for profileId: UUID) {
         if let index = profiles.firstIndex(where: { $0.id == profileId }) {
@@ -525,7 +490,6 @@ class ProfileManager: ObservableObject {
             name: FunnyNameGenerator.getRandomName(excluding: []),
             iconConfig: .default,
             refreshInterval: 30.0,
-            autoStartSessionEnabled: false,
             checkOverageLimitEnabled: true,
             notificationSettings: NotificationSettings()
         )

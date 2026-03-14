@@ -112,16 +112,6 @@ class DataStore: StorageProvider {
         return interval > 0 ? interval : Constants.RefreshIntervals.menuBar
     }
 
-    /// Saves auto-start session preference
-    func saveAutoStartSessionEnabled(_ enabled: Bool) {
-        defaults.set(enabled, forKey: Constants.UserDefaultsKeys.autoStartSessionEnabled)
-    }
-
-    /// Loads auto-start session preference
-    func loadAutoStartSessionEnabled() -> Bool {
-        return defaults.bool(forKey: Constants.UserDefaultsKeys.autoStartSessionEnabled)
-    }
-
     /// Saves check overage limit preference
     func saveCheckOverageLimitEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: "checkOverageLimitEnabled")
@@ -168,11 +158,6 @@ class DataStore: StorageProvider {
     func loadDebugAPILoggingEnabled() -> Bool {
         return defaults.bool(forKey: "debugAPILoggingEnabled")
     }
-
-    // MARK: - Statusline Configuration
-    // NOTE: Statusline settings have been moved to SharedDataStore.swift
-    // as they are app-wide settings, not profile-specific.
-    // Use SharedDataStore.shared for statusline preferences.
 
     // MARK: - Setup State
 

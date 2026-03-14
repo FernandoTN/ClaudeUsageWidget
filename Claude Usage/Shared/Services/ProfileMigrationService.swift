@@ -55,8 +55,6 @@ class ProfileMigrationService {
         let iconConfig = dataStore.loadMenuBarIconConfiguration()
         let refreshInterval = dataStore.loadRefreshInterval()
         let notificationsEnabled = dataStore.loadNotificationsEnabled()
-        let autoStartSessionEnabled = dataStore.loadAutoStartSessionEnabled()
-
         return Profile(
             id: UUID(),
             name: profileName,
@@ -64,7 +62,6 @@ class ProfileMigrationService {
             cliAccountSyncedAt: nil,
             iconConfig: iconConfig,
             refreshInterval: refreshInterval,
-            autoStartSessionEnabled: autoStartSessionEnabled,
             notificationSettings: NotificationSettings(
                 enabled: notificationsEnabled,
                 threshold75Enabled: true,

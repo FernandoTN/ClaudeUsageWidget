@@ -10,14 +10,6 @@ enum Constants {
         static let claudeUsageData = "claudeUsageData"
         static let notificationsEnabled = "notificationsEnabled"
         static let refreshInterval = "refreshInterval"
-        static let autoStartSessionEnabled = "autoStartSessionEnabled"
-
-        // Statusline component configuration
-        static let statuslineShowDirectory = "statuslineShowDirectory"
-        static let statuslineShowBranch = "statuslineShowBranch"
-        static let statuslineShowUsage = "statuslineShowUsage"
-        static let statuslineShowProgressBar = "statuslineShowProgressBar"
-
         // API usage tracking
         static let apiUsageData = "apiUsageData"
         static let apiTrackingEnabled = "apiTrackingEnabled"

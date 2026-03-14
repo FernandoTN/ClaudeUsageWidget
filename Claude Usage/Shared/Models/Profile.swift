@@ -34,7 +34,6 @@ struct Profile: Codable, Identifiable, Equatable {
 
     // MARK: - Behavior Settings (Per-Profile)
     var refreshInterval: TimeInterval
-    var autoStartSessionEnabled: Bool
     var checkOverageLimitEnabled: Bool
 
     // MARK: - Notification Settings (Per-Profile)
@@ -62,7 +61,6 @@ struct Profile: Codable, Identifiable, Equatable {
         apiUsage: APIUsage? = nil,
         iconConfig: MenuBarIconConfiguration = .default,
         refreshInterval: TimeInterval = 30.0,
-        autoStartSessionEnabled: Bool = false,
         checkOverageLimitEnabled: Bool = true,
         notificationSettings: NotificationSettings = NotificationSettings(),
         isSelectedForDisplay: Bool = true,
@@ -83,7 +81,6 @@ struct Profile: Codable, Identifiable, Equatable {
         self.apiUsage = apiUsage
         self.iconConfig = iconConfig
         self.refreshInterval = refreshInterval
-        self.autoStartSessionEnabled = autoStartSessionEnabled
         self.checkOverageLimitEnabled = checkOverageLimitEnabled
         self.notificationSettings = notificationSettings
         self.isSelectedForDisplay = isSelectedForDisplay

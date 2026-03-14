@@ -27,7 +27,6 @@ struct SetupWizardState {
     var validationState: ValidationState = .idle
     var testedOrganizations: [ClaudeAPIService.AccountInfo] = []
     var selectedOrgId: String? = nil
-    var autoStartSessionEnabled: Bool = false
     var showInstructions: Bool = false
     var showingAuthSheet: Bool = false
 }
@@ -245,12 +244,6 @@ struct SetupWizardView: View {
             .animation(.easeInOut(duration: 0.3), value: wizardState.currentStep)
         }
         .frame(width: 580, height: 680)
-        .onAppear {
-            // Load auto-start preference from active profile
-            if let activeProfile = ProfileManager.shared.activeProfile {
-                wizardState.autoStartSessionEnabled = activeProfile.autoStartSessionEnabled
-            }
-        }
     }
 
     // MARK: - Migration Functions
@@ -666,36 +659,6 @@ struct ConfirmStepSetup: View {
                     .background(Color.secondary.opacity(0.05))
                     .cornerRadius(10)
 
-                    // Auto-start session option
-                    VStack(alignment: .leading, spacing: 10) {
-                        Divider()
-
-                        HStack(spacing: 6) {
-                            Text("setup.auto_start_session".localized)
-                                .font(.system(size: 13, weight: .semibold))
-
-                            Text("session.beta_badge".localized)
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color.orange)
-                                )
-                        }
-
-                        Text("setup.auto_start_session.description".localized)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Toggle(isOn: $wizardState.autoStartSessionEnabled) {
-                            Text("setup.enable_auto_start".localized)
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .toggleStyle(.switch)
-                    }
                 }
                 .padding(32)
             }
@@ -752,13 +715,9 @@ struct ConfirmStepSetup: View {
                 if var profile = ProfileManager.shared.activeProfile {
                     profile.claudeSessionKey = wizardState.sessionKey
                     profile.organizationId = wizardState.selectedOrgId
-                    profile.autoStartSessionEnabled = wizardState.autoStartSessionEnabled
                     ProfileManager.shared.updateProfile(profile)
                     LoggingService.shared.log("SetupWizard: Updated profile model with new credentials")
                 }
-
-                // Update statusline scripts if installed
-                try? StatuslineService.shared.updateScriptsIfInstalled()
 
                 // Mark setup as completed (shared setting)
                 SharedDataStore.shared.saveHasCompletedSetup(true)

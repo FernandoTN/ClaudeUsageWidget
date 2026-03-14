@@ -65,39 +65,6 @@ struct GeneralSettingsView: View {
                         }
                     }
 
-                    // Auto-Start Session
-                    SettingsSectionCard(
-                        title: "general.autostart_title".localized,
-                        subtitle: "general.autostart_subtitle".localized
-                    ) {
-                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
-                            SettingToggle(
-                                title: "general.autostart_toggle".localized,
-                                description: "general.autostart_description".localized,
-                                isOn: Binding(
-                                    get: { profile.autoStartSessionEnabled },
-                                    set: { newValue in
-                                        var updated = profile
-                                        updated.autoStartSessionEnabled = newValue
-                                        profileManager.updateProfile(updated)
-                                    }
-                                )
-                            )
-
-                            // Requirement
-                            VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
-                                Text("Requirements:")
-                                    .font(DesignTokens.Typography.caption)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
-
-                                Text("general.autostart_requirement".localized)
-                                    .font(DesignTokens.Typography.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-
                     // Notifications
                     SettingsSectionCard(
                         title: "general.notifications_title".localized,

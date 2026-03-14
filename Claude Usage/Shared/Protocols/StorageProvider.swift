@@ -25,9 +25,6 @@ protocol StorageProvider {
     func saveRefreshInterval(_ interval: TimeInterval)
     func loadRefreshInterval() -> TimeInterval
 
-    func saveAutoStartSessionEnabled(_ enabled: Bool)
-    func loadAutoStartSessionEnabled() -> Bool
-
     func saveCheckOverageLimitEnabled(_ enabled: Bool)
     func loadCheckOverageLimitEnabled() -> Bool
 
@@ -40,10 +37,6 @@ protocol StorageProvider {
 
     func saveAPIOrganizationId(_ orgId: String)
     func loadAPIOrganizationId() -> String?
-
-    // MARK: - Statusline Configuration
-    // NOTE: Statusline methods moved to SharedDataStore
-    // (app-wide settings, not profile-specific)
 
     // MARK: - Setup State
     func saveHasCompletedSetup(_ completed: Bool)
