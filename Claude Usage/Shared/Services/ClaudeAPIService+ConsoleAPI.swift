@@ -4,29 +4,18 @@ import Foundation
 
 extension ClaudeAPIService {
 
-    /// Performs a Console API GET request with network logging
+    /// Performs a Console API GET request
     private func consoleRequest(url: URL, apiSessionKey: String) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.setValue("sessionKey=\(apiSessionKey)", forHTTPHeaderField: "Cookie")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpMethod = "GET"
 
-        let startTime = CFAbsoluteTimeGetCurrent()
         let (data, response) = try await URLSession.shared.data(for: request)
-        let duration = CFAbsoluteTimeGetCurrent() - startTime
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            NetworkLoggerService.shared.logRequest(
-                url: url.absoluteString, method: "GET", requestBody: nil,
-                responseData: nil, statusCode: nil, duration: duration, error: APIError.invalidResponse
-            )
             throw APIError.invalidResponse
         }
-
-        NetworkLoggerService.shared.logRequest(
-            url: url.absoluteString, method: "GET", requestBody: nil,
-            responseData: data, statusCode: httpResponse.statusCode, duration: duration, error: nil
-        )
 
         return (data, httpResponse)
     }

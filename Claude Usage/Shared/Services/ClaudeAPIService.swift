@@ -245,23 +245,11 @@ class ClaudeAPIService: APIServiceProtocol {
             request.httpMethod = "GET"
             request.timeoutInterval = 30
 
-            let startTime = Date()
             let (data, response): (Data, URLResponse)
             do {
                 (data, response) = try await URLSession.shared.data(for: request)
             } catch {
                 // Network errors
-                let duration = Date().timeIntervalSince(startTime)
-                NetworkLoggerService.shared.logRequest(
-                    url: url.absoluteString,
-                    method: "GET",
-                    requestBody: request.httpBody,
-                    responseData: nil,
-                    statusCode: nil,
-                    duration: duration,
-                    error: error
-                )
-
                 let appError = AppError(
                     code: .networkGenericError,
                     message: "Failed to connect to Claude API",
@@ -274,8 +262,6 @@ class ClaudeAPIService: APIServiceProtocol {
                 throw appError
             }
 
-            let duration = Date().timeIntervalSince(startTime)
-
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw AppError(
                     code: .apiInvalidResponse,
@@ -283,17 +269,6 @@ class ClaudeAPIService: APIServiceProtocol {
                     isRecoverable: true
                 )
             }
-
-            // Log to NetworkLoggerService
-            NetworkLoggerService.shared.logRequest(
-                url: url.absoluteString,
-                method: "GET",
-                requestBody: request.httpBody,
-                responseData: data,
-                statusCode: httpResponse.statusCode,
-                duration: duration,
-                error: nil
-            )
 
             switch httpResponse.statusCode {
             case 200:
@@ -513,25 +488,7 @@ class ClaudeAPIService: APIServiceProtocol {
             ]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-            let startTime = Date()
-            let (data, response): (Data, URLResponse)
-            do {
-                (data, response) = try await URLSession.shared.data(for: request)
-            } catch {
-                let duration = Date().timeIntervalSince(startTime)
-                NetworkLoggerService.shared.logRequest(
-                    url: url.absoluteString,
-                    method: "POST",
-                    requestBody: request.httpBody,
-                    responseData: nil,
-                    statusCode: nil,
-                    duration: duration,
-                    error: error
-                )
-                throw error
-            }
-
-            let duration = Date().timeIntervalSince(startTime)
+            let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw AppError(
@@ -540,17 +497,6 @@ class ClaudeAPIService: APIServiceProtocol {
                     isRecoverable: true
                 )
             }
-
-            // Log to NetworkLoggerService
-            NetworkLoggerService.shared.logRequest(
-                url: url.absoluteString,
-                method: "POST",
-                requestBody: request.httpBody,
-                responseData: data,
-                statusCode: httpResponse.statusCode,
-                duration: duration,
-                error: nil
-            )
 
             guard httpResponse.statusCode == 200 else {
                 let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"
@@ -591,23 +537,11 @@ class ClaudeAPIService: APIServiceProtocol {
 
         LoggingService.shared.logAPIRequest(endpoint)
 
-        let startTime = Date()
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await URLSession.shared.data(for: request)
         } catch {
             // Network-level errors
-            let duration = Date().timeIntervalSince(startTime)
-            NetworkLoggerService.shared.logRequest(
-                url: url.absoluteString,
-                method: "GET",
-                requestBody: request.httpBody,
-                responseData: nil,
-                statusCode: nil,
-                duration: duration,
-                error: error
-            )
-
             LoggingService.shared.logAPIError(endpoint, error: error)
             let appError = AppError(
                 code: .networkGenericError,
@@ -620,8 +554,6 @@ class ClaudeAPIService: APIServiceProtocol {
             throw appError
         }
 
-        let duration = Date().timeIntervalSince(startTime)
-
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AppError(
                 code: .apiInvalidResponse,
@@ -632,17 +564,6 @@ class ClaudeAPIService: APIServiceProtocol {
         }
 
         LoggingService.shared.logAPIResponse(endpoint, statusCode: httpResponse.statusCode)
-
-        // Log to NetworkLoggerService
-        NetworkLoggerService.shared.logRequest(
-            url: url.absoluteString,
-            method: "GET",
-            requestBody: request.httpBody,
-            responseData: data,
-            statusCode: httpResponse.statusCode,
-            duration: duration,
-            error: nil
-        )
 
         // Log raw response if debug logging is enabled
         if DataStore.shared.loadDebugAPILoggingEnabled() {
@@ -927,23 +848,11 @@ class ClaudeAPIService: APIServiceProtocol {
         ]
         conversationRequest.httpBody = try JSONSerialization.data(withJSONObject: conversationBody)
 
-        let startTime1 = Date()
         let (conversationData, conversationResponse) = try await URLSession.shared.data(for: conversationRequest)
-        let duration1 = Date().timeIntervalSince(startTime1)
 
         guard let httpResponse = conversationResponse as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-
-        NetworkLoggerService.shared.logRequest(
-            url: conversationURL.absoluteString,
-            method: "POST",
-            requestBody: conversationRequest.httpBody,
-            responseData: conversationData,
-            statusCode: httpResponse.statusCode,
-            duration: duration1,
-            error: nil
-        )
 
         guard httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
             throw APIError.serverError(statusCode: httpResponse.statusCode)
@@ -972,23 +881,11 @@ class ClaudeAPIService: APIServiceProtocol {
         ]
         messageRequest.httpBody = try JSONSerialization.data(withJSONObject: messageBody)
 
-        let startTime2 = Date()
-        let (messageData, messageResponse) = try await URLSession.shared.data(for: messageRequest)
-        let duration2 = Date().timeIntervalSince(startTime2)
+        let (_, messageResponse) = try await URLSession.shared.data(for: messageRequest)
 
         guard let messageHTTPResponse = messageResponse as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-
-        NetworkLoggerService.shared.logRequest(
-            url: messageURL.absoluteString,
-            method: "POST",
-            requestBody: messageRequest.httpBody,
-            responseData: messageData,
-            statusCode: messageHTTPResponse.statusCode,
-            duration: duration2,
-            error: nil
-        )
 
         guard messageHTTPResponse.statusCode == 200 else {
             throw APIError.serverError(statusCode: messageHTTPResponse.statusCode)
@@ -1006,21 +903,7 @@ class ClaudeAPIService: APIServiceProtocol {
         // Attempt to delete, but don't fail if deletion fails
         // The session is already initialized, which is the primary goal
         do {
-            let startTime3 = Date()
-            let (deleteData, deleteResponse) = try await URLSession.shared.data(for: deleteRequest)
-            let duration3 = Date().timeIntervalSince(startTime3)
-
-            if let deleteHTTPResponse = deleteResponse as? HTTPURLResponse {
-                NetworkLoggerService.shared.logRequest(
-                    url: deleteURL.absoluteString,
-                    method: "DELETE",
-                    requestBody: deleteRequest.httpBody,
-                    responseData: deleteData,
-                    statusCode: deleteHTTPResponse.statusCode,
-                    duration: duration3,
-                    error: nil
-                )
-            }
+            _ = try await URLSession.shared.data(for: deleteRequest)
         } catch {
             // Silently ignore deletion errors - session is already initialized
         }

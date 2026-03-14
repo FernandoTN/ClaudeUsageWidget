@@ -21,9 +21,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // Load profiles into ProfileManager (synchronously)
         ProfileManager.shared.loadProfiles()
 
-        // Initialize update manager to enable automatic update checks
-        _ = UpdateManager.shared
-
         // Request notification permissions
         requestNotificationPermissions()
 
