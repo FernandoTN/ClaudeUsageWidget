@@ -43,22 +43,31 @@ class MigrationService {
 
         // Get all keys from old UserDefaults
         let oldData = oldDefaults.dictionaryRepresentation()
-        LoggingService.shared.log("MigrationService: Found \(oldData.count) keys to migrate")
+        LoggingService.shared.log("MigrationService: Found \(oldData.count) keys in App Group")
 
-        // Copy all data to standard UserDefaults
+        // Filter out credential keys to prevent copying secrets to UserDefaults
+        let credentialKeys: Set<String> = [
+            "apiSessionKey", "claudeSessionKey", "sessionKey",
+            Constants.UserDefaultsKeys.apiSessionKey
+        ]
+
+        // Copy non-credential data to standard UserDefaults
+        var migratedCount = 0
         for (key, value) in oldData {
+            if credentialKeys.contains(key) {
+                LoggingService.shared.log("MigrationService: Skipping credential key '\(key)'")
+                continue
+            }
             UserDefaults.standard.set(value, forKey: key)
+            migratedCount += 1
         }
-
-        // Synchronize to ensure data is written
-        UserDefaults.standard.synchronize()
 
         // Mark migration as complete
         UserDefaults.standard.set(true, forKey: migrationKey)
 
-        LoggingService.shared.log("MigrationService: ✅ Successfully migrated \(oldData.count) keys from App Group")
+        LoggingService.shared.log("MigrationService: Successfully migrated \(migratedCount) keys from App Group (skipped \(oldData.count - migratedCount) credential keys)")
 
-        return oldData.count
+        return migratedCount
     }
 
     /// Resets all app data (standard container only, NOT old App Group data)

@@ -150,37 +150,44 @@ class ErrorRecovery {
     // MARK: - Circuit Breaker
 
     private var circuitBreakerState: [ErrorCategory: CircuitState] = [:]
+    private let stateQueue = DispatchQueue(label: "com.claudewidget.error-recovery")
 
     /// Check if circuit breaker is open for a category
     func isCircuitOpen(for category: ErrorCategory) -> Bool {
-        guard let state = circuitBreakerState[category] else {
-            return false
-        }
-
-        switch state {
-        case .open(let openedAt):
-            // Circuit opens for 60 seconds
-            let timeSinceOpen = Date().timeIntervalSince(openedAt)
-            if timeSinceOpen > 60 {
-                // Try half-open
-                circuitBreakerState[category] = .halfOpen
+        return stateQueue.sync {
+            guard let state = circuitBreakerState[category] else {
                 return false
             }
-            return true
 
-        case .halfOpen, .closed:
-            return false
+            switch state {
+            case .open(let openedAt):
+                // Circuit opens for 60 seconds
+                let timeSinceOpen = Date().timeIntervalSince(openedAt)
+                if timeSinceOpen > 60 {
+                    // Try half-open
+                    circuitBreakerState[category] = .halfOpen
+                    return false
+                }
+                return true
+
+            case .halfOpen, .closed:
+                return false
+            }
         }
     }
 
     /// Record a failure for circuit breaker
     func recordFailure(for category: ErrorCategory) {
-        circuitBreakerState[category] = .open(openedAt: Date())
+        stateQueue.sync {
+            circuitBreakerState[category] = .open(openedAt: Date())
+        }
     }
 
     /// Record a success for circuit breaker
     func recordSuccess(for category: ErrorCategory) {
-        circuitBreakerState[category] = .closed
+        stateQueue.sync {
+            circuitBreakerState[category] = .closed
+        }
     }
 }
 

@@ -15,8 +15,6 @@ final class WindowCoordinator: NSObject {
     private var detachedWindow: NSWindow?
     private var settingsWindow: NSWindow?
 
-    weak var manager: AnyObject?
-
     // MARK: - Popover Management
 
     func setupPopover(contentViewController: NSViewController) {
@@ -93,6 +91,7 @@ final class WindowCoordinator: NSObject {
         window.level = .floating
         window.center()
         window.isRestorable = false
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
 
         // Clear popover's content so it can be recreated later
@@ -110,7 +109,7 @@ final class WindowCoordinator: NSObject {
         // If settings window already exists, just bring it to front
         if let existingWindow = settingsWindow, existingWindow.isVisible {
             existingWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             LoggingService.shared.logWindowEvent("Settings window brought to front")
             return
         }
@@ -118,7 +117,7 @@ final class WindowCoordinator: NSObject {
         // Create settings window
         DispatchQueue.main.asyncAfter(deadline: .now() + Constants.UITiming.popoverCloseDelay) {
             NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
 
             let window = SettingsWindowBuilder.makeWindow(size: Constants.WindowSizes.settingsWindow)
             window.title = "app.window.settings".localized
@@ -173,9 +172,12 @@ extension WindowCoordinator: NSPopoverDelegate {
 
 extension WindowCoordinator: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        if notification.object as? NSWindow === settingsWindow {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === settingsWindow {
             settingsWindow = nil
             NSApp.setActivationPolicy(.accessory)
+        } else if window === detachedWindow {
+            detachedWindow = nil
         }
     }
 }

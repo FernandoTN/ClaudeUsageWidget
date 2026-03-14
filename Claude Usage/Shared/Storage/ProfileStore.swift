@@ -106,9 +106,18 @@ class ProfileStore {
 
     func saveProfiles(_ profiles: [Profile]) {
         do {
-            // Save each profile's credentials to Keychain (before JSON encoding strips them)
+            // Save each profile's credentials to Keychain only if changed
+            // Load current Keychain state for comparison to avoid redundant writes
+            let existingProfiles = loadProfiles()
             for profile in profiles {
-                saveCredentialsToKeychain(for: profile)
+                let existing = existingProfiles.first(where: { $0.id == profile.id })
+                let credentialsChanged = existing == nil
+                    || existing?.claudeSessionKey != profile.claudeSessionKey
+                    || existing?.apiSessionKey != profile.apiSessionKey
+                    || existing?.cliCredentialsJSON != profile.cliCredentialsJSON
+                if credentialsChanged {
+                    saveCredentialsToKeychain(for: profile)
+                }
             }
 
             // JSON encode profiles — CodingKeys excludes credential fields,

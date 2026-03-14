@@ -60,7 +60,6 @@ class ProfileManager: ObservableObject {
     // MARK: - Profile Operations
 
     func createProfile(name: String? = nil, copySettingsFrom: Profile? = nil) -> Profile {
-        let usedNames = profiles.map { $0.name }
         let profileName = name ?? "Profile \(profiles.count + 1)"
 
         let newProfile = Profile(
@@ -90,7 +89,7 @@ class ProfileManager: ObservableObject {
 
                 // Detailed logging for credential state
                 LoggingService.shared.log("ProfileManager.updateProfile: Updated ACTIVE profile '\(profile.name)'")
-                LoggingService.shared.log("  - claudeSessionKey: \(profile.claudeSessionKey == nil ? "NIL" : "EXISTS (len: \(profile.claudeSessionKey!.count))")")
+                LoggingService.shared.log("  - claudeSessionKey: \(profile.claudeSessionKey == nil ? "NIL" : "EXISTS")")
                 LoggingService.shared.log("  - organizationId: \(profile.organizationId == nil ? "NIL" : "EXISTS")")
                 LoggingService.shared.log("  - hasClaudeAI: \(profile.hasClaudeAI)")
                 LoggingService.shared.log("  - hasAnyCredentials: \(profile.hasAnyCredentials)")
@@ -487,21 +486,21 @@ class ProfileManager: ObservableObject {
     }
 
     private func createDefaultProfiles() -> [Profile] {
-        let gmail = Profile(
-            name: "Gmail",
+        let account1 = Profile(
+            name: "Account 1",
             iconConfig: .default,
             refreshInterval: 30.0,
             checkOverageLimitEnabled: true,
             notificationSettings: NotificationSettings()
         )
-        let hotmail = Profile(
-            name: "Hotmail",
+        let account2 = Profile(
+            name: "Account 2",
             iconConfig: .default,
             refreshInterval: 30.0,
             checkOverageLimitEnabled: true,
             notificationSettings: NotificationSettings()
         )
-        return [gmail, hotmail]
+        return [account1, account2]
     }
 
 }

@@ -21,6 +21,8 @@ Supports **two accounts simultaneously** (e.g., work + personal), with color-cod
 | Orange | 80-95% |
 | Red | > 95% |
 
+Click the menu bar icon to open a popover with detailed usage breakdown, reset timers, and per-model stats.
+
 ## Privacy Guarantees
 
 This fork makes **zero network calls** to anything other than `claude.ai`, `api.anthropic.com`, and `status.claude.com`. Specifically removed:
@@ -60,7 +62,7 @@ All credentials (session keys, OAuth tokens) are stored exclusively in the **mac
 
 3. Build and run (`Cmd+R`).
 
-The app will appear in your menu bar.
+The app will appear in your menu bar (no dock icon).
 
 ## Setup
 
@@ -71,6 +73,24 @@ The app will appear in your menu bar.
 5. Usage percentages appear in the menu bar immediately.
 
 For a second account, log out of Claude Code (`claude logout`), log in with the other account, and capture on the second profile slot.
+
+## Configuration
+
+### Refresh Interval
+
+Default: 30 seconds. Configurable per profile in Settings > General.
+
+### Notifications
+
+macOS notifications fire at configurable thresholds (default: 75%, 90%, 95%). Enable/disable per profile in Settings > General.
+
+### Keyboard Shortcuts
+
+Assign global shortcuts in Settings > Shortcuts to quickly check usage without clicking the menu bar.
+
+### Menu Bar Display
+
+Choose which metrics to show as menu bar icons and their display style in Settings > Appearance.
 
 ## What Was Removed
 
@@ -97,13 +117,57 @@ For a second account, log out of Claude Code (`claude logout`), log in with the 
 |-----------|---------|
 | ClaudeAPIService | Fetches usage from claude.ai and api.anthropic.com |
 | ClaudeCodeSyncService | Reads OAuth token from Claude Code's Keychain |
-| KeychainService | Secure credential storage |
-| ProfileManager + ProfileStore | Multi-account management |
-| MenuBarManager + Icon Renderer | Menu bar UI with usage percentages |
+| KeychainService | Secure credential storage (kSecAttrAccessibleWhenUnlocked) |
+| ProfileManager + ProfileStore | Multi-account management and persistence |
+| MenuBarManager + Icon Renderer | Menu bar UI with color-coded usage percentages |
 | PopoverContentView | Dropdown showing detailed usage breakdown |
-| SetupWizardView | First-run setup flow |
+| SetupWizardView | First-run setup flow with CLI auto-detection |
 | NotificationManager | Threshold alerts when approaching limits |
 | DesignSystem | Consistent styling across settings views |
+| NetworkMonitor | Connectivity detection for error handling |
+| LaunchAtLoginManager | Auto-start on macOS login |
+
+## Architecture
+
+```
+Claude Usage/
+├── App/
+│   ├── AppDelegate.swift              App lifecycle, setup wizard trigger
+│   └── ClaudeUsageTrackerApp.swift    SwiftUI entry point
+├── MenuBar/
+│   ├── MenuBarManager.swift           Orchestrates icons, popover, refresh
+│   ├── MenuBarIconRenderer.swift      CoreGraphics icon rendering
+│   ├── PopoverContentView.swift       Detailed usage popover
+│   ├── StatusBarUIManager.swift       NSStatusItem management
+│   ├── WindowCoordinator.swift        Popover/window lifecycle
+│   └── UsageRefreshCoordinator.swift  Refresh timing
+├── Views/
+│   ├── SetupWizardView.swift          First-run onboarding
+│   ├── SettingsView.swift             Tabbed settings window
+│   └── Settings/                      Settings tabs and components
+└── Shared/
+    ├── Services/                      API client, Keychain, profiles, sync
+    ├── Models/                        Profile, ClaudeUsage, APIUsage, etc.
+    ├── Storage/                       ProfileStore, SharedDataStore
+    ├── Utilities/                     Constants, validators, formatters
+    ├── Extensions/                    Color, Date, UserDefaults extensions
+    ├── ErrorHandling/                 Typed errors with recovery
+    └── Protocols/                     APIServiceProtocol, StorageProvider
+```
+
+## Testing
+
+```bash
+xcodebuild test -scheme "Claude Usage" -destination "platform=macOS"
+```
+
+6 test suites:
+- `ClaudeUsageTests` — Integration tests
+- `URLBuilderTests` — URL construction validation
+- `SessionKeyValidatorTests` — Key format validation
+- `UsageStatusCalculatorTests` — Color/threshold mapping
+- `DateExtensionsTests` — Date utilities
+- `SharedDataStoreTests` — Preference persistence
 
 ## Acknowledgments
 

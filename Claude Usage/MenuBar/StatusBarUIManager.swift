@@ -20,7 +20,6 @@ final class StatusBarUIManager {
     private var isMultiProfileMode: Bool = false
 
     private var appearanceObservers: [NSKeyValueObservation] = []
-    private var appearanceDebounceTimer: Timer?
 
     // Image cache to avoid redundant button.image assignments (which trigger KVO)
     private var lastImageData: [ObjectIdentifier: Data] = [:]
@@ -364,7 +363,7 @@ final class StatusBarUIManager {
             }
 
             image.isTemplate = useMonochrome && !config.showPaceMarker
-            button.image = image
+            setButtonImage(button, image: image)
         }
     }
 
@@ -458,7 +457,7 @@ final class StatusBarUIManager {
             )
 
             image.isTemplate = config.colorMode == .monochrome && !config.showPaceMarker
-            button.image = image
+            setButtonImage(button, image: image)
         }
     }
 
@@ -497,7 +496,7 @@ final class StatusBarUIManager {
         )
 
         image.isTemplate = config.colorMode == .monochrome && !config.showPaceMarker
-        button.image = image
+        setButtonImage(button, image: image)
     }
 
     /// Get button for a specific metric (used for popover positioning)
@@ -563,14 +562,6 @@ final class StatusBarUIManager {
         button.image = image
     }
 
-    /// Debounces appearance change notifications so multiple displays/buttons
-    /// coalesce into a single delegate callback
-    private func scheduleAppearanceUpdate() {
-        appearanceDebounceTimer?.invalidate()
-        appearanceDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-            self?.delegate?.statusBarAppearanceDidChange()
-        }
-    }
 }
 
 // MARK: - Delegate Protocol

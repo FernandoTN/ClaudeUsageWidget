@@ -40,7 +40,7 @@ enum MenuBarIconStyle: String, CaseIterable, Codable {
 }
 
 /// Manages shared data storage between app and widgets using App Groups
-class DataStore: StorageProvider {
+class DataStore {
     static let shared = DataStore()
 
     private let defaults: UserDefaults
@@ -258,8 +258,7 @@ class DataStore: StorageProvider {
             return nil
         } catch {
             LoggingService.shared.logStorageError("loadAPISessionKey", error: error)
-            // Fallback to UserDefaults on error
-            return defaults.string(forKey: Constants.UserDefaultsKeys.apiSessionKey)
+            return nil
         }
     }
 

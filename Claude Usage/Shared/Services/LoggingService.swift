@@ -95,7 +95,7 @@ final class LoggingService {
     }
 
     func logWarning(_ message: String) {
-        os_log("⚠️ %{public}@", log: generalLogger, type: .fault, message)
+        os_log("⚠️ %{public}@", log: generalLogger, type: .default, message)
     }
 
     func logInfo(_ message: String) {

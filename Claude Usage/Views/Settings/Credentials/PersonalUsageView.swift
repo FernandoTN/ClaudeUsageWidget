@@ -36,6 +36,7 @@ struct PersonalUsageView: View {
     @StateObject private var profileManager = ProfileManager.shared
     @State private var wizardState = WizardState()
     @State private var currentCredentials: ProfileCredentials?
+    @State private var showSaveSuccess = false
     private let apiService = ClaudeAPIService()
 
     var body: some View {
@@ -88,6 +89,23 @@ struct PersonalUsageView: View {
                     RoundedRectangle(cornerRadius: DesignTokens.Radius.card)
                         .strokeBorder(DesignTokens.Colors.cardBorder, lineWidth: 1)
                 )
+
+                // Success banner
+                if showSaveSuccess {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.system(size: 14))
+                        Text("Configuration saved successfully!")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.green)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.green.opacity(0.08))
+                    .cornerRadius(8)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
                 // Configuration Card Container
                 VStack(alignment: .leading, spacing: 0) {
@@ -152,7 +170,18 @@ struct PersonalUsageView: View {
                             ConfirmStep(
                                 wizardState: $wizardState,
                                 apiService: apiService,
-                                onSave: { loadCurrentCredentials() }
+                                onSave: {
+                                    loadCurrentCredentials()
+                                    withAnimation {
+                                        showSaveSuccess = true
+                                    }
+                                    // Auto-hide after 5 seconds
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                                        withAnimation {
+                                            showSaveSuccess = false
+                                        }
+                                    }
+                                }
                             )
                         }
                     }

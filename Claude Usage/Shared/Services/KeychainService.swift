@@ -185,25 +185,12 @@ class KeychainService {
 
         // If update fails because item doesn't exist, add new item
         if updateStatus == errSecItemNotFound {
-            var accessControlError: Unmanaged<CFError>?
-            guard let accessControl = SecAccessControlCreateWithFlags(
-                kCFAllocatorDefault,
-                kSecAttrAccessibleWhenUnlocked,
-                [],
-                &accessControlError
-            ) else {
-                if let error = accessControlError?.takeRetainedValue() {
-                    LoggingService.shared.logError("Keychain: Failed to create access control: \(error)")
-                }
-                return
-            }
-
             let addQuery: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
                 kSecAttrAccount as String: account,
                 kSecValueData as String: data,
-                kSecAttrAccessControl as String: accessControl,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
                 kSecAttrSynchronizable as String: false
             ]
 

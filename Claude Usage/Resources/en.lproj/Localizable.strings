@@ -12,7 +12,6 @@
 "app.name" = "Claude Usage Widget";
 "app.window.main" = "Claude Usage";
 "app.window.settings" = "Settings";
-"app.window.github_prompt" = "Support Claude Usage Widget";
 
 /* ==================== */
 /* MARK: - Common Actions */
@@ -46,10 +45,6 @@
 "settings.session_management.description" = "Automatic session management";
 "settings.notifications" = "Notifications";
 "settings.notifications.description" = "Usage alerts and notifications";
-"settings.claude_cli" = "Claude CLI";
-"settings.claude_cli.description" = "Terminal statusline integration";
-"settings.updates" = "Updates";
-"settings.updates.description" = "Keep your app up to date";
 "settings.about" = "About";
 "settings.about.description" = "App information and credits";
 
@@ -99,10 +94,6 @@
 "general.refresh_interval.description" = "Shorter intervals provide more real-time data but may impact battery life";
 "general.check_overage_limit" = "Check Extra Usage Limit";
 "general.check_overage_limit.description" = "Fetch and display monthly cost and overage limit information";
-"general.language.title" = "Language";
-"general.language.select" = "Select Language";
-"general.language.restart_note" = "Language changes will take effect after restarting the app";
-"general.language.restart_app" = "Restart App to Apply";
 
 /* ==================== */
 /* MARK: - Appearance Settings */
@@ -115,14 +106,6 @@
 "appearance.monochrome_mode.description" = "Icons adapt to light/dark mode automatically";
 "appearance.metric_configuration" = "Metric Configuration";
 "appearance.drag_to_reorder" = "Drag to reorder icons. Disabled metrics are hidden from the menu bar.";
-
-/* ==================== */
-/* MARK: - Session Management */
-/* ==================== */
-"session.auto_start" = "Auto-start session on reset";
-"session.auto_start.description" = "Automatically send 'Hi' to Claude when your session resets to 0%. This keeps your session always ready without manual intervention.";
-"session.enable_auto_start" = "Enable auto-start session";
-"session.beta_badge" = "BETA";
 
 /* ==================== */
 /* MARK: - Notifications Settings */
@@ -151,9 +134,6 @@
 "setup.instruction.step3" = "Find the 'sessionKey' cookie";
 "setup.instruction.step4" = "Double-click its Value and copy (Cmd+C)";
 "setup.paste_session_key" = "Paste the sessionKey value you copied";
-"setup.auto_start_session" = "Auto-start session on reset";
-"setup.auto_start_session.description" = "Automatically send 'Hi' to Claude 3.5 Haiku when your session resets to 0%. This keeps your session always ready without manual intervention.";
-"setup.enable_auto_start" = "Enable auto-start session";
 "setup.menubar_appearance" = "Menu Bar Appearance";
 "setup.choose_icon_style" = "Choose your preferred icon style";
 "setup.monochrome_adaptive" = "Monochrome (Adaptive)";
@@ -163,30 +143,8 @@
 /* MARK: - About */
 /* ==================== */
 "about.version" = "Version %@";
-"about.check_updates" = "Check for Updates";
-"about.created_by" = "Created By";
-"about.contributors" = "Contributors (%d)";
-"about.contributors_loading" = "Contributors";
-"about.contributors_failed" = "Could not load contributors";
 "about.links" = "Links";
-"about.star_github" = "Star on GitHub";
-"about.report_issue" = "Report Issue";
-"about.send_feedback" = "Send Feedback";
 "about.mit_license" = "MIT License • Open Source";
-"about.copyright" = "© 2025 Hamed Elfayome";
-
-/* ==================== */
-/* MARK: - Updates Settings */
-/* ==================== */
-"settings.updates.title" = "Software Updates";
-"settings.updates.current_version" = "Current Version";
-"settings.updates.last_check" = "Last Checked";
-"settings.updates.never_checked" = "Never";
-"settings.updates.automatic" = "Automatic Updates";
-"settings.updates.automatic.description" = "Automatically check for and download updates daily";
-"settings.updates.check_now" = "Check for Updates";
-"settings.updates.info.title" = "Secure Updates";
-"settings.updates.info.description" = "All updates are cryptographically signed and verified before installation";
 
 /* ==================== */
 /* MARK: - Icon Styles */
@@ -229,10 +187,6 @@
 "notification.session_critical.message" = "You've used %@ of your 5-hour session limit! %@";
 "notification.session_reset.title" = "Session Reset";
 "notification.session_reset.message" = "Your session has reset! You now have a fresh 5-hour session available.";
-"notification.session_auto_started.title" = "Session Auto-Started";
-"notification.session_auto_started.message" = "A new session has been automatically initialized. Your fresh 5-hour session is ready!";
-"notification.session_auto_start_failed.title" = "Auto-Start Failed";
-"notification.session_auto_start_failed.message" = "Failed to automatically start the session. Please check your credentials.";
 "notification.weekly_warning.title" = "Weekly Usage Warning";
 "notification.weekly_warning.message" = "You've used %@ of your weekly limit. %@";
 "notification.weekly_critical.title" = "Weekly Usage Critical";
@@ -283,15 +237,6 @@
 "validation.contains_whitespace" = "Session key contains whitespace";
 
 /* ==================== */
-/* MARK: - GitHub Star Prompt */
-/* ==================== */
-"github.enjoy_app" = "Enjoying Claude Usage Widget?";
-"github.star_description" = "If this app has been helpful, please consider starring it on GitHub! It helps others discover the project and motivates continued development.";
-"github.star_button" = "Star on GitHub";
-"github.maybe_later" = "Maybe Later";
-"github.never_show" = "Don't Show Again";
-
-/* ==================== */
 /* MARK: - API Settings */
 /* ==================== */
 "api.enable_tracking" = "Enable API tracking";
@@ -318,14 +263,6 @@
 "personal.remove" = "Remove Session Key";
 
 /* ==================== */
-/* MARK: - Claude Code (CLI) */
-/* ==================== */
-"claudecode.title" = "Claude CLI Integration";
-"claudecode.description" = "Display usage information in your terminal statusline";
-"claudecode.coming_soon" = "Coming Soon";
-"claudecode.features_description" = "Integration with Claude Code CLI for terminal statusline display is coming in a future update.";
-
-/* ==================== */
 /* MARK: - Additional UI Labels */
 /* ==================== */
 "ui.app_behavior" = "App Behavior";
@@ -342,39 +279,6 @@
 "ui.icon_style" = "Icon Style";
 "ui.display_mode" = "Display Mode";
 "ui.at_least_one_metric" = "At least one metric must be enabled";
-
-/* ==================== */
-/* MARK: - Session Management (Additional) */
-/* ==================== */
-"session.subtitle" = "Automatic session initialization and maintenance";
-"session.auto_description_line1" = "• Detects when your session resets to 0%";
-"session.auto_description_line2" = "• Sends 'Hi' to Claude 3.5 Haiku (cheapest model)";
-"session.auto_description_line3" = "• Uses a temporary chat that won't appear in your history";
-"session.auto_description_line4" = "• New 5-hour session is ready instantly";
-
-/* ==================== */
-/* MARK: - Claude CLI (Additional) */
-/* ==================== */
-"claudecode.subtitle" = "Customize your terminal statusline display";
-"claudecode.preview_label" = "Live Preview";
-"claudecode.preview_description" = "This is how your statusline will appear in Claude CLI";
-"claudecode.component_model" = "Model name";
-"claudecode.component_directory" = "Directory name";
-"claudecode.component_branch" = "Git branch";
-"claudecode.component_context" = "Context window";
-"claudecode.component_context_tokens" = "Show as tokens (instead of %)";
-"claudecode.component_usage" = "Usage statistics";
-"claudecode.component_progressbar" = "Progress bar";
-"claudecode.component_pace_marker" = "Pace marker";
-"claudecode.pace_marker_info" = "Colored by projected usage pace (green → purple)";
-"claudecode.component_resettime" = "Reset time";
-"claudecode.requirement_sessionkey" = "• Session key configured in Credentials → Claude.ai tab";
-"claudecode.requirement_restart" = "• Restart Claude CLI after applying changes";
-"claudecode.error_no_components" = "Please select at least one component to display";
-"claudecode.error_no_sessionkey" = "Session key not configured. Please set it in the Personal Usage tab first.";
-"claudecode.success_applied" = "Configuration applied! Restart Claude CLI to see changes.";
-"claudecode.success_disabled" = "Statusline disabled. Restart Claude CLI.";
-"claudecode.preview_no_components" = "No components selected";
 
 /* ==================== */
 /* MARK: - API Billing (Additional) */
@@ -426,7 +330,6 @@
 "general.slider_fast" = "Fast";
 "general.slider_balanced_label" = "Balanced";
 "general.slider_battery_saver_label" = "Battery Saver";
-"general.available_languages" = "Available Languages (%d)";
 
 /* ==================== */
 /* MARK: - Badges */
@@ -541,22 +444,10 @@
 "general.refresh_seconds" = "%d seconds";
 "general.refresh_min" = "10s";
 "general.refresh_max" = "300s";
-"general.autostart_title" = "Auto-Start Session";
-"general.autostart_subtitle" = "Automatically start a new session when needed";
-"general.autostart_toggle" = "Auto-Start New Session";
-"general.autostart_description" = "Automatically send a message when session resets";
-"general.autostart_requirement" = "• Session key configured in Credentials → Claude.ai tab";
 "general.notifications_title" = "Notifications";
 "general.notifications_subtitle" = "Get notified about usage milestones";
 "general.connected" = "Connected";
 "general.not_connected" = "Not Connected";
-
-/* ==================== */
-/* MARK: - Updates Settings */
-/* ==================== */
-"updates.version_info" = "Version Information";
-"updates.update_preferences" = "Update Preferences";
-"updates.version_label" = "v%@ (%@)";
 
 /* ==================== */
 /* MARK: - Appearance (Additional) */
@@ -578,18 +469,6 @@
 "personal.configuration_title" = "Configuration";
 "personal.status_connected" = "Connected";
 "personal.status_not_connected" = "Not Connected";
-
-/* ==================== */
-/* MARK: - Language Settings */
-/* ==================== */
-"language.title" = "Language";
-"language.subtitle" = "Choose your preferred language";
-"language.select_language" = "Select Language";
-"language.available" = "Available Languages";
-"language.restart_required" = "Restart Required";
-"language.restart_message" = "The app needs to restart for language changes to take effect.";
-"language.restart_now" = "Restart Now";
-"language.restart_later" = "Later";
 
 /* ==================== */
 /* MARK: - Common Actions (Additional) */
@@ -665,12 +544,6 @@
 "section.manage_profiles_desc" = "Manage profiles";
 
 /* ==================== */
-/* MARK: - Creator Info */
-/* ==================== */
-"creator.name" = "Hamed Elfayome";
-"creator.username" = "@hamed-elfayome";
-
-/* ==================== */
 /* MARK: - Wizard Steps & Actions */
 /* ==================== */
 "wizard.enter_key" = "Enter Key";
@@ -705,11 +578,6 @@
 "api.single_organization" = "Single organization found and selected automatically";
 "api.remove_title" = "Remove Credentials";
 "api.remove_subtitle" = "Permanently delete your API Console session key from this profile";
-"claudecode.button_apply" = "Apply";
-"claudecode.button_reset" = "Reset";
-"claudecode.actions_title" = "Actions";
-"claudecode.component_profile" = "Profile name";
-"claudecode.context_info" = "Context may show ~80-95% instead of 100% — Claude auto-compresses before the limit, and output tokens also use context space.";
 "error.generic" = "Error: %@";
 "personal.button_saving" = "Saving...";
 "personal.button_setup_wizard" = "Setup Wizard";
@@ -740,115 +608,11 @@
 
 /* Claude Code Info */
 "wizard.claude_code_info_title" = "Using Claude Code?";
-"wizard.claude_code_info_description" = "Usage tracking will work, but CLI status line & auto-start session won't work without session key";
+"wizard.claude_code_info_description" = "A session key is needed for usage tracking";
 "wizard.claude_code_skip_setup" = "Skip Setup";
 "wizard.migrate_description_short" = "Import your old profiles data from previous app version";
 "wizard.skip_migration" = "Skip";
 "wizard.migration_skipped" = "Skipped";
-
-/* ==================== */
-/* MARK: - Usage History */
-/* ==================== */
-"section.history_title" = "History";
-"section.history_desc" = "View usage history";
-"section.support_title" = "Support";
-"section.support_desc" = "Support the project development";
-"section.debug_title" = "Debug Tools";
-"section.debug_desc" = "Network logging and diagnostics";
-"history.title" = "Usage History";
-"history.subtitle" = "Track your usage over time";
-"history.tab.session" = "Sessions";
-"history.tab.weekly" = "Weekly";
-"history.tab.billing" = "Billing";
-"history.chart.session_title" = "Session Usage History";
-"history.chart.weekly_title" = "Weekly Usage Trend";
-"history.chart.billing_title" = "Monthly API Spend";
-"history.chart.now" = "Now";
-"history.empty.session_title" = "No Session History";
-"history.empty.session_description" = "Session usage will be recorded after each 5-hour reset";
-"history.empty.weekly_title" = "No Weekly History";
-"history.empty.weekly_description" = "Weekly usage will be recorded after each Monday reset";
-"history.empty.billing_title" = "No Billing History";
-"history.empty.billing_description" = "Billing data will be recorded after each monthly reset";
-"history.list.title" = "History Records";
-"history.list.count" = "%d records";
-"history.list.empty" = "No records yet. History will be recorded automatically at each reset.";
-"history.list.more" = "+%d more records";
-"history.export_button" = "Export";
-"history.clear_button" = "Clear";
-"history.no_profile" = "No active profile";
-"history.reset_type.session" = "Session Reset";
-"history.reset_type.weekly" = "Weekly Reset";
-"history.reset_type.billing" = "Billing Cycle";
-"history.label.total" = "Total";
-"history.label.spent" = "Spent";
-"history.label.session" = "Session";
-"history.time_scale.5_hours" = "5 Hours";
-"history.time_scale.24_hours" = "24 Hours";
-"history.time_scale.7_days" = "7 Days";
-"history.time_scale.30_days" = "30 Days";
-"history.chart.session_usage" = "Session Usage";
-"history.chart.weekly_usage" = "Weekly Usage";
-"history.chart.api_billing" = "API Billing";
-"history.chart.no_data" = "No data in selected range";
-"history.export.title" = "Export Data";
-"history.export.json" = "Export as JSON";
-"history.export.csv" = "Export as CSV";
-"history.chart.now" = "Now";
-
-/* ==================== */
-/* MARK: - Support View */
-/* ==================== */
-"support.title" = "Support the Project";
-"support.subtitle" = "Claude Usage Widget is free and open source";
-"support.all_features_free" = "All Features Are Free";
-"support.all_features_desc" = "Every feature in this app is completely free to use. No premium tiers, no paywalls, no subscriptions.";
-"support.open_source" = "Open Source";
-"support.open_source_desc" = "The source code is publicly available on GitHub. You can inspect, modify, and contribute to the project.";
-"support.no_tracking" = "No Tracking";
-"support.no_tracking_desc" = "Your privacy matters. No analytics, no telemetry, no data collection. Everything stays on your Mac.";
-"support.message" = "If you find this app useful, consider supporting its development";
-"support.buy_coffee" = "Buy Me a Coffee";
-"support.footer" = "Your support helps keep this project alive and growing";
-"support.also_support" = "You can also support by";
-"support.star_github" = "Starring on GitHub";
-
-/* ==================== */
-/* MARK: - Debug View */
-/* ==================== */
-"debug.title" = "Debug Tools";
-"debug.subtitle" = "Log network requests for troubleshooting and diagnostics";
-"debug.network_logger" = "Network Request Logger";
-"debug.network_logger_desc" = "Capture all API requests with detailed information";
-"debug.logging_duration" = "Logging Duration";
-"debug.logging_active" = "Logging Active";
-"debug.logging_inactive" = "Logging Inactive";
-"debug.stops_in" = "Stops in %@";
-"debug.start_logging" = "Start Logging";
-"debug.stop_logging" = "Stop Logging";
-"debug.clear_logs" = "Clear Logs";
-"debug.clear_all_logs" = "Clear All Logs?";
-"debug.clear_logs_message" = "This will permanently delete all logged network requests.";
-"debug.captured_requests" = "Captured Requests";
-"debug.requests_logged" = "%d requests logged";
-"debug.no_requests" = "No requests logged yet";
-"debug.request_details" = "Request Details";
-"debug.basic_information" = "Basic Information";
-"debug.request_body" = "Request Body";
-"debug.response_preview" = "Response (Preview)";
-"debug.full_size" = "Full size: %@";
-"debug.error" = "Error";
-"debug.url" = "URL";
-"debug.method" = "Method";
-"debug.status_code" = "Status Code";
-"debug.duration" = "Duration";
-"debug.timestamp" = "Timestamp";
-"debug.duration_seconds" = "%.3f seconds";
-
-/* ==================== */
-/* MARK: - Combined Usage Chart */
-/* ==================== */
-"history.chart.usage_overview" = "Usage Overview";
 
 /* ==================== */
 /* MARK: - Keyboard Shortcuts */
@@ -873,23 +637,6 @@
 "shortcuts.info_desc" = "Shortcuts work from any application. Each shortcut must include at least one modifier key (Command, Option, Control, or Shift). Avoid conflicts with system shortcuts.";
 
 /* ==================== */
-/* MARK: - Mobile App (Coming Soon) */
-/* ==================== */
-"section.mobile_app_title" = "Mobile App";
-"section.mobile_app_desc" = "Mobile app coming soon";
-"mobile.title" = "Mobile App";
-"mobile.subtitle" = "Track your Claude usage on the go";
-"mobile.coming_soon_badge" = "COMING SOON";
-"mobile.cta_message" = "Interested? Let us know and we'll notify you when it's ready.";
-"mobile.notify_me" = "Notify Me";
-"mobile.submitting" = "Submitting...";
-"mobile.notified" = "You're on the list!";
-"mobile.notified_desc" = "We'll let you know when the mobile app is available.";
-"mobile.privacy_note" = "No personal data is collected. This only registers your interest.";
-"mobile.error_title" = "Request Failed";
-"mobile.error_message" = "Could not register your interest. Please check your internet connection and try again.";
-
-/* ==================== */
 /* MARK: - Popover Settings */
 /* ==================== */
 "section.popover_title" = "Popover";
@@ -909,29 +656,6 @@
 "popover.time_format_system" = "System";
 "popover.time_format_12h" = "12-hour";
 "popover.time_format_24h" = "24-hour";
-
-/* ==================== */
-/* MARK: - Feedback Prompt */
-/* ==================== */
-"feedback.title" = "Help Us Improve";
-"feedback.subtitle" = "Your feedback shapes the future of this app";
-"feedback.name_placeholder" = "Name";
-"feedback.title_label" = "Role";
-"feedback.contact_placeholder" = "Email";
-"feedback.message_placeholder" = "Tell us anything — feedback, ideas, feature requests...";
-"feedback.submit" = "Submit";
-"feedback.submitting" = "Sending...";
-"feedback.remind_later" = "Remind Me Later";
-"feedback.never_show" = "Don't Ask Again";
-"feedback.thanks" = "Thanks for your feedback!";
-"feedback.error_title" = "Submission Failed";
-"feedback.error_message" = "Could not send your feedback. Please try again later.";
-"feedback.role_developer" = "Developer";
-"feedback.role_designer" = "Designer";
-"feedback.role_manager" = "Manager";
-"feedback.role_student" = "Student";
-"feedback.role_researcher" = "Researcher";
-"feedback.role_other" = "Other";
 
 // MARK: - Status Banners
 "popover.banner.credentials_expired" = "Credentials expired. Update in Settings.";

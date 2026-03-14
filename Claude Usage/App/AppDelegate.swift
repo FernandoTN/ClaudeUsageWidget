@@ -5,6 +5,7 @@ import UserNotifications
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var menuBarManager: MenuBarManager?
     private var setupWindow: NSWindow?
+    private var setupWindowCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Disable window restoration for menu bar app
@@ -153,13 +154,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         LoggingService.shared.log("AppDelegate: Window created and made key")
 
         // Hide dock icon again when setup window closes
-        NotificationCenter.default.addObserver(
+        setupWindowCloseObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
             NSApp.setActivationPolicy(.accessory)
             self?.setupWindow = nil
+
+            // Remove observer to prevent leak
+            if let observer = self?.setupWindowCloseObserver {
+                NotificationCenter.default.removeObserver(observer)
+                self?.setupWindowCloseObserver = nil
+            }
 
             // Initialize menu bar after setup completes
             if self?.menuBarManager == nil {
@@ -169,7 +176,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
         setupWindow = window
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

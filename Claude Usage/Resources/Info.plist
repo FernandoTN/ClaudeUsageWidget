@@ -29,7 +29,7 @@
 	<key>NSQuitAlwaysKeepsWindows</key>
 	<false/>
 	<key>NSSupportsAutomaticTermination</key>
-	<true/>
+	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>NSSupportsSuddenTermination</key>

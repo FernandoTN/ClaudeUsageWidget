@@ -11,7 +11,7 @@ final class SharedDataStoreTests: XCTestCase {
     }
 
     override func tearDown() {
-        // Clean up test data
+        UserDefaults.standard.removeObject(forKey: "hasCompletedSetup")
         super.tearDown()
     }
 

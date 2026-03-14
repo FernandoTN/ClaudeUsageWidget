@@ -3,7 +3,7 @@ import UserNotifications
 import AppKit
 
 /// Manages user notifications for usage threshold alerts
-class NotificationManager: NotificationServiceProtocol {
+class NotificationManager {
     static let shared = NotificationManager()
 
     // Track previous session percentage per profile to detect resets
@@ -24,8 +24,8 @@ class NotificationManager: NotificationServiceProtocol {
 
     /// Sends a notification when approaching usage limits (legacy method)
     func sendUsageAlert(type: AlertType, percentage: Double, resetTime: Date?) {
-        // Check if notifications are enabled in preferences
-        guard DataStore.shared.loadNotificationsEnabled() else {
+        // Check if notifications are enabled for the active profile
+        guard ProfileManager.shared.activeProfile?.notificationSettings.enabled ?? false else {
             return
         }
 
@@ -177,19 +177,16 @@ class NotificationManager: NotificationServiceProtocol {
 
     /// Checks usage and sends appropriate alerts (legacy, for backwards compatibility)
     func checkAndNotify(usage: ClaudeUsage) {
-        // Fallback to old behavior if called without profile
-        guard DataStore.shared.loadNotificationsEnabled() else {
+        // Use the active profile's notification settings
+        let settings = ProfileManager.shared.activeProfile?.notificationSettings
+            ?? NotificationSettings(enabled: false)
+
+        guard settings.enabled else {
             return
         }
 
-        let settings = NotificationSettings(
-            enabled: true,
-            threshold75Enabled: true,
-            threshold90Enabled: true,
-            threshold95Enabled: true
-        )
-
-        checkAndNotify(usage: usage, profileName: "Default", settings: settings)
+        let profileName = ProfileManager.shared.activeProfile?.name ?? "Default"
+        checkAndNotify(usage: usage, profileName: profileName, settings: settings)
     }
 
     /// Sends a profile-specific usage alert

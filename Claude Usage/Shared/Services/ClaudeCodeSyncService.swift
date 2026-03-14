@@ -225,58 +225,45 @@ class ClaudeCodeSyncService {
         resolvedServiceName = nil
     }
 
-    /// Writes Claude Code credentials to system Keychain using security command
+    /// Writes Claude Code credentials to system Keychain using Security framework.
+    /// Uses SecItemUpdate/SecItemAdd directly to avoid exposing credentials in process arguments.
     func writeSystemCredentials(_ jsonData: String) throws {
         let serviceName = resolveServiceName()
-        LoggingService.shared.log("Writing credentials to keychain using security command (service: \(serviceName))")
+        LoggingService.shared.log("Writing credentials to keychain via Security framework (service: \(serviceName))")
 
-        // First, delete existing item
-        let deleteProcess = Process()
-        deleteProcess.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        deleteProcess.arguments = [
-            "delete-generic-password",
-            "-s", serviceName,
-            "-a", NSUserName()
-        ]
-
-        try deleteProcess.run()
-        deleteProcess.waitUntilExit()
-
-        let deleteExitCode = deleteProcess.terminationStatus
-        if deleteExitCode == 0 {
-            LoggingService.shared.log("Deleted existing keychain item")
-        } else {
-            LoggingService.shared.log("No existing keychain item to delete (or delete failed with code \(deleteExitCode))")
+        guard let passwordData = jsonData.data(using: .utf8) else {
+            throw ClaudeCodeError.invalidJSON
         }
 
-        // Add new item using security command
-        let addProcess = Process()
-        addProcess.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        addProcess.arguments = [
-            "add-generic-password",
-            "-s", serviceName,
-            "-a", NSUserName(),
-            "-w", jsonData,
-            "-U"  // Update if exists
+        // Query to find existing item
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: NSUserName()
         ]
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        addProcess.standardOutput = outputPipe
-        addProcess.standardError = errorPipe
+        // Attributes for the credential
+        let attributes: [String: Any] = [
+            kSecValueData as String: passwordData,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]
 
-        try addProcess.run()
-        addProcess.waitUntilExit()
+        // Try to update existing item first
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
-        let exitCode = addProcess.terminationStatus
+        if status == errSecItemNotFound {
+            // Item doesn't exist yet — add it
+            var addQuery = query
+            addQuery[kSecValueData as String] = passwordData
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
 
-        if exitCode == 0 {
-            LoggingService.shared.log("✅ Added Claude Code system credentials successfully using security command")
+        if status == errSecSuccess {
+            LoggingService.shared.log("Added Claude Code system credentials successfully via Security framework")
         } else {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorString = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            LoggingService.shared.log("❌ Failed to add credentials: \(errorString)")
-            throw ClaudeCodeError.keychainWriteFailed(status: OSStatus(exitCode))
+            LoggingService.shared.log("Failed to write credentials (status: \(status))")
+            throw ClaudeCodeError.keychainWriteFailed(status: status)
         }
     }
 

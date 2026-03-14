@@ -1,7 +1,7 @@
 import Foundation
 
 /// Service for fetching usage data directly from Claude's API
-class ClaudeAPIService: APIServiceProtocol {
+class ClaudeAPIService {
     // MARK: - Types
 
     /// Authentication method for API requests
@@ -39,7 +39,7 @@ class ClaudeAPIService: APIServiceProtocol {
             }
 
             LoggingService.shared.log("ClaudeAPIService.readSessionKey: Profile '\(activeProfile.name)'")
-            LoggingService.shared.log("  - claudeSessionKey: \(activeProfile.claudeSessionKey == nil ? "NIL" : "EXISTS (len: \(activeProfile.claudeSessionKey!.count))")")
+            LoggingService.shared.log("  - claudeSessionKey: \(activeProfile.claudeSessionKey == nil ? "NIL" : "EXISTS")")
 
             guard let key = activeProfile.claudeSessionKey else {
                 LoggingService.shared.logError("ClaudeAPIService.readSessionKey: Profile has NIL claudeSessionKey - throwing sessionKeyNotFound")
@@ -140,7 +140,8 @@ class ClaudeAPIService: APIServiceProtocol {
             // CLI OAuth authentication (requires specific headers)
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("claude-code/2.1.5", forHTTPHeaderField: "User-Agent")
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+            request.setValue("ClaudeUsageWidget/\(version)", forHTTPHeaderField: "User-Agent")
             request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
 
         case .consoleAPISession(let apiKey):
@@ -356,7 +357,15 @@ class ClaudeAPIService: APIServiceProtocol {
         let organizations = try await fetchAllOrganizations(sessionKey: sessionKey)
 
         // Auto-select organization (prefer first one for now - user can change later)
-        let selectedOrg = organizations.first!
+        guard let selectedOrg = organizations.first else {
+            throw AppError(
+                code: .apiParsingFailed,
+                message: "No organizations available",
+                technicalDetails: "fetchAllOrganizations returned a non-empty array but .first was nil",
+                isRecoverable: false,
+                recoverySuggestion: "Please ensure your Claude account has access to organizations"
+            )
+        }
         LoggingService.shared.logInfo("Auto-selected organization: \(selectedOrg.name) (ID: \(selectedOrg.uuid))")
 
         // Store the selected org ID in active profile
@@ -480,7 +489,10 @@ class ClaudeAPIService: APIServiceProtocol {
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             request.timeoutInterval = 30
 
-            // Minimal request: cheapest model, 1 token, to get rate limit headers
+            // IMPORTANT: This sends a real (minimal) API message because no dedicated
+            // OAuth usage endpoint exists. We use the cheapest model, max_tokens=1, and
+            // the shortest possible prompt to minimize cost. Usage data is extracted from
+            // the rate-limit response headers rather than the message content.
             let body: [String: Any] = [
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 1,
@@ -566,7 +578,7 @@ class ClaudeAPIService: APIServiceProtocol {
         LoggingService.shared.logAPIResponse(endpoint, statusCode: httpResponse.statusCode)
 
         // Log raw response if debug logging is enabled
-        if DataStore.shared.loadDebugAPILoggingEnabled() {
+        if SharedDataStore.shared.loadDebugAPILoggingEnabled() {
             if let responseString = String(data: data, encoding: .utf8) {
                 // Truncate to first 500 chars to avoid huge logs
                 let truncated = responseString.prefix(500)
@@ -619,6 +631,28 @@ class ClaudeAPIService: APIServiceProtocol {
         }
     }
 
+    // MARK: - Date Formatters (cached)
+
+    /// ISO 8601 formatter with fractional seconds (primary)
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// ISO 8601 formatter without fractional seconds (fallback)
+    private static let iso8601FallbackFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    /// Parses an ISO 8601 date string, trying fractional seconds first then falling back
+    private static func parseISO8601Date(_ string: String) -> Date? {
+        return iso8601Formatter.date(from: string)
+            ?? iso8601FallbackFormatter.date(from: string)
+    }
+
     // MARK: - Response Parsing
 
     private func parseUsageResponse(_ data: Data) throws -> ClaudeUsage {
@@ -633,9 +667,7 @@ class ClaudeAPIService: APIServiceProtocol {
                     sessionPercentage = parseUtilization(utilization)
                 }
                 if let resetsAt = fiveHour["resets_at"] as? String {
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    sessionResetTime = formatter.date(from: resetsAt) ?? sessionResetTime
+                    sessionResetTime = Self.parseISO8601Date(resetsAt) ?? sessionResetTime
                 }
             }
 
@@ -647,9 +679,7 @@ class ClaudeAPIService: APIServiceProtocol {
                     weeklyPercentage = parseUtilization(utilization)
                 }
                 if let resetsAt = sevenDay["resets_at"] as? String {
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    weeklyResetTime = formatter.date(from: resetsAt) ?? weeklyResetTime
+                    weeklyResetTime = Self.parseISO8601Date(resetsAt) ?? weeklyResetTime
                 }
             }
 
@@ -669,9 +699,7 @@ class ClaudeAPIService: APIServiceProtocol {
                     sonnetPercentage = parseUtilization(utilization)
                 }
                 if let resetsAt = sevenDaySonnet["resets_at"] as? String {
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    sonnetResetTime = formatter.date(from: resetsAt)
+                    sonnetResetTime = Self.parseISO8601Date(resetsAt)
                 }
             }
 
@@ -710,7 +738,7 @@ class ClaudeAPIService: APIServiceProtocol {
         }
 
         // Log the actual response for debugging
-        if DataStore.shared.loadDebugAPILoggingEnabled() {
+        if SharedDataStore.shared.loadDebugAPILoggingEnabled() {
             if let responseString = String(data: data, encoding: .utf8) {
                 LoggingService.shared.logDebug("Failed to parse usage response: \(responseString)")
             }
@@ -851,17 +879,25 @@ class ClaudeAPIService: APIServiceProtocol {
         let (conversationData, conversationResponse) = try await URLSession.shared.data(for: conversationRequest)
 
         guard let httpResponse = conversationResponse as? HTTPURLResponse else {
-            throw APIError.invalidResponse
+            throw AppError(
+                code: .apiInvalidResponse,
+                message: "Invalid response when creating conversation",
+                isRecoverable: true
+            )
         }
 
         guard httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
-            throw APIError.serverError(statusCode: httpResponse.statusCode)
+            throw AppError.apiServerError(statusCode: httpResponse.statusCode)
         }
 
         // Parse conversation UUID
         guard let json = try? JSONSerialization.jsonObject(with: conversationData) as? [String: Any],
               let conversationUUID = json["uuid"] as? String else {
-            throw APIError.invalidResponse
+            throw AppError(
+                code: .apiInvalidResponse,
+                message: "Failed to parse conversation UUID from response",
+                isRecoverable: true
+            )
         }
 
         // Send a minimal "Hi" message to initialize the session
@@ -884,11 +920,15 @@ class ClaudeAPIService: APIServiceProtocol {
         let (_, messageResponse) = try await URLSession.shared.data(for: messageRequest)
 
         guard let messageHTTPResponse = messageResponse as? HTTPURLResponse else {
-            throw APIError.invalidResponse
+            throw AppError(
+                code: .apiInvalidResponse,
+                message: "Invalid response when sending initialization message",
+                isRecoverable: true
+            )
         }
 
         guard messageHTTPResponse.statusCode == 200 else {
-            throw APIError.serverError(statusCode: messageHTTPResponse.statusCode)
+            throw AppError.apiServerError(statusCode: messageHTTPResponse.statusCode)
         }
 
         // Delete the conversation to keep it out of chat history (incognito mode)
