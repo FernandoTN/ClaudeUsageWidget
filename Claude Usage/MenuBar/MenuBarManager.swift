@@ -45,12 +45,6 @@ class MenuBarManager: NSObject, ObservableObject {
     // Settings window reference
     private var settingsWindow: NSWindow?
 
-    // GitHub star prompt window reference
-    private var githubPromptWindow: NSWindow?
-
-    // Feedback prompt window reference
-    private var feedbackWindow: NSWindow?
-
     // Track which button is currently showing the popover
     private weak var currentPopoverButton: NSStatusBarButton?
 
@@ -1472,150 +1466,6 @@ class MenuBarManager: NSObject, ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
-    /// Shows the GitHub star prompt window
-    func showGitHubStarPrompt() {
-        // If window already exists, just bring it to front
-        if let existingWindow = githubPromptWindow, existingWindow.isVisible {
-            existingWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        // Temporarily show dock icon for the prompt window
-        NSApp.setActivationPolicy(.regular)
-
-        // Create the GitHub star prompt view
-        let promptView = GitHubStarPromptView(
-            onStar: { [weak self] in
-                self?.handleGitHubStarClick()
-            },
-            onMaybeLater: { [weak self] in
-                self?.handleMaybeLaterClick()
-            },
-            onDontAskAgain: { [weak self] in
-                self?.handleDontAskAgainClick()
-            }
-        )
-
-        let hostingController = NSHostingController(rootView: promptView)
-
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = ""
-        window.styleMask = [.titled, .closable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.setContentSize(NSSize(width: 300, height: 145))
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.isRestorable = false
-        window.level = .floating
-        window.delegate = self
-
-        // Store reference
-        githubPromptWindow = window
-
-        // Mark that we've shown the prompt
-        dataStore.saveLastGitHubStarPromptDate(Date())
-
-        // Show the window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func handleGitHubStarClick() {
-        // Open GitHub repository
-        if let url = URL(string: Constants.githubRepoURL) {
-            NSWorkspace.shared.open(url)
-        }
-
-        // Mark as starred
-        dataStore.saveHasStarredGitHub(true)
-
-        // Close the prompt window
-        githubPromptWindow?.close()
-        githubPromptWindow = nil
-
-        // Hide dock icon
-        NSApp.setActivationPolicy(.accessory)
-    }
-
-    private func handleMaybeLaterClick() {
-        // Just close the window - the prompt will show again after the reminder interval
-        githubPromptWindow?.close()
-        githubPromptWindow = nil
-
-        // Hide dock icon
-        NSApp.setActivationPolicy(.accessory)
-    }
-
-    private func handleDontAskAgainClick() {
-        // Mark to never show again
-        dataStore.saveNeverShowGitHubPrompt(true)
-
-        // Close the prompt window
-        githubPromptWindow?.close()
-        githubPromptWindow = nil
-
-        // Hide dock icon
-        NSApp.setActivationPolicy(.accessory)
-    }
-
-    // MARK: - Feedback Prompt
-
-    /// Shows the feedback collection prompt window
-    func showFeedbackPrompt() {
-        if let existingWindow = feedbackWindow, existingWindow.isVisible {
-            existingWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        NSApp.setActivationPolicy(.regular)
-
-        let promptView = FeedbackPromptView(
-            onSubmit: { [weak self] _, _, _, _ in
-                SharedDataStore.shared.saveHasSubmittedFeedback(true)
-                // Close after a brief delay to show the thanks state
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    self?.closeFeedbackWindow()
-                }
-            },
-            onRemindLater: { [weak self] in
-                SharedDataStore.shared.saveLastFeedbackPromptDate(Date())
-                self?.closeFeedbackWindow()
-            },
-            onDontAskAgain: { [weak self] in
-                SharedDataStore.shared.saveNeverShowFeedbackPrompt(true)
-                self?.closeFeedbackWindow()
-            }
-        )
-
-        let hostingController = NSHostingController(rootView: promptView)
-
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = ""
-        window.styleMask = [.titled, .closable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.setContentSize(NSSize(width: 380, height: 420))
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.isRestorable = false
-        window.level = .floating
-        window.delegate = self
-
-        feedbackWindow = window
-        SharedDataStore.shared.saveLastFeedbackPromptDate(Date())
-
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func closeFeedbackWindow() {
-        feedbackWindow?.close()
-        feedbackWindow = nil
-        NSApp.setActivationPolicy(.accessory)
-    }
 }
 
 // MARK: - NSPopoverDelegate
@@ -1682,10 +1532,6 @@ extension MenuBarManager: NSWindowDelegate {
             } else if window == detachedWindow {
                 // Clear detached window reference when closed
                 detachedWindow = nil
-            } else if window == githubPromptWindow {
-                // Hide dock icon again when GitHub prompt window closes
-                NSApp.setActivationPolicy(.accessory)
-                githubPromptWindow = nil
             }
         }
     }

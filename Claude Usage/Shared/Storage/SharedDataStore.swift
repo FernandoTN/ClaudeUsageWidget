@@ -40,17 +40,6 @@ class SharedDataStore {
         static let hasCompletedSetup = "hasCompletedSetup"
         static let hasShownWizardOnce = "hasShownWizardOnce"
 
-        // GitHub Star Tracking
-        static let firstLaunchDate = "firstLaunchDate"
-        static let lastGitHubStarPromptDate = "lastGitHubStarPromptDate"
-        static let hasStarredGitHub = "hasStarredGitHub"
-        static let neverShowGitHubPrompt = "neverShowGitHubPrompt"
-
-        // Feedback Prompt Tracking
-        static let lastFeedbackPromptDate = "lastFeedbackPromptDate"
-        static let hasSubmittedFeedback = "hasSubmittedFeedback"
-        static let neverShowFeedbackPrompt = "neverShowFeedbackPrompt"
-
         // Debug Settings
         static let debugAPILoggingEnabled = "debugAPILoggingEnabled"
 
@@ -302,129 +291,6 @@ class SharedDataStore {
         defaults.set(true, forKey: Keys.hasShownWizardOnce)
     }
 
-    // MARK: - GitHub Star Prompt Tracking
-
-    func saveFirstLaunchDate(_ date: Date) {
-        defaults.set(date, forKey: Keys.firstLaunchDate)
-    }
-
-    func loadFirstLaunchDate() -> Date? {
-        return defaults.object(forKey: Keys.firstLaunchDate) as? Date
-    }
-
-    func saveLastGitHubStarPromptDate(_ date: Date) {
-        defaults.set(date, forKey: Keys.lastGitHubStarPromptDate)
-    }
-
-    func loadLastGitHubStarPromptDate() -> Date? {
-        return defaults.object(forKey: Keys.lastGitHubStarPromptDate) as? Date
-    }
-
-    func saveHasStarredGitHub(_ starred: Bool) {
-        defaults.set(starred, forKey: Keys.hasStarredGitHub)
-    }
-
-    func loadHasStarredGitHub() -> Bool {
-        return defaults.bool(forKey: Keys.hasStarredGitHub)
-    }
-
-    func saveNeverShowGitHubPrompt(_ neverShow: Bool) {
-        defaults.set(neverShow, forKey: Keys.neverShowGitHubPrompt)
-    }
-
-    func loadNeverShowGitHubPrompt() -> Bool {
-        return defaults.bool(forKey: Keys.neverShowGitHubPrompt)
-    }
-
-    func shouldShowGitHubStarPrompt() -> Bool {
-        // Don't show if user said "don't ask again"
-        if loadNeverShowGitHubPrompt() {
-            return false
-        }
-
-        // Don't show if user already starred
-        if loadHasStarredGitHub() {
-            return false
-        }
-
-        let now = Date()
-
-        // Check if we have a first launch date
-        guard let firstLaunch = loadFirstLaunchDate() else {
-            // If no first launch date, save it now and don't show prompt yet
-            saveFirstLaunchDate(now)
-            return false
-        }
-
-        // Check if it's been at least 1 day since first launch
-        let timeSinceFirstLaunch = now.timeIntervalSince(firstLaunch)
-        if timeSinceFirstLaunch < Constants.GitHubPromptTiming.initialDelay {
-            return false
-        }
-
-        // Check if we've ever shown the prompt before
-        guard let lastPrompt = loadLastGitHubStarPromptDate() else {
-            // Never shown before, and it's been 1+ days since first launch
-            return true
-        }
-
-        // Has been shown before - check if enough time has passed for a reminder
-        let timeSinceLastPrompt = now.timeIntervalSince(lastPrompt)
-        return timeSinceLastPrompt >= Constants.GitHubPromptTiming.reminderInterval
-    }
-
-    // MARK: - Feedback Prompt Tracking
-
-    func saveLastFeedbackPromptDate(_ date: Date) {
-        defaults.set(date, forKey: Keys.lastFeedbackPromptDate)
-    }
-
-    func loadLastFeedbackPromptDate() -> Date? {
-        return defaults.object(forKey: Keys.lastFeedbackPromptDate) as? Date
-    }
-
-    func saveHasSubmittedFeedback(_ submitted: Bool) {
-        defaults.set(submitted, forKey: Keys.hasSubmittedFeedback)
-    }
-
-    func loadHasSubmittedFeedback() -> Bool {
-        return defaults.bool(forKey: Keys.hasSubmittedFeedback)
-    }
-
-    func saveNeverShowFeedbackPrompt(_ neverShow: Bool) {
-        defaults.set(neverShow, forKey: Keys.neverShowFeedbackPrompt)
-    }
-
-    func loadNeverShowFeedbackPrompt() -> Bool {
-        return defaults.bool(forKey: Keys.neverShowFeedbackPrompt)
-    }
-
-    func shouldShowFeedbackPrompt() -> Bool {
-        if loadNeverShowFeedbackPrompt() { return false }
-        if loadHasSubmittedFeedback() { return false }
-
-        guard let firstLaunch = loadFirstLaunchDate() else { return false }
-
-        let now = Date()
-        let timeSinceFirstLaunch = now.timeIntervalSince(firstLaunch)
-        if timeSinceFirstLaunch < Constants.FeedbackPromptTiming.initialDelay {
-            return false
-        }
-
-        guard let lastPrompt = loadLastFeedbackPromptDate() else {
-            return true
-        }
-
-        let timeSinceLastPrompt = now.timeIntervalSince(lastPrompt)
-        return timeSinceLastPrompt >= Constants.FeedbackPromptTiming.reminderInterval
-    }
-
-    func resetFeedbackPromptForTesting() {
-        defaults.removeObject(forKey: Keys.lastFeedbackPromptDate)
-        defaults.removeObject(forKey: Keys.hasSubmittedFeedback)
-        defaults.removeObject(forKey: Keys.neverShowFeedbackPrompt)
-    }
-
     // MARK: - Debug Settings
 
     func saveDebugAPILoggingEnabled(_ enabled: Bool) {
@@ -525,12 +391,4 @@ class SharedDataStore {
         }
     }
 
-    // MARK: - Testing Helpers
-
-    func resetGitHubStarPromptForTesting() {
-        defaults.removeObject(forKey: Keys.firstLaunchDate)
-        defaults.removeObject(forKey: Keys.lastGitHubStarPromptDate)
-        defaults.removeObject(forKey: Keys.hasStarredGitHub)
-        defaults.removeObject(forKey: Keys.neverShowGitHubPrompt)
-    }
 }

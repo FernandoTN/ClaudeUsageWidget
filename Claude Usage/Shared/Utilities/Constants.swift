@@ -18,12 +18,6 @@ enum Constants {
         static let statuslineShowUsage = "statuslineShowUsage"
         static let statuslineShowProgressBar = "statuslineShowProgressBar"
 
-        // GitHub star prompt tracking
-        static let firstLaunchDate = "firstLaunchDate"
-        static let lastGitHubStarPromptDate = "lastGitHubStarPromptDate"
-        static let hasStarredGitHub = "hasStarredGitHub"
-        static let neverShowGitHubPrompt = "neverShowGitHubPrompt"
-
         // API usage tracking
         static let apiUsageData = "apiUsageData"
         static let apiTrackingEnabled = "apiTrackingEnabled"
@@ -110,21 +104,6 @@ enum Constants {
         static let critical: Double = 95.0
     }
 
-    // GitHub repository
-    static let githubRepoURL = "https://github.com/hamed-elfayome/Claude-Usage-Tracker"
-
-    // GitHub star prompt timing (in seconds)
-    enum GitHubPromptTiming {
-        static let initialDelay: TimeInterval = 24 * 60 * 60  // 1 day
-        static let reminderInterval: TimeInterval = 10 * 24 * 60 * 60  // 10 days (between 7-14 days)
-    }
-
-    // Feedback prompt timing (in seconds)
-    enum FeedbackPromptTiming {
-        static let initialDelay: TimeInterval = 7 * 24 * 60 * 60  // 7 days
-        static let reminderInterval: TimeInterval = 7 * 24 * 60 * 60  // 7 days
-    }
-
     // API Endpoints
     enum APIEndpoints {
         static let claudeBase = "https://claude.ai/api"
@@ -145,10 +124,4 @@ enum Constants {
         static let popoverSize = NSSize(width: 320, height: 600)
     }
 
-    // GitHub Repository Info
-    enum GitHub {
-        static let owner = "hamed-elfayome"
-        static let repo = "Claude-Usage-Tracker"
-        static let repoURL = "https://github.com/\(owner)/\(repo)"
-    }
 }

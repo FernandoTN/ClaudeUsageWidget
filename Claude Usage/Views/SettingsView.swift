@@ -288,10 +288,6 @@ struct SettingsView: View {
                     ClaudeCodeView()
                 case .shortcuts:
                     ShortcutsSettingsView()
-                case .support:
-                    SupportView()
-                case .mobileApp:
-                    MobileAppView()
                 case .popover:
                     PopoverSettingsView()
                 case .about:
@@ -531,8 +527,6 @@ enum SettingsSection: String, CaseIterable {
     case language
     case claudeCode
     case shortcuts
-    case support
-    case mobileApp
     case popover
     case about
 
@@ -549,8 +543,6 @@ enum SettingsSection: String, CaseIterable {
         case .language: return "language.title".localized
         case .claudeCode: return "settings.claude_cli".localized
         case .shortcuts: return "section.shortcuts_title".localized
-        case .support: return "section.support_title".localized
-        case .mobileApp: return "section.mobile_app_title".localized
         case .popover: return "section.popover_title".localized
         case .about: return "settings.about".localized
         }
@@ -569,8 +561,6 @@ enum SettingsSection: String, CaseIterable {
         case .language: return "globe"
         case .claudeCode: return "chevron.left.forwardslash.chevron.right"
         case .shortcuts: return "keyboard"
-        case .support: return "heart.fill"
-        case .mobileApp: return "iphone"
         case .popover: return "rectangle.topthird.inset.filled"
         case .about: return "info.circle.fill"
         }
@@ -589,8 +579,6 @@ enum SettingsSection: String, CaseIterable {
         case .language: return "language.subtitle".localized
         case .claudeCode: return "settings.claude_cli.description".localized
         case .shortcuts: return "section.shortcuts_desc".localized
-        case .support: return "section.support_desc".localized
-        case .mobileApp: return "section.mobile_app_desc".localized
         case .popover: return "section.popover_desc".localized
         case .about: return "settings.about.description".localized
         }
@@ -599,7 +587,6 @@ enum SettingsSection: String, CaseIterable {
     var shortLabel: String {
         switch self {
         case .about: return "About"
-        case .support: return "Support"
         default: return title
         }
     }
@@ -624,7 +611,7 @@ enum SettingsSection: String, CaseIterable {
 
     var isBottomBarItem: Bool {
         switch self {
-        case .about, .support:
+        case .about:
             return true
         default:
             return false
