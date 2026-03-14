@@ -2,7 +2,7 @@
 
 A privacy-first macOS menu bar widget that displays your [Claude Max](https://claude.ai) usage metrics at a glance.
 
-Built as a stripped-down fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) (MIT license), with all external telemetry removed and credentials moved to secure Keychain storage.
+Built as a stripped-down fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) (MIT license), with all external telemetry removed.
 
 ## What It Does
 
@@ -37,13 +37,12 @@ This fork makes **zero network calls** to anything other than `claude.ai`, `api.
 | GitHub contributor service | Called api.github.com |
 | Debug network logger | Developer-only tooling |
 
-All credentials (session keys, OAuth tokens) are stored exclusively in the **macOS Keychain** with `kSecAttrAccessibleWhenUnlocked` protection -- not in UserDefaults plist files.
+Credentials (session keys, OAuth tokens) are stored locally in the app's UserDefaults on your machine.
 
 ## Requirements
 
 - macOS 14 (Sonoma) or later
 - An active [Claude Max](https://claude.ai) subscription
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed (for OAuth token capture)
 
 ## Installation
 
@@ -67,12 +66,13 @@ The app will appear in your menu bar (no dock icon).
 ## Setup
 
 1. **Launch the app** -- it appears in your macOS menu bar.
-2. **Open Claude Code** in your terminal and log in: `claude`
-3. **Open Settings** in the widget and click "Capture" on your first profile slot.
-4. The widget reads your OAuth token from Claude Code's macOS Keychain entry.
-5. Usage percentages appear in the menu bar immediately.
+2. **Open Settings** and select your first profile (e.g., "Gmail").
+3. Click **"Sign in to claude.ai"** -- a browser window opens for Google SSO.
+4. After signing in (you'll see the Claude chat), click **"Capture Session"** at the bottom of the sheet.
+5. Select your organization and save the configuration.
+6. Usage percentages appear in the menu bar immediately.
 
-For a second account, log out of Claude Code (`claude logout`), log in with the other account, and capture on the second profile slot.
+For a second account, switch to the other profile in Settings and repeat steps 3-5. Each login starts fresh -- signing into the second account does not affect the first.
 
 ## Configuration
 
@@ -117,7 +117,7 @@ Choose which metrics to show as menu bar icons and their display style in Settin
 |-----------|---------|
 | ClaudeAPIService | Fetches usage from claude.ai and api.anthropic.com |
 | ClaudeCodeSyncService | Reads OAuth token from Claude Code's Keychain |
-| KeychainService | Secure credential storage (kSecAttrAccessibleWhenUnlocked) |
+| KeychainService | Credential storage |
 | ProfileManager + ProfileStore | Multi-account management and persistence |
 | MenuBarManager + Icon Renderer | Menu bar UI with color-coded usage percentages |
 | PopoverContentView | Dropdown showing detailed usage breakdown |
@@ -139,8 +139,7 @@ Claude Usage/
 │   ├── MenuBarIconRenderer.swift      CoreGraphics icon rendering
 │   ├── PopoverContentView.swift       Detailed usage popover
 │   ├── StatusBarUIManager.swift       NSStatusItem management
-│   ├── WindowCoordinator.swift        Popover/window lifecycle
-│   └── UsageRefreshCoordinator.swift  Refresh timing
+│   └── WindowCoordinator.swift        Popover/window lifecycle
 ├── Views/
 │   ├── SetupWizardView.swift          First-run onboarding
 │   ├── SettingsView.swift             Tabbed settings window
@@ -151,8 +150,7 @@ Claude Usage/
     ├── Storage/                       ProfileStore, SharedDataStore
     ├── Utilities/                     Constants, validators, formatters
     ├── Extensions/                    Color, Date, UserDefaults extensions
-    ├── ErrorHandling/                 Typed errors with recovery
-    └── Protocols/                     APIServiceProtocol, StorageProvider
+    └── ErrorHandling/                 Typed errors with recovery
 ```
 
 ## Testing
