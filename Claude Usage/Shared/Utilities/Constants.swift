@@ -3,7 +3,7 @@ import Foundation
 /// Application-wide constants
 enum Constants {
     // App Group identifier for sharing data between app and widgets
-    static let appGroupIdentifier = "group.com.claudeusagetracker.shared"
+    static let appGroupIdentifier = "group.com.fernandotn.ClaudeUsageWidget.shared"
 
     // UserDefaults keys
     enum UserDefaultsKeys {

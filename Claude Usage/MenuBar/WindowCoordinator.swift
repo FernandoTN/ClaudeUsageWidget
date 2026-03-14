@@ -8,7 +8,7 @@
 import Cocoa
 import SwiftUI
 
-/// Coordinates window lifecycle (popover, settings, GitHub prompt, detached window)
+/// Coordinates window lifecycle (popover, settings, detached window)
 final class WindowCoordinator: NSObject {
     private var popover: NSPopover?
     private var eventMonitor: Any?

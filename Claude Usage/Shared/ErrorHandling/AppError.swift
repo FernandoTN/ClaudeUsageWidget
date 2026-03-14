@@ -186,13 +186,6 @@ enum ErrorCode: String, CaseIterable {
     case storagePermissionDenied = "E5004"
     case storageFileNotFound = "E5005"
 
-    // MARK: - GitHub API Errors (6000-6099)
-
-    case githubRateLimited = "E6000"
-    case githubNotFound = "E6001"
-    case githubServerError = "E6002"
-    case githubGenericError = "E6099"
-
     // MARK: - Unknown Errors (9000-9999)
 
     case unknown = "E9999"
@@ -207,7 +200,6 @@ enum ErrorCode: String, CaseIterable {
         case "E3": return .api
         case "E4": return .urlConstruction
         case "E5": return .dataStorage
-        case "E6": return .github
         default: return .unknown
         }
     }
@@ -221,7 +213,6 @@ enum ErrorCategory: String {
     case api = "API"
     case urlConstruction = "URL Construction"
     case dataStorage = "Data Storage"
-    case github = "GitHub"
     case unknown = "Unknown"
 }
 

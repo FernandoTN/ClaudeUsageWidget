@@ -67,10 +67,6 @@ class ErrorRecovery {
                 return .doNotRetry(reason: "Storage operation failed multiple times")
             }
 
-        // GitHub errors
-        case .githubRateLimited:
-            return .retryAfter(delay: 60.0, strategy: .fixed)
-
         // URL errors - no retry, programming error
         case .urlInvalidBase, .urlInvalidPath, .urlMalformed:
             return .doNotRetry(reason: "Invalid URL configuration")

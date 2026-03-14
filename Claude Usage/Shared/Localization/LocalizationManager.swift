@@ -112,12 +112,7 @@ enum LocalizationKey: String {
     case validationSuccess = "setup.validation.success"
 
     // MARK: - About
-    case createdBy = "about.created_by"
-    case contributors = "about.contributors"
     case links = "about.links"
-    case starOnGitHub = "about.star_github"
-    case reportIssue = "about.report_issue"
-    case sendFeedback = "about.send_feedback"
     case mitLicense = "about.mit_license"
     case copyright = "about.copyright"
 

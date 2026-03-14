@@ -30,14 +30,14 @@ class ProfileManager: ObservableObject {
     func loadProfiles() {
         profiles = profileStore.loadProfiles()
 
-        // Ensure minimum 1 profile
+        // Ensure minimum profiles exist
         if profiles.isEmpty {
-            let defaultProfile = createDefaultProfile()
-            profiles = [defaultProfile]
+            let defaultProfiles = createDefaultProfiles()
+            profiles = defaultProfiles
             profileStore.saveProfiles(profiles)
 
-            // On first launch, try to sync CLI credentials to the new default profile
-            syncCLICredentialsToDefaultProfile(defaultProfile.id)
+            // On first launch, try to sync CLI credentials to the first default profile
+            syncCLICredentialsToDefaultProfile(defaultProfiles[0].id)
         }
 
         // Load active profile
@@ -486,14 +486,22 @@ class ProfileManager: ObservableObject {
         }
     }
 
-    private func createDefaultProfile() -> Profile {
-        Profile(
-            name: "Default Profile",
+    private func createDefaultProfiles() -> [Profile] {
+        let gmail = Profile(
+            name: "Gmail",
             iconConfig: .default,
             refreshInterval: 30.0,
             checkOverageLimitEnabled: true,
             notificationSettings: NotificationSettings()
         )
+        let hotmail = Profile(
+            name: "Hotmail",
+            iconConfig: .default,
+            refreshInterval: 30.0,
+            checkOverageLimitEnabled: true,
+            notificationSettings: NotificationSettings()
+        )
+        return [gmail, hotmail]
     }
 
 }
