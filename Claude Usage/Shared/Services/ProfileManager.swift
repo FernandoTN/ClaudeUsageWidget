@@ -110,9 +110,10 @@ class ProfileManager: ObservableObject {
 
         let profileName = profiles.first(where: { $0.id == id })?.name ?? "unknown"
 
-        profiles.removeAll { $0.id == id }
+        // Delete Keychain credentials before removing from the array
+        profileStore.deleteProfileCredentials(profileId: id)
 
-        // Credentials are deleted automatically with the profile
+        profiles.removeAll { $0.id == id }
 
         // Switch to first profile if deleted active
         if activeProfile?.id == id {

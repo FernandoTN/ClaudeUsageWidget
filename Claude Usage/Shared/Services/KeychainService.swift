@@ -149,6 +149,130 @@ class KeychainService {
         }
     }
 
+    // MARK: - Per-Profile Credential Storage
+
+    /// Saves a per-profile credential string to the Keychain
+    /// - Parameters:
+    ///   - value: The credential string to save
+    ///   - profileId: The UUID of the profile
+    ///   - key: A short key name (e.g. "claude-key", "api-key", "cli-creds")
+    func saveProfileCredential(_ value: String, profileId: UUID, key: String) {
+        guard let data = value.data(using: .utf8) else {
+            LoggingService.shared.logError("Keychain: Invalid UTF-8 data for profile credential \(key)")
+            return
+        }
+
+        let service = "com.claudewidget.\(key)-\(profileId.uuidString)"
+        let account = "profile-credential"
+
+        // First, try to update existing item
+        let updateQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+
+        let attributes: [String: Any] = [
+            kSecValueData as String: data
+        ]
+
+        let updateStatus = SecItemUpdate(updateQuery as CFDictionary, attributes as CFDictionary)
+
+        if updateStatus == errSecSuccess {
+            LoggingService.shared.log("Keychain: Updated profile credential \(key) for \(profileId.uuidString.prefix(8))")
+            return
+        }
+
+        // If update fails because item doesn't exist, add new item
+        if updateStatus == errSecItemNotFound {
+            var accessControlError: Unmanaged<CFError>?
+            guard let accessControl = SecAccessControlCreateWithFlags(
+                kCFAllocatorDefault,
+                kSecAttrAccessibleWhenUnlocked,
+                [],
+                &accessControlError
+            ) else {
+                if let error = accessControlError?.takeRetainedValue() {
+                    LoggingService.shared.logError("Keychain: Failed to create access control: \(error)")
+                }
+                return
+            }
+
+            let addQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecValueData as String: data,
+                kSecAttrAccessControl as String: accessControl,
+                kSecAttrSynchronizable as String: false
+            ]
+
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+
+            if addStatus == errSecSuccess {
+                LoggingService.shared.log("Keychain: Added profile credential \(key) for \(profileId.uuidString.prefix(8))")
+            } else {
+                LoggingService.shared.logError("Keychain: Failed to save profile credential \(key), status: \(addStatus)")
+            }
+        } else {
+            LoggingService.shared.logError("Keychain: Failed to update profile credential \(key), status: \(updateStatus)")
+        }
+    }
+
+    /// Loads a per-profile credential string from the Keychain
+    /// - Parameters:
+    ///   - profileId: The UUID of the profile
+    ///   - key: A short key name (e.g. "claude-key", "api-key", "cli-creds")
+    /// - Returns: The stored credential string, or nil if not found
+    func loadProfileCredential(profileId: UUID, key: String) -> String? {
+        let service = "com.claudewidget.\(key)-\(profileId.uuidString)"
+        let account = "profile-credential"
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        if status == errSecSuccess {
+            guard let data = result as? Data,
+                  let value = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return value
+        } else {
+            return nil
+        }
+    }
+
+    /// Deletes all per-profile credentials from the Keychain
+    /// - Parameter profileId: The UUID of the profile whose credentials should be deleted
+    func deleteProfileCredentials(profileId: UUID) {
+        for key in ["claude-key", "api-key", "cli-creds"] {
+            let service = "com.claudewidget.\(key)-\(profileId.uuidString)"
+            let account = "profile-credential"
+
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ]
+
+            let status = SecItemDelete(query as CFDictionary)
+
+            if status == errSecSuccess {
+                LoggingService.shared.log("Keychain: Deleted profile credential \(key) for \(profileId.uuidString.prefix(8))")
+            } else if status != errSecItemNotFound {
+                LoggingService.shared.logError("Keychain: Failed to delete profile credential \(key), status: \(status)")
+            }
+        }
+    }
+
     /// Checks if a value exists in the Keychain
     /// - Parameter key: The keychain key identifier
     /// - Returns: true if the item exists, false otherwise
