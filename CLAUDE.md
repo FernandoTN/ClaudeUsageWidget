@@ -75,14 +75,14 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
 - `ProfileStore` runs a one-time **v2 migration** (`credentialsRepairedToKeychain_v2`):
   recovers credentials from the old plaintext JSON, strips the leak, and rebuilds the
   per-profile Keychain items with clean ACLs on a background queue.
-- `ClaudeCodeSyncService.writeSystemCredentials` updates **only** `~/.claude/.credentials.json`
-  — the shared `Claude Code-credentials` Keychain item is deliberately left untouched. Its
-  ACL is bound to the Claude Code CLI's code signature, and macOS layers a partition-list
-  restriction on top that the Security API cannot bypass. Any write to it from this app
-  raises a SecurityAgent prompt that "Always Allow" cannot defeat (ad-hoc signature
-  changes every build; the CLI rewrites the ACL on every run). The CLI reads the file
-  as its source of truth, so a file-only sync is sufficient — and switching accounts
-  is silent.
+- `ClaudeCodeSyncService.writeSystemCredentials` syncs credentials to BOTH
+  `~/.claude/.credentials.json` and the shared `Claude Code-credentials` system Keychain
+  item — the Claude Code CLI reads the Keychain as its source of truth, so an in-app
+  account switch only reaches the CLI if that item is updated. The Keychain update
+  shells out to `/usr/bin/security add-generic-password -U`: the `security` tool runs
+  inside the item's `apple-tool:` partition, so it updates silently. A `SecItem*` write
+  from this app (ad-hoc signed, not in that partition) raises a SecurityAgent prompt
+  that "Always Allow" cannot defeat, so the API path is deliberately avoided.
 
 **Rule: never read Keychain item *data* on the main thread.** It can raise a modal prompt;
 the prompt needs the main thread; the main thread is blocked waiting for it → deadlock.

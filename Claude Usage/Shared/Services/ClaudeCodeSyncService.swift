@@ -225,34 +225,56 @@ class ClaudeCodeSyncService {
         resolvedServiceName = nil
     }
 
-    /// Writes Claude Code credentials to `~/.claude/.credentials.json` only.
+    /// Syncs Claude Code credentials to BOTH `~/.claude/.credentials.json` and the
+    /// shared `Claude Code-credentials` system Keychain item — the Claude Code CLI
+    /// reads the Keychain as its source of truth, so the item must be updated for an
+    /// in-app account switch to take effect in the CLI.
     ///
-    /// We deliberately **do not** touch the shared `Claude Code-credentials` system
-    /// Keychain item. That item is owned by the Claude Code CLI: its ACL is bound to
-    /// the CLI's code signature, and macOS adds a partition-list restriction on top.
-    /// Any attempt to update the item from this app — `SecItemUpdate`, `SecItemDelete`
-    /// followed by `SecItemAdd`, or even probing it — raises a SecurityAgent password
-    /// prompt that the user cannot dismiss permanently:
-    ///
-    /// - This app is ad-hoc signed, so its code signature (and partition identifier)
-    ///   changes on every build; an "Always Allow" entry is invalidated by the next
-    ///   rebuild.
-    /// - The Claude Code CLI rewrites the item's ACL whenever it runs, undoing any
-    ///   permissive grant the user added.
-    /// - The partition list is enforced below the ACL layer we control via the
-    ///   Security API, so a permissive `SecAccess` does not bypass it.
-    ///
-    /// The Claude Code CLI reads `~/.claude/.credentials.json` as its source of truth
-    /// (our own `readSystemCredentials` does the same, file-first), so a file-only
-    /// sync is sufficient for the CLI to pick up the active profile — and it lets us
-    /// switch accounts silently.
+    /// The Keychain update shells out to `/usr/bin/security` rather than using the
+    /// `SecItem*` API. The item's ACL is bound to the Claude Code CLI's code signature
+    /// and macOS adds a partition-list restriction (`apple-tool:`) on top. A `SecItem*`
+    /// write from this app — ad-hoc signed and NOT in the `apple-tool:` partition —
+    /// raises a SecurityAgent password prompt on every call, and "Always Allow" never
+    /// sticks (the ad-hoc signature changes on every build). The `security` CLI tool,
+    /// however, runs *inside* the `apple-tool:` partition, so its `-U` (update)
+    /// succeeds silently.
     func writeSystemCredentials(_ jsonData: String) throws {
-        // Same input guard the old keychain path used.
         guard jsonData.data(using: .utf8) != nil else {
             throw ClaudeCodeError.invalidJSON
         }
-        LoggingService.shared.log("Syncing CLI credentials to ~/.claude/.credentials.json (system Keychain item is left untouched on purpose)")
         writeCredentialsFile(jsonData)
+        updateSystemKeychainViaSecurityTool(jsonData)
+    }
+
+    /// Updates the `Claude Code-credentials` Keychain item via the `security` CLI.
+    /// Best-effort: a failure here is logged but does not fail the profile switch.
+    private func updateSystemKeychainViaSecurityTool(_ jsonData: String) {
+        let serviceName = resolveServiceName()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = [
+            "add-generic-password",
+            "-U",                       // update the item if it already exists
+            "-s", serviceName,
+            "-a", NSUserName(),
+            "-w", jsonData
+        ]
+        let errorPipe = Pipe()
+        process.standardOutput = Pipe()
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            if process.terminationStatus == 0 {
+                LoggingService.shared.log("Updated Claude Code system Keychain item via security CLI")
+            } else {
+                let err = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "unknown"
+                LoggingService.shared.log("security CLI keychain update failed (status \(process.terminationStatus)): \(err)")
+            }
+        } catch {
+            LoggingService.shared.logError("Failed to launch security CLI for keychain update", error: error)
+        }
     }
 
     /// Writes credentials to ~/.claude/.credentials.json (best-effort).
