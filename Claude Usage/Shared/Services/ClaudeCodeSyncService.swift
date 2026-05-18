@@ -236,32 +236,41 @@ class ClaudeCodeSyncService {
             throw ClaudeCodeError.invalidJSON
         }
 
-        // Query to find existing item
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: NSUserName()
         ]
 
-        // Attributes for the credential
-        let attributes: [String: Any] = [
-            kSecValueData as String: passwordData,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
-        ]
+        // Delete any existing item, then re-add it with a PERMISSIVE ACL.
+        //
+        // SecItemUpdate would keep the item's existing ACL — and that ACL keeps raising
+        // a password prompt on every profile switch: the item is created by the Claude
+        // Code CLI (so its ACL does not trust this app), and because the app is ad-hoc
+        // signed its code signature changes on every build, so "Always Allow" never
+        // sticks. Delete + add lets us install an unrestricted ACL, so no application
+        // (this widget, the CLI, or /usr/bin/security) is ever prompted for this item
+        // again. Delete + add is also prompt-free in itself — SecItemDelete and
+        // SecItemAdd do not require the decrypt authorization that raises the prompt.
+        SecItemDelete(query as CFDictionary)
 
-        // Try to update existing item first
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-
-        if status == errSecItemNotFound {
-            // Item doesn't exist yet — add it
-            var addQuery = query
-            addQuery[kSecValueData as String] = passwordData
+        var addQuery = query
+        addQuery[kSecValueData as String] = passwordData
+        if let access = KeychainService.shared.makeUnrestrictedAccess(label: "Claude Code credentials") {
+            addQuery[kSecAttrAccess as String] = access
+        } else {
             addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // The delete did not take — fall back to updating the data in place.
+            status = SecItemUpdate(query as CFDictionary,
+                                   [kSecValueData as String: passwordData] as CFDictionary)
         }
 
         if status == errSecSuccess {
-            LoggingService.shared.log("Added Claude Code system credentials successfully via Security framework")
+            LoggingService.shared.log("Wrote Claude Code system credentials with an unrestricted ACL")
         } else {
             LoggingService.shared.log("Failed to write credentials (status: \(status))")
             throw ClaudeCodeError.keychainWriteFailed(status: status)

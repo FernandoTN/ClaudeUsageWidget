@@ -161,7 +161,9 @@ class KeychainService {
     /// deadlocks the whole UI (it needs the very thread that is blocked waiting for it).
     /// Returns `nil` if the (legacy, deprecated) ACL API is unavailable, in which case
     /// callers fall back to the standard accessibility attribute.
-    private func makeUnrestrictedAccess(label: String) -> SecAccess? {
+    ///
+    /// Also reused by `ClaudeCodeSyncService` for the shared `Claude Code-credentials` item.
+    func makeUnrestrictedAccess(label: String) -> SecAccess? {
         var access: SecAccess?
         guard SecAccessCreate(label as CFString, nil, &access) == errSecSuccess,
               let access else {
