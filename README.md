@@ -25,7 +25,7 @@ Click the menu bar icon to open a popover with detailed usage breakdown, reset t
 
 ## Privacy Guarantees
 
-This fork makes **zero network calls** to anything other than `claude.ai`, `api.anthropic.com`, and `status.claude.com`. Specifically removed:
+This fork makes **zero network calls** to anything other than `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, and `status.claude.com`. Specifically removed:
 
 | Removed | What it did |
 |---------|------------|
@@ -37,7 +37,7 @@ This fork makes **zero network calls** to anything other than `claude.ai`, `api.
 | GitHub contributor service | Called api.github.com |
 | Debug network logger | Developer-only tooling |
 
-Credentials (session keys, OAuth tokens) are stored locally in the app's UserDefaults on your machine.
+Credentials (session keys, OAuth tokens) are stored only in the macOS Keychain on your machine. They are never written to disk in plaintext, and never transmitted anywhere other than the Anthropic domains listed above.
 
 ## Requirements
 
@@ -66,7 +66,7 @@ The app will appear in your menu bar (no dock icon).
 ## Setup
 
 1. **Launch the app** -- it appears in your macOS menu bar.
-2. **Open Settings** and select your first profile (e.g., "Gmail").
+2. **Open Settings** and select your first profile (e.g., "Account 1").
 3. Click **"Sign in to claude.ai"** -- a browser window opens for Google SSO.
 4. After signing in (you'll see the Claude chat), click **"Capture Session"** at the bottom of the sheet.
 5. Select your organization and save the configuration.
@@ -115,10 +115,10 @@ Choose which metrics to show as menu bar icons and their display style in Settin
 
 | Component | Purpose |
 |-----------|---------|
-| ClaudeAPIService | Fetches usage from claude.ai and api.anthropic.com |
-| ClaudeCodeSyncService | Reads OAuth token from Claude Code's Keychain |
-| KeychainService | Credential storage |
-| ProfileManager + ProfileStore | Multi-account management and persistence |
+| ClaudeAPIService | Fetches usage from claude.ai, api.anthropic.com, and console.anthropic.com |
+| ClaudeCodeSyncService | Reads and writes Claude Code's OAuth credentials (Keychain + `~/.claude/.credentials.json`) |
+| KeychainService | Keychain-backed credential storage |
+| ProfileManager + ProfileStore | Multi-account management and Keychain-backed persistence |
 | MenuBarManager + Icon Renderer | Menu bar UI with color-coded usage percentages |
 | PopoverContentView | Dropdown showing detailed usage breakdown |
 | SetupWizardView | First-run setup flow with CLI auto-detection |
