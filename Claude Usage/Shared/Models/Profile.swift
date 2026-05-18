@@ -46,8 +46,31 @@ struct Profile: Codable, Identifiable, Equatable {
     var createdAt: Date
     var lastUsedAt: Date
 
-    // Credentials are stored alongside other profile data via Codable.
-    // The synthesized CodingKeys includes all properties.
+    // MARK: - Codable
+    // Credentials (claudeSessionKey, apiSessionKey, cliCredentialsJSON) are deliberately
+    // EXCLUDED from CodingKeys so they are never serialized into the UserDefaults JSON.
+    // They live only in the Keychain and are re-hydrated by ProfileStore on load.
+    // The excluded properties are all Optional, so the synthesized init(from:) defaults
+    // them to nil — no custom decoder needed.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case organizationId
+        case apiOrganizationId
+        case apiSessionKeyExpiry
+        case hasCliAccount
+        case cliAccountSyncedAt
+        case claudeUsage
+        case apiUsage
+        case iconConfig
+        case refreshInterval
+        case checkOverageLimitEnabled
+        case notificationSettings
+        case isSelectedForDisplay
+        case createdAt
+        case lastUsedAt
+        // EXCLUDED (Keychain-only): claudeSessionKey, apiSessionKey, cliCredentialsJSON
+    }
 
     init(
         id: UUID = UUID(),

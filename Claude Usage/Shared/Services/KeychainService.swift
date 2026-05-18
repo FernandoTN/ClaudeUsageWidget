@@ -151,6 +151,35 @@ class KeychainService {
 
     // MARK: - Per-Profile Credential Storage
 
+    /// Creates a permissive `SecAccess` that lets every application read the item
+    /// without a confirmation prompt.
+    ///
+    /// This is required because the app is **ad-hoc signed** — its code signature
+    /// changes on every build. Keychain ACLs identify trusted apps by signature, so
+    /// a default ACL would be invalidated by the next rebuild and trigger a modal
+    /// SecurityAgent prompt. If that read happens on the main thread, the prompt
+    /// deadlocks the whole UI (it needs the very thread that is blocked waiting for it).
+    /// Returns `nil` if the (legacy, deprecated) ACL API is unavailable, in which case
+    /// callers fall back to the standard accessibility attribute.
+    private func makeUnrestrictedAccess(label: String) -> SecAccess? {
+        var access: SecAccess?
+        guard SecAccessCreate(label as CFString, nil, &access) == errSecSuccess,
+              let access else {
+            return nil
+        }
+        var aclListCF: CFArray?
+        guard SecAccessCopyACLList(access, &aclListCF) == errSecSuccess,
+              let aclList = aclListCF as? [SecACL] else {
+            return access
+        }
+        for acl in aclList {
+            // nil trusted-applications == every application is trusted;
+            // an empty prompt selector (rawValue 0) == never show a confirmation prompt.
+            SecACLSetContents(acl, nil, label as CFString, SecKeychainPromptSelector(rawValue: 0))
+        }
+        return access
+    }
+
     /// Saves a per-profile credential string to the Keychain
     /// - Parameters:
     ///   - value: The credential string to save
@@ -183,16 +212,22 @@ class KeychainService {
             return
         }
 
-        // If update fails because item doesn't exist, add new item
+        // If update fails because item doesn't exist, add a new item with a
+        // permissive ACL so a changed code signature never triggers a prompt.
         if updateStatus == errSecItemNotFound {
-            let addQuery: [String: Any] = [
+            var addQuery: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
                 kSecAttrAccount as String: account,
                 kSecValueData as String: data,
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
                 kSecAttrSynchronizable as String: false
             ]
+
+            if let access = makeUnrestrictedAccess(label: "Claude Usage credential") {
+                addQuery[kSecAttrAccess as String] = access
+            } else {
+                addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+            }
 
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
 

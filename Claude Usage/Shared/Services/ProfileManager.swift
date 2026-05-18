@@ -23,11 +23,16 @@ class ProfileManager: ObservableObject {
 
     private var switchingSemaphore = false
 
+    /// Observer that re-reads profiles once the background Keychain credential load completes.
+    private var credentialsReadyObserver: NSObjectProtocol?
+
     private init() {}
 
     // MARK: - Initialization
 
     func loadProfiles() {
+        registerCredentialsReadyObserverIfNeeded()
+
         profiles = profileStore.loadProfiles()
 
         // Ensure minimum profiles exist
@@ -185,16 +190,21 @@ class ProfileManager: ObservableObject {
 
         LoggingService.shared.log("Switching to profile: \(profile.name)")
 
-        // Re-sync current profile before leaving (if CLI credentials exist)
+        // Re-sync current profile before leaving (if CLI credentials exist).
+        // The `security` subprocess + Keychain work runs off the main actor so the
+        // UI never freezes during a profile switch (including an automatic one).
         if let currentProfile = activeProfile, currentProfile.cliCredentialsJSON != nil {
-            do {
-                try cliSyncService.resyncBeforeSwitching(for: currentProfile.id)
-                // Reload profiles to get the updated data in memory
-                profiles = profileStore.loadProfiles()
-                LoggingService.shared.log("✓ Re-synced current profile before switching")
-            } catch {
-                LoggingService.shared.logError("Failed to re-sync current profile (non-fatal)", error: error)
+            let currentProfileId = currentProfile.id
+            await runOffMainActor {
+                do {
+                    try ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: currentProfileId)
+                    LoggingService.shared.log("✓ Re-synced current profile before switching")
+                } catch {
+                    LoggingService.shared.logError("Failed to re-sync current profile (non-fatal)", error: error)
+                }
             }
+            // Reload profiles to get the updated data in memory
+            profiles = profileStore.loadProfiles()
         }
 
         // Reload profiles from disk to get latest data (including any resyncs from other profiles)
@@ -212,11 +222,15 @@ class ProfileManager: ObservableObject {
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
 
         if updatedProfile.cliCredentialsJSON != nil {
-            do {
-                try cliSyncService.applyProfileCredentials(updatedProfile.id)
-                LoggingService.shared.log("✓ Applied CLI credentials for: \(updatedProfile.name)")
-            } catch {
-                LoggingService.shared.logError("Failed to apply CLI credentials (non-fatal)", error: error)
+            let targetProfileId = updatedProfile.id
+            let targetProfileName = updatedProfile.name
+            await runOffMainActor {
+                do {
+                    try ClaudeCodeSyncService.shared.applyProfileCredentials(targetProfileId)
+                    LoggingService.shared.log("✓ Applied CLI credentials for: \(targetProfileName)")
+                } catch {
+                    LoggingService.shared.logError("Failed to apply CLI credentials (non-fatal)", error: error)
+                }
             }
         } else {
             LoggingService.shared.log("⚠️ Profile '\(updatedProfile.name)' has no CLI credentials JSON")
@@ -448,6 +462,51 @@ class ProfileManager: ObservableObject {
     }
 
     // MARK: - Private Helpers
+
+    /// Runs blocking work (e.g. `security` subprocesses, Keychain I/O) on a background
+    /// queue and *suspends* — rather than blocks — the calling actor until it finishes.
+    /// Keeps the main thread free so the UI stays responsive during a profile switch.
+    private func runOffMainActor(_ work: @escaping () -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                work()
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Registers (once) an observer that re-reads profiles when ProfileStore finishes
+    /// loading credentials from the Keychain on its background queue.
+    private func registerCredentialsReadyObserverIfNeeded() {
+        guard credentialsReadyObserver == nil else { return }
+        credentialsReadyObserver = NotificationCenter.default.addObserver(
+            forName: .profileCredentialsReady,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                ProfileManager.shared.reloadAfterCredentialSync()
+            }
+        }
+    }
+
+    /// Re-reads profiles after the background Keychain credential load completes, so the
+    /// UI picks up credentials that were not yet available at the synchronous startup load.
+    private func reloadAfterCredentialSync() {
+        let reloaded = profileStore.loadProfiles()
+        guard !reloaded.isEmpty else { return }
+
+        profiles = reloaded
+        if let activeId = activeProfile?.id,
+           let updatedActive = reloaded.first(where: { $0.id == activeId }) {
+            activeProfile = updatedActive
+        }
+
+        LoggingService.shared.log("ProfileManager: Reloaded profiles after Keychain credential sync")
+
+        // Let the menu bar / popover refresh now that credentials are available.
+        NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+    }
 
     /// Syncs CLI credentials to default profile on first launch only
     private func syncCLICredentialsToDefaultProfile(_ profileId: UUID) {
