@@ -225,59 +225,33 @@ class ClaudeCodeSyncService {
         resolvedServiceName = nil
     }
 
-    /// Writes Claude Code credentials to system Keychain AND ~/.claude/.credentials.json.
-    /// Both targets are updated so that readSystemCredentials() (which reads the file first)
-    /// and Claude Code CLI (which also reads the file) stay in sync with profile switches.
+    /// Writes Claude Code credentials to `~/.claude/.credentials.json` only.
+    ///
+    /// We deliberately **do not** touch the shared `Claude Code-credentials` system
+    /// Keychain item. That item is owned by the Claude Code CLI: its ACL is bound to
+    /// the CLI's code signature, and macOS adds a partition-list restriction on top.
+    /// Any attempt to update the item from this app — `SecItemUpdate`, `SecItemDelete`
+    /// followed by `SecItemAdd`, or even probing it — raises a SecurityAgent password
+    /// prompt that the user cannot dismiss permanently:
+    ///
+    /// - This app is ad-hoc signed, so its code signature (and partition identifier)
+    ///   changes on every build; an "Always Allow" entry is invalidated by the next
+    ///   rebuild.
+    /// - The Claude Code CLI rewrites the item's ACL whenever it runs, undoing any
+    ///   permissive grant the user added.
+    /// - The partition list is enforced below the ACL layer we control via the
+    ///   Security API, so a permissive `SecAccess` does not bypass it.
+    ///
+    /// The Claude Code CLI reads `~/.claude/.credentials.json` as its source of truth
+    /// (our own `readSystemCredentials` does the same, file-first), so a file-only
+    /// sync is sufficient for the CLI to pick up the active profile — and it lets us
+    /// switch accounts silently.
     func writeSystemCredentials(_ jsonData: String) throws {
-        let serviceName = resolveServiceName()
-        LoggingService.shared.log("Writing credentials to keychain via Security framework (service: \(serviceName))")
-
-        guard let passwordData = jsonData.data(using: .utf8) else {
+        // Same input guard the old keychain path used.
+        guard jsonData.data(using: .utf8) != nil else {
             throw ClaudeCodeError.invalidJSON
         }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: NSUserName()
-        ]
-
-        // Delete any existing item, then re-add it with a PERMISSIVE ACL.
-        //
-        // SecItemUpdate would keep the item's existing ACL — and that ACL keeps raising
-        // a password prompt on every profile switch: the item is created by the Claude
-        // Code CLI (so its ACL does not trust this app), and because the app is ad-hoc
-        // signed its code signature changes on every build, so "Always Allow" never
-        // sticks. Delete + add lets us install an unrestricted ACL, so no application
-        // (this widget, the CLI, or /usr/bin/security) is ever prompted for this item
-        // again. Delete + add is also prompt-free in itself — SecItemDelete and
-        // SecItemAdd do not require the decrypt authorization that raises the prompt.
-        SecItemDelete(query as CFDictionary)
-
-        var addQuery = query
-        addQuery[kSecValueData as String] = passwordData
-        if let access = KeychainService.shared.makeUnrestrictedAccess(label: "Claude Code credentials") {
-            addQuery[kSecAttrAccess as String] = access
-        } else {
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-        }
-
-        var status = SecItemAdd(addQuery as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            // The delete did not take — fall back to updating the data in place.
-            status = SecItemUpdate(query as CFDictionary,
-                                   [kSecValueData as String: passwordData] as CFDictionary)
-        }
-
-        if status == errSecSuccess {
-            LoggingService.shared.log("Wrote Claude Code system credentials with an unrestricted ACL")
-        } else {
-            LoggingService.shared.log("Failed to write credentials (status: \(status))")
-            throw ClaudeCodeError.keychainWriteFailed(status: status)
-        }
-
-        // Also write to ~/.claude/.credentials.json so the file stays in sync.
-        // readSystemCredentials() reads this file first, and Claude Code CLI does too.
+        LoggingService.shared.log("Syncing CLI credentials to ~/.claude/.credentials.json (system Keychain item is left untouched on purpose)")
         writeCredentialsFile(jsonData)
     }
 
@@ -343,10 +317,10 @@ class ClaudeCodeSyncService {
             throw ClaudeCodeError.noProfileCredentials
         }
 
-        LoggingService.shared.log("📦 Found CLI credentials, writing to keychain...")
+        LoggingService.shared.log("📦 Found CLI credentials, syncing to ~/.claude/.credentials.json...")
         try writeSystemCredentials(jsonData)
 
-        LoggingService.shared.log("✅ Applied profile CLI credentials to system: \(profileId)")
+        LoggingService.shared.log("✅ Applied profile CLI credentials: \(profileId)")
     }
 
     /// Removes CLI credentials from profile (doesn't affect system)
