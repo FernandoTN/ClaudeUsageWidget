@@ -243,29 +243,36 @@ struct CLIAccountView: View {
         isSyncing = true
         syncError = nil
 
-        do {
-            try ClaudeCodeSyncService.shared.syncToProfile(profileId)
+        // The sync reads the Keychain via a `security` subprocess — run it off the
+        // main thread so Settings stays responsive (see CLAUDE.md concurrency rule).
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try ClaudeCodeSyncService.shared.syncToProfile(profileId) }
 
-            // Reload profiles to get the updated cliCredentialsJSON
-            profileManager.loadProfiles()
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    // Reload profiles to get the updated cliCredentialsJSON
+                    profileManager.loadProfiles()
 
-            // Update profile metadata
-            if var updated = profileManager.activeProfile {
-                updated.hasCliAccount = true
-                updated.cliAccountSyncedAt = Date()
-                profileManager.updateProfile(updated)
+                    // Update profile metadata
+                    if var updated = profileManager.activeProfile {
+                        updated.hasCliAccount = true
+                        updated.cliAccountSyncedAt = Date()
+                        profileManager.updateProfile(updated)
+                    }
+
+                    // Load account info
+                    loadCLIAccountInfo()
+
+                    LoggingService.shared.log("CLIAccountView: CLI sync complete, credentials saved to profile")
+                case .failure(let error):
+                    syncError = error.localizedDescription
+                    LoggingService.shared.logError("CLIAccountView: CLI sync failed - \(error.localizedDescription)")
+                }
+
+                isSyncing = false
             }
-
-            // Load account info
-            loadCLIAccountInfo()
-
-            LoggingService.shared.log("CLIAccountView: CLI sync complete, credentials saved to profile")
-        } catch {
-            syncError = error.localizedDescription
-            LoggingService.shared.logError("CLIAccountView: CLI sync failed - \(error.localizedDescription)")
         }
-
-        isSyncing = false
     }
 
     private func removeSync() {

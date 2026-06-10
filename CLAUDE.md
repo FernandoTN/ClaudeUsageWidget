@@ -75,6 +75,14 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
 - `ProfileStore` runs a one-time **v2 migration** (`credentialsRepairedToKeychain_v2`):
   recovers credentials from the old plaintext JSON, strips the leak, and rebuilds the
   per-profile Keychain items with clean ACLs on a background queue.
+- `ClaudeCodeSyncService.readSystemCredentials` is **Keychain-first**: the CLI writes
+  logins and silent token refreshes ONLY to the `Claude Code-credentials` Keychain item,
+  never to `.credentials.json` — and this app rewrites that file on every profile switch,
+  so reading the file first re-ingests the app's own stale write (this was the bug behind
+  "Resync never updates the token" and the forced CLI re-login on every switch). When both
+  sources hold valid JSON, the later-expiring token wins. The read shells out to
+  `security`, so keep it off the main thread (`readSystemCredentialsOffMain()` exists for
+  main-actor callers).
 - `ClaudeCodeSyncService.writeSystemCredentials` syncs credentials to BOTH
   `~/.claude/.credentials.json` and the shared `Claude Code-credentials` system Keychain
   item — the Claude Code CLI reads the Keychain as its source of truth, so an in-app

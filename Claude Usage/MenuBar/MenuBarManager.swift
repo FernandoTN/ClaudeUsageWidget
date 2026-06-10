@@ -885,7 +885,7 @@ class MenuBarManager: NSObject, ObservableObject {
         }
 
         // Priority 3: System Keychain CLI OAuth token
-        if let systemCredentials = try? ClaudeCodeSyncService.shared.readSystemCredentials(),
+        if let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
            !ClaudeCodeSyncService.shared.isTokenExpired(systemCredentials),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: systemCredentials) {
             return try await apiService.fetchUsageData(oauthAccessToken: accessToken)

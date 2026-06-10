@@ -19,41 +19,83 @@ class ClaudeCodeSyncService {
 
     // MARK: - System Credentials Access (Fallback Chain)
 
-    /// Reads Claude Code credentials using a fallback chain:
-    /// 1. ~/.claude/.credentials.json (always complete, not subject to keychain truncation)
-    /// 2. System Keychain (may be truncated for large payloads >2KB)
-    /// 3. Regex extraction of accessToken from truncated keychain data (last resort)
+    /// Reads Claude Code credentials, preferring the source the CLI itself trusts:
+    /// 1. System Keychain item — the CLI's source of truth. A CLI login or silent
+    ///    token refresh updates ONLY this item, never the plaintext file.
+    /// 2. ~/.claude/.credentials.json — the CLI's plaintext fallback. This app also
+    ///    rewrites it on every profile switch, so it must never shadow a fresher
+    ///    Keychain item (reading it first re-ingests our own stale write).
+    ///    When both sources hold valid JSON, the later-expiring token wins;
+    ///    ties go to the Keychain.
+    /// 3. Regex extraction of accessToken from truncated Keychain data (last resort).
+    ///
+    /// Shells out to `security` — never call on the main thread; use
+    /// `readSystemCredentialsOffMain()` from main-actor contexts.
     func readSystemCredentials() throws -> String? {
-        // 1. Try credentials file first (most reliable)
-        if let fileJSON = readCredentialsFile() {
-            LoggingService.shared.log("Read credentials from .credentials.json file")
-            return fileJSON
+        var keychainRaw: String?
+        var keychainError: Error?
+        do {
+            keychainRaw = try readKeychainCredentials()
+        } catch {
+            keychainError = error
         }
 
-        // 2. Try keychain
-        let keychainData = try readKeychainCredentials()
-
-        guard let rawJSON = keychainData else {
-            // No credentials anywhere
-            return nil
+        // Accept the keychain payload only if it is complete, valid JSON
+        var keychainJSON: String?
+        if let raw = keychainRaw,
+           let data = raw.data(using: .utf8),
+           (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil {
+            keychainJSON = raw
         }
 
-        // 3. Validate keychain JSON
-        if let data = rawJSON.data(using: .utf8),
-           let _ = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return rawJSON
+        let fileJSON = readCredentialsFile()
+
+        switch (keychainJSON, fileJSON) {
+        case let (keychain?, file?):
+            let keychainExpiry = extractTokenExpiry(from: keychain) ?? .distantPast
+            let fileExpiry = extractTokenExpiry(from: file) ?? .distantPast
+            if fileExpiry > keychainExpiry {
+                LoggingService.shared.log("Using credentials file (token outlives Keychain's: \(fileExpiry) vs \(keychainExpiry))")
+                return file
+            }
+            LoggingService.shared.log("Using system Keychain credentials (expires \(keychainExpiry))")
+            return keychain
+        case let (keychain?, nil):
+            LoggingService.shared.log("Using system Keychain credentials (no credentials file)")
+            return keychain
+        case let (nil, file?):
+            LoggingService.shared.log("Using credentials file (Keychain unavailable)")
+            return file
+        case (nil, nil):
+            break
         }
 
-        // 4. Keychain data is truncated/invalid — try regex extraction
-        LoggingService.shared.log("Keychain JSON is invalid (likely truncated), attempting regex extraction")
-        if let token = extractAccessTokenViaRegex(from: rawJSON) {
-            let minimalJSON = "{\"claudeAiOauth\":{\"accessToken\":\"\(token)\"}}"
-            LoggingService.shared.log("Built minimal credentials from regex-extracted token")
-            return minimalJSON
+        // Keychain data present but invalid (likely truncated >2KB) — try regex extraction
+        if let raw = keychainRaw {
+            LoggingService.shared.log("Keychain JSON is invalid (likely truncated), attempting regex extraction")
+            if let token = extractAccessTokenViaRegex(from: raw) {
+                let minimalJSON = "{\"claudeAiOauth\":{\"accessToken\":\"\(token)\"}}"
+                LoggingService.shared.log("Built minimal credentials from regex-extracted token")
+                return minimalJSON
+            }
+            throw ClaudeCodeError.invalidJSON
         }
 
-        // 5. All attempts failed
-        throw ClaudeCodeError.invalidJSON
+        // No credentials anywhere; surface a keychain read failure if one occurred
+        if let keychainError {
+            throw keychainError
+        }
+        return nil
+    }
+
+    /// Reads system credentials on a background queue and *suspends* — rather than
+    /// blocks — the calling actor. Safe to call from the main actor.
+    func readSystemCredentialsOffMain() async throws -> String? {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try self.readSystemCredentials() })
+            }
+        }
     }
 
     // MARK: - Private Credential Sources
