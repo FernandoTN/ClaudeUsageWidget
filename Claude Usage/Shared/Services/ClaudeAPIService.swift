@@ -703,6 +703,27 @@ class ClaudeAPIService {
                 }
             }
 
+            // Extract Fable weekly usage. Fable has no `seven_day_fable` object;
+            // it is reported as a scoped weekly limit inside the `limits` array:
+            // {"kind": "weekly_scoped", "percent": N, "resets_at": ...,
+            //  "scope": {"model": {"display_name": "Fable"}}}
+            var fablePercentage: Double? = nil
+            var fableResetTime: Date? = nil
+            if let limits = json["limits"] as? [[String: Any]] {
+                for limit in limits {
+                    guard (limit["kind"] as? String) == "weekly_scoped",
+                          let scope = limit["scope"] as? [String: Any],
+                          let model = scope["model"] as? [String: Any],
+                          (model["display_name"] as? String) == "Fable" else { continue }
+                    if let percent = limit["percent"] {
+                        fablePercentage = parseUtilization(percent)
+                    }
+                    if let resetsAt = limit["resets_at"] as? String {
+                        fableResetTime = Self.parseISO8601Date(resetsAt)
+                    }
+                }
+            }
+
             // We don't know user's plan, so we use 0 for limits we can't determine
             let weeklyLimit = Constants.weeklyLimit
 
@@ -727,6 +748,8 @@ class ClaudeAPIService {
                 sonnetWeeklyTokensUsed: sonnetTokens,
                 sonnetWeeklyPercentage: sonnetPercentage,
                 sonnetWeeklyResetTime: sonnetResetTime,
+                fableWeeklyPercentage: fablePercentage,
+                fableWeeklyResetTime: fableResetTime,
                 costUsed: nil,
                 costLimit: nil,
                 costCurrency: nil,

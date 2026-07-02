@@ -28,6 +28,12 @@ struct ClaudeUsage: Codable, Equatable {
     var sonnetWeeklyPercentage: Double
     var sonnetWeeklyResetTime: Date?
 
+    // Weekly data (Fable only) — reported via the scoped weekly limit in the
+    // `limits` array, not a `seven_day_*` object. Optional with nil defaults so
+    // previously cached usage JSON still decodes.
+    var fableWeeklyPercentage: Double? = nil
+    var fableWeeklyResetTime: Date? = nil
+
     // Extra usage data
     var costUsed: Double?
     var costLimit: Double?

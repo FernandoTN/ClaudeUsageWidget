@@ -630,6 +630,22 @@ struct SmartUsageDashboard: View {
                 )
             }
 
+            if let fablePercentage = usage.fableWeeklyPercentage {
+                UsageRow(
+                    title: "menubar.fable_usage".localized,
+                    tag: "menubar.weekly".localized,
+                    subtitle: nil,
+                    usedPercentage: fablePercentage,
+                    showRemaining: showRemainingPercentage,
+                    resetTime: usage.fableWeeklyResetTime,
+                    periodDuration: Constants.weeklyWindow,
+                    showTimeMarker: showTimeMarker,
+                    showPaceMarker: showPaceMarker,
+                    usePaceColoring: usePaceColoring,
+                    timeDisplay: timeDisplay
+                )
+            }
+
             // Extra usage (cost-based)
             if let used = usage.costUsed, let limit = usage.costLimit, let currency = usage.costCurrency, limit > 0 {
                 let usedPercentage = (used / limit) * 100.0
