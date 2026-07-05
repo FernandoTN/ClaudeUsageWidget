@@ -268,6 +268,8 @@ struct SettingsView: View {
                     APIBillingView()
                 case .cliAccount:
                     CLIAccountView()
+                case .codexAccount:
+                    CodexAccountView()
 
                 // Profile Settings
                 case .appearance:
@@ -509,6 +511,7 @@ enum SettingsSection: String, CaseIterable {
     case claudeAI
     case apiConsole
     case cliAccount
+    case codexAccount
 
     // Profile Settings
     case appearance
@@ -526,6 +529,7 @@ enum SettingsSection: String, CaseIterable {
         case .claudeAI: return "section.claudeai_title".localized
         case .apiConsole: return "section.api_console_title".localized
         case .cliAccount: return "section.cli_account_title".localized
+        case .codexAccount: return "section.codex_account_title".localized
         case .appearance: return "section.appearance_title".localized
         case .general: return "section.general_title".localized
         case .appSettings: return "section.app_settings_title".localized
@@ -541,6 +545,7 @@ enum SettingsSection: String, CaseIterable {
         case .claudeAI: return "key.fill"
         case .apiConsole: return "dollarsign.circle.fill"
         case .cliAccount: return "terminal.fill"
+        case .codexAccount: return "chevron.left.forwardslash.chevron.right"
         case .appearance: return "paintbrush.fill"
         case .general: return "gearshape.fill"
         case .appSettings: return "gearshape.2.fill"
@@ -556,6 +561,7 @@ enum SettingsSection: String, CaseIterable {
         case .claudeAI: return "section.claudeai_desc".localized
         case .apiConsole: return "section.api_console_desc".localized
         case .cliAccount: return "section.cli_account_desc".localized
+        case .codexAccount: return "section.codex_account_desc".localized
         case .appearance: return "section.appearance_desc".localized
         case .general: return "section.general_desc".localized
         case .appSettings: return "section.app_settings_desc".localized
@@ -575,7 +581,7 @@ enum SettingsSection: String, CaseIterable {
 
     var isCredential: Bool {
         switch self {
-        case .claudeAI, .apiConsole, .cliAccount:
+        case .claudeAI, .apiConsole, .cliAccount, .codexAccount:
             return true
         default:
             return false
@@ -687,6 +693,19 @@ struct ProfileCredentialCardsRow: View {
                     title: "CLI Account",
                     isConnected: profileManager.activeProfile?.hasCliAccount ?? false,
                     isSelected: selectedSection == .cliAccount
+                )
+            }
+            .buttonStyle(.plain)
+
+            // Codex Account Card
+            Button {
+                selectedSection = .codexAccount
+            } label: {
+                CredentialMiniCard(
+                    icon: "chevron.left.forwardslash.chevron.right",
+                    title: "Codex Account",
+                    isConnected: profileManager.activeProfile?.hasCodexAccount ?? false,
+                    isSelected: selectedSection == .codexAccount
                 )
             }
             .buttonStyle(.plain)

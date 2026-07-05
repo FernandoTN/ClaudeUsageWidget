@@ -73,7 +73,9 @@ class ClaudeAPIService {
     /// Gets the best available authentication method with fallback support
     /// Priority: 1) claude.ai session → 2) saved CLI OAuth → 3) system Keychain CLI OAuth
     /// Note: Console API session is NOT used as fallback (it only provides billing data, not usage)
-    private func getAuthentication() throws -> AuthenticationType {
+    /// Async so the system Keychain fallback can shell out to `security` OFF the main
+    /// thread (see the CLAUDE.md rule about Keychain reads on the main thread).
+    private func getAuthentication() async throws -> AuthenticationType {
         guard let activeProfile = ProfileManager.shared.activeProfile else {
             LoggingService.shared.logError("ClaudeAPIService.getAuthentication: No active profile")
             throw AppError.sessionKeyNotFound()
@@ -103,7 +105,7 @@ class ClaudeAPIService {
 
         // Fall back to reading CLI credentials directly from system Keychain
         do {
-            if let systemCredentials = try ClaudeCodeSyncService.shared.readSystemCredentials() {
+            if let systemCredentials = try await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain() {
                 LoggingService.shared.log("ClaudeAPIService: Found CLI credentials in system Keychain")
 
                 // Validate token is not expired
@@ -436,7 +438,7 @@ class ClaudeAPIService {
 
     /// Fetches real usage data from Claude's API
     func fetchUsageData() async throws -> ClaudeUsage {
-        let auth = try getAuthentication()
+        let auth = try await getAuthentication()
 
         switch auth {
         case .claudeAISession(let sessionKey):

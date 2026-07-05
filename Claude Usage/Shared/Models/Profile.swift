@@ -25,6 +25,14 @@ struct Profile: Codable, Identifiable, Equatable {
     var hasCliAccount: Bool
     var cliAccountSyncedAt: Date?
 
+    // MARK: - Codex Account (OpenAI Codex CLI)
+    /// Full contents of the account's ~/.codex/auth.json — Keychain-only, never
+    /// serialized to UserDefaults (excluded from CodingKeys, like the other secrets).
+    var codexCredentialsJSON: String?
+    /// Display metadata (non-secret, persisted normally).
+    var codexEmail: String?
+    var codexAccountSyncedAt: Date?
+
     // MARK: - Usage Data (Per-Profile)
     var claudeUsage: ClaudeUsage?
     var apiUsage: APIUsage?
@@ -41,6 +49,18 @@ struct Profile: Codable, Identifiable, Equatable {
 
     // MARK: - Display Configuration
     var isSelectedForDisplay: Bool  // For multi-profile menu bar mode
+
+    // MARK: - Auto-Switch Eligibility
+    /// Whether this profile may be chosen as a TARGET by the session-limit
+    /// auto-switch. Stored as an Optional so profiles saved before this field
+    /// existed decode as nil — which means enabled. Use `isAutoSwitchEnabled`.
+    var includeInAutoSwitch: Bool?
+
+    /// Auto-switch eligibility with the nil-means-enabled default applied.
+    var isAutoSwitchEnabled: Bool {
+        get { includeInAutoSwitch ?? true }
+        set { includeInAutoSwitch = newValue }
+    }
 
     // MARK: - Metadata
     var createdAt: Date
@@ -60,6 +80,8 @@ struct Profile: Codable, Identifiable, Equatable {
         case apiSessionKeyExpiry
         case hasCliAccount
         case cliAccountSyncedAt
+        case codexEmail
+        case codexAccountSyncedAt
         case claudeUsage
         case apiUsage
         case iconConfig
@@ -67,9 +89,11 @@ struct Profile: Codable, Identifiable, Equatable {
         case checkOverageLimitEnabled
         case notificationSettings
         case isSelectedForDisplay
+        case includeInAutoSwitch
         case createdAt
         case lastUsedAt
-        // EXCLUDED (Keychain-only): claudeSessionKey, apiSessionKey, cliCredentialsJSON
+        // EXCLUDED (Keychain-only): claudeSessionKey, apiSessionKey, cliCredentialsJSON,
+        // codexCredentialsJSON
     }
 
     init(
@@ -83,6 +107,9 @@ struct Profile: Codable, Identifiable, Equatable {
         cliCredentialsJSON: String? = nil,
         hasCliAccount: Bool = false,
         cliAccountSyncedAt: Date? = nil,
+        codexCredentialsJSON: String? = nil,
+        codexEmail: String? = nil,
+        codexAccountSyncedAt: Date? = nil,
         claudeUsage: ClaudeUsage? = nil,
         apiUsage: APIUsage? = nil,
         iconConfig: MenuBarIconConfiguration = .default,
@@ -90,6 +117,7 @@ struct Profile: Codable, Identifiable, Equatable {
         checkOverageLimitEnabled: Bool = true,
         notificationSettings: NotificationSettings = NotificationSettings(),
         isSelectedForDisplay: Bool = true,
+        includeInAutoSwitch: Bool? = nil,
         createdAt: Date = Date(),
         lastUsedAt: Date = Date()
     ) {
@@ -103,6 +131,9 @@ struct Profile: Codable, Identifiable, Equatable {
         self.cliCredentialsJSON = cliCredentialsJSON
         self.hasCliAccount = hasCliAccount
         self.cliAccountSyncedAt = cliAccountSyncedAt
+        self.codexCredentialsJSON = codexCredentialsJSON
+        self.codexEmail = codexEmail
+        self.codexAccountSyncedAt = codexAccountSyncedAt
         self.claudeUsage = claudeUsage
         self.apiUsage = apiUsage
         self.iconConfig = iconConfig
@@ -110,6 +141,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.checkOverageLimitEnabled = checkOverageLimitEnabled
         self.notificationSettings = notificationSettings
         self.isSelectedForDisplay = isSelectedForDisplay
+        self.includeInAutoSwitch = includeInAutoSwitch
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt
     }
@@ -123,10 +155,28 @@ struct Profile: Codable, Identifiable, Equatable {
         apiSessionKey != nil && apiOrganizationId != nil
     }
 
-    /// True if profile has credentials that can fetch usage data (Claude.ai, CLI OAuth, or API Console)
+    /// True if this profile holds a Codex CLI account
+    var hasCodexAccount: Bool {
+        codexCredentialsJSON != nil
+    }
+
+    /// True if this profile's ONLY usage source is a Codex account. Such profiles
+    /// fetch from the ChatGPT backend instead of the Claude endpoints, and are never
+    /// valid targets for the Claude session-limit auto-switch.
+    var isCodexOnlyProfile: Bool {
+        hasCodexAccount && !hasClaudeUsageSource
+    }
+
+    /// True if profile can fetch CLAUDE usage (claude.ai session, API Console, or CLI OAuth)
+    var hasClaudeUsageSource: Bool {
+        hasClaudeAI || hasAPIConsole || hasUsableCLIOAuth
+    }
+
+    /// True if profile has credentials that can fetch usage data (Claude.ai, CLI OAuth,
+    /// API Console, or a Codex account)
     /// Note: System keychain fallback is handled in ClaudeAPIService.getAuthentication() during actual API calls
     var hasUsageCredentials: Bool {
-        hasClaudeAI || hasAPIConsole || hasValidCLIOAuth
+        hasClaudeUsageSource || hasCodexAccount
     }
 
     /// True if profile has CLI OAuth credentials that are not expired
@@ -135,8 +185,19 @@ struct Profile: Codable, Identifiable, Equatable {
         return !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON)
     }
 
+    /// True if the CLI OAuth credentials can be used for a usage fetch: either the
+    /// access token is still valid, or it carries a refresh token the app redeems
+    /// itself before fetching (ClaudeCodeSyncService.ensureFreshCredentials). An
+    /// expired-but-refreshable profile must NOT be treated as credential-less — that
+    /// was the bug where usage silently froze until a manual CLI resync.
+    var hasUsableCLIOAuth: Bool {
+        guard let cliJSON = cliCredentialsJSON else { return false }
+        return !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON)
+            || ClaudeCodeSyncService.shared.extractRefreshToken(from: cliJSON) != nil
+    }
+
     var hasAnyCredentials: Bool {
-        hasClaudeAI || hasAPIConsole || cliCredentialsJSON != nil
+        hasClaudeAI || hasAPIConsole || cliCredentialsJSON != nil || codexCredentialsJSON != nil
     }
 }
 
@@ -149,6 +210,7 @@ struct ProfileCredentials {
     var apiOrganizationId: String?
     var apiSessionKeyExpiry: Date?
     var cliCredentialsJSON: String?
+    var codexCredentialsJSON: String?
 
     var hasClaudeAI: Bool {
         claudeSessionKey != nil && organizationId != nil

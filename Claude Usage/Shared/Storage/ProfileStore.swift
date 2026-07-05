@@ -33,6 +33,7 @@ class ProfileStore {
         var claudeSessionKey: String?
         var apiSessionKey: String?
         var cliCredentialsJSON: String?
+        var codexCredentialsJSON: String?
     }
     private var credentialCache: [UUID: CachedCredentials] = [:]
     private let cacheLock = NSLock()
@@ -154,7 +155,8 @@ class ProfileStore {
             let cached = CachedCredentials(
                 claudeSessionKey: keychainService.loadProfileCredential(profileId: id, key: "claude-key"),
                 apiSessionKey: keychainService.loadProfileCredential(profileId: id, key: "api-key"),
-                cliCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "cli-creds")
+                cliCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "cli-creds"),
+                codexCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "codex-creds")
             )
             cacheLock.lock()
             credentialCache[id] = cached
@@ -204,7 +206,8 @@ class ProfileStore {
             let new = CachedCredentials(
                 claudeSessionKey: profile.claudeSessionKey,
                 apiSessionKey: profile.apiSessionKey,
-                cliCredentialsJSON: profile.cliCredentialsJSON
+                cliCredentialsJSON: profile.cliCredentialsJSON,
+                codexCredentialsJSON: profile.codexCredentialsJSON
             )
 
             cacheLock.lock()
@@ -215,6 +218,7 @@ class ProfileStore {
             let credentialsChanged = old?.claudeSessionKey != new.claudeSessionKey
                 || old?.apiSessionKey != new.apiSessionKey
                 || old?.cliCredentialsJSON != new.cliCredentialsJSON
+                || old?.codexCredentialsJSON != new.codexCredentialsJSON
 
             if credentialsChanged {
                 let profileId = profile.id
@@ -321,6 +325,7 @@ class ProfileStore {
         profiles[index].apiSessionKey = credentials.apiSessionKey
         profiles[index].apiOrganizationId = credentials.apiOrganizationId
         profiles[index].cliCredentialsJSON = credentials.cliCredentialsJSON
+        profiles[index].codexCredentialsJSON = credentials.codexCredentialsJSON
 
         // saveProfiles persists credentials to the Keychain (cache + background queue)
         // and non-credential data to UserDefaults.
@@ -340,7 +345,8 @@ class ProfileStore {
             apiSessionKey: profile.apiSessionKey,
             apiOrganizationId: profile.apiOrganizationId,
             apiSessionKeyExpiry: profile.apiSessionKeyExpiry,
-            cliCredentialsJSON: profile.cliCredentialsJSON
+            cliCredentialsJSON: profile.cliCredentialsJSON,
+            codexCredentialsJSON: profile.codexCredentialsJSON
         )
     }
 
@@ -364,6 +370,7 @@ class ProfileStore {
         syncCredentialItem(credentials.claudeSessionKey, profileId: profileId, key: "claude-key")
         syncCredentialItem(credentials.apiSessionKey, profileId: profileId, key: "api-key")
         syncCredentialItem(credentials.cliCredentialsJSON, profileId: profileId, key: "cli-creds")
+        syncCredentialItem(credentials.codexCredentialsJSON, profileId: profileId, key: "codex-creds")
     }
 
     private func syncCredentialItem(_ value: String?, profileId: UUID, key: String) {
@@ -397,5 +404,6 @@ class ProfileStore {
         profile.claudeSessionKey = cached?.claudeSessionKey
         profile.apiSessionKey = cached?.apiSessionKey
         profile.cliCredentialsJSON = cached?.cliCredentialsJSON
+        profile.codexCredentialsJSON = cached?.codexCredentialsJSON
     }
 }

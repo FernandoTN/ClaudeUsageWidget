@@ -243,17 +243,63 @@ struct ManageProfilesView: View {
                     title: "auto_switch.title".localized,
                     subtitle: "auto_switch.subtitle".localized
                 ) {
-                    SettingToggle(
-                        title: "auto_switch.enable_title".localized,
-                        description: "auto_switch.enable_description".localized,
-                        badge: .new,
-                        isOn: Binding(
-                            get: { SharedDataStore.shared.loadAutoSwitchProfileEnabled() },
-                            set: { enabled in
-                                SharedDataStore.shared.saveAutoSwitchProfileEnabled(enabled)
-                            }
+                    VStack(alignment: .leading, spacing: DesignTokens.Spacing.cardPadding) {
+                        SettingToggle(
+                            title: "auto_switch.enable_title".localized,
+                            description: "auto_switch.enable_description".localized,
+                            badge: .new,
+                            isOn: Binding(
+                                get: { SharedDataStore.shared.loadAutoSwitchProfileEnabled() },
+                                set: { enabled in
+                                    SharedDataStore.shared.saveAutoSwitchProfileEnabled(enabled)
+                                }
+                            )
                         )
-                    )
+
+                        Divider()
+
+                        // Per-profile eligibility toggles
+                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+                            Text("auto_switch.eligible_profiles".localized)
+                                .font(DesignTokens.Typography.caption)
+                                .foregroundColor(.secondary)
+
+                            ForEach(profileManager.profiles) { profile in
+                                Toggle(isOn: Binding(
+                                    get: {
+                                        profileManager.profiles.first(where: { $0.id == profile.id })?.isAutoSwitchEnabled ?? true
+                                    },
+                                    set: { enabled in
+                                        profileManager.updateAutoSwitchEnabled(enabled, for: profile.id)
+                                    }
+                                )) {
+                                    HStack(spacing: DesignTokens.Spacing.small) {
+                                        Text(profile.name)
+                                            .font(DesignTokens.Typography.body)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+
+                                        if profileManager.activeProfile?.id == profile.id {
+                                            Text("multiprofile.active_badge".localized)
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundColor(.white)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.accentColor)
+                                                .cornerRadius(4)
+                                        }
+                                    }
+                                }
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                            }
+
+                            Text("auto_switch.eligible_profiles_hint".localized)
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 2)
+                        }
+                    }
                 }
 
                 // Info Card
@@ -439,6 +485,10 @@ struct ProfileRow: View {
 
         if profile.hasCliAccount {
             parts.append("profiles.cli_synced".localized)
+        }
+
+        if profile.hasCodexAccount {
+            parts.append(profile.codexEmail.map { "Codex: \($0)" } ?? "profiles.codex_synced".localized)
         }
 
         parts.append("\("profiles.created".localized) \(profile.createdAt.formatted(date: .abbreviated, time: .omitted))")

@@ -207,11 +207,21 @@ class ProfileManager: ObservableObject {
             profiles = profileStore.loadProfiles()
         }
 
+        // Same for a Codex account: the codex CLI refreshes tokens silently in
+        // ~/.codex/auth.json — adopt that (same-account-only) before leaving.
+        if let currentProfile = activeProfile, currentProfile.codexCredentialsJSON != nil {
+            let currentProfileId = currentProfile.id
+            await runOffMainActor {
+                CodexUsageService.shared.adoptAuthFileIfSameAccount(for: currentProfileId)
+            }
+            profiles = profileStore.loadProfiles()
+        }
+
         // Reload profiles from disk to get latest data (including any resyncs from other profiles)
         profiles = profileStore.loadProfiles()
 
         // Get the updated target profile from the reloaded data
-        guard let updatedProfile = profiles.first(where: { $0.id == id }) else {
+        guard var updatedProfile = profiles.first(where: { $0.id == id }) else {
             LoggingService.shared.log("Profile not found after reload: \(id)")
             switchingSemaphore = false
             isSwitchingProfile = false
@@ -220,6 +230,21 @@ class ProfileManager: ObservableObject {
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
+
+        if updatedProfile.cliCredentialsJSON != nil {
+            // If the target's OAuth token went stale while it was inactive, refresh it
+            // FIRST so the CLI is handed a usable login instead of an expired token.
+            // Never adopt from the system Keychain here — at this point it still holds
+            // the PREVIOUS profile's account. syncToSystem is false because
+            // applyProfileCredentials writes the credentials to the system right after.
+            if await cliSyncService.ensureFreshCredentials(for: id, adoptSystemKeychain: false, syncToSystem: false) {
+                profiles = profileStore.loadProfiles()
+                if let refreshed = profiles.first(where: { $0.id == id }) {
+                    updatedProfile = refreshed
+                }
+                LoggingService.shared.log("✓ Refreshed stale CLI token for '\(updatedProfile.name)' before applying")
+            }
+        }
 
         if updatedProfile.cliCredentialsJSON != nil {
             let targetProfileId = updatedProfile.id
@@ -234,6 +259,21 @@ class ProfileManager: ObservableObject {
             }
         } else {
             LoggingService.shared.log("⚠️ Profile '\(updatedProfile.name)' has no CLI credentials JSON")
+        }
+
+        // Apply the profile's Codex account (if any) to ~/.codex/auth.json so the
+        // `codex` CLI switches accounts along with the app.
+        if updatedProfile.codexCredentialsJSON != nil {
+            let targetProfileId = updatedProfile.id
+            let targetProfileName = updatedProfile.name
+            await runOffMainActor {
+                do {
+                    try CodexUsageService.shared.applyProfileCredentials(targetProfileId)
+                    LoggingService.shared.log("✓ Applied Codex credentials for: \(targetProfileName)")
+                } catch {
+                    LoggingService.shared.logError("Failed to apply Codex credentials (non-fatal)", error: error)
+                }
+            }
         }
 
         // Update last used timestamp
@@ -270,6 +310,7 @@ class ProfileManager: ObservableObject {
             profiles[index].apiSessionKey = credentials.apiSessionKey
             profiles[index].apiOrganizationId = credentials.apiOrganizationId
             profiles[index].cliCredentialsJSON = credentials.cliCredentialsJSON
+            profiles[index].codexCredentialsJSON = credentials.codexCredentialsJSON
 
             if activeProfile?.id == profileId {
                 activeProfile = profiles[index]
@@ -409,6 +450,20 @@ class ProfileManager: ObservableObject {
         }
     }
 
+    /// Updates whether a profile may be chosen as an auto-switch target
+    func updateAutoSwitchEnabled(_ enabled: Bool, for profileId: UUID) {
+        if let index = profiles.firstIndex(where: { $0.id == profileId }) {
+            profiles[index].isAutoSwitchEnabled = enabled
+
+            if activeProfile?.id == profileId {
+                activeProfile = profiles[index]
+            }
+
+            profileStore.saveProfiles(profiles)
+            LoggingService.shared.log("ProfileManager: Auto-switch \(enabled ? "enabled" : "disabled") for profile '\(profiles[index].name)'")
+        }
+    }
+
     /// Updates check overage limit setting for a profile
     func updateCheckOverageLimitEnabled(_ enabled: Bool, for profileId: UUID) {
         if let index = profiles.firstIndex(where: { $0.id == profileId }) {
@@ -504,8 +559,51 @@ class ProfileManager: ObservableObject {
 
         LoggingService.shared.log("ProfileManager: Reloaded profiles after Keychain credential sync")
 
+        // One-time: import a Codex CLI login into its own profile. Runs here (not at
+        // startup) because the Keychain credential cache must be hydrated first to
+        // know whether a codex profile already exists.
+        autoImportCodexAccountIfNeeded()
+
         // Let the menu bar / popover refresh now that credentials are available.
         NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+    }
+
+    /// If the user is logged into the codex CLI (~/.codex/auth.json exists) and no
+    /// profile holds Codex credentials yet, create a dedicated Codex profile once.
+    /// Additional Codex accounts are added manually: log into the other account with
+    /// `codex`, create a profile, and use Settings → Codex Account → Sync.
+    private func autoImportCodexAccountIfNeeded() {
+        let flagKey = "codexAutoImported_v1"
+        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
+        guard !profiles.contains(where: { $0.hasCodexAccount }) else {
+            UserDefaults.standard.set(true, forKey: flagKey)
+            return
+        }
+
+        let codexService = CodexUsageService.shared
+        guard let authJSON = codexService.readAuthFile(),
+              codexService.extractAccessToken(from: authJSON) != nil else {
+            // Not logged into codex — retry next launch (don't set the flag).
+            return
+        }
+
+        let email = codexService.extractEmail(from: authJSON)
+        let newProfile = Profile(
+            name: email.map { "Codex (\($0))" } ?? "Codex",
+            codexCredentialsJSON: authJSON,
+            codexEmail: email,
+            codexAccountSyncedAt: Date(),
+            iconConfig: .default,
+            refreshInterval: 60.0,
+            checkOverageLimitEnabled: false,
+            notificationSettings: NotificationSettings(),
+            isSelectedForDisplay: true
+        )
+
+        profiles.append(newProfile)
+        profileStore.saveProfiles(profiles)
+        UserDefaults.standard.set(true, forKey: flagKey)
+        LoggingService.shared.log("ProfileManager: ✅ Auto-imported Codex account '\(email ?? "unknown")' as profile '\(newProfile.name)'")
     }
 
     /// Syncs CLI credentials to default profile on first launch only

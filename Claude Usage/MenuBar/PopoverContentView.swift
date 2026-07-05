@@ -163,6 +163,18 @@ struct PopoverContentView: View {
                         .foregroundColor(.primary)
                         .lineLimit(1)
 
+                    if viewingProfile.hasCodexAccount {
+                        Text("CODEX")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(Color.purple.opacity(0.12))
+                            )
+                    }
+
                     Spacer()
 
                     if viewingProfile.id == profileManager.activeProfile?.id {
@@ -182,6 +194,37 @@ struct PopoverContentView: View {
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color.primary.opacity(0.03))
+                )
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+            }
+
+            // Codex account note — the session/weekly bars below show the OpenAI
+            // Codex plan windows, not Claude usage
+            if let viewingProfile = manager.clickedProfileId.flatMap({ id in
+                   profileManager.profiles.first(where: { $0.id == id })
+               }) ?? profileManager.activeProfile,
+               viewingProfile.isCodexOnlyProfile {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.purple)
+
+                    Text(viewingProfile.codexEmail.map {
+                        String(format: "popover.codex_note_email".localized, $0)
+                    } ?? "popover.codex_note".localized)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.purple.opacity(0.06))
                 )
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
@@ -238,6 +281,20 @@ struct ProfileSwitcherCompact: View {
                         Spacer()
 
                         HStack(spacing: 4) {
+                            // Auto-switch eligibility: filled green rotation = eligible,
+                            // hollow gray = excluded from auto-switch
+                            Image(systemName: profile.isAutoSwitchEnabled
+                                  ? "arrow.triangle.2.circlepath.circle.fill"
+                                  : "arrow.triangle.2.circlepath.circle")
+                                .font(.system(size: 9))
+                                .foregroundColor(profile.isAutoSwitchEnabled ? .adaptiveGreen : .secondary)
+
+                            if profile.hasCodexAccount {
+                                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.purple)
+                            }
+
                             if profile.hasCliAccount {
                                 Image(systemName: "terminal.fill")
                                     .font(.system(size: 9))
@@ -306,6 +363,20 @@ struct ProfileSwitcherBar: View {
                         Spacer()
 
                         HStack(spacing: 4) {
+                            // Auto-switch eligibility: filled green rotation = eligible,
+                            // hollow gray = excluded from auto-switch
+                            Image(systemName: profile.isAutoSwitchEnabled
+                                  ? "arrow.triangle.2.circlepath.circle.fill"
+                                  : "arrow.triangle.2.circlepath.circle")
+                                .font(.system(size: 9))
+                                .foregroundColor(profile.isAutoSwitchEnabled ? .adaptiveGreen : .secondary)
+
+                            if profile.hasCodexAccount {
+                                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.purple)
+                            }
+
                             if profile.hasCliAccount {
                                 Image(systemName: "terminal.fill")
                                     .font(.system(size: 9))

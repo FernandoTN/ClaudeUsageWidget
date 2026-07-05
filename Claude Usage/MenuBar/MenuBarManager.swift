@@ -816,7 +816,13 @@ class MenuBarManager: NSObject, ObservableObject {
             }
 
             // Fetch usage for each selected profile
-            for profile in selectedProfiles {
+            for var profile in selectedProfiles {
+                // Self-heal a stale CLI OAuth token before fetching
+                await self.ensureFreshCLICredentialsIfNeeded(for: profile)
+                if let updated = self.profileManager.profiles.first(where: { $0.id == profile.id }) {
+                    profile = updated
+                }
+
                 LoggingService.shared.log("MenuBarManager: Fetching usage for profile '\(profile.name)'")
 
                 do {
@@ -871,6 +877,11 @@ class MenuBarManager: NSObject, ObservableObject {
 
     /// Fetches usage data for a specific profile using its credentials
     private func fetchUsageForProfile(_ profile: Profile) async throws -> ClaudeUsage {
+        // Codex-only profiles fetch from the ChatGPT backend instead
+        if profile.isCodexOnlyProfile {
+            return try await CodexUsageService.shared.fetchUsage(for: profile.id)
+        }
+
         // Priority 1: claude.ai session key (cookie-based)
         if let sessionKey = profile.claudeSessionKey,
            let orgId = profile.organizationId {
@@ -884,8 +895,12 @@ class MenuBarManager: NSObject, ObservableObject {
             return try await apiService.fetchUsageData(oauthAccessToken: accessToken)
         }
 
-        // Priority 3: System Keychain CLI OAuth token
-        if let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
+        // Priority 3: System Keychain CLI OAuth token — the shared Keychain item always
+        // holds the ACTIVE account's login, so this fallback is only correct for the
+        // active profile. Using it for another profile would display the active
+        // account's usage under that profile's name.
+        if profile.id == profileManager.activeProfile?.id,
+           let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
            !ClaudeCodeSyncService.shared.isTokenExpired(systemCredentials),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: systemCredentials) {
             return try await apiService.fetchUsageData(oauthAccessToken: accessToken)
@@ -962,17 +977,24 @@ class MenuBarManager: NSObject, ObservableObject {
             // Set loading state (keep existing data visible during refresh)
             self.isRefreshing = true
 
-            let currentProfileId = self.profileManager.activeProfile?.id
+            // Self-heal a stale CLI OAuth token before fetching (this is what used to
+            // require a manual Settings → CLI → Resync)
+            await self.ensureFreshCLICredentialsIfNeeded(for: profile)
 
-            // Fetch usage and status in parallel
-            async let usageResult = apiService.fetchUsageData()
             async let statusResult = statusService.fetchStatus()
 
             var usageSuccess = false
 
             // Fetch usage with proper error handling
             do {
-                let newUsage = try await usageResult
+                // Codex-only profiles fetch from the ChatGPT backend (the service
+                // self-heals its own token); everything else uses the Claude flow.
+                let newUsage: ClaudeUsage
+                if profile.isCodexOnlyProfile {
+                    newUsage = try await CodexUsageService.shared.fetchUsage(for: profile.id)
+                } else {
+                    newUsage = try await apiService.fetchUsageData()
+                }
 
                 // Check for resets before updating usage
                 self.usage = newUsage
@@ -1082,12 +1104,46 @@ class MenuBarManager: NSObject, ObservableObject {
         NotificationManager.shared.sendSuccessNotification()
     }
 
+    // MARK: - CLI Token Self-Healing
+
+    /// If the profile's stored CLI OAuth token is stale, repair it before the fetch:
+    /// adopt the CLI's silently-refreshed token from the system Keychain (active
+    /// profile only — that item always holds the ACTIVE account's login) or redeem
+    /// the refresh token, then reload profiles so the fetch sees the new token.
+    /// Without this, an expired stored token froze the displayed usage until the
+    /// user manually resynced in Settings → CLI.
+    private func ensureFreshCLICredentialsIfNeeded(for profile: Profile) async {
+        guard let cliJSON = profile.cliCredentialsJSON else { return }
+
+        let syncService = ClaudeCodeSyncService.shared
+        if let expiry = syncService.extractTokenExpiry(from: cliJSON),
+           expiry > Date().addingTimeInterval(300) {
+            return  // token still comfortably valid — skip the Keychain subprocess
+        }
+
+        let isActive = profile.id == profileManager.activeProfile?.id
+        let changed = await syncService.ensureFreshCredentials(
+            for: profile.id,
+            adoptSystemKeychain: isActive,
+            syncToSystem: isActive
+        )
+        if changed {
+            profileManager.loadProfiles()
+            LoggingService.shared.log("MenuBarManager: CLI credentials self-healed for '\(profile.name)'")
+        }
+    }
+
     // MARK: - Auto-Switch Profile on Session Limit
 
     /// Checks if the current profile hit 100% and switches to the next available one
     private func checkAutoSwitchIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }
+
+        // Guard: auto-switch is a CLAUDE-account feature. A Codex profile hitting its
+        // limit must not trigger a switch to a Claude account (and vice versa).
+        // Codex→Codex auto-switching can be added once multiple Codex accounts exist.
+        guard !currentProfile.isCodexOnlyProfile else { return }
 
         // Guard: need more than 1 profile
         let profiles = profileManager.profiles
@@ -1132,29 +1188,80 @@ class MenuBarManager: NSObject, ObservableObject {
         }
     }
 
-    /// Finds the next profile with available session capacity, wrapping around
+    /// Picks the profile to switch to when the session limit is hit.
+    ///
+    /// Selection: among the other profiles that can fetch usage, prefer the one whose
+    /// WEEKLY limit resets soonest — its remaining weekly quota expires first, so it
+    /// should be burned before quota that lasts longer ("use it or lose it"). A
+    /// candidate is only eligible while it still has session AND weekly headroom;
+    /// otherwise the next-soonest weekly reset is tried. CLI accounts without a paid
+    /// subscription are skipped entirely.
     private func findNextAvailableProfile(after currentProfile: Profile) -> Profile? {
-        let profiles = profileManager.profiles
-        guard let currentIndex = profiles.firstIndex(where: { $0.id == currentProfile.id }) else { return nil }
+        let now = Date()
 
-        let count = profiles.count
-        for offset in 1..<count {
-            let index = (currentIndex + offset) % count
-            let candidate = profiles[index]
+        let candidates = profileManager.profiles.filter { candidate in
+            guard candidate.id != currentProfile.id, candidate.hasUsageCredentials else { return false }
 
-            // Must have usage credentials
-            guard candidate.hasUsageCredentials else { continue }
+            // Codex-only profiles are never targets for the Claude auto-switch
+            guard !candidate.isCodexOnlyProfile else { return false }
 
-            // If no saved usage data, treat as available
-            guard let candidateUsage = candidate.claudeUsage else { return candidate }
-
-            // Must be below 100%
-            if candidateUsage.effectiveSessionPercentage < 100.0 {
-                return candidate
+            // Respect the per-profile eligibility toggle (Settings → Profiles → Auto-Switch)
+            guard candidate.isAutoSwitchEnabled else {
+                LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (excluded by per-profile toggle)")
+                return false
             }
+
+            // Skip CLI-only accounts on a free plan — they have no paid quota to take over
+            if !candidate.hasClaudeAI,
+               let cliJSON = candidate.cliCredentialsJSON,
+               let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),
+               info.type.lowercased() == "free" {
+                LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (free subscription)")
+                return false
+            }
+            return true
         }
 
+        // Soonest weekly reset first. Profiles with no cached usage sort last (their
+        // reset time is unknown, so they serve as the fallback).
+        let ranked = candidates.sorted {
+            nextWeeklyReset(for: $0, now: now) < nextWeeklyReset(for: $1, now: now)
+        }
+
+        for candidate in ranked {
+            if hasSessionHeadroom(candidate) && hasWeeklyHeadroom(candidate, now: now) {
+                return candidate
+            }
+            LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no headroom, trying next")
+        }
         return nil
+    }
+
+    /// The candidate's next weekly reset. Cached usage may be days old (only the
+    /// active profile refreshes in single-profile mode), so a stored reset already
+    /// in the past means that account's week has rolled over — project it forward
+    /// week by week to its next boundary.
+    private func nextWeeklyReset(for profile: Profile, now: Date) -> Date {
+        guard var reset = profile.claudeUsage?.weeklyResetTime else { return .distantFuture }
+        while reset < now {
+            reset = reset.addingTimeInterval(7 * 24 * 3600)
+        }
+        return reset
+    }
+
+    /// True while the candidate still has 5-hour session capacity. A profile with no
+    /// cached usage is assumed available; an expired session window counts as 0%.
+    private func hasSessionHeadroom(_ profile: Profile) -> Bool {
+        guard let usage = profile.claudeUsage else { return true }
+        return usage.effectiveSessionPercentage < 100.0
+    }
+
+    /// True while the candidate still has weekly capacity. A weekly reset already in
+    /// the past means the window rolled over since the data was cached — full quota.
+    private func hasWeeklyHeadroom(_ profile: Profile, now: Date) -> Bool {
+        guard let usage = profile.claudeUsage else { return true }
+        if usage.weeklyResetTime < now { return true }
+        return usage.weeklyPercentage < 100.0
     }
 
     @objc private func preferencesClicked() {

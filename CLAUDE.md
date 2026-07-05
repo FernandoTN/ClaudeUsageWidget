@@ -83,6 +83,17 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
   sources hold valid JSON, the later-expiring token wins. The read shells out to
   `security`, so keep it off the main thread (`readSystemCredentialsOffMain()` exists for
   main-actor callers).
+- `ClaudeCodeSyncService.ensureFreshCredentials` **self-heals stale CLI OAuth tokens**:
+  it adopts the CLI's silently-refreshed token from the system Keychain (active profile
+  only — the shared item always holds the ACTIVE account's login) and, failing that,
+  redeems the refresh token against `console.anthropic.com/v1/oauth/token` exactly like
+  the CLI does. The refresh token ROTATES on success, so the result must be persisted
+  everywhere the old one lived (profile store + system Keychain + credentials file).
+  `MenuBarManager` runs this before every usage fetch and `ProfileManager` before every
+  profile switch — an expired stored token must never freeze the displayed usage (that
+  was the "usage only updates after a manual CLI resync" bug). Correspondingly,
+  `Profile.hasUsageCredentials` counts CLI credentials that are expired but carry a
+  refresh token as usable.
 - `ClaudeCodeSyncService.writeSystemCredentials` syncs credentials to BOTH
   `~/.claude/.credentials.json` and the shared `Claude Code-credentials` system Keychain
   item — the Claude Code CLI reads the Keychain as its source of truth, so an in-app
@@ -97,8 +108,25 @@ the prompt needs the main thread; the main thread is blocked waiting for it → 
 
 ## Networking
 
-The app contacts only `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, and
-`status.claude.com`. There is no telemetry — keep it that way.
+The app contacts only `claude.ai`, `api.anthropic.com`, `console.anthropic.com`,
+`status.claude.com`, and — for Codex accounts — `chatgpt.com` (usage) and
+`auth.openai.com` (token refresh). There is no telemetry — keep it that way.
+
+## Codex accounts
+
+`CodexUsageService` mirrors the Claude CLI sync design for OpenAI Codex accounts:
+a profile's `codexCredentialsJSON` (Keychain key `codex-creds`) holds a full copy of
+`~/.codex/auth.json`. Usage comes from `GET chatgpt.com/backend-api/wham/usage`
+(`Authorization: Bearer` + `ChatGPT-Account-Id` headers; `rate_limit.primary_window` →
+5-hour session, `secondary_window` → weekly) and is stored in `profile.claudeUsage` so
+all existing rendering works unchanged. Token refresh uses the Codex CLI's public
+client id against `auth.openai.com/oauth/token`; refresh tokens ROTATE, so results are
+persisted to the profile store and back to auth.json when it holds the same
+`account_id`. Activating a profile with Codex credentials rewrites auth.json (that is
+how multi-account switching works); leaving one adopts auth.json back (same-account
+check). Codex-only profiles (`Profile.isCodexOnlyProfile`) are excluded from the
+Claude session-limit auto-switch in both directions. A one-time auto-import
+(`codexAutoImported_v1`) creates a "Codex (email)" profile from an existing CLI login.
 
 ## Layout
 

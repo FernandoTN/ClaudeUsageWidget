@@ -207,7 +207,35 @@
 "auto_switch.title" = "Auto-Switch Profile";
 "auto_switch.subtitle" = "Automatically switch when session limit is reached";
 "auto_switch.enable_title" = "Enable Auto-Switch";
-"auto_switch.enable_description" = "When the active profile hits 100% session usage, automatically switch to the next available profile";
+"auto_switch.enable_description" = "When the active profile hits 100% session usage, automatically switch to the profile whose weekly limit resets soonest and that still has session capacity";
+"auto_switch.eligible_profiles" = "Accounts eligible for auto-switch";
+
+/* ==================== */
+/* MARK: - Codex Account */
+/* ==================== */
+"section.codex_account_title" = "Codex Account";
+"section.codex_account_desc" = "Track an OpenAI Codex CLI account";
+"codex.title" = "Codex Account";
+"codex.subtitle" = "Track session and weekly usage for an OpenAI Codex (ChatGPT) account";
+"codex.synced" = "Codex account synced";
+"codex.not_synced" = "No Codex account synced";
+"codex.account_details" = "Account Details";
+"codex.credentials_synced" = "Credentials are stored in this profile's Keychain entry";
+"codex.no_credentials" = "Sync your Codex CLI login to this profile to track its usage";
+"codex.account" = "Account";
+"codex.access_token" = "Access Token";
+"codex.sync_from_cli" = "Sync from Codex CLI";
+"codex.resync" = "Re-sync from Codex CLI";
+"codex.sync_instructions" = "Log in with the `codex` CLI first, then sync. The app copies ~/.codex/auth.json into this profile.";
+"codex.about_title" = "About Codex accounts";
+"codex.benefit_1" = "Shows the same 5-hour session and weekly windows as Claude accounts, fetched from your ChatGPT plan";
+"codex.benefit_2" = "Switching to this profile also switches the codex CLI to this account";
+"codex.benefit_3" = "Tokens refresh automatically — no re-login needed";
+"codex.multi_account_note" = "Multiple Codex accounts: log into the other account with `codex login`, create a new profile, and sync it there. Switching profiles then switches the CLI account.";
+"popover.codex_note" = "OpenAI Codex account — usage from your ChatGPT plan";
+"popover.codex_note_email" = "Codex account: %@";
+"profiles.codex_synced" = "Codex synced";
+"auto_switch.eligible_profiles_hint" = "Disabled accounts are never chosen as an auto-switch target. The profile menu shows a green rotation icon for eligible accounts.";
 
 /* ==================== */
 /* MARK: - Error Messages */

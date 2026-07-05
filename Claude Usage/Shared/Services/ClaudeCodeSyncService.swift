@@ -448,6 +448,151 @@ class ClaudeCodeSyncService {
         return Date() > expiryDate
     }
 
+    /// Extracts the OAuth refresh token from CLI credentials JSON
+    func extractRefreshToken(from jsonData: String) -> String? {
+        guard let data = jsonData.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let token = oauth["refreshToken"] as? String else {
+            return nil
+        }
+        return token
+    }
+
+    // MARK: - OAuth Token Refresh
+
+    /// Claude Code's public OAuth client ID. The token endpoint requires it for the
+    /// refresh_token grant; it is the same value the CLI sends and is not a secret.
+    private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    private static let oauthTokenEndpoint = "https://console.anthropic.com/v1/oauth/token"
+
+    /// Exchanges the refresh token for a new access token — the same silent refresh
+    /// the CLI performs. Returns the full credentials JSON with the rotated tokens
+    /// merged in (scopes / subscriptionType are preserved).
+    ///
+    /// NOTE: the refresh token ROTATES on success. The caller must persist the
+    /// returned JSON everywhere the old one lived (profile store, and — for the
+    /// active profile — the system Keychain + credentials file), otherwise the CLI
+    /// is left holding a consumed refresh token and forces a re-login.
+    func refreshOAuthToken(credentialsJSON: String) async throws -> String {
+        guard let data = credentialsJSON.data(using: .utf8),
+              var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var oauth = root["claudeAiOauth"] as? [String: Any],
+              let refreshToken = oauth["refreshToken"] as? String,
+              let url = URL(string: Self.oauthTokenEndpoint) else {
+            throw ClaudeCodeError.invalidJSON
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": Self.oauthClientId
+        ])
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ClaudeCodeError.tokenRefreshFailed(status: -1)
+        }
+        guard httpResponse.statusCode == 200,
+              let payload = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let accessToken = payload["access_token"] as? String else {
+            LoggingService.shared.log("OAuth token refresh failed (HTTP \(httpResponse.statusCode))")
+            throw ClaudeCodeError.tokenRefreshFailed(status: httpResponse.statusCode)
+        }
+
+        oauth["accessToken"] = accessToken
+        if let rotated = payload["refresh_token"] as? String {
+            oauth["refreshToken"] = rotated
+        }
+        if let expiresIn = payload["expires_in"] as? Double {
+            // CLI stores expiresAt as integer milliseconds since epoch
+            oauth["expiresAt"] = Int((Date().timeIntervalSince1970 + expiresIn) * 1000.0)
+        }
+        if let scope = payload["scope"] as? String, !scope.isEmpty {
+            oauth["scopes"] = scope.components(separatedBy: " ")
+        }
+        root["claudeAiOauth"] = oauth
+
+        let merged = try JSONSerialization.data(withJSONObject: root)
+        guard let mergedString = String(data: merged, encoding: .utf8) else {
+            throw ClaudeCodeError.invalidJSON
+        }
+        LoggingService.shared.log("OAuth token refreshed via refresh_token grant (new expiry: \(extractTokenExpiry(from: mergedString)?.description ?? "unknown"))")
+        return mergedString
+    }
+
+    /// Makes sure a profile's stored CLI credentials hold a usable access token,
+    /// self-healing a stale one without user interaction:
+    ///
+    /// 1. `adoptSystemKeychain` (active profile only!): the CLI silently refreshes
+    ///    its token in the shared Keychain item while an account is in use, and that
+    ///    item always belongs to the ACTIVE account — adopt it if it expires later.
+    /// 2. If the token is still expired (or about to), redeem the refresh token via
+    ///    the OAuth endpoint, exactly like the CLI would.
+    ///
+    /// Any update is persisted to the profile store; when `syncToSystem` is set, an
+    /// OAuth-refreshed token is also written back to the system Keychain +
+    /// credentials file so the CLI never holds a consumed refresh token.
+    /// Returns true if the stored credentials changed (callers should reload profiles).
+    func ensureFreshCredentials(for profileId: UUID, adoptSystemKeychain: Bool, syncToSystem: Bool) async -> Bool {
+        guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
+              var workingJSON = profile.cliCredentialsJSON else {
+            return false
+        }
+
+        var changed = false
+
+        if adoptSystemKeychain,
+           let systemJSON = try? await readSystemCredentialsOffMain(),
+           let systemExpiry = extractTokenExpiry(from: systemJSON),
+           systemExpiry > (extractTokenExpiry(from: workingJSON) ?? .distantPast) {
+            workingJSON = systemJSON
+            changed = true
+            LoggingService.shared.log("ensureFreshCredentials: adopted fresher token from system Keychain (expires \(systemExpiry))")
+        }
+
+        var didOAuthRefresh = false
+        let expiry = extractTokenExpiry(from: workingJSON) ?? .distantPast
+        if expiry < Date().addingTimeInterval(120), extractRefreshToken(from: workingJSON) != nil {
+            do {
+                workingJSON = try await refreshOAuthToken(credentialsJSON: workingJSON)
+                changed = true
+                didOAuthRefresh = true
+            } catch {
+                LoggingService.shared.logError("ensureFreshCredentials: OAuth token refresh failed (non-fatal)", error: error)
+            }
+        }
+
+        guard changed else { return false }
+
+        var profiles = ProfileStore.shared.loadProfiles()
+        if let index = profiles.firstIndex(where: { $0.id == profileId }) {
+            profiles[index].cliCredentialsJSON = workingJSON
+            profiles[index].cliAccountSyncedAt = Date()
+            ProfileStore.shared.saveProfiles(profiles)
+        }
+
+        if syncToSystem && didOAuthRefresh {
+            let json = workingJSON
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try self.writeSystemCredentials(json)
+                    } catch {
+                        LoggingService.shared.logError("ensureFreshCredentials: failed to sync refreshed token to system (non-fatal)", error: error)
+                    }
+                    continuation.resume()
+                }
+            }
+        }
+
+        return true
+    }
+
     // MARK: - Auto Re-sync Before Switching
 
     /// Re-syncs credentials from system Keychain before profile switching
@@ -491,6 +636,7 @@ enum ClaudeCodeError: LocalizedError {
     case keychainReadFailed(status: OSStatus)
     case keychainWriteFailed(status: OSStatus)
     case noProfileCredentials
+    case tokenRefreshFailed(status: Int)
 
     var errorDescription: String? {
         switch self {
@@ -504,6 +650,8 @@ enum ClaudeCodeError: LocalizedError {
             return "Failed to write credentials to system Keychain (status: \(status))."
         case .noProfileCredentials:
             return "This profile has no synced CLI account."
+        case .tokenRefreshFailed(let status):
+            return "Failed to refresh the Claude Code OAuth token (HTTP \(status)). Please re-sync your CLI account."
         }
     }
 }
