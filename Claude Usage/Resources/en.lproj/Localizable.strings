@@ -207,7 +207,7 @@
 "auto_switch.title" = "Auto-Switch Profile";
 "auto_switch.subtitle" = "Automatically switch when session limit is reached";
 "auto_switch.enable_title" = "Enable Auto-Switch";
-"auto_switch.enable_description" = "When the active profile hits 100% session usage, automatically switch to the profile whose weekly limit resets soonest and that still has session capacity";
+"auto_switch.enable_description" = "When an active account hits 100% session usage, automatically switch to the account whose weekly limit resets soonest and that still has session capacity. Claude and Codex accounts rotate within their own group.";
 "auto_switch.eligible_profiles" = "Accounts eligible for auto-switch";
 
 /* ==================== */

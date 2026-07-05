@@ -276,6 +276,27 @@ class ProfileStore {
         return UUID(uuidString: uuidString)
     }
 
+    // MARK: - Per-Provider Active Accounts
+    // Two accounts are "active" at any time — one Claude (owns the Claude Code CLI
+    // Keychain login) and one Codex (owns ~/.codex/auth.json). Switching a profile
+    // of one provider must never disturb the other provider's active account.
+
+    func saveActiveClaudeProfileId(_ id: UUID?) {
+        defaults.set(id?.uuidString, forKey: "activeClaudeProfileId")
+    }
+
+    func loadActiveClaudeProfileId() -> UUID? {
+        defaults.string(forKey: "activeClaudeProfileId").flatMap(UUID.init(uuidString:))
+    }
+
+    func saveActiveCodexProfileId(_ id: UUID?) {
+        defaults.set(id?.uuidString, forKey: "activeCodexProfileId")
+    }
+
+    func loadActiveCodexProfileId() -> UUID? {
+        defaults.string(forKey: "activeCodexProfileId").flatMap(UUID.init(uuidString:))
+    }
+
     func saveDisplayMode(_ mode: ProfileDisplayMode) {
         defaults.set(mode.rawValue, forKey: Keys.displayMode)
     }

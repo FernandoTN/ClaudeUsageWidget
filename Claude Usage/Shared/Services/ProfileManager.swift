@@ -18,6 +18,14 @@ class ProfileManager: ObservableObject {
     @Published var multiProfileConfig: MultiProfileDisplayConfig = .default
     @Published var isSwitchingProfile: Bool = false
 
+    /// Per-provider active accounts. Two accounts are "active" at any time — one
+    /// Claude (owns the Claude Code CLI Keychain login) and one Codex (owns
+    /// ~/.codex/auth.json). `activeProfile` is only the FOCUSED profile; these track
+    /// which profile each CLI is actually logged into, so switching a Codex profile
+    /// influences only the other Codex account and vice versa.
+    private(set) var activeClaudeProfileId: UUID?
+    private(set) var activeCodexProfileId: UUID?
+
     private let profileStore = ProfileStore.shared
     private let cliSyncService = ClaudeCodeSyncService.shared
 
@@ -58,6 +66,9 @@ class ProfileManager: ObservableObject {
 
         displayMode = profileStore.loadDisplayMode()
         multiProfileConfig = profileStore.loadMultiProfileConfig()
+
+        activeClaudeProfileId = profileStore.loadActiveClaudeProfileId()
+        activeCodexProfileId = profileStore.loadActiveCodexProfileId()
 
         LoggingService.shared.log("ProfileManager: Loaded \(profiles.count) profile(s), active: \(activeProfile?.name ?? "none")")
     }
@@ -113,6 +124,16 @@ class ProfileManager: ObservableObject {
         }
 
         let profileName = profiles.first(where: { $0.id == id })?.name ?? "unknown"
+
+        // Release provider-active ownership if the deleted profile held it
+        if activeClaudeProfileId == id {
+            activeClaudeProfileId = nil
+            profileStore.saveActiveClaudeProfileId(nil)
+        }
+        if activeCodexProfileId == id {
+            activeCodexProfileId = nil
+            profileStore.saveActiveCodexProfileId(nil)
+        }
 
         // Delete Keychain credentials before removing from the array
         profileStore.deleteProfileCredentials(profileId: id)
@@ -190,35 +211,45 @@ class ProfileManager: ObservableObject {
 
         LoggingService.shared.log("Switching to profile: \(profile.name)")
 
-        // Re-sync current profile before leaving (if CLI credentials exist).
-        // The `security` subprocess + Keychain work runs off the main actor so the
-        // UI never freezes during a profile switch (including an automatic one).
-        if let currentProfile = activeProfile, currentProfile.cliCredentialsJSON != nil {
-            let currentProfileId = currentProfile.id
+        // Provider-scoped handoff: activating a profile only replaces the shared
+        // login state of the providers THAT PROFILE carries. Switching to a Codex
+        // profile touches only ~/.codex/auth.json (the outgoing CODEX account is
+        // re-adopted first) and leaves the Claude Code CLI login untouched;
+        // switching to a Claude profile does the reverse. The outgoing account of
+        // each provider is tracked separately from the focused profile — the two
+        // can differ (e.g. focused on Claude while a Codex account is also active).
+
+        profiles = profileStore.loadProfiles()
+        let target = profiles.first(where: { $0.id == id })
+
+        // 1. Claude side: the CLI Keychain login is about to be replaced — re-adopt
+        //    it (incl. any silent token refresh) into the profile that owns it.
+        //    The `security` subprocess runs off the main actor so the UI never freezes.
+        if target?.cliCredentialsJSON != nil,
+           let outgoingId = activeClaudeProfileId ?? (activeProfile?.cliCredentialsJSON != nil ? activeProfile?.id : nil),
+           outgoingId != id,
+           profiles.first(where: { $0.id == outgoingId })?.cliCredentialsJSON != nil {
             await runOffMainActor {
                 do {
-                    try ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: currentProfileId)
-                    LoggingService.shared.log("✓ Re-synced current profile before switching")
+                    try ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: outgoingId)
+                    LoggingService.shared.log("✓ Re-synced outgoing Claude account before switching")
                 } catch {
-                    LoggingService.shared.logError("Failed to re-sync current profile (non-fatal)", error: error)
+                    LoggingService.shared.logError("Failed to re-sync outgoing Claude account (non-fatal)", error: error)
                 }
             }
-            // Reload profiles to get the updated data in memory
             profiles = profileStore.loadProfiles()
         }
 
-        // Same for a Codex account: the codex CLI refreshes tokens silently in
-        // ~/.codex/auth.json — adopt that (same-account-only) before leaving.
-        if let currentProfile = activeProfile, currentProfile.codexCredentialsJSON != nil {
-            let currentProfileId = currentProfile.id
+        // 2. Codex side: auth.json is about to be replaced — adopt the codex CLI's
+        //    silent refreshes back into the outgoing Codex profile (account-matched,
+        //    so a stale id can never mix accounts).
+        if target?.codexCredentialsJSON != nil,
+           let outgoingId = activeCodexProfileId, outgoingId != id {
             await runOffMainActor {
-                CodexUsageService.shared.adoptAuthFileIfSameAccount(for: currentProfileId)
+                CodexUsageService.shared.adoptAuthFileIfSameAccount(for: outgoingId)
             }
             profiles = profileStore.loadProfiles()
         }
-
-        // Reload profiles from disk to get latest data (including any resyncs from other profiles)
-        profiles = profileStore.loadProfiles()
 
         // Get the updated target profile from the reloaded data
         guard var updatedProfile = profiles.first(where: { $0.id == id }) else {
@@ -287,6 +318,17 @@ class ProfileManager: ObservableObject {
         activeProfile = updated
         profileStore.saveActiveProfileId(id)
         profileStore.saveProfiles(profiles)
+
+        // Record the new owner of each provider's shared login (only for the
+        // provider(s) this profile actually carries — the other one is untouched).
+        if updated.cliCredentialsJSON != nil {
+            activeClaudeProfileId = id
+            profileStore.saveActiveClaudeProfileId(id)
+        }
+        if updated.codexCredentialsJSON != nil {
+            activeCodexProfileId = id
+            profileStore.saveActiveCodexProfileId(id)
+        }
 
         switchingSemaphore = false
         isSwitchingProfile = false
@@ -564,8 +606,52 @@ class ProfileManager: ObservableObject {
         // know whether a codex profile already exists.
         autoImportCodexAccountIfNeeded()
 
+        // Resolve/repair the per-provider active accounts now that credentials are
+        // hydrated (before hydration every profile looks credential-less).
+        resolveProviderActiveAccounts()
+
         // Let the menu bar / popover refresh now that credentials are available.
         NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+    }
+
+    /// Validates the persisted per-provider active ids against the loaded profiles
+    /// and infers them when missing (first run after the two-active-accounts update):
+    /// - Claude: falls back to the focused profile when it holds CLI credentials.
+    /// - Codex: matched by account_id against ~/.codex/auth.json — deterministic,
+    ///   because that file IS the codex CLI's current login.
+    private func resolveProviderActiveAccounts() {
+        if let id = activeClaudeProfileId,
+           profiles.first(where: { $0.id == id })?.cliCredentialsJSON == nil {
+            activeClaudeProfileId = nil
+        }
+        if activeClaudeProfileId == nil,
+           let focused = activeProfile, focused.cliCredentialsJSON != nil {
+            activeClaudeProfileId = focused.id
+        }
+        profileStore.saveActiveClaudeProfileId(activeClaudeProfileId)
+
+        if let id = activeCodexProfileId,
+           profiles.first(where: { $0.id == id })?.codexCredentialsJSON == nil {
+            activeCodexProfileId = nil
+        }
+        if activeCodexProfileId == nil {
+            let codexService = CodexUsageService.shared
+            if let fileJSON = codexService.readAuthFile(),
+               let fileAccount = codexService.extractAccountId(from: fileJSON) {
+                activeCodexProfileId = profiles.first(where: {
+                    $0.codexCredentialsJSON.flatMap(codexService.extractAccountId(from:)) == fileAccount
+                })?.id
+            }
+            if activeCodexProfileId == nil {
+                let codexProfiles = profiles.filter { $0.hasCodexAccount }
+                if codexProfiles.count == 1 {
+                    activeCodexProfileId = codexProfiles[0].id
+                }
+            }
+        }
+        profileStore.saveActiveCodexProfileId(activeCodexProfileId)
+
+        LoggingService.shared.log("ProfileManager: active Claude=\(profiles.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none"), active Codex=\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")")
     }
 
     /// If the user is logged into the codex CLI (~/.codex/auth.json exists) and no

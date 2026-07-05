@@ -124,9 +124,19 @@ client id against `auth.openai.com/oauth/token`; refresh tokens ROTATE, so resul
 persisted to the profile store and back to auth.json when it holds the same
 `account_id`. Activating a profile with Codex credentials rewrites auth.json (that is
 how multi-account switching works); leaving one adopts auth.json back (same-account
-check). Codex-only profiles (`Profile.isCodexOnlyProfile`) are excluded from the
-Claude session-limit auto-switch in both directions. A one-time auto-import
-(`codexAutoImported_v1`) creates a "Codex (email)" profile from an existing CLI login.
+check). A one-time auto-import (`codexAutoImported_v1`) creates a "Codex (email)"
+profile from an existing CLI login.
+
+**Two accounts are active at any time** — one Claude and one Codex.
+`ProfileManager.activeClaudeProfileId` tracks who owns the Claude Code CLI Keychain
+login and `activeCodexProfileId` who owns auth.json; `activeProfile` is only the
+*focused* profile. Activating a profile replaces ONLY the shared login state of the
+provider(s) it carries: the outgoing account of that provider is re-adopted first,
+the other provider is never touched. Keychain adoption / syncToSystem decisions key
+off `activeClaudeProfileId`, not the focused profile. The session-limit auto-switch
+applies the same policy (soonest weekly reset + headroom + per-profile toggle) to
+BOTH groups independently and never crosses providers; in multi-profile mode both
+provider-active accounts are checked after each refresh sweep.
 
 ## Layout
 

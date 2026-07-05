@@ -867,10 +867,23 @@ class MenuBarManager: NSObject, ObservableObject {
             self.lastSuccessfulRefreshTime = Date()
             self.isRefreshing = false
 
-            // Check auto-switch for the active profile
-            if let activeProfile = self.profileManager.activeProfile,
-               let activeUsage = activeProfile.claudeUsage {
-                self.checkAutoSwitchIfNeeded(usage: activeUsage, currentProfile: activeProfile)
+            // Check auto-switch for each provider's active account (both are "in
+            // use" at any time: the Claude account the CLI is logged into and the
+            // Codex account owning auth.json — either hitting its limit should
+            // rotate within its own provider group).
+            var checkedIds = Set<UUID>()
+            let idsToCheck = [
+                self.profileManager.activeProfile?.id,
+                self.profileManager.activeClaudeProfileId,
+                self.profileManager.activeCodexProfileId
+            ].compactMap { $0 }
+
+            for profileId in idsToCheck where !checkedIds.contains(profileId) {
+                checkedIds.insert(profileId)
+                if let candidate = self.profileManager.profiles.first(where: { $0.id == profileId }),
+                   let candidateUsage = candidate.claudeUsage {
+                    self.checkAutoSwitchIfNeeded(usage: candidateUsage, currentProfile: candidate)
+                }
             }
         }
     }
@@ -896,10 +909,10 @@ class MenuBarManager: NSObject, ObservableObject {
         }
 
         // Priority 3: System Keychain CLI OAuth token — the shared Keychain item always
-        // holds the ACTIVE account's login, so this fallback is only correct for the
-        // active profile. Using it for another profile would display the active
+        // holds the active CLAUDE account's login, so this fallback is only correct
+        // for that profile. Using it for another profile would display the active
         // account's usage under that profile's name.
-        if profile.id == profileManager.activeProfile?.id,
+        if profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id),
            let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
            !ClaudeCodeSyncService.shared.isTokenExpired(systemCredentials),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: systemCredentials) {
@@ -1121,11 +1134,14 @@ class MenuBarManager: NSObject, ObservableObject {
             return  // token still comfortably valid — skip the Keychain subprocess
         }
 
-        let isActive = profile.id == profileManager.activeProfile?.id
+        // "Active" here means: this profile owns the Claude Code CLI Keychain login
+        // (tracked separately from the focused profile — the focus may be on a
+        // Codex profile while this Claude account is still the CLI's login).
+        let isActiveClaude = profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
         let changed = await syncService.ensureFreshCredentials(
             for: profile.id,
-            adoptSystemKeychain: isActive,
-            syncToSystem: isActive
+            adoptSystemKeychain: isActiveClaude,
+            syncToSystem: isActiveClaude
         )
         if changed {
             profileManager.loadProfiles()
@@ -1140,10 +1156,9 @@ class MenuBarManager: NSObject, ObservableObject {
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }
 
-        // Guard: auto-switch is a CLAUDE-account feature. A Codex profile hitting its
-        // limit must not trigger a switch to a Claude account (and vice versa).
-        // Codex→Codex auto-switching can be added once multiple Codex accounts exist.
-        guard !currentProfile.isCodexOnlyProfile else { return }
+        // Auto-switch never crosses providers: a Codex profile at 100% switches to
+        // another CODEX account, a Claude profile to another CLAUDE account
+        // (candidate filtering below enforces the same-provider rule).
 
         // Guard: need more than 1 profile
         let profiles = profileManager.profiles
@@ -1190,20 +1205,22 @@ class MenuBarManager: NSObject, ObservableObject {
 
     /// Picks the profile to switch to when the session limit is hit.
     ///
-    /// Selection: among the other profiles that can fetch usage, prefer the one whose
-    /// WEEKLY limit resets soonest — its remaining weekly quota expires first, so it
-    /// should be burned before quota that lasts longer ("use it or lose it"). A
-    /// candidate is only eligible while it still has session AND weekly headroom;
-    /// otherwise the next-soonest weekly reset is tried. CLI accounts without a paid
-    /// subscription are skipped entirely.
+    /// Selection: among the other profiles OF THE SAME PROVIDER (Codex accounts
+    /// switch among Codex accounts, Claude among Claude — the same policy applies
+    /// to both groups), prefer the one whose WEEKLY limit resets soonest — its
+    /// remaining weekly quota expires first, so it should be burned before quota
+    /// that lasts longer ("use it or lose it"). A candidate is only eligible while
+    /// it still has session AND weekly headroom; otherwise the next-soonest weekly
+    /// reset is tried. Claude CLI accounts without a paid subscription are skipped.
     private func findNextAvailableProfile(after currentProfile: Profile) -> Profile? {
         let now = Date()
+        let switchingCodex = currentProfile.isCodexOnlyProfile
 
         let candidates = profileManager.profiles.filter { candidate in
             guard candidate.id != currentProfile.id, candidate.hasUsageCredentials else { return false }
 
-            // Codex-only profiles are never targets for the Claude auto-switch
-            guard !candidate.isCodexOnlyProfile else { return false }
+            // Same-provider rule: never cross between Claude and Codex accounts
+            guard candidate.isCodexOnlyProfile == switchingCodex else { return false }
 
             // Respect the per-profile eligibility toggle (Settings → Profiles → Auto-Switch)
             guard candidate.isAutoSwitchEnabled else {
@@ -1211,8 +1228,9 @@ class MenuBarManager: NSObject, ObservableObject {
                 return false
             }
 
-            // Skip CLI-only accounts on a free plan — they have no paid quota to take over
-            if !candidate.hasClaudeAI,
+            // Skip Claude CLI-only accounts on a free plan — no paid quota to take over
+            if !switchingCodex,
+               !candidate.hasClaudeAI,
                let cliJSON = candidate.cliCredentialsJSON,
                let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),
                info.type.lowercased() == "free" {
