@@ -1210,8 +1210,9 @@ class MenuBarManager: NSObject, ObservableObject {
     /// to both groups), prefer the one whose WEEKLY limit resets soonest — its
     /// remaining weekly quota expires first, so it should be burned before quota
     /// that lasts longer ("use it or lose it"). A candidate is only eligible while
-    /// it still has session AND weekly headroom; otherwise the next-soonest weekly
-    /// reset is tried. Claude CLI accounts without a paid subscription are skipped.
+    /// it still has session, all-models weekly AND Fable weekly headroom; otherwise
+    /// the next-soonest weekly reset is tried. Claude CLI accounts without a paid
+    /// subscription are skipped.
     private func findNextAvailableProfile(after currentProfile: Profile) -> Profile? {
         let now = Date()
         let switchingCodex = currentProfile.isCodexOnlyProfile
@@ -1247,10 +1248,12 @@ class MenuBarManager: NSObject, ObservableObject {
         }
 
         for candidate in ranked {
-            if hasSessionHeadroom(candidate) && hasWeeklyHeadroom(candidate, now: now) {
+            if hasSessionHeadroom(candidate)
+                && hasWeeklyHeadroom(candidate, now: now)
+                && hasFableWeeklyHeadroom(candidate, now: now) {
                 return candidate
             }
-            LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no headroom, trying next")
+            LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
         }
         return nil
     }
@@ -1280,6 +1283,16 @@ class MenuBarManager: NSObject, ObservableObject {
         guard let usage = profile.claudeUsage else { return true }
         if usage.weeklyResetTime < now { return true }
         return usage.weeklyPercentage < 100.0
+    }
+
+    /// True while the candidate still has Fable weekly capacity. Accounts that don't
+    /// report a Fable limit (Codex profiles, plans without a Fable window) are treated
+    /// as available; a Fable reset already in the past means full quota again.
+    private func hasFableWeeklyHeadroom(_ profile: Profile, now: Date) -> Bool {
+        guard let usage = profile.claudeUsage,
+              let fablePercentage = usage.fableWeeklyPercentage else { return true }
+        if let fableReset = usage.fableWeeklyResetTime, fableReset < now { return true }
+        return fablePercentage < 100.0
     }
 
     @objc private func preferencesClicked() {

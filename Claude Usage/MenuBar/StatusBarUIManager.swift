@@ -189,8 +189,15 @@ final class StatusBarUIManager {
             multiProfileStatusItems[UUID()] = statusItem
             LoggingService.shared.logUIEvent("Multi-profile: No profiles selected, showing default logo")
         } else {
+            // Each new status item is inserted to the LEFT of the app's existing
+            // items, so the last-created group ends up leftmost. Create Claude
+            // profiles first and Codex profiles last so all Codex accounts sit
+            // together on the far left, separated from the Claude accounts.
+            let orderedProfiles = selectedProfiles.filter { !$0.isCodexOnlyProfile }
+                + selectedProfiles.filter { $0.isCodexOnlyProfile }
+
             // Create one status item per selected profile
-            for profile in selectedProfiles {
+            for profile in orderedProfiles {
                 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
                 if let button = statusItem.button {
