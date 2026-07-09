@@ -199,6 +199,24 @@ struct Profile: Codable, Identifiable, Equatable {
     var hasAnyCredentials: Bool {
         hasClaudeAI || hasAPIConsole || cliCredentialsJSON != nil || codexCredentialsJSON != nil
     }
+
+    // MARK: - Provider Exclusivity
+    // A profile belongs to ONE provider: Claude (claude.ai / API Console / CLI) or
+    // Codex. Settings hides the other provider's credential sections based on these.
+    // They also consult the persisted metadata (hasCliAccount, organizationId,
+    // codexEmail, …) so the answer is right even before the background Keychain
+    // hydration fills in the credential fields.
+
+    /// True if this profile carries anything Claude-side.
+    var carriesClaudeAccount: Bool {
+        hasClaudeAI || hasAPIConsole || cliCredentialsJSON != nil
+            || hasCliAccount || organizationId != nil || apiOrganizationId != nil
+    }
+
+    /// True if this profile carries a Codex account.
+    var carriesCodexAccount: Bool {
+        hasCodexAccount || codexEmail != nil
+    }
 }
 
 // MARK: - ProfileCredentials (for compatibility)

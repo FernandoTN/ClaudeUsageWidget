@@ -16,6 +16,14 @@ struct CodexAccountView: View {
     @State private var isSyncing = false
     @State private var syncError: String?
 
+    /// Provider exclusivity: a profile that already holds a Claude account can never
+    /// be given a Codex one (the sidebar hides this page for such profiles; this is
+    /// the belt-and-braces check in case it is reached anyway).
+    private var isProviderLocked: Bool {
+        guard let profile = profileManager.activeProfile else { return false }
+        return profile.carriesClaudeAccount && !profile.carriesCodexAccount
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.section) {
@@ -101,10 +109,10 @@ struct CodexAccountView: View {
                                 }
                             } else {
                                 HStack(spacing: DesignTokens.Spacing.small) {
-                                    Image(systemName: "info.circle")
+                                    Image(systemName: isProviderLocked ? "lock.fill" : "info.circle")
                                         .font(.system(size: DesignTokens.Icons.standard))
                                         .foregroundColor(.orange)
-                                    Text("codex.sync_instructions".localized)
+                                    Text((isProviderLocked ? "codex.locked_claude_profile" : "codex.sync_instructions").localized)
                                         .font(DesignTokens.Typography.body)
                                         .foregroundColor(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -128,23 +136,25 @@ struct CodexAccountView: View {
                             }
 
                             HStack(spacing: DesignTokens.Spacing.iconText) {
-                                Button(action: syncFromCodexCLI) {
-                                    HStack(spacing: DesignTokens.Spacing.extraSmall) {
-                                        if isSyncing {
-                                            ProgressView()
-                                                .scaleEffect(0.8)
-                                                .frame(width: DesignTokens.Icons.small, height: DesignTokens.Icons.small)
-                                        } else {
-                                            Image(systemName: "arrow.triangle.2.circlepath")
-                                                .font(.system(size: DesignTokens.Icons.small))
+                                if !isProviderLocked {
+                                    Button(action: syncFromCodexCLI) {
+                                        HStack(spacing: DesignTokens.Spacing.extraSmall) {
+                                            if isSyncing {
+                                                ProgressView()
+                                                    .scaleEffect(0.8)
+                                                    .frame(width: DesignTokens.Icons.small, height: DesignTokens.Icons.small)
+                                            } else {
+                                                Image(systemName: "arrow.triangle.2.circlepath")
+                                                    .font(.system(size: DesignTokens.Icons.small))
+                                            }
+                                            Text(profile.hasCodexAccount ? "codex.resync".localized : "codex.sync_from_cli".localized)
+                                                .font(DesignTokens.Typography.body)
                                         }
-                                        Text(profile.hasCodexAccount ? "codex.resync".localized : "codex.sync_from_cli".localized)
-                                            .font(DesignTokens.Typography.body)
                                     }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.regular)
+                                    .disabled(isSyncing)
                                 }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.regular)
-                                .disabled(isSyncing)
 
                                 if profile.hasCodexAccount {
                                     Button(action: removeSync) {
@@ -202,7 +212,7 @@ struct CodexAccountView: View {
     }
 
     private func syncFromCodexCLI() {
-        guard let profileId = profileManager.activeProfile?.id else { return }
+        guard let profileId = profileManager.activeProfile?.id, !isProviderLocked else { return }
 
         isSyncing = true
         syncError = nil
@@ -215,6 +225,9 @@ struct CodexAccountView: View {
                 switch result {
                 case .success:
                     profileManager.loadProfiles()
+                    // The profile now holds a copy of auth.json, i.e. the codex CLI's
+                    // current login — so it owns the shared login from here on.
+                    profileManager.claimActiveCodexOwnership(profileId)
                     NotificationCenter.default.post(name: .credentialsChanged, object: nil)
                     LoggingService.shared.log("CodexAccountView: Codex sync complete")
                 case .failure(let error):
