@@ -295,6 +295,21 @@ class ProfileManager: ObservableObject {
         // Apply the profile's Codex account (if any) to ~/.codex/auth.json so the
         // `codex` CLI switches accounts along with the app.
         if updatedProfile.codexCredentialsJSON != nil {
+            // Validate/refresh the stored tokens BEFORE handing them to the CLI
+            // (parity with the Claude flow above). The stored copy may be days old;
+            // requiring 24h of remaining validity means the CLI won't have to
+            // refresh mid-session with a possibly-rotated-away refresh token —
+            // that was the "refresh token was revoked" failure after a switch.
+            // A revoked token is surfaced to the user by the service; the raw
+            // copy is still applied so a transient refresh failure isn't fatal.
+            if await CodexUsageService.shared.ensureFreshCredentials(for: id, freshFor: 24 * 3600) {
+                profiles = profileStore.loadProfiles()
+                if let refreshed = profiles.first(where: { $0.id == id }) {
+                    updatedProfile = refreshed
+                }
+                LoggingService.shared.log("✓ Refreshed stale Codex token for '\(updatedProfile.name)' before applying")
+            }
+
             let targetProfileId = updatedProfile.id
             let targetProfileName = updatedProfile.name
             await runOffMainActor {
