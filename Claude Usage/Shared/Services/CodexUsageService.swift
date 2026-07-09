@@ -102,6 +102,16 @@ class CodexUsageService {
         return decodeJWTClaims(idToken)?["email"] as? String
     }
 
+    /// The CLI's top-level `last_refresh` timestamp. The refresh token can rotate
+    /// WITHOUT the access token changing, so freshness comparisons must consult
+    /// this in addition to the access-token expiry.
+    func extractLastRefresh(from json: String) -> Date? {
+        guard let stamp = parse(json)?["last_refresh"] as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)
+    }
+
     func isTokenExpired(_ json: String) -> Bool {
         guard let expiry = extractTokenExpiry(from: json) else { return false }
         return Date() > expiry
@@ -137,6 +147,7 @@ class CodexUsageService {
         profiles[index].codexEmail = extractEmail(from: json)
         profiles[index].codexAccountSyncedAt = Date()
         ProfileStore.shared.saveProfiles(profiles)
+        reloginNotifiedProfiles.remove(profileId)
 
         LoggingService.shared.log("Codex: Synced CLI credentials to profile \(profileId)")
     }
@@ -168,7 +179,7 @@ class CodexUsageService {
     }
 
     /// Re-adopts auth.json into the profile IF it holds the SAME account and a
-    /// later-expiring token (the `codex` CLI refreshes tokens silently in that file,
+    /// fresher login (the `codex` CLI refreshes tokens silently in that file,
     /// exactly like Claude Code does in the Keychain). Safe to call when leaving a
     /// profile or before a fetch — the account_id match prevents cross-account mixups.
     /// Returns true if the stored credentials changed.
@@ -179,9 +190,19 @@ class CodexUsageService {
               let stored = profiles[index].codexCredentialsJSON,
               let fileJSON = readAuthFile(),
               let fileAccount = extractAccountId(from: fileJSON),
-              fileAccount == extractAccountId(from: stored),
-              let fileExpiry = extractTokenExpiry(from: fileJSON),
-              fileExpiry > (extractTokenExpiry(from: stored) ?? .distantPast) else {
+              fileAccount == extractAccountId(from: stored) else {
+            return false
+        }
+
+        // "Fresher" must consider last_refresh as well as the access-token expiry:
+        // the CLI can rotate ONLY the refresh token (same access token), and an
+        // unadopted rotation strands a dead refresh token in the profile — which
+        // surfaces as the CLI's "refresh token was revoked" after a later switch.
+        let fileExpiry = extractTokenExpiry(from: fileJSON) ?? .distantPast
+        let storedExpiry = extractTokenExpiry(from: stored) ?? .distantPast
+        let fileRefreshedAt = extractLastRefresh(from: fileJSON) ?? .distantPast
+        let storedRefreshedAt = extractLastRefresh(from: stored) ?? .distantPast
+        guard fileExpiry > storedExpiry || fileRefreshedAt > storedRefreshedAt else {
             return false
         }
 
@@ -248,7 +269,12 @@ class CodexUsageService {
     /// changes to the profile store; a refreshed token is also written back to
     /// auth.json when that file holds the same account, so the CLI never ends up
     /// with a consumed refresh token. Returns true if stored credentials changed.
-    func ensureFreshCredentials(for profileId: UUID) async -> Bool {
+    ///
+    /// `freshFor` is how long the access token must remain valid before a refresh
+    /// is attempted. The default (2 minutes) suits usage fetches; account switches
+    /// pass 24h so the CLI is handed a token it won't have to refresh mid-session
+    /// with a possibly-rotated-away refresh token.
+    func ensureFreshCredentials(for profileId: UUID, freshFor: TimeInterval = 120) async -> Bool {
         var changed = adoptAuthFileIfSameAccount(for: profileId)
 
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
@@ -257,7 +283,7 @@ class CodexUsageService {
         }
 
         let expiry = extractTokenExpiry(from: currentJSON) ?? .distantPast
-        if expiry < Date().addingTimeInterval(120), extractRefreshToken(from: currentJSON) != nil {
+        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: currentJSON) != nil {
             do {
                 let refreshed = try await refreshOAuthToken(credentialsJSON: currentJSON)
 
@@ -274,12 +300,32 @@ class CodexUsageService {
                     try? writeAuthFile(refreshed)
                 }
                 changed = true
+                reloginNotifiedProfiles.remove(profileId)
             } catch {
                 LoggingService.shared.logError("Codex: token refresh failed (non-fatal)", error: error)
+                notifyReloginNeededIfRevoked(error, profileId: profileId)
             }
         }
 
         return changed
+    }
+
+    /// Profiles already alerted about a revoked refresh token — one notification per
+    /// dead login, re-armed when a refresh succeeds or the account is re-synced.
+    private var reloginNotifiedProfiles: Set<UUID> = []
+
+    /// A 4xx from the token endpoint (invalid_grant & friends) means the stored
+    /// refresh token is revoked — no retry can fix it, only `codex login` plus a
+    /// re-sync. Tell the user once instead of failing silently on every fetch.
+    private func notifyReloginNeededIfRevoked(_ error: Error, profileId: UUID) {
+        guard case CodexError.tokenRefreshFailed(let status) = error,
+              status == 400 || status == 401 || status == 403,
+              !reloginNotifiedProfiles.contains(profileId) else {
+            return
+        }
+        reloginNotifiedProfiles.insert(profileId)
+        let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Codex"
+        NotificationManager.shared.sendCodexReloginNotification(profileName: name)
     }
 
     // MARK: - Usage Fetch

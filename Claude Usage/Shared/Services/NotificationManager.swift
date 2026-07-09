@@ -272,6 +272,28 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that a profile's saved Codex refresh token was revoked and the account
+    /// needs `codex login` + a re-sync (the app cannot repair a revoked token itself).
+    func sendCodexReloginNotification(profileName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.codex_relogin.title".localized
+        content.body = "notification.codex_relogin.message".localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "codex_relogin_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send Codex re-login notification: \(error)")
+            }
+        }
+    }
+
     /// Clears notification tracking state for a specific profile
     func clearNotificationsForProfile(_ profileName: String) {
         sentNotifications = sentNotifications.filter { !$0.hasPrefix(profileName) }

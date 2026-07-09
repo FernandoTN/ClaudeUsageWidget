@@ -127,6 +127,17 @@ how multi-account switching works); leaving one adopts auth.json back (same-acco
 check). A one-time auto-import (`codexAutoImported_v1`) creates a "Codex (email)"
 profile from an existing CLI login.
 
+**Rotation hazards** (each learned from a real "refresh token was revoked" CLI
+failure): the CLI can rotate ONLY the refresh token, so adoption freshness compares
+`last_refresh` as well as the access-token expiry; activation refreshes the target's
+tokens first when they expire within 24h (`ensureFreshCredentials(freshFor:)`) so the
+CLI is never handed a nearly-expired token whose refresh token may have rotated away;
+a 4xx from the token endpoint means the stored refresh token is revoked (e.g. by
+`codex logout`) — unrecoverable app-side, so the user gets one notification telling
+them to `codex login` + re-sync. Syncing INTO a profile claims the provider-active
+pointer (`claimActiveCodexOwnership` / `claimActiveClaudeOwnership`), and the launch
+repair re-derives the Codex owner from auth.json even when a pointer is already set.
+
 **Two accounts are active at any time** — one Claude and one Codex.
 `ProfileManager.activeClaudeProfileId` tracks who owns the Claude Code CLI Keychain
 login and `activeCodexProfileId` who owns auth.json; `activeProfile` is only the

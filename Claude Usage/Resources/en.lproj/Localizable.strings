@@ -228,11 +228,13 @@
 "codex.resync" = "Re-sync from Codex CLI";
 "codex.sync_instructions" = "Log in with the `codex` CLI first, then sync. The app copies ~/.codex/auth.json into this profile.";
 "codex.locked_claude_profile" = "This profile already holds a Claude account. Codex accounts live on their own profiles — create a new profile and sync the Codex CLI there.";
+"notification.codex_relogin.title" = "Codex account needs re-login";
+"notification.codex_relogin.message" = "The saved Codex token for '%@' was revoked. Run `codex login` for that account, then re-sync it in Settings → Codex Account.";
 "codex.about_title" = "About Codex accounts";
 "codex.benefit_1" = "Shows the same 5-hour session and weekly windows as Claude accounts, fetched from your ChatGPT plan";
 "codex.benefit_2" = "Switching to this profile also switches the codex CLI to this account";
 "codex.benefit_3" = "Tokens refresh automatically — no re-login needed";
-"codex.multi_account_note" = "Multiple Codex accounts: log into the other account with `codex login`, create a new profile, and sync it there. Switching profiles then switches the CLI account.";
+"codex.multi_account_note" = "Multiple Codex accounts: log into the other account with `codex login`, create a new profile, and sync it there. Switching profiles then switches the CLI account. Avoid `codex logout` — it revokes the token saved in the previous profile, which then needs a fresh login and re-sync.";
 "popover.codex_note" = "OpenAI Codex account — usage from your ChatGPT plan";
 "popover.codex_note_email" = "Codex account: %@";
 "profiles.codex_synced" = "Codex synced";
