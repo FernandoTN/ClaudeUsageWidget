@@ -23,8 +23,8 @@ class ProfileManager: ObservableObject {
     /// ~/.codex/auth.json). `activeProfile` is only the FOCUSED profile; these track
     /// which profile each CLI is actually logged into, so switching a Codex profile
     /// influences only the other Codex account and vice versa.
-    private(set) var activeClaudeProfileId: UUID?
-    private(set) var activeCodexProfileId: UUID?
+    @Published private(set) var activeClaudeProfileId: UUID?
+    @Published private(set) var activeCodexProfileId: UUID?
 
     private let profileStore = ProfileStore.shared
     private let cliSyncService = ClaudeCodeSyncService.shared
@@ -355,6 +355,14 @@ class ProfileManager: ObservableObject {
         activeCodexProfileId = profileId
         profileStore.saveActiveCodexProfileId(profileId)
         LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Codex login")
+    }
+
+    /// True if the profile owns its provider's shared CLI login — the Claude Code
+    /// Keychain item or ~/.codex/auth.json. One Claude and one Codex account are
+    /// active at any time, so up to TWO profiles carry the "Active" badge; the
+    /// focused profile is a separate concept and gets no badge of its own.
+    func isProviderActive(_ profile: Profile) -> Bool {
+        profile.id == activeClaudeProfileId || profile.id == activeCodexProfileId
     }
 
     // MARK: - Credentials
