@@ -462,6 +462,15 @@ class ProfileManager: ObservableObject {
 
     /// Saves Claude usage data for a specific profile
     func saveClaudeUsage(_ usage: ClaudeUsage, for profileId: UUID) {
+        // Re-read the store FIRST: this runs right after a fetch, and the fetch may
+        // have rotated this profile's credentials (Codex/CLI adoption or an OAuth
+        // refresh) store-direct. saveProfiles syncs the credential cache from the
+        // Profile objects it's given, so saving a stale in-memory array would
+        // clobber the rotated tokens with the CONSUMED refresh token — which the
+        // next refresh attempt then trips OpenAI/Anthropic reuse detection on
+        // ("refresh token was revoked").
+        profiles = profileStore.loadProfiles()
+
         guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
             LoggingService.shared.logError("saveClaudeUsage: Profile not found with ID: \(profileId)")
             return
@@ -486,6 +495,10 @@ class ProfileManager: ObservableObject {
 
     /// Saves API usage data for a specific profile
     func saveAPIUsage(_ usage: APIUsage, for profileId: UUID) {
+        // Same store re-read as saveClaudeUsage — never clobber credentials that
+        // rotated during the fetch this call is reporting on.
+        profiles = profileStore.loadProfiles()
+
         guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
             LoggingService.shared.logError("saveAPIUsage: Profile not found with ID: \(profileId)")
             return
