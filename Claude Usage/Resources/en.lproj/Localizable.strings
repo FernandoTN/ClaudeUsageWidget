@@ -227,6 +227,7 @@
 "codex.sync_from_cli" = "Sync from Codex CLI";
 "codex.resync" = "Re-sync from Codex CLI";
 "codex.sync_instructions" = "Log in with the `codex` CLI first, then sync. The app copies ~/.codex/auth.json into this profile.";
+"codex.locked_claude_profile" = "This profile already holds a Claude account. Codex accounts live on their own profiles — create a new profile and sync the Codex CLI there.";
 "codex.about_title" = "About Codex accounts";
 "codex.benefit_1" = "Shows the same 5-hour session and weekly windows as Claude accounts, fetched from your ChatGPT plan";
 "codex.benefit_2" = "Switching to this profile also switches the codex CLI to this account";
@@ -547,6 +548,7 @@
 "cli.subscription" = "Subscription";
 "cli.scopes" = "Scopes";
 "cli.sync_instructions" = "Click 'Sync from Claude Code' below to import your credentials";
+"cli.locked_codex_profile" = "This profile already holds a Codex account. Claude accounts live on their own profiles — create a new profile and sync Claude Code there.";
 "cli.about_title" = "About CLI Account Sync";
 "cli.benefits" = "Benefits:";
 "cli.tracking_note" = "Note: Usage tracking uses Claude.ai credentials. CLI credentials are only for account switching.";

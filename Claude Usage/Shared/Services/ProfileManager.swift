@@ -336,6 +336,27 @@ class ProfileManager: ObservableObject {
         LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
     }
 
+    // MARK: - Provider Ownership
+
+    /// Records `profileId` as the owner of the Claude Code CLI's shared Keychain
+    /// login. Call right after syncing the system credentials INTO that profile —
+    /// it then matches the shared login by construction, so the pointer must follow
+    /// (a Sync used to leave the pointer on the previously active account, and the
+    /// launch-time repair never re-checked a non-nil pointer).
+    func claimActiveClaudeOwnership(_ profileId: UUID) {
+        activeClaudeProfileId = profileId
+        profileStore.saveActiveClaudeProfileId(profileId)
+        LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Claude login")
+    }
+
+    /// Records `profileId` as the owner of ~/.codex/auth.json. Call right after
+    /// syncing auth.json INTO that profile (see claimActiveClaudeOwnership).
+    func claimActiveCodexOwnership(_ profileId: UUID) {
+        activeCodexProfileId = profileId
+        profileStore.saveActiveCodexProfileId(profileId)
+        LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Codex login")
+    }
+
     // MARK: - Credentials
 
     func loadCredentials(for profileId: UUID) throws -> ProfileCredentials {
@@ -630,17 +651,21 @@ class ProfileManager: ObservableObject {
         }
         profileStore.saveActiveClaudeProfileId(activeClaudeProfileId)
 
-        if let id = activeCodexProfileId,
-           profiles.first(where: { $0.id == id })?.codexCredentialsJSON == nil {
-            activeCodexProfileId = nil
-        }
-        if activeCodexProfileId == nil {
-            let codexService = CodexUsageService.shared
-            if let fileJSON = codexService.readAuthFile(),
-               let fileAccount = codexService.extractAccountId(from: fileJSON) {
-                activeCodexProfileId = profiles.first(where: {
-                    $0.codexCredentialsJSON.flatMap(codexService.extractAccountId(from:)) == fileAccount
-                })?.id
+        // auth.json IS the codex CLI's current login: whenever its account matches a
+        // profile, that profile owns the shared login — even if the persisted pointer
+        // disagrees (a Sync into another profile used to leave the pointer behind, and
+        // a stale pointer made auto-switch watch an account the CLI wasn't using).
+        let codexService = CodexUsageService.shared
+        if let fileJSON = codexService.readAuthFile(),
+           let fileAccount = codexService.extractAccountId(from: fileJSON),
+           let owner = profiles.first(where: {
+               $0.codexCredentialsJSON.flatMap(codexService.extractAccountId(from:)) == fileAccount
+           }) {
+            activeCodexProfileId = owner.id
+        } else {
+            if let id = activeCodexProfileId,
+               profiles.first(where: { $0.id == id })?.codexCredentialsJSON == nil {
+                activeCodexProfileId = nil
             }
             if activeCodexProfileId == nil {
                 let codexProfiles = profiles.filter { $0.hasCodexAccount }

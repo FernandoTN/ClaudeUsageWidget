@@ -13,6 +13,14 @@ struct CLIAccountView: View {
     @State private var syncError: String?
     @State private var cliAccountInfo: CLIAccountInfo?
 
+    /// Provider exclusivity: a profile that already holds a Codex account can never
+    /// be given a Claude one (the sidebar hides this page for such profiles; this is
+    /// the belt-and-braces check in case it is reached anyway).
+    private var isProviderLocked: Bool {
+        guard let profile = profileManager.activeProfile else { return false }
+        return profile.carriesCodexAccount && !profile.carriesClaudeAccount
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.section) {
@@ -123,10 +131,10 @@ struct CLIAccountView: View {
                             } else {
                                 // Not synced message
                                 HStack(spacing: DesignTokens.Spacing.small) {
-                                    Image(systemName: "info.circle")
+                                    Image(systemName: isProviderLocked ? "lock.fill" : "info.circle")
                                         .font(.system(size: DesignTokens.Icons.standard))
                                         .foregroundColor(.orange)
-                                    Text("cli.sync_instructions".localized)
+                                    Text((isProviderLocked ? "cli.locked_codex_profile" : "cli.sync_instructions").localized)
                                         .font(DesignTokens.Typography.body)
                                         .foregroundColor(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -152,23 +160,25 @@ struct CLIAccountView: View {
 
                             // Action Buttons
                             HStack(spacing: DesignTokens.Spacing.iconText) {
-                                Button(action: syncFromCLI) {
-                                    HStack(spacing: DesignTokens.Spacing.extraSmall) {
-                                        if isSyncing {
-                                            ProgressView()
-                                                .scaleEffect(0.8)
-                                                .frame(width: DesignTokens.Icons.small, height: DesignTokens.Icons.small)
-                                        } else {
-                                            Image(systemName: "arrow.triangle.2.circlepath")
-                                                .font(.system(size: DesignTokens.Icons.small))
+                                if !isProviderLocked {
+                                    Button(action: syncFromCLI) {
+                                        HStack(spacing: DesignTokens.Spacing.extraSmall) {
+                                            if isSyncing {
+                                                ProgressView()
+                                                    .scaleEffect(0.8)
+                                                    .frame(width: DesignTokens.Icons.small, height: DesignTokens.Icons.small)
+                                            } else {
+                                                Image(systemName: "arrow.triangle.2.circlepath")
+                                                    .font(.system(size: DesignTokens.Icons.small))
+                                            }
+                                            Text(profile.hasCliAccount ? "cli.resync".localized : "cli.sync_from_code".localized)
+                                                .font(DesignTokens.Typography.body)
                                         }
-                                        Text(profile.hasCliAccount ? "cli.resync".localized : "cli.sync_from_code".localized)
-                                            .font(DesignTokens.Typography.body)
                                     }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.regular)
+                                    .disabled(isSyncing)
                                 }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.regular)
-                                .disabled(isSyncing)
 
                                 if profile.hasCliAccount {
                                     Button(action: removeSync) {
@@ -238,7 +248,7 @@ struct CLIAccountView: View {
     }
 
     private func syncFromCLI() {
-        guard let profileId = profileManager.activeProfile?.id else { return }
+        guard let profileId = profileManager.activeProfile?.id, !isProviderLocked else { return }
 
         isSyncing = true
         syncError = nil
@@ -260,6 +270,11 @@ struct CLIAccountView: View {
                         updated.cliAccountSyncedAt = Date()
                         profileManager.updateProfile(updated)
                     }
+
+                    // The profile now holds a copy of the system Keychain login, i.e.
+                    // the Claude Code CLI's current account — so it owns the shared
+                    // login from here on.
+                    profileManager.claimActiveClaudeOwnership(profileId)
 
                     // Load account info
                     loadCLIAccountInfo()
