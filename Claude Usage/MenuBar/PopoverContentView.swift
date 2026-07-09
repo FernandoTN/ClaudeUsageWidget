@@ -177,7 +177,7 @@ struct PopoverContentView: View {
 
                     Spacer()
 
-                    if viewingProfile.id == profileManager.activeProfile?.id {
+                    if profileManager.isProviderActive(viewingProfile) {
                         Text("Active")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundColor(.accentColor)

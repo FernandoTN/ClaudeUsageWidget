@@ -78,7 +78,7 @@ struct ManageProfilesView: View {
                                     ProfileSelectionRow(
                                         profile: profile,
                                         isSelected: profile.isSelectedForDisplay,
-                                        isActive: profileManager.activeProfile?.id == profile.id,
+                                        isActive: profileManager.isProviderActive(profile),
                                         onToggle: {
                                             // Ensure at least one profile stays selected
                                             let selectedCount = profileManager.profiles.filter { $0.isSelectedForDisplay }.count
@@ -279,7 +279,7 @@ struct ManageProfilesView: View {
                                             .lineLimit(1)
                                             .truncationMode(.tail)
 
-                                        if profileManager.activeProfile?.id == profile.id {
+                                        if profileManager.isProviderActive(profile) {
                                             Text("multiprofile.active_badge".localized)
                                                 .font(.system(size: 9, weight: .bold))
                                                 .foregroundColor(.white)
@@ -375,7 +375,7 @@ struct ProfileRow: View {
             // Profile Icon
             Image(systemName: profile.hasCliAccount ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle.fill")
                 .font(.system(size: 24))
-                .foregroundColor(profileManager.activeProfile?.id == profile.id ? .accentColor : .secondary)
+                .foregroundColor(profileManager.isProviderActive(profile) ? .accentColor : .secondary)
 
             VStack(alignment: .leading, spacing: 4) {
                 if isEditing {
@@ -388,7 +388,7 @@ struct ProfileRow: View {
                         Text(profile.name)
                             .font(.system(size: 14, weight: .medium))
 
-                        if profileManager.activeProfile?.id == profile.id {
+                        if profileManager.isProviderActive(profile) {
                             Text("profiles.active_badge".localized)
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundColor(.white)
