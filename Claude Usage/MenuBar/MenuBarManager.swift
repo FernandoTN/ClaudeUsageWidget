@@ -1164,6 +1164,11 @@ class MenuBarManager: NSObject, ObservableObject {
         let profiles = profileManager.profiles
         guard profiles.count > 1 else { return }
 
+        // Proactive: as usage climbs toward the limit, validate the predicted next
+        // candidate's login so the eventual switch is seamless (or the user learns
+        // about a dead account while there is still headroom to re-login).
+        preflightNextCandidateIfNeeded(usage: usage, currentProfile: currentProfile)
+
         let profileId = currentProfile.id
 
         // If usage dropped below 100%, clear the flag (session reset)
@@ -1205,6 +1210,92 @@ class MenuBarManager: NSObject, ObservableObject {
             }
             LoggingService.shared.log("AutoSwitch: All profiles at 100% or unavailable, staying on '\(fromName)'")
         }
+    }
+
+    // MARK: - Candidate Preflight (seamless auto-switch)
+
+    /// Session-usage milestones at which the NEXT auto-switch candidate's stored
+    /// login is validated ahead of the 100% switch.
+    private static let preflightMilestones: [Double] = [25, 50, 75, 90]
+
+    /// Milestones already preflighted per current profile — cleared when its
+    /// session usage drops back below the first milestone (window reset).
+    private var preflightedMilestones: [UUID: Set<Double>] = [:]
+    private var preflightRunning: Set<UUID> = []
+
+    /// Fires once per crossed milestone (25/50/75/90% of the current account's
+    /// session window) and validates the auto-switch's predicted target in the
+    /// background. Validation = the same refresh the switch itself would perform,
+    /// done EARLY: a live-but-stale token is refreshed now (proving the refresh
+    /// token works and banking a fresh access token), and a dead one triggers the
+    /// re-login notification while the current account still has headroom — so the
+    /// eventual switch lands on a login that is known to work.
+    private func preflightNextCandidateIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
+        let percentage = usage.effectiveSessionPercentage
+        if percentage < Self.preflightMilestones[0] {
+            preflightedMilestones[currentProfile.id] = nil  // window reset — re-arm
+            return
+        }
+        guard let milestone = Self.preflightMilestones.last(where: { percentage >= $0 }),
+              !(preflightedMilestones[currentProfile.id]?.contains(milestone) ?? false),
+              !preflightRunning.contains(currentProfile.id) else { return }
+
+        preflightedMilestones[currentProfile.id, default: []].insert(milestone)
+        preflightRunning.insert(currentProfile.id)
+
+        let currentId = currentProfile.id
+        Task {
+            await self.preflightCandidates(after: currentProfile, milestone: milestone)
+            self.preflightRunning.remove(currentId)
+        }
+    }
+
+    /// Walks the ranked same-provider candidates until one holds a LIVE login,
+    /// notifying (via the services) about every dead one found on the way.
+    private func preflightCandidates(after currentProfile: Profile, milestone: Double) async {
+        var excluded: Set<UUID> = []
+        while let candidate = findNextAvailableProfile(after: currentProfile, excluding: excluded) {
+            // A candidate that already owns its provider's shared login is being
+            // kept fresh by the CLI itself. Do NOT refresh it here — rotating its
+            // refresh token without syncing the shared login would leave the CLI
+            // holding a consumed token (the exact failure this preflight prevents).
+            if candidate.id == profileManager.activeClaudeProfileId
+                || candidate.id == profileManager.activeCodexProfileId {
+                LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' already owns its provider login — OK")
+                return
+            }
+
+            var alive = true
+            if candidate.isCodexOnlyProfile {
+                _ = await CodexUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600)
+                if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.codexCredentialsJSON {
+                    alive = !CodexUsageService.shared.isTokenExpired(json)
+                }
+            } else if candidate.cliCredentialsJSON != nil {
+                _ = await ClaudeCodeSyncService.shared.ensureFreshCredentials(
+                    for: candidate.id,
+                    adoptSystemKeychain: false,
+                    syncToSystem: false,
+                    freshFor: 3600
+                )
+                if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.cliCredentialsJSON {
+                    alive = !ClaudeCodeSyncService.shared.isTokenExpired(json)
+                }
+            }
+            // claude.ai-session-only candidates carry no OAuth tokens to validate.
+
+            if alive {
+                LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' login is live and fresh")
+                return
+            }
+
+            // Dead login — ensureFreshCredentials already sent the re-login
+            // notification. Validate the next candidate so a working fallback is
+            // confirmed before the switch fires.
+            LoggingService.shared.log("Preflight[\(Int(milestone))%]: '\(candidate.name)' login is DEAD — user notified, checking next candidate")
+            excluded.insert(candidate.id)
+        }
+        LoggingService.shared.log("Preflight[\(Int(milestone))%]: no live candidate available after '\(currentProfile.name)'")
     }
 
     /// Picks the profile to switch to when the session limit is hit.
