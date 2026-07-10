@@ -366,6 +366,7 @@ class ClaudeCodeSyncService {
 
         profiles[index].cliCredentialsJSON = jsonData
         ProfileStore.shared.saveProfiles(profiles)
+        reloginNotifiedProfiles.remove(profileId)
 
         LoggingService.shared.log("Synced CLI credentials to profile: \(profileId)")
     }
@@ -562,8 +563,14 @@ class ClaudeCodeSyncService {
                 workingJSON = try await refreshOAuthToken(credentialsJSON: workingJSON)
                 changed = true
                 didOAuthRefresh = true
+                reloginNotifiedProfiles.remove(profileId)
             } catch {
                 LoggingService.shared.logError("ensureFreshCredentials: OAuth token refresh failed (non-fatal)", error: error)
+                if case ClaudeCodeError.tokenRefreshFailed(let status) = error,
+                   status == 400 || status == 401 || status == 403 {
+                    // The stored refresh token is revoked — unrecoverable app-side.
+                    notifyReloginNeeded(for: profileId)
+                }
             }
         }
 
@@ -591,6 +598,23 @@ class ClaudeCodeSyncService {
         }
 
         return true
+    }
+
+    // MARK: - Dead Login Notification
+
+    /// Profiles already alerted about a dead CLI login — one notification per dead
+    /// login, re-armed when a refresh succeeds or the account is re-synced.
+    private var reloginNotifiedProfiles: Set<UUID> = []
+
+    /// Tells the user (once) that a profile's saved Claude Code login is dead — its
+    /// access token is expired and the refresh token revoked/consumed — so only a
+    /// manual `/login` plus a re-sync can revive it. Called on a 4xx from the token
+    /// endpoint and by the activation gate that refuses to apply a dead login.
+    func notifyReloginNeeded(for profileId: UUID) {
+        guard !reloginNotifiedProfiles.contains(profileId) else { return }
+        reloginNotifiedProfiles.insert(profileId)
+        let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Claude"
+        NotificationManager.shared.sendClaudeReloginNotification(profileName: name)
     }
 
     // MARK: - Auto Re-sync Before Switching
@@ -623,6 +647,7 @@ class ClaudeCodeSyncService {
         profiles[index].cliCredentialsJSON = freshJSON
         profiles[index].cliAccountSyncedAt = Date()  // Update sync timestamp
         ProfileStore.shared.saveProfiles(profiles)
+        reloginNotifiedProfiles.remove(profileId)
 
         LoggingService.shared.log("✓ Re-synced CLI credentials from system and updated timestamp")
     }

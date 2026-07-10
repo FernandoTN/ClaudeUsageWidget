@@ -272,6 +272,28 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that a profile's saved Claude Code login is dead (expired access token
+    /// and revoked/consumed refresh token) and needs `/login` + a re-sync.
+    func sendClaudeReloginNotification(profileName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.claude_relogin.title".localized
+        content.body = "notification.claude_relogin.message".localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "claude_relogin_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send Claude re-login notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Codex refresh token was revoked and the account
     /// needs `codex login` + a re-sync (the app cannot repair a revoked token itself).
     func sendCodexReloginNotification(profileName: String) {

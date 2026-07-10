@@ -228,6 +228,8 @@
 "codex.resync" = "Re-sync from Codex CLI";
 "codex.sync_instructions" = "Log in with the `codex` CLI first, then sync. The app copies ~/.codex/auth.json into this profile.";
 "codex.locked_claude_profile" = "This profile already holds a Claude account. Codex accounts live on their own profiles — create a new profile and sync the Codex CLI there.";
+"notification.claude_relogin.title" = "Claude account needs re-login";
+"notification.claude_relogin.message" = "The saved Claude Code login for '%@' has expired and could not be refreshed. Run `claude` and `/login` with that account, then re-sync it in Settings → CLI Account.";
 "notification.codex_relogin.title" = "Codex account needs re-login";
 "notification.codex_relogin.message" = "The saved Codex token for '%@' was revoked. Run `codex login` for that account, then re-sync it in Settings → Codex Account.";
 "codex.about_title" = "About Codex accounts";
