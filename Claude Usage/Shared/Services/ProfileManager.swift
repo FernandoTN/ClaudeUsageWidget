@@ -190,20 +190,24 @@ class ProfileManager: ObservableObject {
 
     // MARK: - Profile Activation (Centralized)
 
-    func activateProfile(_ id: UUID) async {
+    /// Returns false when the switch could not take over a provider login the
+    /// profile carries (dead credentials were NOT applied — see the gates below),
+    /// so callers like the auto-switch can try a different candidate.
+    @discardableResult
+    func activateProfile(_ id: UUID) async -> Bool {
         guard !switchingSemaphore else {
             LoggingService.shared.log("Profile switch already in progress, ignoring")
-            return
+            return false
         }
 
         guard let profile = profiles.first(where: { $0.id == id }) else {
             LoggingService.shared.log("Profile not found: \(id)")
-            return
+            return false
         }
 
         if activeProfile?.id == id {
             LoggingService.shared.log("Profile already active: \(profile.name)")
-            return
+            return true
         }
 
         switchingSemaphore = true
@@ -256,8 +260,14 @@ class ProfileManager: ObservableObject {
             LoggingService.shared.log("Profile not found after reload: \(id)")
             switchingSemaphore = false
             isSwitchingProfile = false
-            return
+            return false
         }
+
+        // Set when a provider login the profile carries could NOT be handed to the
+        // CLI because the stored credentials are dead (expired + unrefreshable).
+        var deadLoginSkipped = false
+        var claudeLoginApplied = false
+        var codexLoginApplied = false
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
@@ -277,16 +287,29 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        if updatedProfile.cliCredentialsJSON != nil {
-            let targetProfileId = updatedProfile.id
-            let targetProfileName = updatedProfile.name
-            await runOffMainActor {
-                do {
-                    try ClaudeCodeSyncService.shared.applyProfileCredentials(targetProfileId)
-                    LoggingService.shared.log("✓ Applied CLI credentials for: \(targetProfileName)")
-                } catch {
-                    LoggingService.shared.logError("Failed to apply CLI credentials (non-fatal)", error: error)
+        if let cliJSON = updatedProfile.cliCredentialsJSON {
+            // GATE: never hand the CLI a dead login. If the token is still expired
+            // after the refresh attempt above, its refresh token is revoked or
+            // consumed — writing it would replace the WORKING outgoing login with
+            // credentials no session can use, bricking every running Claude Code
+            // session with "login expired. Please run /login". Keep the outgoing
+            // login in place and tell the user this account needs a manual /login.
+            if cliSyncService.isTokenExpired(cliJSON) {
+                deadLoginSkipped = true
+                cliSyncService.notifyReloginNeeded(for: id)
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
+            } else {
+                let targetProfileId = updatedProfile.id
+                let targetProfileName = updatedProfile.name
+                await runOffMainActor {
+                    do {
+                        try ClaudeCodeSyncService.shared.applyProfileCredentials(targetProfileId)
+                        LoggingService.shared.log("✓ Applied CLI credentials for: \(targetProfileName)")
+                    } catch {
+                        LoggingService.shared.logError("Failed to apply CLI credentials (non-fatal)", error: error)
+                    }
                 }
+                claudeLoginApplied = true
             }
         } else {
             LoggingService.shared.log("⚠️ Profile '\(updatedProfile.name)' has no CLI credentials JSON")
@@ -310,15 +333,26 @@ class ProfileManager: ObservableObject {
                 LoggingService.shared.log("✓ Refreshed stale Codex token for '\(updatedProfile.name)' before applying")
             }
 
-            let targetProfileId = updatedProfile.id
-            let targetProfileName = updatedProfile.name
-            await runOffMainActor {
-                do {
-                    try CodexUsageService.shared.applyProfileCredentials(targetProfileId)
-                    LoggingService.shared.log("✓ Applied Codex credentials for: \(targetProfileName)")
-                } catch {
-                    LoggingService.shared.logError("Failed to apply Codex credentials (non-fatal)", error: error)
+            // GATE: same rule as the Claude side — a login that is expired even
+            // after the refresh attempt is dead, and writing it to auth.json would
+            // break the codex CLI until a manual `codex login`.
+            if let codexJSON = updatedProfile.codexCredentialsJSON,
+               CodexUsageService.shared.isTokenExpired(codexJSON) {
+                deadLoginSkipped = true
+                CodexUsageService.shared.notifyReloginNeeded(for: id)
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' Codex login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
+            } else {
+                let targetProfileId = updatedProfile.id
+                let targetProfileName = updatedProfile.name
+                await runOffMainActor {
+                    do {
+                        try CodexUsageService.shared.applyProfileCredentials(targetProfileId)
+                        LoggingService.shared.log("✓ Applied Codex credentials for: \(targetProfileName)")
+                    } catch {
+                        LoggingService.shared.logError("Failed to apply Codex credentials (non-fatal)", error: error)
+                    }
                 }
+                codexLoginApplied = true
             }
         }
 
@@ -334,13 +368,14 @@ class ProfileManager: ObservableObject {
         profileStore.saveActiveProfileId(id)
         profileStore.saveProfiles(profiles)
 
-        // Record the new owner of each provider's shared login (only for the
-        // provider(s) this profile actually carries — the other one is untouched).
-        if updated.cliCredentialsJSON != nil {
+        // Record the new owner of each provider's shared login — but ONLY for a
+        // login that was actually applied. A dead login that was gated above did
+        // not replace the shared login, so the outgoing account still owns it.
+        if claudeLoginApplied {
             activeClaudeProfileId = id
             profileStore.saveActiveClaudeProfileId(id)
         }
-        if updated.codexCredentialsJSON != nil {
+        if codexLoginApplied {
             activeCodexProfileId = id
             profileStore.saveActiveCodexProfileId(id)
         }
@@ -348,7 +383,8 @@ class ProfileManager: ObservableObject {
         switchingSemaphore = false
         isSwitchingProfile = false
 
-        LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
+        LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)\(deadLoginSkipped ? " (dead provider login NOT applied)" : "")")
+        return !deadLoginSkipped
     }
 
     // MARK: - Provider Ownership

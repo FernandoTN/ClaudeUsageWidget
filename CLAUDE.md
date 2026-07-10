@@ -134,9 +134,17 @@ tokens first when they expire within 24h (`ensureFreshCredentials(freshFor:)`) s
 CLI is never handed a nearly-expired token whose refresh token may have rotated away;
 a 4xx from the token endpoint means the stored refresh token is revoked (e.g. by
 `codex logout`) — unrecoverable app-side, so the user gets one notification telling
-them to `codex login` + re-sync. Syncing INTO a profile claims the provider-active
-pointer (`claimActiveCodexOwnership` / `claimActiveClaudeOwnership`), and the launch
+them to `codex login` + re-sync (same pattern for dead Claude logins → `/login`).
+Syncing INTO a profile claims the provider-active pointer
+(`claimActiveCodexOwnership` / `claimActiveClaudeOwnership`), and the launch
 repair re-derives the Codex owner from auth.json even when a pointer is already set.
+
+**Dead-login gate**: `activateProfile` NEVER applies credentials that are still
+expired after the pre-apply refresh (both providers). Writing a dead login over the
+shared CLI login bricks every running session ("login expired. Please run /login"
+in Claude Code — a real incident). A gated switch keeps the outgoing login and the
+provider-active pointer in place, notifies once, and returns false so the
+auto-switch tries the next ranked candidate instead of no-op'ing.
 
 **Two accounts are active at any time** — one Claude and one Codex.
 `ProfileManager.activeClaudeProfileId` tracks who owns the Claude Code CLI Keychain

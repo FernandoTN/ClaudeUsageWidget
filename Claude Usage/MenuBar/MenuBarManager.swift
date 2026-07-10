@@ -1181,25 +1181,29 @@ class MenuBarManager: NSObject, ObservableObject {
         // Mark as triggered
         autoSwitchedProfileIds.insert(profileId)
 
-        // Find the next available profile
-        guard let nextProfile = findNextAvailableProfile(after: currentProfile) else {
-            LoggingService.shared.log("AutoSwitch: All profiles at 100% or unavailable, staying on '\(currentProfile.name)'")
-            return
-        }
-
-        LoggingService.shared.log("AutoSwitch: Switching from '\(currentProfile.name)' to '\(nextProfile.name)'")
-
-        // Activate the next profile
+        // Try candidates in ranking order. A candidate whose stored login turns out
+        // to be dead is NOT applied by activateProfile (it returns false and the
+        // shared login stays on the outgoing account) — move on to the next one
+        // instead of silently staying on an exhausted account.
         let fromName = currentProfile.name
-        let toName = nextProfile.name
         Task {
-            await profileManager.activateProfile(nextProfile.id)
+            var excluded: Set<UUID> = []
+            while let nextProfile = self.findNextAvailableProfile(after: currentProfile, excluding: excluded) {
+                LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)'")
 
-            // Send notification
-            NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: toName)
+                if await self.profileManager.activateProfile(nextProfile.id) {
+                    // Send notification
+                    NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextProfile.name)
 
-            // Post notification for UI reactivity
-            NotificationCenter.default.post(name: .autoSwitchProfileTriggered, object: nil)
+                    // Post notification for UI reactivity
+                    NotificationCenter.default.post(name: .autoSwitchProfileTriggered, object: nil)
+                    return
+                }
+
+                excluded.insert(nextProfile.id)
+                LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
+            }
+            LoggingService.shared.log("AutoSwitch: All profiles at 100% or unavailable, staying on '\(fromName)'")
         }
     }
 
@@ -1213,12 +1217,13 @@ class MenuBarManager: NSObject, ObservableObject {
     /// it still has session, all-models weekly AND Fable weekly headroom; otherwise
     /// the next-soonest weekly reset is tried. Claude CLI accounts without a paid
     /// subscription are skipped.
-    private func findNextAvailableProfile(after currentProfile: Profile) -> Profile? {
+    private func findNextAvailableProfile(after currentProfile: Profile, excluding: Set<UUID> = []) -> Profile? {
         let now = Date()
         let switchingCodex = currentProfile.isCodexOnlyProfile
 
         let candidates = profileManager.profiles.filter { candidate in
-            guard candidate.id != currentProfile.id, candidate.hasUsageCredentials else { return false }
+            guard candidate.id != currentProfile.id, candidate.hasUsageCredentials,
+                  !excluding.contains(candidate.id) else { return false }
 
             // Same-provider rule: never cross between Claude and Codex accounts
             guard candidate.isCodexOnlyProfile == switchingCodex else { return false }

@@ -319,10 +319,16 @@ class CodexUsageService {
     /// re-sync. Tell the user once instead of failing silently on every fetch.
     private func notifyReloginNeededIfRevoked(_ error: Error, profileId: UUID) {
         guard case CodexError.tokenRefreshFailed(let status) = error,
-              status == 400 || status == 401 || status == 403,
-              !reloginNotifiedProfiles.contains(profileId) else {
+              status == 400 || status == 401 || status == 403 else {
             return
         }
+        notifyReloginNeeded(for: profileId)
+    }
+
+    /// Tells the user (once) that a profile's saved Codex login is dead. Also called
+    /// by the activation gate that refuses to hand the CLI a dead login.
+    func notifyReloginNeeded(for profileId: UUID) {
+        guard !reloginNotifiedProfiles.contains(profileId) else { return }
         reloginNotifiedProfiles.insert(profileId)
         let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Codex"
         NotificationManager.shared.sendCodexReloginNotification(profileName: name)
