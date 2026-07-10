@@ -538,8 +538,11 @@ class ClaudeCodeSyncService {
     /// Any update is persisted to the profile store; when `syncToSystem` is set, an
     /// OAuth-refreshed token is also written back to the system Keychain +
     /// credentials file so the CLI never holds a consumed refresh token.
+    /// `freshFor` is how long the access token must remain valid before a refresh is
+    /// attempted (default 2 minutes; the auto-switch preflight passes a full hour to
+    /// force-validate a candidate's refresh token ahead of the switch).
     /// Returns true if the stored credentials changed (callers should reload profiles).
-    func ensureFreshCredentials(for profileId: UUID, adoptSystemKeychain: Bool, syncToSystem: Bool) async -> Bool {
+    func ensureFreshCredentials(for profileId: UUID, adoptSystemKeychain: Bool, syncToSystem: Bool, freshFor: TimeInterval = 120) async -> Bool {
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
               var workingJSON = profile.cliCredentialsJSON else {
             return false
@@ -558,7 +561,7 @@ class ClaudeCodeSyncService {
 
         var didOAuthRefresh = false
         let expiry = extractTokenExpiry(from: workingJSON) ?? .distantPast
-        if expiry < Date().addingTimeInterval(120), extractRefreshToken(from: workingJSON) != nil {
+        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: workingJSON) != nil {
             do {
                 workingJSON = try await refreshOAuthToken(credentialsJSON: workingJSON)
                 changed = true

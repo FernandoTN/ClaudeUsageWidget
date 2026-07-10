@@ -146,6 +146,14 @@ in Claude Code — a real incident). A gated switch keeps the outgoing login and
 provider-active pointer in place, notifies once, and returns false so the
 auto-switch tries the next ranked candidate instead of no-op'ing.
 
+**Candidate preflight**: as a provider-active account crosses 25/50/75/90% of its
+session window, `MenuBarManager.preflightCandidates` validates the auto-switch's
+predicted target in the background — refreshing a stale token early (proving the
+refresh token is alive, banking a fresh access token) and notifying about dead ones
+while there is still headroom to `/login` + re-sync. It never refreshes a candidate
+that already owns its provider's shared login (that would rotate the family out
+from under the CLI); milestones re-arm when usage falls back below 25%.
+
 **Two accounts are active at any time** — one Claude and one Codex.
 `ProfileManager.activeClaudeProfileId` tracks who owns the Claude Code CLI Keychain
 login and `activeCodexProfileId` who owns auth.json; `activeProfile` is only the
