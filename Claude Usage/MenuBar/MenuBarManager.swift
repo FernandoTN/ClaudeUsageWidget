@@ -833,6 +833,14 @@ class MenuBarManager: NSObject, ObservableObject {
 
             // Fetch usage for each selected profile
             for var profile in selectedProfiles {
+                // Space the requests out: api.anthropic.com rate-limits bursts, and
+                // six back-to-back oauth/usage GETs got the tail profiles 429'd on
+                // 7 of 10 sweeps (their usage went stale for minutes at a time).
+                // ~2s apart keeps the whole sweep well under the 30s interval.
+                if profile.id != selectedProfiles.first?.id {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+
                 // Self-heal a stale CLI OAuth token before fetching
                 await self.ensureFreshCLICredentialsIfNeeded(for: profile)
                 if let updated = self.profileManager.profiles.first(where: { $0.id == profile.id }) {
