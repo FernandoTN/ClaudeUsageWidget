@@ -149,6 +149,13 @@ applies the same policy (soonest weekly reset + headroom + per-profile toggle) t
 BOTH groups independently and never crosses providers; in multi-profile mode both
 provider-active accounts are checked after each refresh sweep.
 
+The multi-profile menu bar mirrors that grouping: Codex items sit together at the
+far LEFT, Claude items to their right, and within each group the account whose
+weekly limit resets soonest is rightmost (`StatusBarUIManager.
+multiProfileCreationOrder` — status items are created right-to-left and cannot be
+moved, so the group is torn down and recreated when fresh usage reshuffles the
+ranking).
+
 ## Layout
 
 `README.md` has the directory tree. Key areas:

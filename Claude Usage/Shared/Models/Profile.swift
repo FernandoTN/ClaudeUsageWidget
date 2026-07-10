@@ -217,6 +217,19 @@ struct Profile: Codable, Identifiable, Equatable {
     var carriesCodexAccount: Bool {
         hasCodexAccount || codexEmail != nil
     }
+
+    /// The profile's next weekly reset boundary. Cached usage may be days old
+    /// (only refreshed profiles update), so a stored reset already in the past
+    /// means that account's week has rolled over — project it forward week by
+    /// week to its next boundary. No cached usage sorts last (.distantFuture).
+    /// Shared by the auto-switch ranking and the menu bar ordering.
+    func nextWeeklyReset(after now: Date) -> Date {
+        guard var reset = claudeUsage?.weeklyResetTime else { return .distantFuture }
+        while reset < now {
+            reset = reset.addingTimeInterval(7 * 24 * 3600)
+        }
+        return reset
+    }
 }
 
 // MARK: - ProfileCredentials (for compatibility)

@@ -1244,7 +1244,7 @@ class MenuBarManager: NSObject, ObservableObject {
         // Soonest weekly reset first. Profiles with no cached usage sort last (their
         // reset time is unknown, so they serve as the fallback).
         let ranked = candidates.sorted {
-            nextWeeklyReset(for: $0, now: now) < nextWeeklyReset(for: $1, now: now)
+            $0.nextWeeklyReset(after: now) < $1.nextWeeklyReset(after: now)
         }
 
         for candidate in ranked {
@@ -1256,18 +1256,6 @@ class MenuBarManager: NSObject, ObservableObject {
             LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
         }
         return nil
-    }
-
-    /// The candidate's next weekly reset. Cached usage may be days old (only the
-    /// active profile refreshes in single-profile mode), so a stored reset already
-    /// in the past means that account's week has rolled over — project it forward
-    /// week by week to its next boundary.
-    private func nextWeeklyReset(for profile: Profile, now: Date) -> Date {
-        guard var reset = profile.claudeUsage?.weeklyResetTime else { return .distantFuture }
-        while reset < now {
-            reset = reset.addingTimeInterval(7 * 24 * 3600)
-        }
-        return reset
     }
 
     /// True while the candidate still has 5-hour session capacity. A profile with no

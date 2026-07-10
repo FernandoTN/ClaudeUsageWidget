@@ -16,6 +16,14 @@ final class StatusBarUIManager {
     // Dictionary to hold status items keyed by profile ID (multi-profile mode)
     private var multiProfileStatusItems: [UUID: NSStatusItem] = [:]
 
+    // The creation order the multi-profile items were built with, plus the
+    // target/action they were wired to — kept so the group can be rebuilt in
+    // place when the weekly-reset ranking reshuffles the desired order
+    // (NSStatusItems cannot be moved, only recreated).
+    private var multiProfileOrder: [UUID] = []
+    private weak var multiProfileTarget: AnyObject?
+    private var multiProfileAction: Selector?
+
     // Current display mode
     private var isMultiProfileMode: Bool = false
 
@@ -157,6 +165,12 @@ final class StatusBarUIManager {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         multiProfileStatusItems.removeAll()
+        multiProfileOrder.removeAll()
+
+        // Deallocated buttons can leave ObjectIdentifier keys that a NEW button
+        // may reuse (same address) — a stale cache hit would skip drawing its
+        // icon after a rebuild, so drop the cache with the items.
+        lastImageData.removeAll()
 
         isMultiProfileMode = false
 
@@ -165,12 +179,36 @@ final class StatusBarUIManager {
 
     // MARK: - Multi-Profile Mode
 
+    /// Creation order for the multi-profile status items. Each new item is
+    /// inserted to the LEFT of the app's existing items, so creation order maps
+    /// right-to-left on screen. Desired layout: all Codex accounts grouped at
+    /// the far left, all Claude accounts to their right; within each group the
+    /// account whose weekly limit resets SOONEST sits rightmost — the same
+    /// "use it or lose it" ranking the auto-switch uses, so the rightmost
+    /// account of a group is always the one to burn first. Name breaks ties so
+    /// equal resets (e.g. two profiles with no cached usage) don't reshuffle.
+    private func multiProfileCreationOrder(for profiles: [Profile]) -> [Profile] {
+        let now = Date()
+        func ranked(_ group: [Profile]) -> [Profile] {
+            group.sorted {
+                let a = $0.nextWeeklyReset(after: now)
+                let b = $1.nextWeeklyReset(after: now)
+                return a != b ? a < b : $0.name < $1.name
+            }
+        }
+        let selected = profiles.filter { $0.isSelectedForDisplay }
+        return ranked(selected.filter { !$0.isCodexOnlyProfile })
+            + ranked(selected.filter { $0.isCodexOnlyProfile })
+    }
+
     /// Sets up status bar for multi-profile display mode
     func setupMultiProfile(profiles: [Profile], target: AnyObject, action: Selector) {
         // Clean up existing items
         cleanup()
 
         isMultiProfileMode = true
+        multiProfileTarget = target
+        multiProfileAction = action
 
         // Filter to only profiles selected for display
         let selectedProfiles = profiles.filter { $0.isSelectedForDisplay }
@@ -189,12 +227,8 @@ final class StatusBarUIManager {
             multiProfileStatusItems[UUID()] = statusItem
             LoggingService.shared.logUIEvent("Multi-profile: No profiles selected, showing default logo")
         } else {
-            // Each new status item is inserted to the LEFT of the app's existing
-            // items, so the last-created group ends up leftmost. Create Claude
-            // profiles first and Codex profiles last so all Codex accounts sit
-            // together on the far left, separated from the Claude accounts.
-            let orderedProfiles = selectedProfiles.filter { !$0.isCodexOnlyProfile }
-                + selectedProfiles.filter { $0.isCodexOnlyProfile }
+            let orderedProfiles = multiProfileCreationOrder(for: profiles)
+            multiProfileOrder = orderedProfiles.map(\.id)
 
             // Create one status item per selected profile
             for profile in orderedProfiles {
@@ -219,6 +253,16 @@ final class StatusBarUIManager {
     /// Updates all multi-profile status items
     func updateMultiProfileButtons(profiles: [Profile], config: MultiProfileDisplayConfig) {
         guard isMultiProfileMode else { return }
+
+        // Fresh usage may have reshuffled the weekly-reset ranking (or changed the
+        // selected set). Status items cannot be reordered in place, so rebuild the
+        // group when the desired order differs — rare, so the flicker is acceptable.
+        let desiredOrder = multiProfileCreationOrder(for: profiles).map(\.id)
+        if desiredOrder != multiProfileOrder,
+           let target = multiProfileTarget, let action = multiProfileAction {
+            LoggingService.shared.logUIEvent("Multi-profile: weekly-reset order changed, rebuilding status items")
+            setupMultiProfile(profiles: profiles, target: target, action: action)
+        }
 
         for profile in profiles where profile.isSelectedForDisplay {
             guard let statusItem = multiProfileStatusItems[profile.id],
