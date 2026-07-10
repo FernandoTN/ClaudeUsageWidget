@@ -189,10 +189,20 @@ final class StatusBarUIManager {
     /// equal resets (e.g. two profiles with no cached usage) don't reshuffle.
     private func multiProfileCreationOrder(for profiles: [Profile]) -> [Profile] {
         let now = Date()
+        // The usage API reports the SAME weekly boundary with ±1s jitter between
+        // fetches (22:59:59.8 one sweep, 23:00:00.1 the next), and two accounts can
+        // share a boundary. Quantize the ranking key to the minute so jitter can't
+        // flip the order — every flip tears down and rebuilds the whole status-item
+        // group, which the user sees as the menu bar going dark.
+        func rank(_ profile: Profile) -> Date {
+            let reset = profile.nextWeeklyReset(after: now)
+            guard reset != .distantFuture else { return reset }
+            return Date(timeIntervalSinceReferenceDate: (reset.timeIntervalSinceReferenceDate / 60).rounded() * 60)
+        }
         func ranked(_ group: [Profile]) -> [Profile] {
             group.sorted {
-                let a = $0.nextWeeklyReset(after: now)
-                let b = $1.nextWeeklyReset(after: now)
+                let a = rank($0)
+                let b = rank($1)
                 return a != b ? a < b : $0.name < $1.name
             }
         }
@@ -262,6 +272,16 @@ final class StatusBarUIManager {
            let target = multiProfileTarget, let action = multiProfileAction {
             LoggingService.shared.logUIEvent("Multi-profile: weekly-reset order changed, rebuilding status items")
             setupMultiProfile(profiles: profiles, target: target, action: action)
+
+            // Buttons created microseconds ago still report a provisional
+            // effectiveAppearance (usually light) — the label color bakes into the
+            // image, so painting now can leave BLACK labels on a dark menu bar
+            // until the next sweep. Repaint on the next runloop, when AppKit has
+            // resolved the real menu-bar appearance (the order is now recorded, so
+            // this cannot recurse into another rebuild).
+            DispatchQueue.main.async { [weak self] in
+                self?.updateMultiProfileButtons(profiles: profiles, config: config)
+            }
         }
 
         for profile in profiles where profile.isSelectedForDisplay {

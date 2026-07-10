@@ -324,8 +324,13 @@ class MenuBarManager: NSObject, ObservableObject {
         // 3. Update menu bar based on current display mode
         // IMPORTANT: In multi-profile mode, we update all icons, not just switch config
         if profileManager.displayMode == .multi {
-            // Multi-profile mode - refresh all profile icons
-            setupMultiProfileMode()
+            // Repaint the existing items instead of tearing the group down: a
+            // profile switch changes no item set, and updateMultiProfileButtons
+            // rebuilds by itself in the rare case the ranking changed. The old
+            // setupMultiProfileMode() here destroyed and recreated all status
+            // items on EVERY switch (visible flicker) and kicked off a second
+            // concurrent refresh sweep on top of step 5's.
+            updateAllStatusBarIcons()
         } else {
             // Single profile mode - update menu bar configuration
             updateMenuBarDisplay(with: profile.iconConfig)
@@ -793,6 +798,16 @@ class MenuBarManager: NSObject, ObservableObject {
 
     /// Refreshes usage data for all profiles selected for multi-profile display
     private func refreshAllSelectedProfiles() {
+        // Reentrancy guard: a sweep does per-profile Keychain healing plus one
+        // network fetch per profile, so it can outlast the 30s timer — and profile
+        // switches used to fire it twice. Overlapping sweeps interleave half-fresh
+        // usage into the end-of-sweep ranking check, causing menu bar rebuild
+        // ping-pong, and double every API call (the 429s in the log).
+        guard !isRefreshing else {
+            LoggingService.shared.log("MenuBarManager: refresh sweep already in progress, skipping")
+            return
+        }
+
         let selectedProfiles = profileManager.profiles.filter { $0.isSelectedForDisplay && $0.hasUsageCredentials }
 
         guard !selectedProfiles.isEmpty else {
@@ -803,8 +818,9 @@ class MenuBarManager: NSObject, ObservableObject {
 
         LoggingService.shared.log("MenuBarManager: Refreshing \(selectedProfiles.count) selected profiles for multi-profile mode")
 
+        isRefreshing = true
         Task {
-            self.isRefreshing = true
+            defer { self.isRefreshing = false }
 
             // Fetch Claude status (same as single profile mode)
             do {
@@ -865,7 +881,6 @@ class MenuBarManager: NSObject, ObservableObject {
             self.lastRefreshError = nil
             self.hasCredentialError = false
             self.lastSuccessfulRefreshTime = Date()
-            self.isRefreshing = false
 
             // Check auto-switch for each provider's active account (both are "in
             // use" at any time: the Claude account the CLI is logged into and the

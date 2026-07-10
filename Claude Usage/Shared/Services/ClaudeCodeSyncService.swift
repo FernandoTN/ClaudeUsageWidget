@@ -543,6 +543,15 @@ class ClaudeCodeSyncService {
     /// force-validate a candidate's refresh token ahead of the switch).
     /// Returns true if the stored credentials changed (callers should reload profiles).
     func ensureFreshCredentials(for profileId: UUID, adoptSystemKeychain: Bool, syncToSystem: Bool, freshFor: TimeInterval = 120) async -> Bool {
+        // Per-profile mutex: the sweep, the milestone preflight and a profile
+        // activation can all try to heal the same profile concurrently. Two
+        // concurrent redemptions of the SAME refresh token make the loser 4xx —
+        // indistinguishable from a revoked token, spuriously flagging the account
+        // dead. Let the first caller do the work; the rest skip.
+        guard !refreshInFlight.contains(profileId) else { return false }
+        refreshInFlight.insert(profileId)
+        defer { refreshInFlight.remove(profileId) }
+
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
               var workingJSON = profile.cliCredentialsJSON else {
             return false
@@ -556,12 +565,17 @@ class ClaudeCodeSyncService {
            systemExpiry > (extractTokenExpiry(from: workingJSON) ?? .distantPast) {
             workingJSON = systemJSON
             changed = true
+            reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
             LoggingService.shared.log("ensureFreshCredentials: adopted fresher token from system Keychain (expires \(systemExpiry))")
         }
 
         var didOAuthRefresh = false
         let expiry = extractTokenExpiry(from: workingJSON) ?? .distantPast
-        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: workingJSON) != nil {
+        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: workingJSON) != nil,
+           // Back off dead logins: a revoked refresh token cannot heal itself, so
+           // don't redeem it again on every sweep (that was 120 failed calls/hour).
+           // The flag re-arms when fresh credentials arrive via re-sync/adoption.
+           !reloginNotifiedProfiles.contains(profileId) {
             do {
                 workingJSON = try await refreshOAuthToken(credentialsJSON: workingJSON)
                 changed = true
@@ -608,6 +622,9 @@ class ClaudeCodeSyncService {
     /// Profiles already alerted about a dead CLI login — one notification per dead
     /// login, re-armed when a refresh succeeds or the account is re-synced.
     private var reloginNotifiedProfiles: Set<UUID> = []
+
+    /// Profiles with a heal currently in flight (see ensureFreshCredentials).
+    private var refreshInFlight: Set<UUID> = []
 
     /// Tells the user (once) that a profile's saved Claude Code login is dead — its
     /// access token is expired and the refresh token revoked/consumed — so only a

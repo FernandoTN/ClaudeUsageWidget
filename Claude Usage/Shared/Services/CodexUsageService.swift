@@ -106,7 +106,22 @@ class CodexUsageService {
     /// WITHOUT the access token changing, so freshness comparisons must consult
     /// this in addition to the access-token expiry.
     func extractLastRefresh(from json: String) -> Date? {
-        guard let stamp = parse(json)?["last_refresh"] as? String else { return nil }
+        guard var stamp = parse(json)?["last_refresh"] as? String else { return nil }
+
+        // The codex CLI writes 6-digit fractional seconds ("…T17:52:21.319149Z");
+        // ISO8601DateFormatter's .withFractionalSeconds accepts EXACTLY 3 digits,
+        // so normalize the fraction to milliseconds or every CLI-written stamp
+        // parses as nil → .distantPast → rotations are never adopted.
+        if let dotIndex = stamp.firstIndex(of: ".") {
+            let fractionStart = stamp.index(after: dotIndex)
+            var fractionEnd = fractionStart
+            while fractionEnd < stamp.endIndex, stamp[fractionEnd].isNumber {
+                fractionEnd = stamp.index(after: fractionEnd)
+            }
+            let normalized = (stamp[fractionStart..<fractionEnd] + "000").prefix(3)
+            stamp.replaceSubrange(fractionStart..<fractionEnd, with: normalized)
+        }
+
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)
@@ -275,7 +290,16 @@ class CodexUsageService {
     /// pass 24h so the CLI is handed a token it won't have to refresh mid-session
     /// with a possibly-rotated-away refresh token.
     func ensureFreshCredentials(for profileId: UUID, freshFor: TimeInterval = 120) async -> Bool {
+        // Per-profile mutex — concurrent redemptions of the same refresh token make
+        // the loser 4xx, spuriously flagging the account dead (see the Claude twin).
+        guard !refreshInFlight.contains(profileId) else { return false }
+        refreshInFlight.insert(profileId)
+        defer { refreshInFlight.remove(profileId) }
+
         var changed = adoptAuthFileIfSameAccount(for: profileId)
+        if changed {
+            reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
+        }
 
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
               let currentJSON = profile.codexCredentialsJSON else {
@@ -283,7 +307,10 @@ class CodexUsageService {
         }
 
         let expiry = extractTokenExpiry(from: currentJSON) ?? .distantPast
-        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: currentJSON) != nil {
+        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: currentJSON) != nil,
+           // Back off dead logins: a revoked refresh token cannot heal itself —
+           // skip redemption until fresh credentials arrive via re-sync/adoption.
+           !reloginNotifiedProfiles.contains(profileId) {
             do {
                 let refreshed = try await refreshOAuthToken(credentialsJSON: currentJSON)
 
@@ -313,6 +340,9 @@ class CodexUsageService {
     /// Profiles already alerted about a revoked refresh token — one notification per
     /// dead login, re-armed when a refresh succeeds or the account is re-synced.
     private var reloginNotifiedProfiles: Set<UUID> = []
+
+    /// Profiles with a heal currently in flight (see ensureFreshCredentials).
+    private var refreshInFlight: Set<UUID> = []
 
     /// A 4xx from the token endpoint (invalid_grant & friends) means the stored
     /// refresh token is revoked — no retry can fix it, only `codex login` plus a

@@ -170,7 +170,15 @@ far LEFT, Claude items to their right, and within each group the account whose
 weekly limit resets soonest is rightmost (`StatusBarUIManager.
 multiProfileCreationOrder` — status items are created right-to-left and cannot be
 moved, so the group is torn down and recreated when fresh usage reshuffles the
-ranking).
+ranking). The ranking key is quantized to the MINUTE: the usage API reports the
+same weekly boundary with ±1s jitter across fetches, and two accounts sharing a
+boundary would otherwise flip order (= full rebuild = visible flicker) on every
+sweep. After a rebuild the icons are repainted on the next runloop — freshly
+created buttons report a provisional effectiveAppearance and would otherwise bake
+black labels into a dark menu bar. `refreshAllSelectedProfiles` has a reentrancy
+guard: sweeps can outlast the timer interval, and overlapping sweeps double API
+load (429s) and race token redemptions. Both services also hold a per-profile
+refresh mutex and back off dead (revoked) refresh tokens until re-sync.
 
 ## Layout
 
