@@ -821,18 +821,21 @@ class MenuBarManager: NSObject, ObservableObject {
             return
         }
 
-        // api.anthropic.com/api/oauth/usage sustains only ~3 requests per 30s
-        // window per IP — with 6 Claude profiles per sweep, the SAME tail three
-        // were 429'd on most sweeps and went minutes stale (measured over 3h).
-        // Fetch the provider-active/focused Claude profiles every sweep and
-        // round-robin TWO of the remaining ones, so every sweep stays under the
-        // cap and each background profile still refreshes every ~90s. Codex
-        // profiles hit a different host and are never throttled.
+        // api.anthropic.com/api/oauth/usage sustains only ~2 requests per 30s
+        // window per IP (3/sweep still drew one 429 per sweep in measurement) —
+        // with 6 Claude profiles per sweep, the SAME tail three were 429'd on
+        // most sweeps and went minutes stale. Fetch the provider-active/focused
+        // Claude profiles every sweep and round-robin the remaining ones with
+        // whatever budget is left, so each background profile still refreshes
+        // every ~2.5 minutes without tripping the limit. Codex profiles hit a
+        // different host and are never throttled.
         let priorityIds = Set([profileManager.activeProfile?.id, profileManager.activeClaudeProfileId].compactMap { $0 })
+        let priorityClaudeCount = allSelected.filter { !$0.isCodexOnlyProfile && priorityIds.contains($0.id) }.count
+        let rotationBudget = max(1, 2 - priorityClaudeCount)
         let backgroundClaude = allSelected.filter { !$0.isCodexOnlyProfile && !priorityIds.contains($0.id) }
         var rotating: [Profile] = []
         if !backgroundClaude.isEmpty {
-            for offset in 0..<min(2, backgroundClaude.count) {
+            for offset in 0..<min(rotationBudget, backgroundClaude.count) {
                 rotating.append(backgroundClaude[(claudeFetchCursor + offset) % backgroundClaude.count])
             }
             claudeFetchCursor = (claudeFetchCursor + rotating.count) % backgroundClaude.count
