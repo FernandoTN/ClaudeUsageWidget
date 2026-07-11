@@ -54,6 +54,11 @@ class MenuBarManager: NSObject, ObservableObject {
     // Track which profiles have already triggered auto-switch (prevents repeated firing)
     private var autoSwitchedProfileIds: Set<UUID> = []
 
+    /// Round-robin cursor over the non-active Claude profiles: the usage endpoint
+    /// sustains ~3 requests per 30s window, so each sweep fetches only two of them
+    /// (plus the provider-active/focused ones) instead of all six at once.
+    private var claudeFetchCursor: Int = 0
+
     // Observer for refresh interval changes
     private var refreshIntervalObserver: NSKeyValueObservation?
 
@@ -808,15 +813,36 @@ class MenuBarManager: NSObject, ObservableObject {
             return
         }
 
-        let selectedProfiles = profileManager.profiles.filter { $0.isSelectedForDisplay && $0.hasUsageCredentials }
+        let allSelected = profileManager.profiles.filter { $0.isSelectedForDisplay && $0.hasUsageCredentials }
 
-        guard !selectedProfiles.isEmpty else {
+        guard !allSelected.isEmpty else {
             LoggingService.shared.log("MenuBarManager: No selected profiles with usage credentials to refresh")
             updateAllStatusBarIcons()
             return
         }
 
-        LoggingService.shared.log("MenuBarManager: Refreshing \(selectedProfiles.count) selected profiles for multi-profile mode")
+        // api.anthropic.com/api/oauth/usage sustains only ~3 requests per 30s
+        // window per IP — with 6 Claude profiles per sweep, the SAME tail three
+        // were 429'd on most sweeps and went minutes stale (measured over 3h).
+        // Fetch the provider-active/focused Claude profiles every sweep and
+        // round-robin TWO of the remaining ones, so every sweep stays under the
+        // cap and each background profile still refreshes every ~90s. Codex
+        // profiles hit a different host and are never throttled.
+        let priorityIds = Set([profileManager.activeProfile?.id, profileManager.activeClaudeProfileId].compactMap { $0 })
+        let backgroundClaude = allSelected.filter { !$0.isCodexOnlyProfile && !priorityIds.contains($0.id) }
+        var rotating: [Profile] = []
+        if !backgroundClaude.isEmpty {
+            for offset in 0..<min(2, backgroundClaude.count) {
+                rotating.append(backgroundClaude[(claudeFetchCursor + offset) % backgroundClaude.count])
+            }
+            claudeFetchCursor = (claudeFetchCursor + rotating.count) % backgroundClaude.count
+        }
+        let rotatingIds = Set(rotating.map(\.id))
+        let selectedProfiles = allSelected.filter {
+            $0.isCodexOnlyProfile || priorityIds.contains($0.id) || rotatingIds.contains($0.id)
+        }
+
+        LoggingService.shared.log("MenuBarManager: Refreshing \(selectedProfiles.count) of \(allSelected.count) selected profiles for multi-profile mode")
 
         isRefreshing = true
         Task {
