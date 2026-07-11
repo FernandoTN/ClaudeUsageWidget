@@ -69,6 +69,11 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
   `cliCredentialsJSON`, so they are never serialized into the `profiles_v3` JSON.
 - `ProfileStore` keeps an in-memory credential cache. `loadProfiles()` reads the cache —
   **never the Keychain on the calling thread**. All Keychain writes go to `keychainQueue`.
+- `saveProfiles` uses **merge semantics**: a nil credential field never deletes anything.
+  Profiles loaded before the background cache hydration finished carry nil credentials,
+  and saving such a stale copy used to diff nil-vs-cached and enqueue Keychain deletions
+  (silent total credential loss on a slow Keychain). Intentional removal goes through
+  `ProfileStore.clearProfileCredential(_:key:)` — never through saving a nil field.
 - `KeychainService.makeUnrestrictedAccess` builds a permissive `SecAccess` (allow-all, no
   prompt) attached to every item it adds, so a changed code signature never triggers a
   modal SecurityAgent prompt.
