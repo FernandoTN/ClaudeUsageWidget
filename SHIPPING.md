@@ -2,17 +2,18 @@
 
 What a downstream user or maintainer must know before adopting this project. The user-facing story is in `README.md`; the engineering invariants are in `CLAUDE.md`.
 
-## Identity you may want to change
+## Identity
 
-The project ships with the original author's identifiers. Everything works as-is, but if you fork seriously you probably want your own:
+The app ships with neutral identifiers:
 
 | Setting | Value | Where |
 |---|---|---|
-| Bundle identifier | `com.fernandotn.ClaudeUsageWidget` | `project.pbxproj` (app + tests) |
-| App group id | `group.com.fernandotn.ClaudeUsageWidget.shared` | `Shared/Utilities/Constants.swift` (declared, currently unused for storage — the app uses standard UserDefaults) |
-| GitHub URL | `github.com/FernandoTN/ClaudeUsageWidget` | `README.md` |
+| Bundle identifier | `com.claudeusagewidget.app` (tests: `.tests`) | `project.pbxproj` |
+| GitHub URL | `github.com/FernandoTN/ClaudeUsageWidget` | `README.md` — the repo's public location; changes only if the repo is transferred |
 
-Changing the bundle identifier resets the app's UserDefaults domain: existing users lose their profiles' *settings* (credentials live in Keychain items keyed by profile UUID and by `com.claudewidget.*` service names, which do NOT depend on the bundle id — but the profile list JSON that points at them does). Don't change it casually on an installed base.
+Two **legacy** identifiers from the original author's builds remain in `Shared/Utilities/Constants.swift`, deliberately: they name historical storage locations that one-time migrations read FROM (`legacyBundleIdentifier` = the pre-rename UserDefaults domain, `legacyAppGroupIdentifier` = an ancient app-group suite). They are migration sources only — never write to them, and never "clean them up" while any pre-rename install might still upgrade. The `LICENSE` copyright line also keeps the original author's name (legal attribution).
+
+**If you change the bundle identifier again**: it IS the UserDefaults domain, so you must add another migration like `MigrationService.migrateLegacyBundleDefaultsIfNeeded()` (runs first thing at launch; copies the old domain's keys when the new domain has no `profiles_v3`). Credentials survive any rename: Keychain service names (`com.claudewidget.<key>-<profileUUID>`, `com.claudeusagetracker.*`) never derived from the bundle id.
 
 ## Signing model (deliberate)
 
