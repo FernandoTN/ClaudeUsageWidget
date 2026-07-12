@@ -233,13 +233,14 @@ class ProfileManager: ObservableObject {
            let outgoingId = activeClaudeProfileId ?? (activeProfile?.cliCredentialsJSON != nil ? activeProfile?.id : nil),
            outgoingId != id,
            profiles.first(where: { $0.id == outgoingId })?.cliCredentialsJSON != nil {
-            await runOffMainActor {
-                do {
-                    try ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: outgoingId)
-                    LoggingService.shared.log("✓ Re-synced outgoing Claude account before switching")
-                } catch {
-                    LoggingService.shared.logError("Failed to re-sync outgoing Claude account (non-fatal)", error: error)
-                }
+            do {
+                // Async + account-matched: the `security` read stays off-main inside,
+                // and the outgoing profile refuses a login known to be another
+                // account's (see adoptionAccountMatches).
+                try await ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: outgoingId)
+                LoggingService.shared.log("✓ Re-synced outgoing Claude account before switching")
+            } catch {
+                LoggingService.shared.logError("Failed to re-sync outgoing Claude account (non-fatal)", error: error)
             }
             profiles = profileStore.loadProfiles()
         }
@@ -266,8 +267,6 @@ class ProfileManager: ObservableObject {
         // Set when a provider login the profile carries could NOT be handed to the
         // CLI because the stored credentials are dead (expired + unrefreshable).
         var deadLoginSkipped = false
-        var claudeLoginApplied = false
-        var codexLoginApplied = false
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
@@ -309,7 +308,17 @@ class ProfileManager: ObservableObject {
                         LoggingService.shared.logError("Failed to apply CLI credentials (non-fatal)", error: error)
                     }
                 }
-                claudeLoginApplied = true
+                // Claim ownership IMMEDIATELY after the apply — the shared login
+                // just changed hands, and any await between the apply and the
+                // pointer update is a window where a concurrent sweep would adopt
+                // the NEW login into the OLD owner's profile (cross-account
+                // contamination — a real incident).
+                activeClaudeProfileId = id
+                profileStore.saveActiveClaudeProfileId(id)
+
+                // Learn/refresh the applied login's account identity in the
+                // background so future adoptions stay account-matched.
+                Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: id) }
             }
         } else {
             LoggingService.shared.log("⚠️ Profile '\(updatedProfile.name)' has no CLI credentials JSON")
@@ -352,7 +361,10 @@ class ProfileManager: ObservableObject {
                         LoggingService.shared.logError("Failed to apply Codex credentials (non-fatal)", error: error)
                     }
                 }
-                codexLoginApplied = true
+                // Same rule as the Claude side: pointer follows the apply with no
+                // awaits in between.
+                activeCodexProfileId = id
+                profileStore.saveActiveCodexProfileId(id)
             }
         }
 
@@ -368,17 +380,9 @@ class ProfileManager: ObservableObject {
         profileStore.saveActiveProfileId(id)
         profileStore.saveProfiles(profiles)
 
-        // Record the new owner of each provider's shared login — but ONLY for a
-        // login that was actually applied. A dead login that was gated above did
-        // not replace the shared login, so the outgoing account still owns it.
-        if claudeLoginApplied {
-            activeClaudeProfileId = id
-            profileStore.saveActiveClaudeProfileId(id)
-        }
-        if codexLoginApplied {
-            activeCodexProfileId = id
-            profileStore.saveActiveCodexProfileId(id)
-        }
+        // Provider pointers were claimed immediately after each successful apply
+        // (see above) — a gated dead login never claims, so the outgoing account
+        // keeps owning the shared login.
 
         switchingSemaphore = false
         isSwitchingProfile = false
@@ -726,6 +730,12 @@ class ProfileManager: ObservableObject {
         }
         profileStore.saveActiveClaudeProfileId(activeClaudeProfileId)
 
+        // Unlike auth.json for Codex, the Claude credentials JSON carries no
+        // account id — the shared login's TRUE owner is verified asynchronously
+        // against the identity endpoint (a mislabeled pointer once let the app
+        // bill days of sessions to the wrong account name).
+        repairClaudeOwnerFromSystemIdentity()
+
         // auth.json IS the codex CLI's current login: whenever its account matches a
         // profile, that profile owns the shared login — even if the persisted pointer
         // disagrees (a Sync into another profile used to leave the pointer behind, and
@@ -752,6 +762,70 @@ class ProfileManager: ObservableObject {
         profileStore.saveActiveCodexProfileId(activeCodexProfileId)
 
         LoggingService.shared.log("ProfileManager: active Claude=\(profiles.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none"), active Codex=\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")")
+    }
+
+    /// Verifies WHO the shared Claude Code login actually belongs to (via the
+    /// account identity endpoint) and repairs the bookkeeping to match:
+    /// - The pointer moves to the profile whose stamped account uuid — or, as a
+    ///   fallback, whose claude.ai organizationId — matches the live token's
+    ///   identity, even when the persisted pointer disagrees.
+    /// - Any OTHER profile holding the same access token is contaminated (it
+    ///   absorbed the owner's login through a pre-guard adoption); its CLI
+    ///   credential copy is cleared so it stops impersonating the owner. The
+    ///   token itself is never touched — running CLI sessions are unaffected.
+    private func repairClaudeOwnerFromSystemIdentity() {
+        Task {
+            let sync = ClaudeCodeSyncService.shared
+            guard let systemJSON = try? await sync.readSystemCredentialsOffMain(),
+                  let systemToken = sync.extractAccessToken(from: systemJSON),
+                  let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return }
+
+            var reloaded = profileStore.loadProfiles()
+            let owner = reloaded.first(where: { $0.claudeAccountUUID == identity.accountUUID })
+                ?? reloaded.first(where: {
+                    $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
+                        && $0.organizationId == identity.organizationUUID
+                })
+            guard let owner else { return }
+
+            if activeClaudeProfileId != owner.id {
+                LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
+                activeClaudeProfileId = owner.id
+                profileStore.saveActiveClaudeProfileId(owner.id)
+            }
+
+            var changed = false
+            if let index = reloaded.firstIndex(where: { $0.id == owner.id }),
+               reloaded[index].claudeAccountUUID != identity.accountUUID {
+                reloaded[index].claudeAccountUUID = identity.accountUUID
+                changed = true
+            }
+
+            // Contamination dedupe: clear byte-identical copies of the owner's
+            // token from every other profile (nil never deletes on save, so the
+            // explicit clear is the only removal path — by design).
+            for profile in reloaded where profile.id != owner.id {
+                guard let json = profile.cliCredentialsJSON,
+                      sync.extractAccessToken(from: json) == systemToken,
+                      let index = reloaded.firstIndex(where: { $0.id == profile.id }) else { continue }
+                profileStore.clearProfileCredential(profile.id, key: .cliCredentials)
+                reloaded[index].cliCredentialsJSON = nil
+                reloaded[index].hasCliAccount = false
+                reloaded[index].cliAccountSyncedAt = nil
+                reloaded[index].claudeAccountUUID = nil
+                changed = true
+                LoggingService.shared.log("ProfileManager: ⚠️ cleared '\(profile.name)' CLI credentials — they were a copy of '\(owner.name)'s login (cross-account contamination)")
+            }
+
+            if changed {
+                profileStore.saveProfiles(reloaded)
+                profiles = profileStore.loadProfiles()
+                if let activeId = activeProfile?.id,
+                   let updatedActive = profiles.first(where: { $0.id == activeId }) {
+                    activeProfile = updatedActive
+                }
+            }
+        }
     }
 
     /// If the user is logged into the codex CLI (~/.codex/auth.json exists) and no

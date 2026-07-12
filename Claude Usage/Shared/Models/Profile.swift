@@ -24,6 +24,12 @@ struct Profile: Codable, Identifiable, Equatable {
     // MARK: - CLI Account Sync Metadata
     var hasCliAccount: Bool
     var cliAccountSyncedAt: Date?
+    /// The Anthropic account uuid behind this profile's CLI OAuth login (from
+    /// api.anthropic.com/api/oauth/profile — the credentials JSON itself carries
+    /// no account id). Non-secret; persisted so Keychain adoption can be
+    /// account-matched like Codex's account_id check. Nil = identity not yet
+    /// learned (treat as no evidence, never as a mismatch).
+    var claudeAccountUUID: String?
 
     // MARK: - Codex Account (OpenAI Codex CLI)
     /// Full contents of the account's ~/.codex/auth.json — Keychain-only, never
@@ -80,6 +86,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case apiSessionKeyExpiry
         case hasCliAccount
         case cliAccountSyncedAt
+        case claudeAccountUUID
         case codexEmail
         case codexAccountSyncedAt
         case claudeUsage
@@ -107,6 +114,7 @@ struct Profile: Codable, Identifiable, Equatable {
         cliCredentialsJSON: String? = nil,
         hasCliAccount: Bool = false,
         cliAccountSyncedAt: Date? = nil,
+        claudeAccountUUID: String? = nil,
         codexCredentialsJSON: String? = nil,
         codexEmail: String? = nil,
         codexAccountSyncedAt: Date? = nil,
@@ -131,6 +139,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.cliCredentialsJSON = cliCredentialsJSON
         self.hasCliAccount = hasCliAccount
         self.cliAccountSyncedAt = cliAccountSyncedAt
+        self.claudeAccountUUID = claudeAccountUUID
         self.codexCredentialsJSON = codexCredentialsJSON
         self.codexEmail = codexEmail
         self.codexAccountSyncedAt = codexAccountSyncedAt

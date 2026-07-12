@@ -144,6 +144,19 @@ Syncing INTO a profile claims the provider-active pointer
 (`claimActiveCodexOwnership` / `claimActiveClaudeOwnership`), and the launch
 repair re-derives the Codex owner from auth.json even when a pointer is already set.
 
+**Account identity (Claude)**: the Claude credentials JSON carries NO account id, so
+Keychain adoption used to trust the provider-active pointer blindly — during a
+switch's suspension points a sweep could copy the incoming account's login into the
+outgoing profile (cross-account contamination; a real incident silently relabeled
+one account's Max login as another's free profile). Now
+`ClaudeCodeSyncService.fetchAccountIdentity` resolves a token's account uuid via
+`api.anthropic.com/api/oauth/profile` (cached per token); profiles carry a persisted
+`claudeAccountUUID` stamp, every adoption path is account-matched (Codex-style), the
+provider pointer is claimed immediately after each apply with no awaits in between,
+sweeps never run mid-switch, and a launch repair re-derives the true owner of the
+shared login from its live identity — clearing byte-identical contaminated copies
+from other profiles (never touching the token itself).
+
 **Dead-login gate**: `activateProfile` NEVER applies credentials that are still
 expired after the pre-apply refresh (both providers). Writing a dead login over the
 shared CLI login bricks every running session ("login expired. Please run /login"

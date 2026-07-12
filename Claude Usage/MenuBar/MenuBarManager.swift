@@ -739,6 +739,15 @@ private func observeCredentialChanges() {
             return
         }
 
+        // Never sweep mid-switch: activateProfile rewrites the shared logins and
+        // pointers across several suspension points, and a sweep's Keychain
+        // adoption interleaved into that window can copy the incoming account's
+        // login into the outgoing profile (cross-account contamination).
+        guard !profileManager.isSwitchingProfile else {
+            LoggingService.shared.log("MenuBarManager: profile switch in progress, skipping sweep")
+            return
+        }
+
         let allSelected = profileManager.profiles.filter { $0.isSelectedForDisplay && $0.hasUsageCredentials }
 
         guard !allSelected.isEmpty else {

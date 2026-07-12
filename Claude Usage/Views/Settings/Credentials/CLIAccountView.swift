@@ -276,6 +276,11 @@ struct CLIAccountView: View {
                     // login from here on.
                     profileManager.claimActiveClaudeOwnership(profileId)
 
+                    // Learn WHOSE login was just synced (force: an explicit re-sync
+                    // may bring a different account than before) so Keychain
+                    // adoption stays account-matched for this profile.
+                    Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: profileId, force: true) }
+
                     // Load account info
                     loadCLIAccountInfo()
 
