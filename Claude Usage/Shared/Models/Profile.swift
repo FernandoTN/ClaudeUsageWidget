@@ -30,6 +30,11 @@ struct Profile: Codable, Identifiable, Equatable {
     /// account-matched like Codex's account_id check. Nil = identity not yet
     /// learned (treat as no evidence, never as a mismatch).
     var claudeAccountUUID: String?
+    /// Email + org uuid of the same login — used to rewrite the CLI's cached
+    /// oauthAccount (~/.claude.json) on switches so /usage names the account the
+    /// token actually belongs to (the CLI only updates it on a manual /login).
+    var claudeAccountEmail: String?
+    var claudeOrganizationUUID: String?
 
     // MARK: - Codex Account (OpenAI Codex CLI)
     /// Full contents of the account's ~/.codex/auth.json — Keychain-only, never
@@ -87,6 +92,8 @@ struct Profile: Codable, Identifiable, Equatable {
         case hasCliAccount
         case cliAccountSyncedAt
         case claudeAccountUUID
+        case claudeAccountEmail
+        case claudeOrganizationUUID
         case codexEmail
         case codexAccountSyncedAt
         case claudeUsage
@@ -115,6 +122,8 @@ struct Profile: Codable, Identifiable, Equatable {
         hasCliAccount: Bool = false,
         cliAccountSyncedAt: Date? = nil,
         claudeAccountUUID: String? = nil,
+        claudeAccountEmail: String? = nil,
+        claudeOrganizationUUID: String? = nil,
         codexCredentialsJSON: String? = nil,
         codexEmail: String? = nil,
         codexAccountSyncedAt: Date? = nil,
@@ -140,6 +149,8 @@ struct Profile: Codable, Identifiable, Equatable {
         self.hasCliAccount = hasCliAccount
         self.cliAccountSyncedAt = cliAccountSyncedAt
         self.claudeAccountUUID = claudeAccountUUID
+        self.claudeAccountEmail = claudeAccountEmail
+        self.claudeOrganizationUUID = claudeOrganizationUUID
         self.codexCredentialsJSON = codexCredentialsJSON
         self.codexEmail = codexEmail
         self.codexAccountSyncedAt = codexAccountSyncedAt

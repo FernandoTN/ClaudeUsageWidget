@@ -796,25 +796,35 @@ class ProfileManager: ObservableObject {
 
             var changed = false
             if let index = reloaded.firstIndex(where: { $0.id == owner.id }),
-               reloaded[index].claudeAccountUUID != identity.accountUUID {
+               reloaded[index].claudeAccountUUID != identity.accountUUID
+                || reloaded[index].claudeAccountEmail != identity.email {
                 reloaded[index].claudeAccountUUID = identity.accountUUID
+                reloaded[index].claudeAccountEmail = identity.email.isEmpty ? nil : identity.email
+                reloaded[index].claudeOrganizationUUID = identity.organizationUUID.isEmpty ? nil : identity.organizationUUID
                 changed = true
             }
 
-            // Contamination dedupe: clear byte-identical copies of the owner's
-            // token from every other profile (nil never deletes on save, so the
-            // explicit clear is the only removal path — by design).
+            // Contamination dedupe: a profile OTHER than the owner holding the
+            // owner's account is a mislabeled duplicate — either a byte-identical
+            // copy of the live token, or a STALE same-account token absorbed
+            // earlier (its fetches then lose the per-account rate limit race to
+            // the owner's every sweep). Clear both kinds (nil never deletes on
+            // save, so the explicit clear is the only removal path — by design).
             for profile in reloaded where profile.id != owner.id {
                 guard let json = profile.cliCredentialsJSON,
-                      sync.extractAccessToken(from: json) == systemToken,
                       let index = reloaded.firstIndex(where: { $0.id == profile.id }) else { continue }
+                let sameToken = sync.extractAccessToken(from: json) == systemToken
+                let sameAccountStamp = profile.claudeAccountUUID == identity.accountUUID
+                guard sameToken || sameAccountStamp else { continue }
                 profileStore.clearProfileCredential(profile.id, key: .cliCredentials)
                 reloaded[index].cliCredentialsJSON = nil
                 reloaded[index].hasCliAccount = false
                 reloaded[index].cliAccountSyncedAt = nil
                 reloaded[index].claudeAccountUUID = nil
+                reloaded[index].claudeAccountEmail = nil
+                reloaded[index].claudeOrganizationUUID = nil
                 changed = true
-                LoggingService.shared.log("ProfileManager: ⚠️ cleared '\(profile.name)' CLI credentials — they were a copy of '\(owner.name)'s login (cross-account contamination)")
+                LoggingService.shared.log("ProfileManager: ⚠️ cleared '\(profile.name)' CLI credentials — \(sameToken ? "a copy of" : "a stale token from") '\(owner.name)'s account (cross-account contamination)")
             }
 
             if changed {
