@@ -1,31 +1,10 @@
 import Foundation
 
 extension Date {
-    /// Returns the next Monday at 12:59pm in the specified timezone
-    func nextMonday1259pm(in timezone: TimeZone = .current) -> Date {
-        var calendar = Calendar.current
-        calendar.timeZone = timezone
-
-        // Get the current date components
-        var components = calendar.dateComponents([.year, .month, .day, .weekday], from: self)
-
-        // Calculate days until next Monday (weekday 2)
-        let currentWeekday = components.weekday ?? 1
-        let daysUntilMonday = currentWeekday == 2 ? 7 : (9 - currentWeekday) % 7
-
-        // Create target date (next Monday)
-        guard let nextMonday = calendar.date(byAdding: .day, value: daysUntilMonday, to: self) else {
-            return self
-        }
-
-        // Set time to 12:59pm
-        components = calendar.dateComponents([.year, .month, .day], from: nextMonday)
-        components.hour = 12
-        components.minute = 59
-        components.second = 0
-
-        return calendar.date(from: components) ?? self
-    }
+    // nextMonday1259pm() was removed deliberately: weekly usage windows reset on
+    // per-account rolling boundaries, not Mondays. Guessing "next Monday" for a
+    // missing resets_at fabricated phantom soonest-resets that mis-ranked
+    // auto-switch candidates. Use ClaudeUsage.healMissingResetStamps instead.
 
     /// Returns a formatted time remaining string (e.g., "3h 45m" or "2 days")
     func timeRemainingString(from now: Date = Date()) -> String {

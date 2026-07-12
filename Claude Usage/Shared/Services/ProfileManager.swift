@@ -531,6 +531,11 @@ class ProfileManager: ObservableObject {
             return
         }
 
+        // Defense in depth: never persist a sentinel reset stamp. Fetch paths heal
+        // before display; this catches any save that skipped them (idempotent).
+        var usage = usage
+        usage.healMissingResetStamps(previous: profiles[index].claudeUsage)
+
         profiles[index].claudeUsage = usage
 
         // Update activeProfile reference if it's the same profile

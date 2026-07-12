@@ -661,9 +661,16 @@ class ClaudeAPIService {
         // Parse Claude's actual API response structure
 
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // A window that rolled over while the account was idle is reported
+            // with zero utilization and NO resets_at (there is no active window).
+            // Store the sentinel and let healMissingResetStamps carry the last
+            // known boundary forward — never invent one here (the old "next
+            // Monday 12:59pm" guess fabricated phantom soonest-resets that
+            // mis-ranked auto-switch candidates; real incident).
+
             // Extract session usage (five_hour)
             var sessionPercentage = 0.0
-            var sessionResetTime = Date().addingTimeInterval(5 * 3600)
+            var sessionResetTime = ClaudeUsage.unknownResetSentinel
             if let fiveHour = json["five_hour"] as? [String: Any] {
                 if let utilization = fiveHour["utilization"] {
                     sessionPercentage = parseUtilization(utilization)
@@ -675,7 +682,7 @@ class ClaudeAPIService {
 
             // Extract weekly usage (seven_day)
             var weeklyPercentage = 0.0
-            var weeklyResetTime = Date().nextMonday1259pm()
+            var weeklyResetTime = ClaudeUsage.unknownResetSentinel
             if let sevenDay = json["seven_day"] as? [String: Any] {
                 if let utilization = sevenDay["utilization"] {
                     weeklyPercentage = parseUtilization(utilization)
@@ -795,13 +802,16 @@ class ClaudeAPIService {
         let sessionUtilization = headerDouble("anthropic-ratelimit-unified-5h-utilization") ?? 0
         var sessionPercentage = sessionUtilization * 100.0
 
+        // Missing reset headers get the sentinel (see parseUsageResponse) — the
+        // caller's healMissingResetStamps carries the last known boundary forward.
         let sessionResetTimestamp = headerDouble("anthropic-ratelimit-unified-5h-reset") ?? 0
         let sessionResetTime = sessionResetTimestamp > 0
             ? Date(timeIntervalSince1970: sessionResetTimestamp)
-            : Date().addingTimeInterval(5 * 3600)
+            : ClaudeUsage.unknownResetSentinel
 
         // If the 5-hour window has already expired, the session has reset
-        if sessionResetTime < Date() {
+        // (an unknown boundary is not "expired" — don't zero on the sentinel)
+        if sessionResetTime != ClaudeUsage.unknownResetSentinel, sessionResetTime < Date() {
             sessionPercentage = 0.0
         }
 
@@ -812,7 +822,7 @@ class ClaudeAPIService {
         let weeklyResetTimestamp = headerDouble("anthropic-ratelimit-unified-7d-reset") ?? 0
         let weeklyResetTime = weeklyResetTimestamp > 0
             ? Date(timeIntervalSince1970: weeklyResetTimestamp)
-            : Date().nextMonday1259pm()
+            : ClaudeUsage.unknownResetSentinel
 
         // Per-model breakdowns not available in rate limit headers
         let weeklyLimit = Constants.weeklyLimit
