@@ -321,6 +321,9 @@ class CodexUsageService {
                     profiles[index].codexCredentialsJSON = refreshed
                     profiles[index].codexAccountSyncedAt = Date()
                     ProfileStore.shared.saveProfiles(profiles)
+                    // The redemption CONSUMED the old refresh token — make sure the
+                    // rotated one is on disk before anything else can kill the process.
+                    await ProfileStore.shared.flushKeychainWrites()
                 }
 
                 // Keep the CLI working: its refresh token was just rotated away.
@@ -342,6 +345,22 @@ class CodexUsageService {
     /// Profiles already alerted about a revoked refresh token — one notification per
     /// dead login, re-armed when a refresh succeeds or the account is re-synced.
     private var reloginNotifiedProfiles: Set<UUID> = []
+
+    /// True when this profile's stored login has been flagged dead (revoked refresh
+    /// token) and the user was told to `codex login` + re-sync. Lets the UI show
+    /// "login expired" instead of "renews automatically" for a token that will
+    /// never renew.
+    func isLoginMarkedDead(_ profileId: UUID) -> Bool {
+        reloginNotifiedProfiles.contains(profileId)
+    }
+
+    /// Per-profile cooldown for post-401 FORCED refreshes. If the usage endpoint
+    /// keeps rejecting a token for a non-token reason (entitlement, account state)
+    /// while the OAuth refresh itself succeeds, retrying the forced refresh every
+    /// 30s sweep would rotate the refresh-token family under the running codex CLI
+    /// once per sweep. One forced attempt per window; cleared by a 200.
+    private var forcedRefreshCooldownUntil: [UUID: Date] = [:]
+    private static let forcedRefreshCooldown: TimeInterval = 15 * 60
 
     /// Profiles with a heal currently in flight (see ensureFreshCredentials).
     private var refreshInFlight: Set<UUID> = []
@@ -412,12 +431,17 @@ class CodexUsageService {
             // invalidated externally (a `codex login` elsewhere rotates the family) —
             // the expiry-based self-heal above never fires for it. Force one refresh
             // and retry; a revoked refresh token 4xxes inside ensureFreshCredentials
-            // and takes the existing re-login notification path.
+            // and takes the existing re-login notification path. Cooldown-gated: a
+            // usage endpoint that keeps 401'ing for non-token reasons must not
+            // rotate the refresh-token family on every 30s sweep.
             if httpResponse.statusCode == 401 || httpResponse.statusCode == 403,
                !isRetryAfterRefresh,
-               await ensureFreshCredentials(for: profileId, freshFor: Self.forceRefreshWindow) {
-                LoggingService.shared.log("Codex: usage fetch got \(httpResponse.statusCode) on an unexpired token — refreshed, retrying once")
-                return try await fetchUsage(for: profileId, isRetryAfterRefresh: true)
+               Date() >= (forcedRefreshCooldownUntil[profileId] ?? .distantPast) {
+                forcedRefreshCooldownUntil[profileId] = Date().addingTimeInterval(Self.forcedRefreshCooldown)
+                if await ensureFreshCredentials(for: profileId, freshFor: Self.forceRefreshWindow) {
+                    LoggingService.shared.log("Codex: usage fetch got \(httpResponse.statusCode) on an unexpired token — refreshed, retrying once")
+                    return try await fetchUsage(for: profileId, isRetryAfterRefresh: true)
+                }
             }
             throw AppError(
                 code: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
@@ -428,6 +452,7 @@ class CodexUsageService {
             )
         }
 
+        forcedRefreshCooldownUntil.removeValue(forKey: profileId)
         return try parseUsageResponse(data)
     }
 

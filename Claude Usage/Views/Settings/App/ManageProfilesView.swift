@@ -495,6 +495,7 @@ struct ProfileRow: View {
 
     private var claudeTokenStatus: StoredTokenStatus? {
         guard let json = profile.cliCredentialsJSON else { return nil }
+        if ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id) { return .expired }
         return StoredTokenStatus(
             expiry: ClaudeCodeSyncService.shared.extractTokenExpiry(from: json),
             hasRefreshToken: ClaudeCodeSyncService.shared.extractRefreshToken(from: json) != nil
@@ -503,6 +504,7 @@ struct ProfileRow: View {
 
     private var codexTokenStatus: StoredTokenStatus? {
         guard let json = profile.codexCredentialsJSON else { return nil }
+        if CodexUsageService.shared.isLoginMarkedDead(profile.id) { return .expired }
         return StoredTokenStatus(
             expiry: CodexUsageService.shared.extractTokenExpiry(from: json),
             hasRefreshToken: CodexUsageService.shared.extractRefreshToken(from: json) != nil

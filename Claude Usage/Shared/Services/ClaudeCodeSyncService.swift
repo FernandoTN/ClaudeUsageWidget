@@ -618,6 +618,11 @@ class ClaudeCodeSyncService {
             profiles[index].cliCredentialsJSON = workingJSON
             profiles[index].cliAccountSyncedAt = Date()
             ProfileStore.shared.saveProfiles(profiles)
+            if didOAuthRefresh {
+                // The redemption CONSUMED the old refresh token — make sure the
+                // rotated one is on disk before anything else can kill the process.
+                await ProfileStore.shared.flushKeychainWrites()
+            }
         }
 
         if syncToSystem && didOAuthRefresh {
@@ -757,6 +762,14 @@ class ClaudeCodeSyncService {
     /// Profiles already alerted about a dead CLI login — one notification per dead
     /// login, re-armed when a refresh succeeds or the account is re-synced.
     private var reloginNotifiedProfiles: Set<UUID> = []
+
+    /// True when this profile's stored CLI login has been flagged dead (revoked
+    /// refresh token) and the user was told to `/login` + re-sync. Lets the UI
+    /// show "login expired" instead of "renews automatically" for a token that
+    /// will never renew.
+    func isLoginMarkedDead(_ profileId: UUID) -> Bool {
+        reloginNotifiedProfiles.contains(profileId)
+    }
 
     /// Profiles with a heal currently in flight (see ensureFreshCredentials).
     private var refreshInFlight: Set<UUID> = []

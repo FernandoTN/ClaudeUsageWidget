@@ -89,16 +89,14 @@ struct PopoverContentView: View {
     }
 
     /// Name of the VIEWED profile if its last fetch hit a credential error, nil
-    /// otherwise. In multi-profile mode each icon's popover only warns about its
-    /// own account — one dead login must not banner every popover.
+    /// otherwise. Keyed on per-profile membership in BOTH display modes — one
+    /// dead login must not banner every popover, and a lingering global flag
+    /// must not accuse whichever profile happens to be focused now.
     private var credentialErrorProfileName: String? {
-        let viewedId = manager.clickedProfileId ?? profileManager.activeProfile?.id
-        if profileManager.displayMode == .multi {
-            guard let id = viewedId, manager.credentialErrorProfileIds.contains(id) else { return nil }
-            return profileManager.profiles.first { $0.id == id }?.name
-        }
-        guard manager.hasCredentialError else { return nil }
-        return profileManager.activeProfile?.name
+        let viewedId = (profileManager.displayMode == .multi ? manager.clickedProfileId : nil)
+            ?? profileManager.activeProfile?.id
+        guard let id = viewedId, manager.credentialErrorProfileIds.contains(id) else { return nil }
+        return profileManager.profiles.first { $0.id == id }?.name
     }
 
     var body: some View {
