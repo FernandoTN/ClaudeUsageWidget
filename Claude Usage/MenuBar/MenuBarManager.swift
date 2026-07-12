@@ -1199,7 +1199,7 @@ private func observeCredentialChanges() {
 
         // If every quota window regained headroom (session reset, weekly rollover),
         // re-arm the trigger for this profile.
-        if !isQuotaExhausted(usage) {
+        if !Self.isQuotaExhausted(usage) {
             autoSwitchedProfileIds.remove(profileId)
             return
         }
@@ -1241,8 +1241,9 @@ private func observeCredentialChanges() {
     /// session, the all-models weekly, or the Fable weekly. Mirrors the candidate
     /// headroom checks below — an account the auto-switch would never pick as a
     /// target should not be kept as the active one either (a weekly limit can run
-    /// out while the session window sits far below 100%).
-    private func isQuotaExhausted(_ usage: ClaudeUsage, now: Date = Date()) -> Bool {
+    /// out while the session window sits far below 100%). Static + now-injectable
+    /// so the mirror is unit-testable.
+    nonisolated static func isQuotaExhausted(_ usage: ClaudeUsage, now: Date = Date()) -> Bool {
         if usage.effectiveSessionPercentage >= 100.0 { return true }
         if usage.weeklyResetTime >= now && usage.weeklyPercentage >= 100.0 { return true }
         if let fablePercentage = usage.fableWeeklyPercentage, fablePercentage >= 100.0,

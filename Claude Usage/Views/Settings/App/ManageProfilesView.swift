@@ -402,12 +402,14 @@ struct ProfileRow: View {
 
                 // Login health per provider, derived from the cached credential JSON
                 // (in-memory only — no Keychain read on the main thread)
-                if claudeTokenStatus != nil || codexTokenStatus != nil {
+                let claudeStatus = claudeTokenStatus
+                let codexStatus = codexTokenStatus
+                if claudeStatus != nil || codexStatus != nil {
                     HStack(spacing: 6) {
-                        if let status = claudeTokenStatus {
+                        if let status = claudeStatus {
                             CredentialStatusBadge(provider: "Claude", status: status)
                         }
-                        if let status = codexTokenStatus {
+                        if let status = codexStatus {
                             CredentialStatusBadge(provider: "Codex", status: status)
                         }
                     }
@@ -565,10 +567,16 @@ enum StoredTokenStatus {
         }
     }
 
+    private static let relativeFormatter = RelativeDateTimeFormatter()
+
     var color: Color {
         switch self {
         case .valid: return .green
-        case .autoRenews: return .orange
+        // Neutral, not a warning: an expired access token with a live refresh
+        // token is the NORMAL resting state of every inactive profile (access
+        // tokens are short-lived) — orange here would paint a healthy 5-account
+        // list as four problems. Orange/red are reserved for real trouble.
+        case .autoRenews: return .secondary
         case .expired: return .red
         }
     }
@@ -576,7 +584,7 @@ enum StoredTokenStatus {
     var text: String {
         switch self {
         case .valid(let until):
-            let relative = RelativeDateTimeFormatter().localizedString(for: until, relativeTo: Date())
+            let relative = Self.relativeFormatter.localizedString(for: until, relativeTo: Date())
             return String(format: "profiles.token_valid".localized, relative)
         case .autoRenews:
             return "profiles.token_auto_renews".localized
