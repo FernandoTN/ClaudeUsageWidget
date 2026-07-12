@@ -34,6 +34,25 @@ class ProfileStore {
         var apiSessionKey: String?
         var cliCredentialsJSON: String?
         var codexCredentialsJSON: String?
+
+        subscript(key: CredentialKey) -> String? {
+            get {
+                switch key {
+                case .claudeSessionKey: return claudeSessionKey
+                case .apiSessionKey: return apiSessionKey
+                case .cliCredentials: return cliCredentialsJSON
+                case .codexCredentials: return codexCredentialsJSON
+                }
+            }
+            set {
+                switch key {
+                case .claudeSessionKey: claudeSessionKey = newValue
+                case .apiSessionKey: apiSessionKey = newValue
+                case .cliCredentials: cliCredentialsJSON = newValue
+                case .codexCredentials: codexCredentialsJSON = newValue
+                }
+            }
+        }
     }
     private var credentialCache: [UUID: CachedCredentials] = [:]
     private let cacheLock = NSLock()
@@ -54,6 +73,7 @@ class ProfileStore {
         static let multiProfileConfig = "multiProfileDisplayConfig"
         static let credentialsMigratedToKeychain = "credentialsMigratedToKeychain"  // legacy v1 flag
         static let credentialsRepairedV2 = "credentialsRepairedToKeychain_v2"
+        static let keychainRebuiltV3 = "keychainItemsRebuiltViaSecurityTool_v3"
     }
 
     init() {
@@ -91,10 +111,88 @@ class ProfileStore {
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
             }
+            // One-time: recreate every item through the security CLI so rebuilds
+            // of this (ad-hoc signed) app stop triggering SecurityAgent prompts.
+            self?.rebuildKeychainItemsViaSecurityToolIfNeeded()
         }
         // Insurance: never block the main thread more than 2s, even on an
         // unexpected authorization prompt. The background pass still completes.
         _ = sem.wait(timeout: .now() + 2.0)
+    }
+
+    /// One-time (v3): rebuilds every per-profile Keychain item through the
+    /// security CLI. Items created by SecItemAdd carry a partition list stamped
+    /// with the cdhash of whichever build created them; because this app is
+    /// ad-hoc signed, EVERY rebuild has a new cdhash, fails the partition check,
+    /// and raises one SecurityAgent prompt PER ITEM — "Always Allow" only
+    /// whitelists the clicking build, which is why it never stuck. Items created
+    /// by /usr/bin/security live in the `apple-tool:` partition and are readable
+    /// by the security CLI forever, regardless of this app's signature; all
+    /// KeychainService reads/writes now go through that CLI.
+    ///
+    /// Runs on keychainQueue AFTER the cache hydration, so every value is in
+    /// memory: per item we add a backup copy first, then delete + re-add the
+    /// canonical item, verify it reads back, and only then drop the backup — a
+    /// crash mid-migration can always be recovered from on the next run.
+    private func rebuildKeychainItemsViaSecurityToolIfNeeded() {
+        guard !defaults.bool(forKey: Keys.keychainRebuiltV3) else { return }
+
+        cacheLock.lock()
+        var snapshot = credentialCache
+        cacheLock.unlock()
+
+        // Recover from a crash in a PREVIOUS migration run: a value whose backup
+        // item exists but whose canonical read came back empty was caught between
+        // delete and re-add — restore it from the backup before rebuilding.
+        for profileId in snapshot.keys {
+            for key in CredentialKey.allCases {
+                let current = snapshot[profileId]?[key]
+                guard current == nil,
+                      let backup = keychainService.loadProfileCredential(profileId: profileId, key: key.rawValue + "-v3bak") else {
+                    continue
+                }
+                LoggingService.shared.log("ProfileStore: recovered \(key.rawValue) for \(profileId.uuidString.prefix(8)) from v3 migration backup")
+                snapshot[profileId]?[key] = backup
+                cacheLock.lock()
+                credentialCache[profileId]?[key] = backup
+                cacheLock.unlock()
+            }
+        }
+
+        var rebuilt = 0
+        var failed = 0
+        for (profileId, creds) in snapshot {
+            let values: [(CredentialKey, String?)] = [
+                (.claudeSessionKey, creds.claudeSessionKey),
+                (.apiSessionKey, creds.apiSessionKey),
+                (.cliCredentials, creds.cliCredentialsJSON),
+                (.codexCredentials, creds.codexCredentialsJSON)
+            ]
+            for (key, value) in values {
+                guard let value else { continue }
+                let backupKey = key.rawValue + "-v3bak"
+                keychainService.saveProfileCredential(value, profileId: profileId, key: backupKey)
+                keychainService.deleteProfileCredential(profileId: profileId, key: key.rawValue)
+                keychainService.saveProfileCredential(value, profileId: profileId, key: key.rawValue)
+                if keychainService.loadProfileCredential(profileId: profileId, key: key.rawValue) == value {
+                    keychainService.deleteProfileCredential(profileId: profileId, key: backupKey)
+                    rebuilt += 1
+                } else {
+                    // Restore from the in-memory value and leave the flag unset so
+                    // the next launch retries this item.
+                    keychainService.saveProfileCredential(value, profileId: profileId, key: key.rawValue)
+                    failed += 1
+                    LoggingService.shared.logError("ProfileStore: v3 keychain rebuild verify failed for \(key.rawValue) (\(profileId.uuidString.prefix(8)))")
+                }
+            }
+        }
+
+        if failed == 0 {
+            defaults.set(true, forKey: Keys.keychainRebuiltV3)
+            LoggingService.shared.log("ProfileStore: rebuilt \(rebuilt) Keychain item(s) via security CLI (v3) — rebuild prompts are gone for good")
+        } else {
+            LoggingService.shared.logError("ProfileStore: v3 keychain rebuild incomplete (\(rebuilt) ok, \(failed) failed) — will retry next launch")
+        }
     }
 
     /// First run on a build with the new storage model. Recovers credentials from the
@@ -151,6 +249,9 @@ class ProfileStore {
                 self.cacheLock.unlock()
             }
             self.defaults.set(true, forKey: Keys.credentialsRepairedV2)
+            // Items were just (re)written through the security CLI, so they are
+            // already partition-safe — no separate v3 rebuild needed.
+            self.defaults.set(true, forKey: Keys.keychainRebuiltV3)
             LoggingService.shared.log("ProfileStore: Keychain credential repair (v2) complete for \(ids.count) profile(s)")
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
@@ -259,6 +360,16 @@ class ProfileStore {
             LoggingService.shared.log("ProfileStore: Saved \(profiles.count) profiles (\(data.count) bytes, credentials in Keychain)")
         } catch {
             LoggingService.shared.logStorageError("saveProfiles", error: error)
+        }
+    }
+
+    /// Suspends until every Keychain write queued so far has been committed.
+    /// Call after persisting a ROTATED refresh token: the old token is already
+    /// consumed at the provider, so process death before the queue drains would
+    /// lose the only working login for that account.
+    func flushKeychainWrites() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            keychainQueue.async { continuation.resume() }
         }
     }
 

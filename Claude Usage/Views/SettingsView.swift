@@ -127,7 +127,7 @@ final class BorderlessSettingsWindow: NSWindow {
 
 /// Builds the settings window — fully borderless, no system titlebar.
 enum SettingsWindowBuilder {
-    static func makeWindow(size: CGSize) -> NSWindow {
+    static func makeWindow(size: CGSize, initialSection: SettingsSection? = nil) -> NSWindow {
         let window = BorderlessSettingsWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: .borderless,
@@ -136,7 +136,7 @@ enum SettingsWindowBuilder {
         )
 
         let hostingView = NSHostingView(rootView:
-            SettingsView()
+            SettingsView(initialSection: initialSection)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         )
         hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -222,9 +222,13 @@ struct TrafficLightButton: View {
 
 /// Professional, native macOS Settings interface with multi-profile support
 struct SettingsView: View {
-    @State private var selectedSection: SettingsSection = .appearance
+    @State private var selectedSection: SettingsSection
     @StateObject private var profileManager = ProfileManager.shared
     @Environment(\.colorScheme) private var colorScheme
+
+    init(initialSection: SettingsSection? = nil) {
+        _selectedSection = State(initialValue: initialSection ?? .appearance)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -299,6 +303,12 @@ struct SettingsView: View {
         }
         .frame(minWidth: 720, maxWidth: 720, maxHeight: .infinity)
         .background(SettingsBackground())
+        .onReceive(NotificationCenter.default.publisher(for: .settingsSectionRequested)) { notification in
+            if let rawValue = notification.object as? String,
+               let section = SettingsSection(rawValue: rawValue) {
+                selectedSection = section
+            }
+        }
     }
 }
 

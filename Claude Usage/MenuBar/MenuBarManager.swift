@@ -13,6 +13,10 @@ class MenuBarManager: NSObject, ObservableObject {
 
     // Error tracking for stale data / credential banners
     @Published private(set) var hasCredentialError: Bool = false
+    // Profiles whose last fetch failed with a credential error (401 / expired
+    // session key). The popover banner keys off the VIEWED profile's membership —
+    // one account's dead login must not flag every account's popover.
+    @Published private(set) var credentialErrorProfileIds: Set<UUID> = []
     @Published private(set) var consecutiveRefreshFailures: Int = 0
     @Published private(set) var lastRefreshError: String? = nil
     @Published private(set) var lastSuccessfulRefreshTime: Date? = nil
@@ -422,6 +426,10 @@ class MenuBarManager: NSObject, ObservableObject {
             onPreferences: { [weak self] in
                 self?.closePopoverOrWindow()
                 self?.preferencesClicked()
+            },
+            onManageProfiles: { [weak self] in
+                self?.closePopoverOrWindow()
+                self?.preferencesClicked(section: .manageProfiles)
             }
         )
 
@@ -834,12 +842,14 @@ private func observeCredentialChanges() {
                         self.usage = newUsage
                     }
                     sweepSuccesses += 1
+                    self.credentialErrorProfileIds.remove(profile.id)
                 } catch {
                     let appError = AppError.wrap(error)
                     sweepFailures += 1
                     sweepLastErrorMessage = appError.message
                     if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
                         sweepCredentialError = true
+                        self.credentialErrorProfileIds.insert(profile.id)
                     }
                     LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                 }
@@ -1049,6 +1059,9 @@ private func observeCredentialChanges() {
                 self.consecutiveRefreshFailures = 0
                 self.lastRefreshError = nil
                 self.hasCredentialError = false
+                if let profileId = self.profileManager.activeProfile?.id {
+                    self.credentialErrorProfileIds.remove(profileId)
+                }
                 self.lastSuccessfulRefreshTime = Date()
 
             } catch {
@@ -1066,6 +1079,9 @@ private func observeCredentialChanges() {
                 // Track credential errors specifically
                 if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
                     self.hasCredentialError = true
+                    if let profileId = self.profileManager.activeProfile?.id {
+                        self.credentialErrorProfileIds.insert(profileId)
+                    }
                 }
 
                 // Check if this refresh was triggered within last 5 seconds
@@ -1181,14 +1197,12 @@ private func observeCredentialChanges() {
 
         let profileId = currentProfile.id
 
-        // If usage dropped below 100%, clear the flag (session reset)
-        if usage.effectiveSessionPercentage < 100.0 {
+        // If every quota window regained headroom (session reset, weekly rollover),
+        // re-arm the trigger for this profile.
+        if !Self.isQuotaExhausted(usage) {
             autoSwitchedProfileIds.remove(profileId)
             return
         }
-
-        // Guard: usage must be >= 100%
-        guard usage.effectiveSessionPercentage >= 100.0 else { return }
 
         // Guard: don't re-trigger for this profile
         guard !autoSwitchedProfileIds.contains(profileId) else { return }
@@ -1215,8 +1229,28 @@ private func observeCredentialChanges() {
                 excluded.insert(nextProfile.id)
                 LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
             }
-            LoggingService.shared.log("AutoSwitch: All profiles at 100% or unavailable, staying on '\(fromName)'")
+            // No candidate had headroom (or their logins were dead). Un-mark so the
+            // next sweep retries — a candidate's session window resetting must not
+            // strand us on an exhausted account for the rest of its weekly window.
+            self.autoSwitchedProfileIds.remove(profileId)
+            LoggingService.shared.log("AutoSwitch: no usable candidate right now, staying on '\(fromName)' (will retry)")
         }
+    }
+
+    /// True when ANY of the profile's quota windows is fully used: the 5-hour
+    /// session, the all-models weekly, or the Fable weekly. Mirrors the candidate
+    /// headroom checks below — an account the auto-switch would never pick as a
+    /// target should not be kept as the active one either (a weekly limit can run
+    /// out while the session window sits far below 100%). Static + now-injectable
+    /// so the mirror is unit-testable.
+    nonisolated static func isQuotaExhausted(_ usage: ClaudeUsage, now: Date = Date()) -> Bool {
+        if usage.effectiveSessionPercentage >= 100.0 { return true }
+        if usage.weeklyResetTime >= now && usage.weeklyPercentage >= 100.0 { return true }
+        if let fablePercentage = usage.fableWeeklyPercentage, fablePercentage >= 100.0,
+           usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
+            return true
+        }
+        return false
     }
 
     // MARK: - Candidate Preflight (seamless auto-switch)
@@ -1402,14 +1436,18 @@ private func observeCredentialChanges() {
         return fablePercentage < 100.0
     }
 
-    @objc private func preferencesClicked() {
+    private func preferencesClicked(section: SettingsSection? = nil) {
         // Close the popover or detached window first
         closePopoverOrWindow()
 
-        // If settings window already exists, just bring it to front
+        // If settings window already exists, bring it to front (and jump it to the
+        // requested section — its SwiftUI state can't be re-seeded from here)
         if let existingWindow = settingsWindow, existingWindow.isVisible {
             existingWindow.makeKeyAndOrderFront(nil)
             NSApp.activate()
+            if let section {
+                NotificationCenter.default.post(name: .settingsSectionRequested, object: section.rawValue)
+            }
             return
         }
 
@@ -1419,7 +1457,7 @@ private func observeCredentialChanges() {
             NSApp.setActivationPolicy(.regular)
 
             // Create and show the settings window
-            let window = SettingsWindowBuilder.makeWindow(size: Constants.WindowSizes.settingsWindow)
+            let window = SettingsWindowBuilder.makeWindow(size: Constants.WindowSizes.settingsWindow, initialSection: section)
             window.title = "Claude Usage - Settings"
             window.center()
             window.isReleasedWhenClosed = false

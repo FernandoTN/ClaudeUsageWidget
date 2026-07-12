@@ -368,6 +368,18 @@ class ProfileManager: ObservableObject {
             }
         }
 
+        // A gated switch must leave the FOCUS unchanged too, not just the shared
+        // login: callers (auto-switch walking ranked candidates, retry sweeps)
+        // treat false as "nothing happened" — flipping activeProfile onto a dead
+        // account would point the UI (and single-profile mode's whole display) at
+        // an account the CLI was never switched to, once per retry.
+        if deadLoginSkipped {
+            switchingSemaphore = false
+            isSwitchingProfile = false
+            LoggingService.shared.log("⛔️ Activation of '\(updatedProfile.name)' aborted (dead provider login NOT applied) — focus stays on the current profile")
+            return false
+        }
+
         // Update last used timestamp
         var updated = updatedProfile
         updated.lastUsedAt = Date()
@@ -387,8 +399,8 @@ class ProfileManager: ObservableObject {
         switchingSemaphore = false
         isSwitchingProfile = false
 
-        LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)\(deadLoginSkipped ? " (dead provider login NOT applied)" : "")")
-        return !deadLoginSkipped
+        LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
+        return true
     }
 
     // MARK: - Provider Ownership
