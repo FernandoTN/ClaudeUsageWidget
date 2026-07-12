@@ -369,6 +369,8 @@ class ClaudeCodeSyncService {
         // /login anywhere between syncs) — the old identity stamp no longer
         // applies. Cleared here; callers re-stamp asynchronously.
         profiles[index].claudeAccountUUID = nil
+        profiles[index].claudeAccountEmail = nil
+        profiles[index].claudeOrganizationUUID = nil
         ProfileStore.shared.saveProfiles(profiles)
         reloginNotifiedProfiles.remove(profileId)
 
@@ -388,6 +390,17 @@ class ClaudeCodeSyncService {
 
         LoggingService.shared.log("📦 Found CLI credentials, syncing to ~/.claude/.credentials.json...")
         try writeSystemCredentials(jsonData)
+
+        // Keep the CLI's DISPLAYED account in sync with the applied login (uses the
+        // profile's stamped identity; skipped when the identity is not yet known —
+        // the stamp task that follows every apply fills it for next time).
+        if let uuid = profile.claudeAccountUUID {
+            updateCLIAccountMetadata(
+                accountUUID: uuid,
+                email: profile.claudeAccountEmail ?? "",
+                organizationUUID: profile.claudeOrganizationUUID ?? ""
+            )
+        }
 
         LoggingService.shared.log("✅ Applied profile CLI credentials: \(profileId)")
     }
@@ -626,16 +639,22 @@ class ClaudeCodeSyncService {
 
     // MARK: - Account Identity
 
+    struct AccountIdentity {
+        let accountUUID: String
+        let organizationUUID: String
+        let email: String
+    }
+
     /// In-memory token → identity cache (identities are immutable per token;
     /// avoids refetching on every sweep). Keyed by a token suffix, never the token.
-    private var identityCache: [String: (accountUUID: String, organizationUUID: String)] = [:]
+    private var identityCache: [String: AccountIdentity] = [:]
 
     /// The account behind an OAuth access token, via api.anthropic.com/api/oauth/
     /// profile. The Claude credentials JSON carries NO account id (unlike Codex's
     /// account_id), so this endpoint is the only way to know WHOSE login a token
     /// is. Returns nil on any failure — callers must treat unknown identity as
     /// "no evidence", never as a mismatch.
-    func fetchAccountIdentity(accessToken: String) async -> (accountUUID: String, organizationUUID: String)? {
+    func fetchAccountIdentity(accessToken: String) async -> AccountIdentity? {
         let cacheKey = String(accessToken.suffix(24))
         if let cached = identityCache[cacheKey] { return cached }
 
@@ -653,28 +672,68 @@ class ClaudeCodeSyncService {
               let accountUUID = account["uuid"] as? String else {
             return nil
         }
-        let organizationUUID = (json["organization"] as? [String: Any])?["uuid"] as? String ?? ""
-        identityCache[cacheKey] = (accountUUID, organizationUUID)
-        return (accountUUID, organizationUUID)
+        let identity = AccountIdentity(
+            accountUUID: accountUUID,
+            organizationUUID: (json["organization"] as? [String: Any])?["uuid"] as? String ?? "",
+            email: account["email"] as? String ?? ""
+        )
+        identityCache[cacheKey] = identity
+        return identity
     }
 
-    /// Persists the account uuid behind a profile's stored CLI token so future
-    /// adoptions can be account-matched. `force` overwrites (use after an explicit
-    /// re-sync, where the account may have changed); otherwise stamps only when
-    /// the identity is not yet known.
+    /// Persists the account identity behind a profile's stored CLI token so future
+    /// adoptions can be account-matched and switches can update the CLI's cached
+    /// account display. `force` overwrites (use after an explicit re-sync, where
+    /// the account may have changed); otherwise stamps only missing identities.
     func stampAccountIdentity(for profileId: UUID, force: Bool = false) async {
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
-              force || profile.claudeAccountUUID == nil,
+              force || profile.claudeAccountUUID == nil || profile.claudeAccountEmail == nil,
               let json = profile.cliCredentialsJSON,
               let token = extractAccessToken(from: json),
               let identity = await fetchAccountIdentity(accessToken: token) else { return }
 
         var profiles = ProfileStore.shared.loadProfiles()
         if let index = profiles.firstIndex(where: { $0.id == profileId }),
-           profiles[index].claudeAccountUUID != identity.accountUUID {
+           profiles[index].claudeAccountUUID != identity.accountUUID
+            || profiles[index].claudeAccountEmail != identity.email
+            || profiles[index].claudeOrganizationUUID != identity.organizationUUID {
             profiles[index].claudeAccountUUID = identity.accountUUID
+            profiles[index].claudeAccountEmail = identity.email.isEmpty ? nil : identity.email
+            profiles[index].claudeOrganizationUUID = identity.organizationUUID.isEmpty ? nil : identity.organizationUUID
             ProfileStore.shared.saveProfiles(profiles)
             LoggingService.shared.log("Claude: stamped account identity for '\(profiles[index].name)'")
+        }
+    }
+
+    /// Rewrites the CLI's cached account metadata (`oauthAccount` in ~/.claude.json)
+    /// to match the login the app just applied. The CLI only updates this cache on
+    /// a manual /login, so after an app-driven switch, /usage and /status would
+    /// otherwise DISPLAY the previous account while every request runs as the new
+    /// one — which is exactly the confusion that mislabeled a real incident.
+    /// Best-effort and surgical: only the oauthAccount keys are touched.
+    func updateCLIAccountMetadata(accountUUID: String, email: String, organizationUUID: String) {
+        let fileURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+        guard let data = try? Data(contentsOf: fileURL),
+              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              var oauthAccount = root["oauthAccount"] as? [String: Any] else {
+            return
+        }
+        guard (oauthAccount["accountUuid"] as? String) != accountUUID else { return }
+
+        oauthAccount["accountUuid"] = accountUUID
+        if !email.isEmpty { oauthAccount["emailAddress"] = email }
+        if !organizationUUID.isEmpty { oauthAccount["organizationUuid"] = organizationUUID }
+        // The org display name belongs to the OLD account — drop it rather than lie;
+        // the CLI restores it on its next /login or profile fetch.
+        oauthAccount["organizationName"] = email.isEmpty ? "" : "\(email)'s Organization"
+        root["oauthAccount"] = oauthAccount
+
+        guard let updated = try? JSONSerialization.data(withJSONObject: root) else { return }
+        do {
+            try updated.write(to: fileURL, options: .atomic)
+            LoggingService.shared.log("Claude: updated CLI cached account metadata (oauthAccount) to match applied login")
+        } catch {
+            LoggingService.shared.logError("Claude: failed to update ~/.claude.json oauthAccount (non-fatal)", error: error)
         }
     }
 
