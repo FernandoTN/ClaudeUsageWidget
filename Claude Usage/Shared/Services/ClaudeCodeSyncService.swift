@@ -365,6 +365,10 @@ class ClaudeCodeSyncService {
         }
 
         profiles[index].cliCredentialsJSON = jsonData
+        // An explicit sync may bring a DIFFERENT account's login (the user can
+        // /login anywhere between syncs) — the old identity stamp no longer
+        // applies. Cleared here; callers re-stamp asynchronously.
+        profiles[index].claudeAccountUUID = nil
         ProfileStore.shared.saveProfiles(profiles)
         reloginNotifiedProfiles.remove(profileId)
 
@@ -564,7 +568,8 @@ class ClaudeCodeSyncService {
         if adoptSystemKeychain,
            let systemJSON = try? await readSystemCredentialsOffMain(),
            let systemExpiry = extractTokenExpiry(from: systemJSON),
-           systemExpiry > (extractTokenExpiry(from: workingJSON) ?? .distantPast) {
+           systemExpiry > (extractTokenExpiry(from: workingJSON) ?? .distantPast),
+           await adoptionAccountMatches(profileId: profileId, systemJSON: systemJSON) {
             workingJSON = systemJSON
             changed = true
             reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
@@ -619,6 +624,75 @@ class ClaudeCodeSyncService {
         return true
     }
 
+    // MARK: - Account Identity
+
+    /// In-memory token → identity cache (identities are immutable per token;
+    /// avoids refetching on every sweep). Keyed by a token suffix, never the token.
+    private var identityCache: [String: (accountUUID: String, organizationUUID: String)] = [:]
+
+    /// The account behind an OAuth access token, via api.anthropic.com/api/oauth/
+    /// profile. The Claude credentials JSON carries NO account id (unlike Codex's
+    /// account_id), so this endpoint is the only way to know WHOSE login a token
+    /// is. Returns nil on any failure — callers must treat unknown identity as
+    /// "no evidence", never as a mismatch.
+    func fetchAccountIdentity(accessToken: String) async -> (accountUUID: String, organizationUUID: String)? {
+        let cacheKey = String(accessToken.suffix(24))
+        if let cached = identityCache[cacheKey] { return cached }
+
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/profile") else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = json["account"] as? [String: Any],
+              let accountUUID = account["uuid"] as? String else {
+            return nil
+        }
+        let organizationUUID = (json["organization"] as? [String: Any])?["uuid"] as? String ?? ""
+        identityCache[cacheKey] = (accountUUID, organizationUUID)
+        return (accountUUID, organizationUUID)
+    }
+
+    /// Persists the account uuid behind a profile's stored CLI token so future
+    /// adoptions can be account-matched. `force` overwrites (use after an explicit
+    /// re-sync, where the account may have changed); otherwise stamps only when
+    /// the identity is not yet known.
+    func stampAccountIdentity(for profileId: UUID, force: Bool = false) async {
+        guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
+              force || profile.claudeAccountUUID == nil,
+              let json = profile.cliCredentialsJSON,
+              let token = extractAccessToken(from: json),
+              let identity = await fetchAccountIdentity(accessToken: token) else { return }
+
+        var profiles = ProfileStore.shared.loadProfiles()
+        if let index = profiles.firstIndex(where: { $0.id == profileId }),
+           profiles[index].claudeAccountUUID != identity.accountUUID {
+            profiles[index].claudeAccountUUID = identity.accountUUID
+            ProfileStore.shared.saveProfiles(profiles)
+            LoggingService.shared.log("Claude: stamped account identity for '\(profiles[index].name)'")
+        }
+    }
+
+    /// The Claude twin of Codex's account_id match: never copy the shared login
+    /// into a profile KNOWN to belong to a different account. This is the guard
+    /// against cross-account contamination (a profile silently absorbing another
+    /// account's token, which then mislabels usage and auto-switch decisions).
+    private func adoptionAccountMatches(profileId: UUID, systemJSON: String) async -> Bool {
+        guard let profileUUID = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.claudeAccountUUID,
+              let token = extractAccessToken(from: systemJSON),
+              let systemIdentity = await fetchAccountIdentity(accessToken: token) else {
+            return true  // no evidence either way — the pointer's word stands
+        }
+        if systemIdentity.accountUUID == profileUUID { return true }
+        LoggingService.shared.log("⛔️ Claude adoption skipped: system Keychain login belongs to a DIFFERENT account than this profile (contamination guard)")
+        return false
+    }
+
     // MARK: - Dead Login Notification
 
     /// Profiles already alerted about a dead CLI login — one notification per dead
@@ -642,14 +716,20 @@ class ClaudeCodeSyncService {
     // MARK: - Auto Re-sync Before Switching
 
     /// Re-syncs credentials from system Keychain before profile switching
-    /// This ensures we always have the latest CLI login when switching profiles
-    func resyncBeforeSwitching(for profileId: UUID) throws {
+    /// This ensures we always have the latest CLI login when switching profiles.
+    /// Account-matched: the outgoing profile only absorbs the shared login when it
+    /// is not KNOWN to belong to a different account (contamination guard).
+    func resyncBeforeSwitching(for profileId: UUID) async throws {
         LoggingService.shared.log("Re-syncing CLI credentials before profile switch: \(profileId)")
 
         // Read fresh credentials from system (if user is logged in)
-        guard let freshJSON = try readSystemCredentials() else {
+        guard let freshJSON = try await readSystemCredentialsOffMain() else {
             // No credentials in system - user not logged into CLI anymore
             LoggingService.shared.log("No system credentials found - skipping re-sync")
+            return
+        }
+
+        guard await adoptionAccountMatches(profileId: profileId, systemJSON: freshJSON) else {
             return
         }
 
