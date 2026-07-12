@@ -80,7 +80,7 @@ struct ClaudeUsage: Codable, Equatable {
             weeklyTokensUsed: 0,
             weeklyLimit: 1_000_000,
             weeklyPercentage: 0,
-            weeklyResetTime: Date().nextMonday1259pm(),
+            weeklyResetTime: Date().addingTimeInterval(7 * 24 * 3600),
             opusWeeklyTokensUsed: 0,
             opusWeeklyPercentage: 0,
             sonnetWeeklyTokensUsed: 0,
@@ -94,6 +94,56 @@ struct ClaudeUsage: Codable, Equatable {
             lastUpdated: Date(),
             userTimezone: .current
         )
+    }
+
+    // MARK: - Reset-stamp healing
+
+    /// Sentinel meaning "the API reported this window with no resets_at stamp".
+    /// A usage window that rolled over while the account was idle has no active
+    /// window, so the endpoint reports zero utilization and OMITS the timestamp.
+    /// Parsers store this sentinel instead of inventing a boundary — the old code
+    /// guessed "next Monday 12:59pm", which fabricated a phantom soonest-reset
+    /// that mis-ranked auto-switch candidates and reshuffled the menu bar
+    /// (a real incident: an idle account's weekly rollover made the auto-switch
+    /// pick it over the correct candidate).
+    nonisolated static let unknownResetSentinel = Date.distantPast
+
+    /// Replaces sentinel reset stamps with values carried forward from the
+    /// profile's previously cached usage. Idempotent — healing an already-healed
+    /// value is a no-op. Call after every fetch, before display or persistence.
+    nonisolated mutating func healMissingResetStamps(previous: ClaudeUsage?, now: Date = Date()) {
+        if sessionResetTime == Self.unknownResetSentinel {
+            if let prev = previous?.sessionResetTime, prev > now {
+                sessionResetTime = prev
+            } else {
+                // No known active window. A window started by the next request
+                // would end 5h out; display-only, replaced by the first fetch
+                // that sees real usage.
+                sessionResetTime = now.addingTimeInterval(5 * 3600)
+            }
+        }
+        if weeklyResetTime == Self.unknownResetSentinel {
+            if let prev = previous?.weeklyResetTime {
+                weeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)
+            } else {
+                weeklyResetTime = now.addingTimeInterval(7 * 24 * 3600)
+            }
+        }
+        if fableWeeklyPercentage != nil, fableWeeklyResetTime == nil,
+           let prev = previous?.fableWeeklyResetTime {
+            fableWeeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)
+        }
+    }
+
+    /// An account's weekly boundary recurs every 7 days — project a stamp from a
+    /// previous window forward to the first occurrence after `now` (same
+    /// semantics as Profile.nextWeeklyReset).
+    nonisolated static func projectedWeeklyBoundary(_ reset: Date, after now: Date) -> Date {
+        var boundary = reset
+        while boundary <= now {
+            boundary = boundary.addingTimeInterval(7 * 24 * 3600)
+        }
+        return boundary
     }
 
 }

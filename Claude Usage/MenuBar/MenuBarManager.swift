@@ -910,6 +910,15 @@ private func observeCredentialChanges() {
 
     /// Fetches usage data for a specific profile using its credentials
     private func fetchUsageForProfile(_ profile: Profile) async throws -> ClaudeUsage {
+        var usage = try await fetchRawUsageForProfile(profile)
+        // A window with no resets_at (rolled over while idle) parses as a
+        // sentinel — replace it with this profile's last known boundary before
+        // anything displays or persists the result.
+        usage.healMissingResetStamps(previous: profile.claudeUsage)
+        return usage
+    }
+
+    private func fetchRawUsageForProfile(_ profile: Profile) async throws -> ClaudeUsage {
         // Codex-only profiles fetch from the ChatGPT backend instead
         if profile.isCodexOnlyProfile {
             return try await CodexUsageService.shared.fetchUsage(for: profile.id)
@@ -1022,12 +1031,15 @@ private func observeCredentialChanges() {
             do {
                 // Codex-only profiles fetch from the ChatGPT backend (the service
                 // self-heals its own token); everything else uses the Claude flow.
-                let newUsage: ClaudeUsage
+                var newUsage: ClaudeUsage
                 if profile.isCodexOnlyProfile {
                     newUsage = try await CodexUsageService.shared.fetchUsage(for: profile.id)
                 } else {
                     newUsage = try await apiService.fetchUsageData()
                 }
+                // Carry forward last known reset boundaries for windows the API
+                // reported without a resets_at stamp (idle rollover — sentinel).
+                newUsage.healMissingResetStamps(previous: profile.claudeUsage)
 
                 // Check for resets before updating usage
                 self.usage = newUsage
