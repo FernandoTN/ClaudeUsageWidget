@@ -1,175 +1,164 @@
 # Claude Usage Widget
 
-A privacy-first macOS menu bar widget that displays your [Claude Max](https://claude.ai) usage metrics at a glance.
+A privacy-first macOS menu-bar app that tracks usage limits for **multiple Claude accounts and OpenAI Codex accounts** at a glance — with automatic account switching when a session limit is hit.
 
-Built as a stripped-down fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) (MIT license), with all external telemetry removed.
+Built as a stripped-down, heavily extended fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) (MIT license), with all external telemetry removed.
 
 ## What It Does
 
-Claude Usage Widget sits in your macOS menu bar and shows real-time usage percentages for your Claude Max subscription:
+The app lives in your menu bar (no dock icon, no main window) and shows live usage for every account you add:
 
-- **5-Hour Session** utilization
-- **7-Day All Models** utilization
-- **7-Day Sonnet** utilization
+- **5-hour session** utilization and reset time
+- **7-day weekly** utilization (all models) and reset time
+- Per-model weekly breakdowns (Opus / Sonnet / Fable) where the plan reports them
+- **Codex accounts**: 5-hour and weekly windows from the ChatGPT backend
 
-Supports **two accounts simultaneously** (e.g., work + personal), with color-coded progress indicators:
+Color coding: green (< 50%), yellow (50–80%), orange (80–95%), red (> 95%). Click any icon for a detailed popover; the popover can be dragged off to float as a small window.
 
-| Color | Usage |
-|-------|-------|
-| Green | < 50% |
-| Yellow | 50-80% |
-| Orange | 80-95% |
-| Red | > 95% |
+### Multi-account model
 
-Click the menu bar icon to open a popover with detailed usage breakdown, reset timers, and per-model stats.
+- Add as many profiles as you like; each holds ONE provider's account — a Claude login (claude.ai session, Claude Code CLI OAuth, or API Console) **or** a Codex CLI login.
+- **Two accounts are "active" at any time** — one Claude and one Codex. The active Claude account owns the Claude Code CLI's shared Keychain login; the active Codex account owns `~/.codex/auth.json`. Switching profiles in the app also switches what the `claude` / `codex` CLIs are logged into.
+- In multi-profile display mode every selected account gets its own menu bar icon: Codex accounts grouped at the far left, Claude accounts to their right, and within each group the account whose weekly limit resets soonest sits rightmost ("use it or lose it" ordering).
+
+### Auto-switch
+
+When the active account's 5-hour session hits 100%, the app switches to the best same-provider candidate: soonest weekly reset first, but only if it still has session, weekly, and per-model weekly headroom. Per-profile opt-out is available in Settings. As usage climbs (25/50/75/90% milestones), the predicted next candidate's stored login is validated in the background so the eventual switch never lands on a dead login — if a candidate's refresh token has been revoked, you get a notification while there is still time to `/login` and re-sync.
+
+### Credential self-healing
+
+OAuth tokens rotate. The app adopts silent token refreshes performed by the CLIs, redeems refresh tokens itself when a stored access token goes stale, persists rotations everywhere the old token lived, backs off dead (revoked) logins instead of hammering the token endpoint, and **never applies an expired, unrefreshable login to the shared CLI state** (a gated switch keeps the outgoing login in place and notifies you instead).
 
 ## Privacy Guarantees
 
-This fork makes **zero network calls** to anything other than `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, and `status.claude.com`. Specifically removed:
+The app contacts **only**: `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, `status.claude.com`, and — for Codex accounts — `chatgpt.com` (usage) and `auth.openai.com` (token refresh). There is no telemetry, no auto-update phone-home, no analytics.
 
-| Removed | What it did |
-|---------|------------|
-| Sparkle auto-update | Phoned home to developer's GitHub Pages every 24 hours |
-| Feedback form | POSTed user PII to a Cloudflare Worker |
-| Mobile interest form | POSTed to a Cloudflare Worker |
-| GitHub star nag | Prompted users to star the repo on a timer |
-| Donation/support links | External buymeacoffee links |
-| GitHub contributor service | Called api.github.com |
-| Debug network logger | Developer-only tooling |
-
-Credentials (session keys, OAuth tokens) are stored only in the macOS Keychain on your machine. They are never written to disk in plaintext, and never transmitted anywhere other than the Anthropic domains listed above.
+Credentials (session keys, OAuth tokens) live **only in the macOS Keychain** on your machine. They are never written to UserDefaults, and never sent anywhere except the provider endpoints listed above. (The one deliberate exception: activating a profile writes that profile's credentials to `~/.claude/.credentials.json` / the shared Claude Code Keychain item / `~/.codex/auth.json` — that is how the CLIs are switched between accounts, and it mirrors what the CLIs themselves store.)
 
 ## Requirements
 
 - macOS 14 (Sonoma) or later
-- An active [Claude Max](https://claude.ai) subscription
+- Xcode 16+ (full Xcode, not just Command Line Tools) to build
+- At least one of:
+  - a Claude subscription (claude.ai session or Claude Code CLI login), and/or
+  - an OpenAI Codex CLI login (`codex login`)
 
-## Installation
+## Build & Install
 
-### Build from Source
+### Option A: Xcode
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/FernandoTN/ClaudeUsageWidget.git
-   cd ClaudeUsageWidget
-   ```
+```bash
+git clone https://github.com/FernandoTN/ClaudeUsageWidget.git
+cd ClaudeUsageWidget
+open "Claude Usage.xcodeproj"
+```
 
-2. Open in Xcode:
-   ```bash
-   open "Claude Usage.xcodeproj"
-   ```
+Build and run (`Cmd+R`). The app appears in your menu bar (no dock icon).
 
-3. Build and run (`Cmd+R`).
+### Option B: command line
 
-The app will appear in your menu bar (no dock icon).
+`xcodebuild` needs full Xcode. If `xcode-select` on your machine points at the Command Line Tools, prefix with `DEVELOPER_DIR` (avoids a global `sudo xcode-select`):
 
-## Setup
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project "Claude Usage.xcodeproj" -scheme "Claude Usage" \
+  -configuration Release -derivedDataPath /tmp/cuw_build \
+  -destination 'platform=macOS' build
+```
 
-1. **Launch the app** -- it appears in your macOS menu bar.
-2. **Open Settings** and select your first profile (e.g., "Account 1").
-3. Click **"Sign in to claude.ai"** -- a browser window opens for Google SSO.
-4. After signing in (you'll see the Claude chat), click **"Capture Session"** at the bottom of the sheet.
-5. Select your organization and save the configuration.
-6. Usage percentages appear in the menu bar immediately.
+Then copy the product to Applications:
 
-For a second account, switch to the other profile in Settings and repeat steps 3-5. Each login starts fresh -- signing into the second account does not affect the first.
+```bash
+cp -R "/tmp/cuw_build/Build/Products/Release/Claude Usage.app" /Applications/
+open "/Applications/Claude Usage.app"
+```
 
-## Configuration
+The project is **ad-hoc signed** (`CODE_SIGN_IDENTITY = "-"`) with no development team, so it builds from a clean clone with no signing setup. See [Troubleshooting](#troubleshooting) for what ad-hoc signing means for the Keychain.
 
-### Refresh Interval
+## First-Run Setup
 
-Default: 30 seconds. Configurable per profile in Settings > General.
+### Claude accounts
 
-### Notifications
+1. Launch the app — the setup wizard opens on first run.
+2. If you are logged into the Claude Code CLI, the wizard detects it and can import that login directly.
+3. Alternatively, sign in to claude.ai through the in-app browser sheet and capture the session, then pick your organization.
+4. For more accounts: create a profile in Settings → Profiles, then either capture another claude.ai session, or log the CLI into the other account (`/login`) and use Settings → CLI Account → Sync.
 
-macOS notifications fire at configurable thresholds (default: 75%, 90%, 95%). Enable/disable per profile in Settings > General.
+### Codex accounts
 
-### Keyboard Shortcuts
+There is no wizard step for Codex (yet):
 
-Assign global shortcuts in Settings > Shortcuts to quickly check usage without clicking the menu bar.
+1. If `~/.codex/auth.json` exists (you ran `codex login`), the app auto-imports it once as a "Codex (email)" profile.
+2. For additional Codex accounts: `codex login` with the other account, create a new profile, then Settings → Codex Account → Sync.
 
-### Menu Bar Display
+### Configuration
 
-Choose which metrics to show as menu bar icons and their display style in Settings > Appearance.
+- **Refresh interval** — default 30s, per profile (Settings → General).
+- **Notifications** — thresholds default to 75/90/95%, per profile.
+- **Menu bar display** — single-profile (one set of metric icons) or multi-profile (one icon per account), styles in Settings → Appearance.
+- **Auto-switch** — global toggle plus per-profile eligibility.
+- **Keyboard shortcuts** — Settings → Shortcuts.
+- **Launch at login** — Settings → General.
 
-## What Was Removed
+## Troubleshooting
 
-~8,700 lines stripped from the original 29,670-line codebase:
+**Keychain password prompts after rebuilding.** The app is ad-hoc signed, and its code signature changes on *every build*. macOS Keychain ACLs identify apps by signature, so "Always Allow" grants die on the next rebuild. The app works around this by attaching permissive ACLs to the Keychain items it creates and by using the `security` CLI (which runs inside the `apple-tool:` partition) for the shared Claude Code item. If you ever see a repeating prompt after replacing the app, click "Always Allow" once — the app repairs its own items' ACLs on launch.
 
-| Component | Lines | Reason |
-|-----------|-------|--------|
-| Sparkle auto-update | ~265 | Privacy: 24h phone-home |
-| Feedback form | ~332 | Privacy: PII exfiltration |
-| Mobile interest form | ~167 | Privacy: external POST |
-| GitHub star nag | ~200 | Bloat: nag UI |
-| Support/donation view | ~162 | Bloat: external links |
-| GitHub contributor service | ~100 | Privacy: api.github.com calls |
-| Usage charts/history | ~1,293 | Bloat: not needed for simple display |
-| Statusline service | ~824 | Security: wrote keys in plaintext to disk |
-| Auto-start session | ~472 | Unwanted: sent real messages consuming quota |
-| Debug network log | ~412 | Bloat: developer tooling |
-| Non-English localizations | ~7,500 | Bloat: 8 language files |
-| FunnyNameGenerator | ~150 | Bloat: cosmetic |
+**"login expired. Please run /login" in Claude Code.** The account that owns the CLI login has a dead token. Run `/login` in Claude Code, then Settings → CLI Account → Sync on that profile.
 
-## What Remains (~21,000 lines)
+**"refresh token was revoked" from the codex CLI.** Same story: `codex login`, then Settings → Codex Account → Sync.
 
-| Component | Purpose |
-|-----------|---------|
-| ClaudeAPIService | Fetches usage from claude.ai, api.anthropic.com, and console.anthropic.com |
-| ClaudeCodeSyncService | Reads and writes Claude Code's OAuth credentials (Keychain + `~/.claude/.credentials.json`) |
-| KeychainService | Keychain-backed credential storage |
-| ProfileManager + ProfileStore | Multi-account management and Keychain-backed persistence |
-| MenuBarManager + Icon Renderer | Menu bar UI with color-coded usage percentages |
-| PopoverContentView | Dropdown showing detailed usage breakdown |
-| SetupWizardView | First-run setup flow with CLI auto-detection |
-| NotificationManager | Threshold alerts when approaching limits |
-| DesignSystem | Consistent styling across settings views |
-| NetworkMonitor | Connectivity detection for error handling |
-| LaunchAtLoginManager | Auto-start on macOS login |
+**Usage looks frozen.** Check the logs:
+
+```bash
+/usr/bin/log show --predicate 'process == "Claude Usage"' --info --last 10m
+```
+
+**Is the app healthy?** There is no window to inspect. A healthy main thread parks in the event loop:
+
+```bash
+sample "$(pgrep -x 'Claude Usage')" 3   # main thread should sit in NSApplication run → mach_msg
+```
+
+**Claude usage rate limits (429).** The usage endpoint sustains only ~2 requests per 30s window per IP. With many Claude profiles the app round-robins background fetches (each background profile refreshes every couple of minutes); this is by design.
+
+## Testing
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test \
+  -project "Claude Usage.xcodeproj" -scheme "Claude Usage" \
+  -destination 'platform=macOS'
+```
+
+Note: tests are hosted in the app, so the suite briefly launches a menu-bar instance.
+
+Suites: credential/token parsing (Claude expiresAt ms-vs-s, Codex JWT expiry, `last_refresh` fractional seconds), weekly-reset projection, menu bar ranking/quantization, session-key validation, URL building, usage status calculation, date utilities, preference persistence, integration tests.
 
 ## Architecture
 
 ```
 Claude Usage/
-├── App/
-│   ├── AppDelegate.swift              App lifecycle, setup wizard trigger
-│   └── ClaudeUsageTrackerApp.swift    SwiftUI entry point
+├── App/                    App lifecycle, setup wizard trigger
 ├── MenuBar/
-│   ├── MenuBarManager.swift           Orchestrates icons, popover, refresh
-│   ├── MenuBarIconRenderer.swift      CoreGraphics icon rendering
-│   ├── PopoverContentView.swift       Detailed usage popover
-│   ├── StatusBarUIManager.swift       NSStatusItem management
-│   └── WindowCoordinator.swift        Popover/window lifecycle
-├── Views/
-│   ├── SetupWizardView.swift          First-run onboarding
-│   ├── SettingsView.swift             Tabbed settings window
-│   └── Settings/                      Settings tabs and components
+│   ├── MenuBarManager      Orchestration: refresh sweeps, auto-switch, preflight
+│   ├── StatusBarUIManager  NSStatusItem management + weekly-reset ordering
+│   ├── MenuBarIconRenderer CoreGraphics icon rendering
+│   └── PopoverContentView  Detailed usage popover
+├── Views/                  Setup wizard, Settings window and tabs
 └── Shared/
-    ├── Services/                      API client, Keychain, profiles, sync
-    ├── Models/                        Profile, ClaudeUsage, APIUsage, etc.
-    ├── Storage/                       ProfileStore, SharedDataStore
-    ├── Utilities/                     Constants, validators, formatters
-    ├── Extensions/                    Color, Date, UserDefaults extensions
-    └── ErrorHandling/                 Typed errors with recovery
+    ├── Services/           ClaudeAPIService, ClaudeCodeSyncService (CLI credential
+    │                       sync + OAuth refresh), CodexUsageService, KeychainService,
+    │                       ProfileManager, NotificationManager
+    ├── Storage/            ProfileStore (profiles + Keychain-backed credential cache)
+    ├── Models/             Profile, ClaudeUsage, APIUsage, icon config
+    └── Utilities/          Constants, validators, formatters
 ```
 
-## Testing
-
-```bash
-xcodebuild test -scheme "Claude Usage" -destination "platform=macOS"
-```
-
-6 test suites:
-- `ClaudeUsageTests` — Integration tests
-- `URLBuilderTests` — URL construction validation
-- `SessionKeyValidatorTests` — Key format validation
-- `UsageStatusCalculatorTests` — Color/threshold mapping
-- `DateExtensionsTests` — Date utilities
-- `SharedDataStoreTests` — Preference persistence
+`CLAUDE.md` documents the load-bearing invariants (Keychain threading rules, token-rotation hazards, the two-active-accounts model) in detail — read it before changing credential or menu bar code. `SHIPPING.md` covers what a downstream user/maintainer must know.
 
 ## Acknowledgments
 
-This project is a fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) by Hamed Elfayome, licensed under the MIT License. The original project provided the multi-profile OAuth architecture, usage-fetching logic, and menu bar rendering that this widget builds on.
+This project is a fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) by Hamed Elfayome, licensed under the MIT License. The original provided the multi-profile architecture, usage-fetching logic, and menu bar rendering this app builds on. This fork removed the original's telemetry/update/feedback networking (~8,700 lines) and added Codex support, per-provider active-account tracking, OAuth self-healing, auto-switch, and rate-limit-aware refresh scheduling.
 
 ## License
 

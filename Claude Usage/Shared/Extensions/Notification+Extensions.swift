@@ -20,9 +20,6 @@ extension Notification.Name {
     /// Posted when the display mode changes (single/multi profile)
     static let displayModeChanged = Notification.Name("displayModeChanged")
 
-    /// Posted when auto-switch profile is triggered (for UI reactivity)
-    static let autoSwitchProfileTriggered = Notification.Name("autoSwitchProfileTriggered")
-
     /// Posted when the background Keychain credential load finishes populating the
     /// in-memory cache, so observers can re-read fully-hydrated profiles.
     static let profileCredentialsReady = Notification.Name("profileCredentialsReady")

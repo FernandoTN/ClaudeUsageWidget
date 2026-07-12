@@ -397,6 +397,8 @@ class ClaudeCodeSyncService {
 
         profiles[index].cliCredentialsJSON = nil
         ProfileStore.shared.saveProfiles(profiles)
+        // saveProfiles never deletes on nil (stale-save protection) — remove explicitly.
+        ProfileStore.shared.clearProfileCredential(profileId, key: .cliCredentials)
 
         LoggingService.shared.log("Removed CLI credentials from profile: \(profileId)")
     }

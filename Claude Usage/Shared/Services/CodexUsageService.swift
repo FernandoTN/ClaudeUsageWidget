@@ -190,6 +190,8 @@ class CodexUsageService {
         profiles[index].codexAccountSyncedAt = nil
         profiles[index].claudeUsage = nil
         ProfileStore.shared.saveProfiles(profiles)
+        // saveProfiles never deletes on nil (stale-save protection) — remove explicitly.
+        ProfileStore.shared.clearProfileCredential(profileId, key: .codexCredentials)
         LoggingService.shared.log("Codex: Removed credentials from profile \(profileId)")
     }
 

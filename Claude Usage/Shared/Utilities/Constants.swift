@@ -2,8 +2,15 @@ import Foundation
 
 /// Application-wide constants
 enum Constants {
-    // App Group identifier for sharing data between app and widgets
-    static let appGroupIdentifier = "group.com.fernandotn.ClaudeUsageWidget.shared"
+    // LEGACY identifiers — historical storage locations that migrations read FROM.
+    // These are frozen forever: old installs wrote data under these names, so the
+    // strings must keep their original values even though the app's own bundle id
+    // has since been renamed. Never point new writes at either of them.
+    /// App Group suite an ancient version stored preferences in (migration source only).
+    static let legacyAppGroupIdentifier = "group.com.fernandotn.ClaudeUsageWidget.shared"
+    /// Bundle id (= UserDefaults domain) of builds before the open-source rename
+    /// (migration source only — see MigrationService.migrateLegacyBundleDefaultsIfNeeded).
+    static let legacyBundleIdentifier = "com.fernandotn.ClaudeUsageWidget"
 
     // UserDefaults keys
     enum UserDefaultsKeys {

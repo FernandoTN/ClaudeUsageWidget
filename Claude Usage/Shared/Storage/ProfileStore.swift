@@ -29,7 +29,7 @@ class ProfileStore {
     private let keychainQueue = DispatchQueue(label: "com.claudewidget.profilestore.keychain", qos: .userInitiated)
 
     /// In-memory credential cache. `loadProfiles()` hydrates from here, not the Keychain.
-    private struct CachedCredentials {
+    private struct CachedCredentials: Equatable {
         var claudeSessionKey: String?
         var apiSessionKey: String?
         var cliCredentialsJSON: String?
@@ -37,6 +37,15 @@ class ProfileStore {
     }
     private var credentialCache: [UUID: CachedCredentials] = [:]
     private let cacheLock = NSLock()
+
+    /// The Keychain item behind each credential field. Raw values are the
+    /// per-profile Keychain key suffixes used by KeychainService.
+    enum CredentialKey: String, CaseIterable {
+        case claudeSessionKey = "claude-key"
+        case apiSessionKey = "api-key"
+        case cliCredentials = "cli-creds"
+        case codexCredentials = "codex-creds"
+    }
 
     private enum Keys {
         static let profiles = "profiles_v3"
@@ -202,8 +211,15 @@ class ProfileStore {
     func saveProfiles(_ profiles: [Profile]) {
         // 1. Sync credentials into the in-memory cache; persist changes to the
         //    Keychain on a background queue (never blocks the caller).
+        //
+        //    MERGE semantics: a nil credential field NEVER implies deletion here.
+        //    Profile values may predate the background Keychain hydration (the
+        //    startup cache warm-up waits at most 2s) — saving such a stale profile
+        //    used to diff nil-vs-cached and enqueue Keychain deletions, silently
+        //    destroying every credential on a slow Keychain. Intentional removal
+        //    goes through clearProfileCredential(_:key:) instead.
         for profile in profiles {
-            let new = CachedCredentials(
+            let incoming = CachedCredentials(
                 claudeSessionKey: profile.claudeSessionKey,
                 apiSessionKey: profile.apiSessionKey,
                 cliCredentialsJSON: profile.cliCredentialsJSON,
@@ -212,18 +228,23 @@ class ProfileStore {
 
             cacheLock.lock()
             let old = credentialCache[profile.id]
-            credentialCache[profile.id] = new
+            let merged = CachedCredentials(
+                claudeSessionKey: incoming.claudeSessionKey ?? old?.claudeSessionKey,
+                apiSessionKey: incoming.apiSessionKey ?? old?.apiSessionKey,
+                cliCredentialsJSON: incoming.cliCredentialsJSON ?? old?.cliCredentialsJSON,
+                codexCredentialsJSON: incoming.codexCredentialsJSON ?? old?.codexCredentialsJSON
+            )
+            credentialCache[profile.id] = merged
             cacheLock.unlock()
 
-            let credentialsChanged = old?.claudeSessionKey != new.claudeSessionKey
-                || old?.apiSessionKey != new.apiSessionKey
-                || old?.cliCredentialsJSON != new.cliCredentialsJSON
-                || old?.codexCredentialsJSON != new.codexCredentialsJSON
+            if merged != incoming {
+                LoggingService.shared.log("ProfileStore: preserved cached credential(s) for \(profile.id) that the saved profile was missing (stale pre-hydration copy?)")
+            }
 
-            if credentialsChanged {
+            if merged != old {
                 let profileId = profile.id
                 keychainQueue.async { [weak self] in
-                    self?.writeCredentialItems(profileId: profileId, credentials: new)
+                    self?.writeCredentialItems(profileId: profileId, credentials: merged)
                 }
             }
         }
@@ -385,21 +406,41 @@ class ProfileStore {
         }
     }
 
-    /// Writes a profile's credentials to the Keychain — saving non-nil values and
-    /// deleting Keychain entries for nil values. MUST be called on `keychainQueue`.
+    /// Writes a profile's non-nil credentials to the Keychain. Nil fields are left
+    /// untouched — deletion is only ever explicit (clearProfileCredential /
+    /// deleteProfileCredentials). MUST be called on `keychainQueue`.
     private func writeCredentialItems(profileId: UUID, credentials: CachedCredentials) {
-        syncCredentialItem(credentials.claudeSessionKey, profileId: profileId, key: "claude-key")
-        syncCredentialItem(credentials.apiSessionKey, profileId: profileId, key: "api-key")
-        syncCredentialItem(credentials.cliCredentialsJSON, profileId: profileId, key: "cli-creds")
-        syncCredentialItem(credentials.codexCredentialsJSON, profileId: profileId, key: "codex-creds")
+        syncCredentialItem(credentials.claudeSessionKey, profileId: profileId, key: CredentialKey.claudeSessionKey.rawValue)
+        syncCredentialItem(credentials.apiSessionKey, profileId: profileId, key: CredentialKey.apiSessionKey.rawValue)
+        syncCredentialItem(credentials.cliCredentialsJSON, profileId: profileId, key: CredentialKey.cliCredentials.rawValue)
+        syncCredentialItem(credentials.codexCredentialsJSON, profileId: profileId, key: CredentialKey.codexCredentials.rawValue)
     }
 
     private func syncCredentialItem(_ value: String?, profileId: UUID, key: String) {
         if let value {
             keychainService.saveProfileCredential(value, profileId: profileId, key: key)
-        } else {
-            deleteKeychainCredential(profileId: profileId, key: key)
         }
+    }
+
+    /// Explicitly removes ONE credential from a profile — the only way a single
+    /// credential leaves the Keychain. Drops it from the in-memory cache
+    /// immediately and deletes the Keychain item on the background queue.
+    func clearProfileCredential(_ profileId: UUID, key: CredentialKey) {
+        cacheLock.lock()
+        var cached = credentialCache[profileId] ?? CachedCredentials()
+        switch key {
+        case .claudeSessionKey: cached.claudeSessionKey = nil
+        case .apiSessionKey: cached.apiSessionKey = nil
+        case .cliCredentials: cached.cliCredentialsJSON = nil
+        case .codexCredentials: cached.codexCredentialsJSON = nil
+        }
+        credentialCache[profileId] = cached
+        cacheLock.unlock()
+
+        keychainQueue.async { [weak self] in
+            self?.deleteKeychainCredential(profileId: profileId, key: key.rawValue)
+        }
+        LoggingService.shared.log("ProfileStore: cleared credential '\(key.rawValue)' for profile \(profileId)")
     }
 
     /// Deletes a single Keychain credential entry for a profile.

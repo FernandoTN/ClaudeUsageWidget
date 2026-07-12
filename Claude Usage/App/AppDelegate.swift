@@ -8,6 +8,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var setupWindowCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // FIRST: one-time preferences migration for the bundle-id rename — must
+        // run before anything reads (or writes) UserDefaults.standard.
+        MigrationService.shared.migrateLegacyBundleDefaultsIfNeeded()
+
         // Disable window restoration for menu bar app
         UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
 

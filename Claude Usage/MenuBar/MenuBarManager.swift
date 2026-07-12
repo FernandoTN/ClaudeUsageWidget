@@ -42,7 +42,6 @@ class MenuBarManager: NSObject, ObservableObject {
 
     private let apiService = ClaudeAPIService()
     private let statusService = ClaudeStatusService()
-    private let dataStore = DataStore.shared
     private let networkMonitor = NetworkMonitor.shared
     private let profileManager = ProfileManager.shared
     // Combine cancellables for profile observation
@@ -58,12 +57,6 @@ class MenuBarManager: NSObject, ObservableObject {
     /// sustains ~3 requests per 30s window, so each sweep fetches only two of them
     /// (plus the provider-active/focused ones) instead of all six at once.
     private var claudeFetchCursor: Int = 0
-
-    // Observer for refresh interval changes
-    private var refreshIntervalObserver: NSKeyValueObservation?
-
-    // Observer for icon style changes
-    private var iconStyleObserver: NSObjectProtocol?
 
     // Observer for icon configuration changes
     private var iconConfigObserver: NSObjectProtocol?
@@ -81,16 +74,7 @@ class MenuBarManager: NSObject, ObservableObject {
     private var wakeObserver: NSObjectProtocol?
     private var lastAutoRefreshTime: Date = .distantPast
 
-    // MARK: - Image Caching (CPU Optimization)
-    private var cachedImage: NSImage?
-    private var cachedImageKey: String = ""
-    private var updateDebounceTimer: Timer?
-    private var cachedIsDarkMode: Bool = false
-
     func setup() {
-        // Initialize cached appearance to avoid layout recursion
-        cachedIsDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
@@ -225,12 +209,6 @@ class MenuBarManager: NSObject, ObservableObject {
         refreshTimer = nil
         networkMonitor.stopMonitoring()
         cancellables.removeAll()  // Clean up Combine subscriptions
-        refreshIntervalObserver?.invalidate()
-        refreshIntervalObserver = nil
-        if let iconStyleObserver = iconStyleObserver {
-            NotificationCenter.default.removeObserver(iconStyleObserver)
-            self.iconStyleObserver = nil
-        }
         if let iconConfigObserver = iconConfigObserver {
             NotificationCenter.default.removeObserver(iconConfigObserver)
             self.iconConfigObserver = nil
@@ -576,24 +554,6 @@ class MenuBarManager: NSObject, ObservableObject {
         }
     }
 
-    /// Updates a specific metric's status bar icon
-    private func updateStatusBarIcon(for metricType: MenuBarMetricType) {
-        statusBarUIManager?.updateButton(
-            for: metricType,
-            usage: usage,
-            apiUsage: apiUsage
-        )
-    }
-
-    // Legacy method kept for backwards compatibility (now uses new system)
-    private func updateStatusButton(_ button: NSStatusBarButton, usage: ClaudeUsage) {
-        // This method is deprecated but kept for any remaining references
-        // The new system handles updates through updateAllStatusBarIcons()
-        updateAllStatusBarIcons()
-    }
-
-    // MARK: - Icon Style: Battery (Classic)
-
     private func startAutoRefresh() {
         let interval = profileManager.activeProfile?.refreshInterval ?? 30.0
         refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -625,41 +585,7 @@ class MenuBarManager: NSObject, ObservableObject {
         }
     }
 
-    private func restartAutoRefresh() {
-        // Invalidate existing timer
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-
-        // Start new timer with updated interval
-        startAutoRefresh()
-    }
-
-    private func observeRefreshIntervalChanges() {
-        // Observe the same UserDefaults instance that DataStore uses
-        refreshIntervalObserver = dataStore.userDefaults.observe(\.refreshInterval, options: [.new]) { [weak self] _, change in
-            if let newValue = change.newValue, newValue > 0 {
-                DispatchQueue.main.async {
-                    self?.restartAutoRefresh()
-                }
-            }
-        }
-    }
-
-    private func observeIconStyleChanges() {
-        // Observe icon style changes from settings (now consolidated with menuBarIconConfigChanged)
-        iconStyleObserver = NotificationCenter.default.addObserver(
-            forName: .menuBarIconConfigChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            // Clear cache to force redraw with new style
-            self.cachedImageKey = ""
-            self.updateAllStatusBarIcons()
-        }
-    }
-
-    private func observeCredentialChanges() {
+private func observeCredentialChanges() {
         // Observe credential changes (add, remove, or update)
         credentialsObserver = NotificationCenter.default.addObserver(
             forName: .credentialsChanged,
@@ -851,6 +777,15 @@ class MenuBarManager: NSObject, ObservableObject {
         Task {
             defer { self.isRefreshing = false }
 
+            // Per-sweep outcome tracking — the error banners must reflect reality:
+            // resetting the failure counters unconditionally at sweep end used to
+            // mask a sweep where EVERY profile failed (dead network, revoked
+            // logins) as a success, so the "stale data" banner never appeared.
+            var sweepSuccesses = 0
+            var sweepFailures = 0
+            var sweepCredentialError = false
+            var sweepLastErrorMessage: String?
+
             // Fetch Claude status (same as single profile mode)
             do {
                 let newStatus = try await statusService.fetchStatus()
@@ -889,7 +824,14 @@ class MenuBarManager: NSObject, ObservableObject {
                     if profile.id == self.profileManager.activeProfile?.id {
                         self.usage = newUsage
                     }
+                    sweepSuccesses += 1
                 } catch {
+                    let appError = AppError.wrap(error)
+                    sweepFailures += 1
+                    sweepLastErrorMessage = appError.message
+                    if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
+                        sweepCredentialError = true
+                    }
                     LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                 }
 
@@ -914,10 +856,17 @@ class MenuBarManager: NSObject, ObservableObject {
                 profiles: self.profileManager.profiles,
                 config: config
             )
-            self.consecutiveRefreshFailures = 0
-            self.lastRefreshError = nil
-            self.hasCredentialError = false
-            self.lastSuccessfulRefreshTime = Date()
+
+            // Reflect the sweep's real outcome in the error-tracking state.
+            if sweepSuccesses > 0 {
+                self.consecutiveRefreshFailures = 0
+                self.lastRefreshError = sweepFailures > 0 ? sweepLastErrorMessage : nil
+                self.lastSuccessfulRefreshTime = Date()
+            } else if sweepFailures > 0 {
+                self.consecutiveRefreshFailures += 1
+                self.lastRefreshError = sweepLastErrorMessage
+            }
+            self.hasCredentialError = sweepCredentialError
 
             // Check auto-switch for each provider's active account (both are "in
             // use" at any time: the Claude account the CLI is logged into and the
@@ -1251,9 +1200,6 @@ class MenuBarManager: NSObject, ObservableObject {
                 if await self.profileManager.activateProfile(nextProfile.id) {
                     // Send notification
                     NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextProfile.name)
-
-                    // Post notification for UI reactivity
-                    NotificationCenter.default.post(name: .autoSwitchProfileTriggered, object: nil)
                     return
                 }
 
@@ -1274,6 +1220,14 @@ class MenuBarManager: NSObject, ObservableObject {
     /// session usage drops back below the first milestone (window reset).
     private var preflightedMilestones: [UUID: Set<Double>] = [:]
     private var preflightRunning: Set<UUID> = []
+
+    /// CANDIDATES currently being validated by any watcher. Both provider-active
+    /// accounts (and the focused profile) are milestone-watched, and two watchers
+    /// of the same provider can rank the SAME candidate next — the per-profile
+    /// refresh mutex already prevents a double token redemption, but this keeps
+    /// the second watcher from walking (and double-notifying about) a candidate
+    /// another watcher is validating right now.
+    private var preflightInFlightCandidates: Set<UUID> = []
 
     /// Fires once per crossed milestone (25/50/75/90% of the current account's
     /// session window) and validates the auto-switch's predicted target in the
@@ -1316,6 +1270,14 @@ class MenuBarManager: NSObject, ObservableObject {
                 LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' already owns its provider login — OK")
                 return
             }
+
+            // Another watcher is validating this exact candidate — let it finish.
+            guard !preflightInFlightCandidates.contains(candidate.id) else {
+                LoggingService.shared.log("Preflight[\(Int(milestone))%]: '\(candidate.name)' is already being validated by another watcher — skipping")
+                return
+            }
+            preflightInFlightCandidates.insert(candidate.id)
+            defer { preflightInFlightCandidates.remove(candidate.id) }
 
             var alive = true
             if candidate.isCodexOnlyProfile {
@@ -1530,8 +1492,6 @@ extension MenuBarManager: StatusBarUIManagerDelegate {
         // appearance name, and setButtonImage() only assigns button.image when the
         // rendered TIFF data actually changes — so even if setting button.image
         // triggers effectiveAppearance KVO, the cycle stops immediately.
-        cachedIsDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        cachedImageKey = ""
         updateAllStatusBarIcons()
     }
 }

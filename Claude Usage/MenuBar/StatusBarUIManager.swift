@@ -187,8 +187,8 @@ final class StatusBarUIManager {
     /// "use it or lose it" ranking the auto-switch uses, so the rightmost
     /// account of a group is always the one to burn first. Name breaks ties so
     /// equal resets (e.g. two profiles with no cached usage) don't reshuffle.
-    private func multiProfileCreationOrder(for profiles: [Profile]) -> [Profile] {
-        let now = Date()
+    /// Static and `now`-injectable so the ordering/quantization rules are unit-testable.
+    static func multiProfileCreationOrder(for profiles: [Profile], now: Date = Date()) -> [Profile] {
         // The usage API reports the SAME weekly boundary with ±1s jitter between
         // fetches (22:59:59.8 one sweep, 23:00:00.1 the next), and two accounts can
         // share a boundary. Quantize the ranking key to the minute so jitter can't
@@ -237,7 +237,7 @@ final class StatusBarUIManager {
             multiProfileStatusItems[UUID()] = statusItem
             LoggingService.shared.logUIEvent("Multi-profile: No profiles selected, showing default logo")
         } else {
-            let orderedProfiles = multiProfileCreationOrder(for: profiles)
+            let orderedProfiles = Self.multiProfileCreationOrder(for: profiles)
             multiProfileOrder = orderedProfiles.map(\.id)
 
             // Create one status item per selected profile
@@ -267,7 +267,7 @@ final class StatusBarUIManager {
         // Fresh usage may have reshuffled the weekly-reset ranking (or changed the
         // selected set). Status items cannot be reordered in place, so rebuild the
         // group when the desired order differs — rare, so the flicker is acceptable.
-        let desiredOrder = multiProfileCreationOrder(for: profiles).map(\.id)
+        let desiredOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
         if desiredOrder != multiProfileOrder,
            let target = multiProfileTarget, let action = multiProfileAction {
             LoggingService.shared.logUIEvent("Multi-profile: weekly-reset order changed, rebuilding status items")

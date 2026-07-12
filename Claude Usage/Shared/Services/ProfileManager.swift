@@ -442,11 +442,13 @@ class ProfileManager: ObservableObject {
 
     /// Removes Claude.ai credentials for a profile
     func removeClaudeAICredentials(for profileId: UUID) throws {
-        // Load and clear credentials from Keychain
+        // Load and clear credentials from Keychain. saveProfiles never deletes on
+        // nil (stale-save protection), so the removal must be explicit.
         var creds = try profileStore.loadProfileCredentials(profileId)
         creds.claudeSessionKey = nil
         creds.organizationId = nil
         try profileStore.saveProfileCredentials(profileId, credentials: creds)
+        profileStore.clearProfileCredential(profileId, key: .claudeSessionKey)
 
         // Update Profile model in memory
         if let index = profiles.firstIndex(where: { $0.id == profileId }) {
@@ -469,11 +471,12 @@ class ProfileManager: ObservableObject {
 
     /// Removes API Console credentials for a profile
     func removeAPICredentials(for profileId: UUID) throws {
-        // Load and clear credentials from Keychain
+        // Load and clear credentials from Keychain (explicit removal — see above)
         var creds = try profileStore.loadProfileCredentials(profileId)
         creds.apiSessionKey = nil
         creds.apiOrganizationId = nil
         try profileStore.saveProfileCredentials(profileId, credentials: creds)
+        profileStore.clearProfileCredential(profileId, key: .apiSessionKey)
 
         // Update Profile model in memory
         if let index = profiles.firstIndex(where: { $0.id == profileId }) {
@@ -789,39 +792,59 @@ class ProfileManager: ObservableObject {
         LoggingService.shared.log("ProfileManager: ✅ Auto-imported Codex account '\(email ?? "unknown")' as profile '\(newProfile.name)'")
     }
 
-    /// Syncs CLI credentials to default profile on first launch only
+    /// Syncs CLI credentials to default profile on first launch only.
+    /// The read shells out to `security` (and may hit the Keychain), so ALL of it
+    /// runs on a background queue — this used to run synchronously on the main
+    /// actor, violating the "never read Keychain item data on the main thread" rule.
     private func syncCLICredentialsToDefaultProfile(_ profileId: UUID) {
-        do {
-            // Attempt to read credentials from system Keychain
-            guard let jsonData = try cliSyncService.readSystemCredentials() else {
-                LoggingService.shared.log("ProfileManager: No CLI credentials found in system Keychain")
-                return
+        Task {
+            let syncService = cliSyncService
+            let synced: Bool = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        // Attempt to read credentials from system Keychain
+                        guard let jsonData = try syncService.readSystemCredentials() else {
+                            LoggingService.shared.log("ProfileManager: No CLI credentials found in system Keychain")
+                            continuation.resume(returning: false)
+                            return
+                        }
+
+                        // Validate: not expired
+                        if syncService.isTokenExpired(jsonData) {
+                            LoggingService.shared.log("ProfileManager: CLI credentials found but expired")
+                            continuation.resume(returning: false)
+                            return
+                        }
+
+                        // Validate: has valid access token
+                        guard syncService.extractAccessToken(from: jsonData) != nil else {
+                            LoggingService.shared.log("ProfileManager: CLI credentials found but missing access token")
+                            continuation.resume(returning: false)
+                            return
+                        }
+
+                        // Sync to the newly created default profile
+                        try syncService.syncToProfile(profileId)
+                        continuation.resume(returning: true)
+                    } catch {
+                        LoggingService.shared.logError("ProfileManager: Failed to sync CLI credentials on first launch (non-fatal)", error: error)
+                        // Non-fatal: profile will be created without credentials
+                        // User can manually sync in settings
+                        continuation.resume(returning: false)
+                    }
+                }
             }
 
-            // Validate: not expired
-            if cliSyncService.isTokenExpired(jsonData) {
-                LoggingService.shared.log("ProfileManager: CLI credentials found but expired")
-                return
-            }
+            guard synced else { return }
 
-            // Validate: has valid access token
-            guard cliSyncService.extractAccessToken(from: jsonData) != nil else {
-                LoggingService.shared.log("ProfileManager: CLI credentials found but missing access token")
-                return
-            }
-
-            // Sync to the newly created default profile
-            try cliSyncService.syncToProfile(profileId)
-
-            // Reload the profile to get updated credentials
+            // Back on the main actor: reload so the UI picks up the credentials.
             profiles = profileStore.loadProfiles()
-
+            if let activeId = activeProfile?.id,
+               let updated = profiles.first(where: { $0.id == activeId }) {
+                activeProfile = updated
+            }
+            claimActiveClaudeOwnership(profileId)
             LoggingService.shared.log("ProfileManager: ✅ Successfully synced CLI credentials to default profile on first launch")
-
-        } catch {
-            LoggingService.shared.logError("ProfileManager: Failed to sync CLI credentials on first launch (non-fatal)", error: error)
-            // Non-fatal: profile will be created without credentials
-            // User can manually sync in settings
         }
     }
 
