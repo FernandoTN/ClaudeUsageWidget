@@ -400,6 +400,19 @@ struct ProfileRow: View {
                     }
                 }
 
+                // Login health per provider, derived from the cached credential JSON
+                // (in-memory only — no Keychain read on the main thread)
+                if claudeTokenStatus != nil || codexTokenStatus != nil {
+                    HStack(spacing: 6) {
+                        if let status = claudeTokenStatus {
+                            CredentialStatusBadge(provider: "Claude", status: status)
+                        }
+                        if let status = codexTokenStatus {
+                            CredentialStatusBadge(provider: "Codex", status: status)
+                        }
+                    }
+                }
+
                 Text(profileInfo)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
@@ -480,6 +493,22 @@ struct ProfileRow: View {
         }
     }
 
+    private var claudeTokenStatus: StoredTokenStatus? {
+        guard let json = profile.cliCredentialsJSON else { return nil }
+        return StoredTokenStatus(
+            expiry: ClaudeCodeSyncService.shared.extractTokenExpiry(from: json),
+            hasRefreshToken: ClaudeCodeSyncService.shared.extractRefreshToken(from: json) != nil
+        )
+    }
+
+    private var codexTokenStatus: StoredTokenStatus? {
+        guard let json = profile.codexCredentialsJSON else { return nil }
+        return StoredTokenStatus(
+            expiry: CodexUsageService.shared.extractTokenExpiry(from: json),
+            hasRefreshToken: CodexUsageService.shared.extractRefreshToken(from: json) != nil
+        )
+    }
+
     private var profileInfo: String {
         var parts: [String] = []
 
@@ -511,6 +540,68 @@ struct ProfileRow: View {
         } catch {
             // Error handled by ProfileManager
         }
+    }
+}
+
+// MARK: - Stored login health
+
+/// Lifecycle state of a stored OAuth login. An expired access token with a live
+/// refresh token on file is NOT a problem — the app redeems it on the next fetch —
+/// so it renders as "renews automatically", not as an error.
+enum StoredTokenStatus {
+    case valid(until: Date)
+    case autoRenews
+    case expired
+
+    init(expiry: Date?, hasRefreshToken: Bool) {
+        if let expiry, expiry > Date() {
+            self = .valid(until: expiry)
+        } else if hasRefreshToken {
+            self = .autoRenews
+        } else {
+            self = .expired
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .valid: return .green
+        case .autoRenews: return .orange
+        case .expired: return .red
+        }
+    }
+
+    var text: String {
+        switch self {
+        case .valid(let until):
+            let relative = RelativeDateTimeFormatter().localizedString(for: until, relativeTo: Date())
+            return String(format: "profiles.token_valid".localized, relative)
+        case .autoRenews:
+            return "profiles.token_auto_renews".localized
+        case .expired:
+            return "profiles.token_expired".localized
+        }
+    }
+}
+
+struct CredentialStatusBadge: View {
+    let provider: String
+    let status: StoredTokenStatus
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(status.color)
+                .frame(width: 5, height: 5)
+
+            Text("\(provider): \(status.text)")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(status.color.opacity(0.12))
+        .cornerRadius(4)
     }
 }
 

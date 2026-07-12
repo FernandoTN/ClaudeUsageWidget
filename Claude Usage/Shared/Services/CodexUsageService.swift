@@ -368,10 +368,14 @@ class CodexUsageService {
 
     // MARK: - Usage Fetch
 
+    /// How far ahead of expiry to demand freshness when forcing a refresh after a
+    /// 401 — far enough in the future that ANY stored expiry triggers redemption.
+    private static let forceRefreshWindow: TimeInterval = 10 * 365 * 24 * 3600
+
     /// Fetches session (5h) + weekly usage for a profile's Codex account and maps it
     /// onto the app's usage model (primary window → session, secondary → weekly).
     /// Self-heals a stale token first.
-    func fetchUsage(for profileId: UUID) async throws -> ClaudeUsage {
+    func fetchUsage(for profileId: UUID, isRetryAfterRefresh: Bool = false) async throws -> ClaudeUsage {
         _ = await ensureFreshCredentials(for: profileId)
 
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
@@ -404,6 +408,17 @@ class CodexUsageService {
         LoggingService.shared.logAPIResponse("codex/wham/usage", statusCode: httpResponse.statusCode)
 
         guard httpResponse.statusCode == 200 else {
+            // A 401/403 with a token that is unexpired by its JWT stamp means it was
+            // invalidated externally (a `codex login` elsewhere rotates the family) —
+            // the expiry-based self-heal above never fires for it. Force one refresh
+            // and retry; a revoked refresh token 4xxes inside ensureFreshCredentials
+            // and takes the existing re-login notification path.
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403,
+               !isRetryAfterRefresh,
+               await ensureFreshCredentials(for: profileId, freshFor: Self.forceRefreshWindow) {
+                LoggingService.shared.log("Codex: usage fetch got \(httpResponse.statusCode) on an unexpired token — refreshed, retrying once")
+                return try await fetchUsage(for: profileId, isRetryAfterRefresh: true)
+            }
             throw AppError(
                 code: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
                     ? .apiUnauthorized : .apiGenericError,

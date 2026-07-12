@@ -58,6 +58,7 @@ struct PopoverContentView: View {
     @ObservedObject var manager: MenuBarManager
     let onRefresh: () -> Void
     let onPreferences: () -> Void
+    let onManageProfiles: () -> Void
 
     @State private var isRefreshing = false
     @State private var showInsights = false
@@ -87,6 +88,19 @@ struct PopoverContentView: View {
         return manager.apiUsage
     }
 
+    /// Name of the VIEWED profile if its last fetch hit a credential error, nil
+    /// otherwise. In multi-profile mode each icon's popover only warns about its
+    /// own account — one dead login must not banner every popover.
+    private var credentialErrorProfileName: String? {
+        let viewedId = manager.clickedProfileId ?? profileManager.activeProfile?.id
+        if profileManager.displayMode == .multi {
+            guard let id = viewedId, manager.credentialErrorProfileIds.contains(id) else { return nil }
+            return profileManager.profiles.first { $0.id == id }?.name
+        }
+        guard manager.hasCredentialError else { return nil }
+        return profileManager.activeProfile?.name
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
@@ -105,7 +119,7 @@ struct PopoverContentView: View {
                         }
                     }
                 },
-                onManageProfiles: onPreferences,
+                onManageProfiles: onManageProfiles,
                 onPreferences: onPreferences,
                 clickedProfileId: manager.clickedProfileId
             )
@@ -113,13 +127,13 @@ struct PopoverContentView: View {
             PopoverDivider()
 
             // Error / stale data banners
-            if manager.hasCredentialError {
+            if let errorProfileName = credentialErrorProfileName {
                 StatusBannerView(
                     icon: "exclamationmark.triangle.fill",
-                    message: "popover.banner.credentials_expired".localized,
+                    message: String(format: "popover.banner.credentials_expired_profile".localized, errorProfileName),
                     color: .orange
                 ) {
-                    onPreferences()
+                    onManageProfiles()
                 }
             } else if manager.consecutiveRefreshFailures >= 3 {
                 StatusBannerView(

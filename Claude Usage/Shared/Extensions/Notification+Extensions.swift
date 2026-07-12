@@ -23,4 +23,8 @@ extension Notification.Name {
     /// Posted when the background Keychain credential load finishes populating the
     /// in-memory cache, so observers can re-read fully-hydrated profiles.
     static let profileCredentialsReady = Notification.Name("profileCredentialsReady")
+
+    /// Posted to jump an already-open settings window to a specific section.
+    /// The object is the target SettingsSection's rawValue.
+    static let settingsSectionRequested = Notification.Name("settingsSectionRequested")
 }
