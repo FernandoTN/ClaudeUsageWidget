@@ -344,7 +344,20 @@ class CodexUsageService {
 
     /// Profiles already alerted about a revoked refresh token — one notification per
     /// dead login, re-armed when a refresh succeeds or the account is re-synced.
-    private var reloginNotifiedProfiles: Set<UUID> = []
+    /// Persisted so dead-login indicators survive an app relaunch.
+    private var reloginNotifiedProfiles: Set<UUID> = CodexUsageService.loadDeadLogins() {
+        didSet { Self.saveDeadLogins(reloginNotifiedProfiles) }
+    }
+
+    private static let deadLoginsKey = "codexDeadLogins_v1"
+
+    private static func loadDeadLogins() -> Set<UUID> {
+        Set((UserDefaults.standard.stringArray(forKey: deadLoginsKey) ?? []).compactMap(UUID.init(uuidString:)))
+    }
+
+    private static func saveDeadLogins(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: deadLoginsKey)
+    }
 
     /// True when this profile's stored login has been flagged dead (revoked refresh
     /// token) and the user was told to `codex login` + re-sync. Lets the UI show
@@ -377,9 +390,11 @@ class CodexUsageService {
     }
 
     /// Tells the user (once) that a profile's saved Codex login is dead. Also called
-    /// by the activation gate that refuses to hand the CLI a dead login.
-    func notifyReloginNeeded(for profileId: UUID) {
-        guard !reloginNotifiedProfiles.contains(profileId) else { return }
+    /// by the activation gate that refuses to hand the CLI a dead login. `force`
+    /// bypasses the dedup for USER-initiated actions (a silent no-op on a manual
+    /// click reads as a broken button, not a safety gate).
+    func notifyReloginNeeded(for profileId: UUID, force: Bool = false) {
+        guard force || !reloginNotifiedProfiles.contains(profileId) else { return }
         reloginNotifiedProfiles.insert(profileId)
         let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Codex"
         NotificationManager.shared.sendCodexReloginNotification(profileName: name)

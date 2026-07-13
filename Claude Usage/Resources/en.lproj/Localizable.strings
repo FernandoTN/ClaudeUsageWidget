@@ -695,6 +695,7 @@
 // MARK: - Status Banners
 "popover.banner.credentials_expired" = "Credentials expired. Update in Settings.";
 "popover.banner.credentials_expired_profile" = "%@: credentials expired. Update in Settings.";
+"popover.profile_login_expired" = "%@ — login expired";
 "profiles.token_valid" = "valid %@";
 "profiles.token_auto_renews" = "renews automatically";
 "profiles.token_expired" = "login expired";

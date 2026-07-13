@@ -1494,7 +1494,7 @@ private func observeCredentialChanges() {
         let nextProfile = profiles[nextIndex]
 
         Task {
-            await profileManager.activateProfile(nextProfile.id)
+            await profileManager.activateProfile(nextProfile.id, userInitiated: true)
         }
     }
 

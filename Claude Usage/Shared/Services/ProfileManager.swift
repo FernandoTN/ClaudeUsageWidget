@@ -194,7 +194,11 @@ class ProfileManager: ObservableObject {
     /// profile carries (dead credentials were NOT applied — see the gates below),
     /// so callers like the auto-switch can try a different candidate.
     @discardableResult
-    func activateProfile(_ id: UUID) async -> Bool {
+    /// `userInitiated` marks a switch the user asked for by clicking a menu/button.
+    /// The dead-login gate then re-delivers the re-login notification even if one
+    /// was already sent — a silent no-op on a manual click reads as a broken
+    /// button, not as a safety gate.
+    func activateProfile(_ id: UUID, userInitiated: Bool = false) async -> Bool {
         guard !switchingSemaphore else {
             LoggingService.shared.log("Profile switch already in progress, ignoring")
             return false
@@ -295,7 +299,7 @@ class ProfileManager: ObservableObject {
             // login in place and tell the user this account needs a manual /login.
             if cliSyncService.isTokenExpired(cliJSON) {
                 deadLoginSkipped = true
-                cliSyncService.notifyReloginNeeded(for: id)
+                cliSyncService.notifyReloginNeeded(for: id, force: userInitiated)
                 LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
             } else {
                 let targetProfileId = updatedProfile.id
@@ -348,7 +352,7 @@ class ProfileManager: ObservableObject {
             if let codexJSON = updatedProfile.codexCredentialsJSON,
                CodexUsageService.shared.isTokenExpired(codexJSON) {
                 deadLoginSkipped = true
-                CodexUsageService.shared.notifyReloginNeeded(for: id)
+                CodexUsageService.shared.notifyReloginNeeded(for: id, force: userInitiated)
                 LoggingService.shared.log("⛔️ '\(updatedProfile.name)' Codex login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
             } else {
                 let targetProfileId = updatedProfile.id

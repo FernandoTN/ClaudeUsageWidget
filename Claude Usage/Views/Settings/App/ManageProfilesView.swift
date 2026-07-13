@@ -440,7 +440,7 @@ struct ProfileRow: View {
                     if profileManager.activeProfile?.id != profile.id {
                         Button(action: {
                             Task {
-                                await profileManager.activateProfile(profile.id)
+                                await profileManager.activateProfile(profile.id, userInitiated: true)
                             }
                         }) {
                             Image(systemName: "checkmark.circle")

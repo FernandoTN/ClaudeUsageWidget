@@ -334,7 +334,7 @@ struct ProfileSectionContainer: View {
                     get: { profileManager.activeProfile?.id ?? UUID() },
                     set: { newId in
                         Task {
-                            await profileManager.activateProfile(newId)
+                            await profileManager.activateProfile(newId, userInitiated: true)
                         }
                     }
                 )) {
