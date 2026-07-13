@@ -805,14 +805,35 @@ class ProfileManager: ObservableObject {
     /// revive a dead profile without switching to it first (impossible — the
     /// dead-login gate refuses the switch) or relaunching the app. The identity
     /// lookup is cached per token, so steady-state sweeps cost nothing.
+    /// True while an identity-routed adoption pass is running (they can be
+    /// triggered from launch AND from sweep-end; overlapping passes would race
+    /// each other's saves).
+    private var identityAdoptionInFlight = false
+
     @discardableResult
     func adoptSystemLoginByIdentity() async -> String? {
         // Never touch shared-login bookkeeping mid-switch (contamination window).
-        guard !isSwitchingProfile else { return nil }
+        guard !isSwitchingProfile, !identityAdoptionInFlight else { return nil }
+        identityAdoptionInFlight = true
+        defer { identityAdoptionInFlight = false }
+
         let sync = ClaudeCodeSyncService.shared
         guard let systemJSON = try? await sync.readSystemCredentialsOffMain(),
               let systemToken = sync.extractAccessToken(from: systemJSON),
               let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return nil }
+
+        // The awaits above are suspension points: a switch may have STARTED (or
+        // finished, rewriting the shared login) while the identity fetch was in
+        // flight. Re-validate both before acting on what is now stale data —
+        // adoption stays identity-keyed either way (a token can only ever land
+        // in the profile its LIVE identity matches), but a stale pass could
+        // still wobble the ownership pointer for a sweep.
+        guard !isSwitchingProfile else { return nil }
+        guard let recheckJSON = try? await sync.readSystemCredentialsOffMain(),
+              sync.extractAccessToken(from: recheckJSON) == systemToken,
+              !isSwitchingProfile else {
+            return nil  // the shared login changed under us — next sweep re-runs
+        }
 
         var reloaded = profileStore.loadProfiles()
         let owner = reloaded.first(where: { $0.claudeAccountUUID == identity.accountUUID })
