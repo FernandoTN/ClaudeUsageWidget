@@ -795,29 +795,42 @@ class ProfileManager: ObservableObject {
     ///   credential copy is cleared so it stops impersonating the owner. The
     ///   token itself is never touched — running CLI sessions are unaffected.
     private func repairClaudeOwnerFromSystemIdentity() {
-        Task {
-            let sync = ClaudeCodeSyncService.shared
-            guard let systemJSON = try? await sync.readSystemCredentialsOffMain(),
-                  let systemToken = sync.extractAccessToken(from: systemJSON),
-                  let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return }
+        Task { await adoptSystemLoginByIdentity() }
+    }
 
-            var reloaded = profileStore.loadProfiles()
-            let owner = reloaded.first(where: { $0.claudeAccountUUID == identity.accountUUID })
-                ?? reloaded.first(where: {
-                    $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
-                        && $0.organizationId == identity.organizationUUID
-                })
-            guard let owner else { return }
+    /// Same repair, callable on demand (runs after every sweep as well as at
+    /// launch): resolves the shared login's live identity, routes the pointer to
+    /// the matching profile, and — new — ADOPTS the login into that profile when
+    /// its stored copy is older. This is what lets a plain `/login` in the CLI
+    /// revive a dead profile without switching to it first (impossible — the
+    /// dead-login gate refuses the switch) or relaunching the app. The identity
+    /// lookup is cached per token, so steady-state sweeps cost nothing.
+    @discardableResult
+    func adoptSystemLoginByIdentity() async -> String? {
+        // Never touch shared-login bookkeeping mid-switch (contamination window).
+        guard !isSwitchingProfile else { return nil }
+        let sync = ClaudeCodeSyncService.shared
+        guard let systemJSON = try? await sync.readSystemCredentialsOffMain(),
+              let systemToken = sync.extractAccessToken(from: systemJSON),
+              let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return nil }
 
-            if activeClaudeProfileId != owner.id {
-                LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
-                activeClaudeProfileId = owner.id
-                profileStore.saveActiveClaudeProfileId(owner.id)
-            }
+        var reloaded = profileStore.loadProfiles()
+        let owner = reloaded.first(where: { $0.claudeAccountUUID == identity.accountUUID })
+            ?? reloaded.first(where: {
+                $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
+                    && $0.organizationId == identity.organizationUUID
+            })
+        guard let owner else { return nil }
 
-            var changed = false
-            if let index = reloaded.firstIndex(where: { $0.id == owner.id }),
-               reloaded[index].claudeAccountUUID != identity.accountUUID
+        if activeClaudeProfileId != owner.id {
+            LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
+            activeClaudeProfileId = owner.id
+            profileStore.saveActiveClaudeProfileId(owner.id)
+        }
+
+        var changed = false
+        if let index = reloaded.firstIndex(where: { $0.id == owner.id }) {
+            if reloaded[index].claudeAccountUUID != identity.accountUUID
                 || reloaded[index].claudeAccountEmail != identity.email {
                 reloaded[index].claudeAccountUUID = identity.accountUUID
                 reloaded[index].claudeAccountEmail = identity.email.isEmpty ? nil : identity.email
@@ -825,38 +838,54 @@ class ProfileManager: ObservableObject {
                 changed = true
             }
 
-            // Contamination dedupe: a profile OTHER than the owner holding the
-            // owner's account is a mislabeled duplicate — either a byte-identical
-            // copy of the live token, or a STALE same-account token absorbed
-            // earlier (its fetches then lose the per-account rate limit race to
-            // the owner's every sweep). Clear both kinds (nil never deletes on
-            // save, so the explicit clear is the only removal path — by design).
-            for profile in reloaded where profile.id != owner.id {
-                guard let json = profile.cliCredentialsJSON,
-                      let index = reloaded.firstIndex(where: { $0.id == profile.id }) else { continue }
-                let sameToken = sync.extractAccessToken(from: json) == systemToken
-                let sameAccountStamp = profile.claudeAccountUUID == identity.accountUUID
-                guard sameToken || sameAccountStamp else { continue }
-                profileStore.clearProfileCredential(profile.id, key: .cliCredentials)
-                reloaded[index].cliCredentialsJSON = nil
-                reloaded[index].hasCliAccount = false
-                reloaded[index].cliAccountSyncedAt = nil
-                reloaded[index].claudeAccountUUID = nil
-                reloaded[index].claudeAccountEmail = nil
-                reloaded[index].claudeOrganizationUUID = nil
+            // Adopt the shared login into its owner when the stored copy is a
+            // DIFFERENT, older token (typical after a manual /login that revived
+            // a dead account). Expiry decides — never overwrite a fresher copy.
+            let ownerToken = reloaded[index].cliCredentialsJSON.flatMap(sync.extractAccessToken(from:))
+            let systemExpiry = sync.extractTokenExpiry(from: systemJSON) ?? .distantPast
+            let ownerExpiry = reloaded[index].cliCredentialsJSON.flatMap(sync.extractTokenExpiry(from:)) ?? .distantPast
+            if ownerToken != systemToken, systemExpiry > ownerExpiry {
+                reloaded[index].cliCredentialsJSON = systemJSON
+                reloaded[index].hasCliAccount = true
+                reloaded[index].cliAccountSyncedAt = Date()
+                sync.markLoginRevived(owner.id)
                 changed = true
-                LoggingService.shared.log("ProfileManager: ⚠️ cleared '\(profile.name)' CLI credentials — \(sameToken ? "a copy of" : "a stale token from") '\(owner.name)'s account (cross-account contamination)")
-            }
-
-            if changed {
-                profileStore.saveProfiles(reloaded)
-                profiles = profileStore.loadProfiles()
-                if let activeId = activeProfile?.id,
-                   let updatedActive = profiles.first(where: { $0.id == activeId }) {
-                    activeProfile = updatedActive
-                }
+                LoggingService.shared.log("ProfileManager: ✓ adopted the CLI's fresh login into '\(owner.name)' (identity-matched)")
             }
         }
+
+        // Contamination dedupe: a profile OTHER than the owner holding the
+        // owner's account is a mislabeled duplicate — either a byte-identical
+        // copy of the live token, or a STALE same-account token absorbed
+        // earlier (its fetches then lose the per-account rate limit race to
+        // the owner's every sweep). Clear both kinds (nil never deletes on
+        // save, so the explicit clear is the only removal path — by design).
+        for profile in reloaded where profile.id != owner.id {
+            guard let json = profile.cliCredentialsJSON,
+                  let index = reloaded.firstIndex(where: { $0.id == profile.id }) else { continue }
+            let sameToken = sync.extractAccessToken(from: json) == systemToken
+            let sameAccountStamp = profile.claudeAccountUUID == identity.accountUUID
+            guard sameToken || sameAccountStamp else { continue }
+            profileStore.clearProfileCredential(profile.id, key: .cliCredentials)
+            reloaded[index].cliCredentialsJSON = nil
+            reloaded[index].hasCliAccount = false
+            reloaded[index].cliAccountSyncedAt = nil
+            reloaded[index].claudeAccountUUID = nil
+            reloaded[index].claudeAccountEmail = nil
+            reloaded[index].claudeOrganizationUUID = nil
+            changed = true
+            LoggingService.shared.log("ProfileManager: ⚠️ cleared '\(profile.name)' CLI credentials — \(sameToken ? "a copy of" : "a stale token from") '\(owner.name)'s account (cross-account contamination)")
+        }
+
+        if changed {
+            profileStore.saveProfiles(reloaded)
+            profiles = profileStore.loadProfiles()
+            if let activeId = activeProfile?.id,
+               let updatedActive = profiles.first(where: { $0.id == activeId }) {
+                activeProfile = updatedActive
+            }
+        }
+        return owner.name
     }
 
     /// If the user is logged into the codex CLI (~/.codex/auth.json exists) and no

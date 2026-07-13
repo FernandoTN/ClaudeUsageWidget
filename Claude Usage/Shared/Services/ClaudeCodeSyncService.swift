@@ -786,6 +786,13 @@ class ClaudeCodeSyncService {
         reloginNotifiedProfiles.contains(profileId)
     }
 
+    /// A fresh login for this profile just arrived (identity-routed adoption or
+    /// re-sync) — re-arm the dead-login notification and clear the persisted
+    /// "login expired" indicators.
+    func markLoginRevived(_ profileId: UUID) {
+        reloginNotifiedProfiles.remove(profileId)
+    }
+
     /// Profiles with a heal currently in flight (see ensureFreshCredentials).
     private var refreshInFlight: Set<UUID> = []
 

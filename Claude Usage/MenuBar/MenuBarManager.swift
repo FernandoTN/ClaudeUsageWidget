@@ -905,6 +905,13 @@ private func observeCredentialChanges() {
                     self.checkAutoSwitchIfNeeded(usage: candidateUsage, currentProfile: candidate)
                 }
             }
+
+            // Route the shared CLI login to whichever profile its live identity
+            // says owns it — this is how a plain `/login` in the terminal revives
+            // a dead profile without switching to it (the gate refuses that) or
+            // relaunching the app. Identity is cached per token, so this only
+            // touches the network when the CLI's login actually changes.
+            await self.profileManager.adoptSystemLoginByIdentity()
         }
     }
 
