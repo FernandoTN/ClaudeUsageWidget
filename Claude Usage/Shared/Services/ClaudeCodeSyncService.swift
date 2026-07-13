@@ -761,7 +761,22 @@ class ClaudeCodeSyncService {
 
     /// Profiles already alerted about a dead CLI login — one notification per dead
     /// login, re-armed when a refresh succeeds or the account is re-synced.
-    private var reloginNotifiedProfiles: Set<UUID> = []
+    /// Persisted so the dead-login indicators (dropdown row, Manage Profiles
+    /// badge) survive an app relaunch instead of reappearing only after the next
+    /// failed refresh attempt.
+    private var reloginNotifiedProfiles: Set<UUID> = ClaudeCodeSyncService.loadDeadLogins() {
+        didSet { Self.saveDeadLogins(reloginNotifiedProfiles) }
+    }
+
+    private static let deadLoginsKey = "claudeDeadLogins_v1"
+
+    private static func loadDeadLogins() -> Set<UUID> {
+        Set((UserDefaults.standard.stringArray(forKey: deadLoginsKey) ?? []).compactMap(UUID.init(uuidString:)))
+    }
+
+    private static func saveDeadLogins(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: deadLoginsKey)
+    }
 
     /// True when this profile's stored CLI login has been flagged dead (revoked
     /// refresh token) and the user was told to `/login` + re-sync. Lets the UI
@@ -778,8 +793,11 @@ class ClaudeCodeSyncService {
     /// access token is expired and the refresh token revoked/consumed — so only a
     /// manual `/login` plus a re-sync can revive it. Called on a 4xx from the token
     /// endpoint and by the activation gate that refuses to apply a dead login.
-    func notifyReloginNeeded(for profileId: UUID) {
-        guard !reloginNotifiedProfiles.contains(profileId) else { return }
+    /// `force` bypasses the once-per-dead-login dedup — pass it for USER-initiated
+    /// actions (clicking the profile in a menu): a silent no-op there reads as a
+    /// broken button, not as a safety gate.
+    func notifyReloginNeeded(for profileId: UUID, force: Bool = false) {
+        guard force || !reloginNotifiedProfiles.contains(profileId) else { return }
         reloginNotifiedProfiles.insert(profileId)
         let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Claude"
         NotificationManager.shared.sendClaudeReloginNotification(profileName: name)

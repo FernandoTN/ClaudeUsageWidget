@@ -275,20 +275,48 @@ struct ProfileSwitcherCompact: View {
     @State private var isHovered = false
     let onManageProfiles: () -> Void
 
+    /// True when a provider login this profile carries is known dead (expired
+    /// with a revoked refresh token). Selecting such a profile is refused by the
+    /// activation gate, so say so IN the menu instead of leaving a button that
+    /// appears to do nothing. Derived from the cached credential JSON and the
+    /// services' persisted dead-login flags — no Keychain reads.
+    private func hasDeadLogin(_ profile: Profile) -> Bool {
+        if let json = profile.cliCredentialsJSON {
+            if ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id) { return true }
+            if case .expired = StoredTokenStatus(
+                expiry: ClaudeCodeSyncService.shared.extractTokenExpiry(from: json),
+                hasRefreshToken: ClaudeCodeSyncService.shared.extractRefreshToken(from: json) != nil
+            ) { return true }
+        }
+        if let json = profile.codexCredentialsJSON {
+            if CodexUsageService.shared.isLoginMarkedDead(profile.id) { return true }
+            if case .expired = StoredTokenStatus(
+                expiry: CodexUsageService.shared.extractTokenExpiry(from: json),
+                hasRefreshToken: CodexUsageService.shared.extractRefreshToken(from: json) != nil
+            ) { return true }
+        }
+        return false
+    }
+
     var body: some View {
         Menu {
             ForEach(profileManager.profiles) { profile in
+                let loginDead = hasDeadLogin(profile)
                 Button(action: {
                     Task {
-                        await profileManager.activateProfile(profile.id)
+                        await profileManager.activateProfile(profile.id, userInitiated: true)
                     }
                 }) {
                     HStack(spacing: 8) {
-                        Image(systemName: "person.circle.fill")
+                        Image(systemName: loginDead ? "exclamationmark.triangle.fill" : "person.circle.fill")
                             .font(.system(size: 12))
+                            .foregroundColor(loginDead ? .red : .primary)
 
-                        Text(profile.name)
+                        Text(loginDead
+                             ? String(format: "popover.profile_login_expired".localized, profile.name)
+                             : profile.name)
                             .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(loginDead ? .secondary : .primary)
 
                         Spacer()
 
@@ -362,7 +390,7 @@ struct ProfileSwitcherBar: View {
             ForEach(profileManager.profiles) { profile in
                 Button(action: {
                     Task {
-                        await profileManager.activateProfile(profile.id)
+                        await profileManager.activateProfile(profile.id, userInitiated: true)
                     }
                 }) {
                     HStack(spacing: 8) {
