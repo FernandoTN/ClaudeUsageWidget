@@ -822,6 +822,17 @@ private func observeCredentialChanges() {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                 }
 
+                // The mid-sweep auto-switch below may have started rewriting the
+                // shared logins. Stop the sweep rather than run Keychain healing
+                // beside it — same cross-account-contamination hazard the
+                // sweep-start guard exists for. Priority (provider-active/focused)
+                // profiles re-fetch next sweep; a skipped background profile waits
+                // for its next round-robin turn (the fetch cursor already moved).
+                if self.profileManager.isSwitchingProfile {
+                    LoggingService.shared.log("MenuBarManager: profile switch started mid-sweep — ending sweep early")
+                    break
+                }
+
                 // Self-heal a stale CLI OAuth token before fetching
                 await self.ensureFreshCLICredentialsIfNeeded(for: profile)
                 if let updated = self.profileManager.profiles.first(where: { $0.id == profile.id }) {
@@ -843,6 +854,18 @@ private func observeCredentialChanges() {
                     }
                     sweepSuccesses += 1
                     self.credentialErrorProfileIds.remove(profile.id)
+
+                    // Check auto-switch NOW for the accounts actually in use
+                    // instead of waiting for the end of the sweep: rate-limit
+                    // spacing makes a full sweep take ~2s per profile, and near
+                    // the threshold those seconds are when parallel sessions hit
+                    // the hard limit. Idempotent with the end-of-sweep check
+                    // (autoSwitchedProfileIds de-dupes the trigger).
+                    if profile.id == self.profileManager.activeProfile?.id
+                        || profile.id == self.profileManager.activeClaudeProfileId
+                        || profile.id == self.profileManager.activeCodexProfileId {
+                        self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                    }
                 } catch {
                     let appError = AppError.wrap(error)
                     sweepFailures += 1
@@ -1196,12 +1219,23 @@ private func observeCredentialChanges() {
 
     // MARK: - Auto-Switch Profile on Session Limit
 
-    /// Checks if the current profile hit 100% and switches to the next available one
+    /// Checks if the current profile crossed the auto-switch threshold (default
+    /// 95%, Settings → Profiles → Auto-Switch) and switches to the next available
+    /// one. Firing BELOW 100% is deliberate: it forfeits the remaining headroom so
+    /// running sessions never hit the hard limit while the sweep-based detection
+    /// (~30s cadence) catches up.
     private func checkAutoSwitchIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }
 
-        // Auto-switch never crosses providers: a Codex profile at 100% switches to
+        // Guard: a switch is already rewriting the shared logins (other provider's
+        // rotation, or a user-initiated switch). Don't stack a second one —
+        // activateProfile would refuse via its semaphore and the candidate walk
+        // below would misread that refusal as dead credentials and skip a
+        // perfectly good candidate. The next sweep re-checks.
+        guard !profileManager.isSwitchingProfile else { return }
+
+        // Auto-switch never crosses providers: a Codex profile at the limit switches to
         // another CODEX account, a Claude profile to another CLAUDE account
         // (candidate filtering below enforces the same-provider rule).
 
@@ -1215,10 +1249,11 @@ private func observeCredentialChanges() {
         preflightNextCandidateIfNeeded(usage: usage, currentProfile: currentProfile)
 
         let profileId = currentProfile.id
+        let threshold = SharedDataStore.shared.loadAutoSwitchThreshold()
 
         // If every quota window regained headroom (session reset, weekly rollover),
         // re-arm the trigger for this profile.
-        if !Self.isQuotaExhausted(usage) {
+        if !Self.isQuotaExhausted(usage, threshold: threshold) {
             autoSwitchedProfileIds.remove(profileId)
             return
         }
@@ -1237,7 +1272,16 @@ private func observeCredentialChanges() {
         Task {
             var excluded: Set<UUID> = []
             while let nextProfile = self.findNextAvailableProfile(after: currentProfile, excluding: excluded) {
-                LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)'")
+                // Re-check at every iteration: a switch that started after the
+                // guard above (other provider, user click) must not be stacked —
+                // retry cleanly on the next sweep instead of walking candidates
+                // on semaphore refusals.
+                guard !self.profileManager.isSwitchingProfile else {
+                    self.autoSwitchedProfileIds.remove(profileId)
+                    LoggingService.shared.log("AutoSwitch: another switch is in flight, deferring to next sweep")
+                    return
+                }
+                LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (threshold \(Int(threshold))%)")
 
                 if await self.profileManager.activateProfile(nextProfile.id) {
                     // Send notification
@@ -1256,16 +1300,23 @@ private func observeCredentialChanges() {
         }
     }
 
-    /// True when ANY of the profile's quota windows is fully used: the 5-hour
-    /// session, the all-models weekly, or the Fable weekly. Mirrors the candidate
-    /// headroom checks below — an account the auto-switch would never pick as a
-    /// target should not be kept as the active one either (a weekly limit can run
-    /// out while the session window sits far below 100%). Static + now-injectable
-    /// so the mirror is unit-testable.
-    nonisolated static func isQuotaExhausted(_ usage: ClaudeUsage, now: Date = Date()) -> Bool {
-        if usage.effectiveSessionPercentage >= 100.0 { return true }
-        if usage.weeklyResetTime >= now && usage.weeklyPercentage >= 100.0 { return true }
-        if let fablePercentage = usage.fableWeeklyPercentage, fablePercentage >= 100.0,
+    /// True when ANY of the profile's quota windows has crossed `threshold`: the
+    /// 5-hour session, the all-models weekly, or the Fable weekly. Mirrors the
+    /// candidate headroom checks below — an account the auto-switch would never
+    /// pick as a target should not be kept as the active one either (a weekly
+    /// limit can run out while the session window sits far below the threshold).
+    /// The shared threshold on BOTH sides is what prevents ping-pong: an account
+    /// switched away from at ≥threshold can never be re-picked as a target until
+    /// one of its windows resets. Static + injectable so the mirror is
+    /// unit-testable.
+    nonisolated static func isQuotaExhausted(
+        _ usage: ClaudeUsage,
+        threshold: Double = 100,
+        now: Date = Date()
+    ) -> Bool {
+        if usage.effectiveSessionPercentage >= threshold { return true }
+        if usage.weeklyResetTime >= now && usage.weeklyPercentage >= threshold { return true }
+        if let fablePercentage = usage.fableWeeklyPercentage, fablePercentage >= threshold,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
             return true
         }
@@ -1275,7 +1326,7 @@ private func observeCredentialChanges() {
     // MARK: - Candidate Preflight (seamless auto-switch)
 
     /// Session-usage milestones at which the NEXT auto-switch candidate's stored
-    /// login is validated ahead of the 100% switch.
+    /// login is validated ahead of the threshold switch.
     private static let preflightMilestones: [Double] = [25, 50, 75, 90]
 
     /// Milestones already preflighted per current profile — cleared when its
@@ -1374,7 +1425,7 @@ private func observeCredentialChanges() {
         LoggingService.shared.log("Preflight[\(Int(milestone))%]: no live candidate available after '\(currentProfile.name)'")
     }
 
-    /// Picks the profile to switch to when the session limit is hit.
+    /// Picks the profile to switch to when the switch threshold is crossed.
     ///
     /// Selection: among the other profiles OF THE SAME PROVIDER (Codex accounts
     /// switch among Codex accounts, Claude among Claude — the same policy applies
@@ -1387,6 +1438,11 @@ private func observeCredentialChanges() {
     private func findNextAvailableProfile(after currentProfile: Profile, excluding: Set<UUID> = []) -> Profile? {
         let now = Date()
         let switchingCodex = currentProfile.isCodexOnlyProfile
+        // Candidates are held to the SAME threshold the trigger fires at: a
+        // profile at ≥threshold is exactly what the switch is escaping, so
+        // landing on one (and ping-ponging between two nearly-full accounts)
+        // must be impossible by construction.
+        let threshold = SharedDataStore.shared.loadAutoSwitchThreshold()
 
         let candidates = profileManager.profiles.filter { candidate in
             guard candidate.id != currentProfile.id, candidate.hasUsageCredentials,
@@ -1420,9 +1476,9 @@ private func observeCredentialChanges() {
         }
 
         for candidate in ranked {
-            if hasSessionHeadroom(candidate)
-                && hasWeeklyHeadroom(candidate, now: now)
-                && hasFableWeeklyHeadroom(candidate, now: now) {
+            if hasSessionHeadroom(candidate, threshold: threshold)
+                && hasWeeklyHeadroom(candidate, threshold: threshold, now: now)
+                && hasFableWeeklyHeadroom(candidate, threshold: threshold, now: now) {
                 return candidate
             }
             LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
@@ -1430,29 +1486,32 @@ private func observeCredentialChanges() {
         return nil
     }
 
-    /// True while the candidate still has 5-hour session capacity. A profile with no
-    /// cached usage is assumed available; an expired session window counts as 0%.
-    private func hasSessionHeadroom(_ profile: Profile) -> Bool {
+    /// True while the candidate's session usage is below the switch threshold. A
+    /// profile with no cached usage is assumed available; an expired session
+    /// window counts as 0%.
+    private func hasSessionHeadroom(_ profile: Profile, threshold: Double) -> Bool {
         guard let usage = profile.claudeUsage else { return true }
-        return usage.effectiveSessionPercentage < 100.0
+        return usage.effectiveSessionPercentage < threshold
     }
 
-    /// True while the candidate still has weekly capacity. A weekly reset already in
-    /// the past means the window rolled over since the data was cached — full quota.
-    private func hasWeeklyHeadroom(_ profile: Profile, now: Date) -> Bool {
+    /// True while the candidate's weekly usage is below the switch threshold. A
+    /// weekly reset already in the past means the window rolled over since the
+    /// data was cached — full quota.
+    private func hasWeeklyHeadroom(_ profile: Profile, threshold: Double, now: Date) -> Bool {
         guard let usage = profile.claudeUsage else { return true }
         if usage.weeklyResetTime < now { return true }
-        return usage.weeklyPercentage < 100.0
+        return usage.weeklyPercentage < threshold
     }
 
-    /// True while the candidate still has Fable weekly capacity. Accounts that don't
-    /// report a Fable limit (Codex profiles, plans without a Fable window) are treated
-    /// as available; a Fable reset already in the past means full quota again.
-    private func hasFableWeeklyHeadroom(_ profile: Profile, now: Date) -> Bool {
+    /// True while the candidate's Fable weekly usage is below the switch threshold.
+    /// Accounts that don't report a Fable limit (Codex profiles, plans without a
+    /// Fable window) are treated as available; a Fable reset already in the past
+    /// means full quota again.
+    private func hasFableWeeklyHeadroom(_ profile: Profile, threshold: Double, now: Date) -> Bool {
         guard let usage = profile.claudeUsage,
               let fablePercentage = usage.fableWeeklyPercentage else { return true }
         if let fableReset = usage.fableWeeklyResetTime, fableReset < now { return true }
-        return fablePercentage < 100.0
+        return fablePercentage < threshold
     }
 
     private func preferencesClicked(section: SettingsSection? = nil) {

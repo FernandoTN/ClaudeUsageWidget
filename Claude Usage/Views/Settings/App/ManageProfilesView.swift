@@ -12,6 +12,7 @@ struct ManageProfilesView: View {
     @State private var showingCreateProfile = false
     @State private var newProfileName = ""
     @State private var errorMessage: String?
+    @State private var autoSwitchThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
 
     var body: some View {
         ScrollView {
@@ -255,6 +256,37 @@ struct ManageProfilesView: View {
                                 }
                             )
                         )
+
+                        Divider()
+
+                        // Proactive switch threshold
+                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+                            HStack {
+                                Text("auto_switch.threshold_title".localized)
+                                    .font(DesignTokens.Typography.body)
+                                Spacer()
+                                Text("\(Int(autoSwitchThreshold))%")
+                                    .font(DesignTokens.Typography.body)
+                                    .foregroundColor(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Slider(
+                                value: $autoSwitchThreshold,
+                                in: SharedDataStore.autoSwitchThresholdRange,
+                                step: 1
+                            )
+                            .controlSize(.small)
+                            // Persist on every value change, not onEditingChanged:
+                            // keyboard and VoiceOver adjustments never report an
+                            // editing session, so a drag-end-only save silently
+                            // drops them.
+                            .onChange(of: autoSwitchThreshold) { _, newValue in
+                                SharedDataStore.shared.saveAutoSwitchThreshold(newValue)
+                            }
+                            Text("auto_switch.threshold_description".localized)
+                                .font(DesignTokens.Typography.caption)
+                                .foregroundColor(.secondary)
+                        }
 
                         Divider()
 

@@ -29,6 +29,7 @@ class SharedDataStore {
 
         // Auto-Switch Profile
         static let autoSwitchProfileEnabled = "autoSwitchProfileEnabled"
+        static let autoSwitchThreshold = "autoSwitchThreshold"
 
         // Popover Settings
         static let popoverShowRemainingTime = "popoverShowRemainingTime" // legacy bool key
@@ -121,6 +122,28 @@ class SharedDataStore {
 
     func loadAutoSwitchProfileEnabled() -> Bool {
         return defaults.bool(forKey: Keys.autoSwitchProfileEnabled)
+    }
+
+    /// Usage percentage at which the auto-switch fires (and above which a
+    /// candidate is no longer an eligible target). Below 100 the switch is
+    /// PROACTIVE: the remaining headroom is forfeited so running Claude Code
+    /// sessions never see "You've hit your session limit" — detection is
+    /// sweep-based (~30s), so a reactive 100% trigger always lands after
+    /// sessions have already started erroring.
+    static let defaultAutoSwitchThreshold: Double = 95
+    static let autoSwitchThresholdRange: ClosedRange<Double> = 80...100
+
+    func saveAutoSwitchThreshold(_ threshold: Double) {
+        defaults.set(threshold, forKey: Keys.autoSwitchThreshold)
+    }
+
+    func loadAutoSwitchThreshold() -> Double {
+        // double(forKey:) returns 0 for a never-written key; clamping also
+        // guards against an out-of-range value hand-edited into the plist.
+        let stored = defaults.double(forKey: Keys.autoSwitchThreshold)
+        guard stored > 0 else { return Self.defaultAutoSwitchThreshold }
+        return min(max(stored, Self.autoSwitchThresholdRange.lowerBound),
+                   Self.autoSwitchThresholdRange.upperBound)
     }
 
     // MARK: - Popover Settings

@@ -23,7 +23,7 @@ Color coding: green (< 50%), yellow (50–80%), orange (80–95%), red (> 95%). 
 
 ### Auto-switch
 
-When the active account's 5-hour session hits 100%, the app switches to the best same-provider candidate: soonest weekly reset first, but only if it still has session, weekly, and per-model weekly headroom. Per-profile opt-out is available in Settings. As usage climbs (25/50/75/90% milestones), the predicted next candidate's stored login is validated in the background so the eventual switch never lands on a dead login — if a candidate's refresh token has been revoked, you get a notification while there is still time to `/login` and re-sync.
+When any of the active account's quota windows (5-hour session, weekly, per-model weekly) crosses the switch threshold — 95% by default, configurable in Settings → Profiles — the app switches to the best same-provider candidate: soonest weekly reset first, but only if all of its windows are still below the same threshold. Switching *before* 100% deliberately forfeits the last few percent so running CLI sessions never stall on "You've hit your session limit"; the shared threshold on both the trigger and candidate eligibility prevents ping-pong between two nearly-full accounts. Per-profile opt-out is available in Settings. As usage climbs (25/50/75/90% milestones), the predicted next candidate's stored login is validated in the background so the eventual switch never lands on a dead login — if a candidate's refresh token has been revoked, you get a notification while there is still time to `/login` and re-sync.
 
 ### Credential self-healing
 

@@ -95,4 +95,31 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: nil), now: now))
         XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 100, fable: nil), now: now))
     }
+
+    // MARK: - Proactive threshold (default 95%)
+
+    func testProactiveThresholdFiresBelowHardLimit() {
+        // The point of the threshold: at 95% the account is exhausted for
+        // auto-switch purposes even though the API would still accept requests.
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 95, weekly: 20), threshold: 95, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 94.9, weekly: 20), threshold: 95, now: now))
+    }
+
+    func testProactiveThresholdAppliesToWeeklyAndFableWindows() {
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 95), threshold: 95, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 95, fableResetIn: 86_400), threshold: 95, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 94, fable: 94, fableResetIn: 86_400), threshold: 95, now: now))
+    }
+
+    func testProactiveThresholdStillRespectsRolledOverWindows() {
+        // Rolled-over windows mean full quota regardless of the threshold.
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 96, sessionResetIn: -60, weekly: 20), threshold: 95, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 96, weeklyResetIn: -60), threshold: 95, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 96, fableResetIn: -60), threshold: 95, now: now))
+    }
+
+    func testThresholdDefaultsToExactLimit() {
+        // Callers that don't pass a threshold keep the historical >= 100 semantics.
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 99.9, weekly: 99.9), now: now))
+    }
 }

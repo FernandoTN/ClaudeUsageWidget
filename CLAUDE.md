@@ -180,7 +180,14 @@ provider(s) it carries: the outgoing account of that provider is re-adopted firs
 the other provider is never touched. Keychain adoption / syncToSystem decisions key
 off `activeClaudeProfileId`, not the focused profile. The session-limit auto-switch
 applies the same policy (soonest weekly reset + headroom + per-profile toggle) to
-BOTH groups independently and never crosses providers; in multi-profile mode both
+BOTH groups independently and never crosses providers; it fires at a configurable
+PROACTIVE threshold (default 95%, `SharedDataStore.loadAutoSwitchThreshold`) so
+running CLI sessions never hit the hard limit while the ~30s sweep catches up —
+the SAME threshold gates candidate eligibility, which is what makes ping-pong
+between two nearly-full accounts impossible. The check runs mid-sweep for the
+provider-active accounts (not just at sweep end), and a sweep ends early if a
+switch starts while it is walking profiles (Keychain-adoption contamination
+hazard); in multi-profile mode both
 provider-active accounts are checked after each refresh sweep.
 
 The multi-profile menu bar mirrors that grouping: Codex items sit together at the

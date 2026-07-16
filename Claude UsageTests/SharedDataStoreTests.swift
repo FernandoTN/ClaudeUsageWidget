@@ -12,6 +12,7 @@ final class SharedDataStoreTests: XCTestCase {
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: "hasCompletedSetup")
+        UserDefaults.standard.removeObject(forKey: "autoSwitchThreshold")
         super.tearDown()
     }
 
@@ -23,6 +24,29 @@ final class SharedDataStoreTests: XCTestCase {
 
         sharedDataStore.saveHasCompletedSetup(true)
         XCTAssertTrue(sharedDataStore.hasCompletedSetup())
+    }
+
+    // MARK: - Auto-Switch Threshold
+
+    func testAutoSwitchThresholdDefaultsWhenNeverWritten() {
+        UserDefaults.standard.removeObject(forKey: "autoSwitchThreshold")
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), SharedDataStore.defaultAutoSwitchThreshold)
+    }
+
+    func testAutoSwitchThresholdRoundTrip() {
+        sharedDataStore.saveAutoSwitchThreshold(90)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 90)
+        sharedDataStore.saveAutoSwitchThreshold(100)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 100)
+    }
+
+    func testAutoSwitchThresholdClampsOutOfRangeValues() {
+        // A hand-edited plist must not produce a threshold that switches
+        // constantly (too low) or never proactively (above 100).
+        sharedDataStore.saveAutoSwitchThreshold(10)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), SharedDataStore.autoSwitchThresholdRange.lowerBound)
+        sharedDataStore.saveAutoSwitchThreshold(150)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), SharedDataStore.autoSwitchThresholdRange.upperBound)
     }
 
 }
