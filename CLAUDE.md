@@ -192,11 +192,13 @@ provider(s) it carries: the outgoing account of that provider is re-adopted firs
 the other provider is never touched. Keychain adoption / syncToSystem decisions key
 off `activeClaudeProfileId`, not the focused profile. The session-limit auto-switch
 applies the same policy (soonest weekly reset + headroom + per-profile toggle) to
-BOTH groups independently and never crosses providers; it fires at a configurable
-PROACTIVE threshold (default 95%, `SharedDataStore.loadAutoSwitchThreshold`) so
-running CLI sessions never hit the hard limit while the ~30s sweep catches up —
-the SAME threshold gates candidate eligibility, which is what makes ping-pong
-between two nearly-full accounts impossible. The check runs mid-sweep for the
+BOTH groups independently and never crosses providers; it fires at configurable
+PROACTIVE thresholds — session default 95% (`loadAutoSwitchThreshold`),
+weekly/Fable default 99% (`loadAutoSwitchWeeklyThreshold`; tighter because
+forfeited weekly quota is gone until the weekly reset) — so running CLI
+sessions never hit the hard limit while the ~30s sweep catches up. The SAME
+per-window thresholds gate candidate eligibility, which is what makes
+ping-pong between two nearly-full accounts impossible. The check runs mid-sweep for the
 provider-active accounts (not just at sweep end), and a sweep ends early if a
 switch starts while it is walking profiles (Keychain-adoption contamination
 hazard); in multi-profile mode both

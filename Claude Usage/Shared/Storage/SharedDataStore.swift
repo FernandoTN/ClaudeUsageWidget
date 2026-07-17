@@ -30,6 +30,7 @@ class SharedDataStore {
         // Auto-Switch Profile
         static let autoSwitchProfileEnabled = "autoSwitchProfileEnabled"
         static let autoSwitchThreshold = "autoSwitchThreshold"
+        static let autoSwitchWeeklyThreshold = "autoSwitchWeeklyThreshold"
 
         // Popover Settings
         static let popoverShowRemainingTime = "popoverShowRemainingTime" // legacy bool key
@@ -124,13 +125,19 @@ class SharedDataStore {
         return defaults.bool(forKey: Keys.autoSwitchProfileEnabled)
     }
 
-    /// Usage percentage at which the auto-switch fires (and above which a
-    /// candidate is no longer an eligible target). Below 100 the switch is
-    /// PROACTIVE: the remaining headroom is forfeited so running Claude Code
-    /// sessions never see "You've hit your session limit" — detection is
-    /// sweep-based (~30s), so a reactive 100% trigger always lands after
-    /// sessions have already started erroring.
+    /// SESSION-window usage percentage at which the auto-switch fires (and
+    /// above which a candidate is no longer an eligible target). Below 100 the
+    /// switch is PROACTIVE: the remaining headroom is forfeited so running
+    /// Claude Code sessions never see "You've hit your session limit" —
+    /// detection is sweep-based (~30s), so a reactive 100% trigger always
+    /// lands after sessions have already started erroring. Cheap to forfeit:
+    /// a session window regenerates within 5 hours.
     static let defaultAutoSwitchThreshold: Double = 95
+    /// WEEKLY-window (all-models and Fable) switch threshold. Deliberately
+    /// tighter than the session threshold: forfeited weekly headroom is gone
+    /// for the rest of the week, so only the last sliver is traded for
+    /// continuity.
+    static let defaultAutoSwitchWeeklyThreshold: Double = 99
     static let autoSwitchThresholdRange: ClosedRange<Double> = 80...100
 
     func saveAutoSwitchThreshold(_ threshold: Double) {
@@ -142,6 +149,17 @@ class SharedDataStore {
         // guards against an out-of-range value hand-edited into the plist.
         let stored = defaults.double(forKey: Keys.autoSwitchThreshold)
         guard stored > 0 else { return Self.defaultAutoSwitchThreshold }
+        return min(max(stored, Self.autoSwitchThresholdRange.lowerBound),
+                   Self.autoSwitchThresholdRange.upperBound)
+    }
+
+    func saveAutoSwitchWeeklyThreshold(_ threshold: Double) {
+        defaults.set(threshold, forKey: Keys.autoSwitchWeeklyThreshold)
+    }
+
+    func loadAutoSwitchWeeklyThreshold() -> Double {
+        let stored = defaults.double(forKey: Keys.autoSwitchWeeklyThreshold)
+        guard stored > 0 else { return Self.defaultAutoSwitchWeeklyThreshold }
         return min(max(stored, Self.autoSwitchThresholdRange.lowerBound),
                    Self.autoSwitchThresholdRange.upperBound)
     }

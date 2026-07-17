@@ -13,6 +13,7 @@ final class SharedDataStoreTests: XCTestCase {
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: "hasCompletedSetup")
         UserDefaults.standard.removeObject(forKey: "autoSwitchThreshold")
+        UserDefaults.standard.removeObject(forKey: "autoSwitchWeeklyThreshold")
         super.tearDown()
     }
 
@@ -38,6 +39,16 @@ final class SharedDataStoreTests: XCTestCase {
         XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 90)
         sharedDataStore.saveAutoSwitchThreshold(100)
         XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 100)
+    }
+
+    func testAutoSwitchWeeklyThresholdDefaultsAndRoundTrips() {
+        UserDefaults.standard.removeObject(forKey: "autoSwitchWeeklyThreshold")
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchWeeklyThreshold(), SharedDataStore.defaultAutoSwitchWeeklyThreshold)
+        sharedDataStore.saveAutoSwitchWeeklyThreshold(97)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchWeeklyThreshold(), 97)
+        // Clamped like the session threshold.
+        sharedDataStore.saveAutoSwitchWeeklyThreshold(150)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchWeeklyThreshold(), SharedDataStore.autoSwitchThresholdRange.upperBound)
     }
 
     func testAutoSwitchThresholdClampsOutOfRangeValues() {

@@ -208,8 +208,10 @@
 "auto_switch.subtitle" = "Automatically switch as an account approaches its usage limit";
 "auto_switch.enable_title" = "Enable Auto-Switch";
 "auto_switch.enable_description" = "When an active account crosses the switch threshold, automatically switch to the account whose weekly limit resets soonest and that still has capacity below the threshold. Claude and Codex accounts rotate within their own group.";
-"auto_switch.threshold_title" = "Switch threshold";
-"auto_switch.threshold_description" = "Switch before the limit is actually reached so running CLI sessions never stall on a session-limit error. 95% is recommended: the forfeited headroom is small, and detection needs the margin. 100% restores the old exact-limit behavior.";
+"auto_switch.threshold_title" = "Session switch threshold";
+"auto_switch.threshold_description" = "Switch before the 5-hour session limit is actually reached so running CLI sessions never stall on a session-limit error. 95% is recommended: the forfeited headroom regenerates within 5 hours, and detection needs the margin. 100% restores the old exact-limit behavior.";
+"auto_switch.weekly_threshold_title" = "Weekly switch threshold";
+"auto_switch.weekly_threshold_description" = "Applies to the weekly all-models and weekly Fable windows. Kept tighter (99% recommended) because forfeited weekly quota is gone until the weekly reset — only the last sliver is traded for continuity.";
 "auto_switch.eligible_profiles" = "Accounts eligible for auto-switch";
 
 /* ==================== */

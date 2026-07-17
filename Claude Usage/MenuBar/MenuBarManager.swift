@@ -1284,11 +1284,13 @@ private func observeCredentialChanges() {
 
     // MARK: - Auto-Switch Profile on Session Limit
 
-    /// Checks if the current profile crossed the auto-switch threshold (default
-    /// 95%, Settings → Profiles → Auto-Switch) and switches to the next available
-    /// one. Firing BELOW 100% is deliberate: it forfeits the remaining headroom so
-    /// running sessions never hit the hard limit while the sweep-based detection
-    /// (~30s cadence) catches up.
+    /// Checks if the current profile crossed an auto-switch threshold (session
+    /// default 95%, weekly/Fable default 99% — Settings → Profiles →
+    /// Auto-Switch) and switches to the next available one. Firing BELOW 100%
+    /// is deliberate: it forfeits the remaining headroom so running sessions
+    /// never hit the hard limit while the sweep-based detection (~30s cadence)
+    /// catches up. The weekly threshold is tighter because forfeited weekly
+    /// quota does not come back until the weekly reset.
     private func checkAutoSwitchIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }
@@ -1314,11 +1316,12 @@ private func observeCredentialChanges() {
         preflightNextCandidateIfNeeded(usage: usage, currentProfile: currentProfile)
 
         let profileId = currentProfile.id
-        let threshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+        let sessionThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+        let weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
 
         // If every quota window regained headroom (session reset, weekly rollover),
         // re-arm the trigger for this profile.
-        if !Self.isQuotaExhausted(usage, threshold: threshold) {
+        if !Self.isQuotaExhausted(usage, sessionThreshold: sessionThreshold, weeklyThreshold: weeklyThreshold) {
             autoSwitchedProfileIds.remove(profileId)
             return
         }
@@ -1346,7 +1349,7 @@ private func observeCredentialChanges() {
                     LoggingService.shared.log("AutoSwitch: another switch is in flight, deferring to next sweep")
                     return
                 }
-                LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (threshold \(Int(threshold))%)")
+                LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
 
                 if await self.profileManager.activateProfile(nextProfile.id) {
                     // Send notification
@@ -1365,23 +1368,27 @@ private func observeCredentialChanges() {
         }
     }
 
-    /// True when ANY of the profile's quota windows has crossed `threshold`: the
-    /// 5-hour session, the all-models weekly, or the Fable weekly. Mirrors the
-    /// candidate headroom checks below — an account the auto-switch would never
-    /// pick as a target should not be kept as the active one either (a weekly
-    /// limit can run out while the session window sits far below the threshold).
-    /// The shared threshold on BOTH sides is what prevents ping-pong: an account
-    /// switched away from at ≥threshold can never be re-picked as a target until
-    /// one of its windows resets. Static + injectable so the mirror is
-    /// unit-testable.
+    /// True when ANY of the profile's quota windows has crossed its threshold:
+    /// the 5-hour session vs `sessionThreshold`, the all-models weekly and the
+    /// Fable weekly vs `weeklyThreshold`. The thresholds differ deliberately —
+    /// forfeited session headroom regenerates within 5h (default 95%), while
+    /// forfeited weekly headroom is gone for the rest of the week (default
+    /// 99%). Mirrors the candidate headroom checks below — an account the
+    /// auto-switch would never pick as a target should not be kept as the
+    /// active one either (a weekly limit can run out while the session window
+    /// sits far below the threshold). The per-window threshold shared with
+    /// BOTH sides is what prevents ping-pong: an account switched away from at
+    /// ≥threshold can never be re-picked as a target until one of its windows
+    /// resets. Static + injectable so the mirror is unit-testable.
     nonisolated static func isQuotaExhausted(
         _ usage: ClaudeUsage,
-        threshold: Double = 100,
+        sessionThreshold: Double = 100,
+        weeklyThreshold: Double = 100,
         now: Date = Date()
     ) -> Bool {
-        if usage.effectiveSessionPercentage >= threshold { return true }
-        if usage.weeklyResetTime >= now && usage.weeklyPercentage >= threshold { return true }
-        if let fablePercentage = usage.fableWeeklyPercentage, fablePercentage >= threshold,
+        if usage.effectiveSessionPercentage >= sessionThreshold { return true }
+        if usage.weeklyResetTime >= now && usage.weeklyPercentage >= weeklyThreshold { return true }
+        if let fablePercentage = usage.fableWeeklyPercentage, fablePercentage >= weeklyThreshold,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
             return true
         }
@@ -1503,11 +1510,12 @@ private func observeCredentialChanges() {
     private func findNextAvailableProfile(after currentProfile: Profile, excluding: Set<UUID> = []) -> Profile? {
         let now = Date()
         let switchingCodex = currentProfile.isCodexOnlyProfile
-        // Candidates are held to the SAME threshold the trigger fires at: a
-        // profile at ≥threshold is exactly what the switch is escaping, so
-        // landing on one (and ping-ponging between two nearly-full accounts)
-        // must be impossible by construction.
-        let threshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+        // Candidates are held to the SAME per-window thresholds the trigger
+        // fires at: a profile at ≥threshold is exactly what the switch is
+        // escaping, so landing on one (and ping-ponging between two
+        // nearly-full accounts) must be impossible by construction.
+        let sessionThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+        let weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
 
         let candidates = profileManager.profiles.filter { candidate in
             guard candidate.id != currentProfile.id, candidate.hasUsageCredentials,
@@ -1541,9 +1549,9 @@ private func observeCredentialChanges() {
         }
 
         for candidate in ranked {
-            if hasSessionHeadroom(candidate, threshold: threshold)
-                && hasWeeklyHeadroom(candidate, threshold: threshold, now: now)
-                && hasFableWeeklyHeadroom(candidate, threshold: threshold, now: now) {
+            if hasSessionHeadroom(candidate, threshold: sessionThreshold)
+                && hasWeeklyHeadroom(candidate, threshold: weeklyThreshold, now: now)
+                && hasFableWeeklyHeadroom(candidate, threshold: weeklyThreshold, now: now) {
                 return candidate
             }
             LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
@@ -1551,27 +1559,27 @@ private func observeCredentialChanges() {
         return nil
     }
 
-    /// True while the candidate's session usage is below the switch threshold. A
-    /// profile with no cached usage is assumed available; an expired session
-    /// window counts as 0%.
+    /// True while the candidate's session usage is below the SESSION switch
+    /// threshold. A profile with no cached usage is assumed available; an
+    /// expired session window counts as 0%.
     private func hasSessionHeadroom(_ profile: Profile, threshold: Double) -> Bool {
         guard let usage = profile.claudeUsage else { return true }
         return usage.effectiveSessionPercentage < threshold
     }
 
-    /// True while the candidate's weekly usage is below the switch threshold. A
-    /// weekly reset already in the past means the window rolled over since the
-    /// data was cached — full quota.
+    /// True while the candidate's weekly usage is below the WEEKLY switch
+    /// threshold. A weekly reset already in the past means the window rolled
+    /// over since the data was cached — full quota.
     private func hasWeeklyHeadroom(_ profile: Profile, threshold: Double, now: Date) -> Bool {
         guard let usage = profile.claudeUsage else { return true }
         if usage.weeklyResetTime < now { return true }
         return usage.weeklyPercentage < threshold
     }
 
-    /// True while the candidate's Fable weekly usage is below the switch threshold.
-    /// Accounts that don't report a Fable limit (Codex profiles, plans without a
-    /// Fable window) are treated as available; a Fable reset already in the past
-    /// means full quota again.
+    /// True while the candidate's Fable weekly usage is below the WEEKLY switch
+    /// threshold. Accounts that don't report a Fable limit (Codex profiles,
+    /// plans without a Fable window) are treated as available; a Fable reset
+    /// already in the past means full quota again.
     private func hasFableWeeklyHeadroom(_ profile: Profile, threshold: Double, now: Date) -> Bool {
         guard let usage = profile.claudeUsage,
               let fablePercentage = usage.fableWeeklyPercentage else { return true }

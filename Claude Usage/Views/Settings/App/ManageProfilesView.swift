@@ -13,6 +13,7 @@ struct ManageProfilesView: View {
     @State private var newProfileName = ""
     @State private var errorMessage: String?
     @State private var autoSwitchThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+    @State private var autoSwitchWeeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
 
     var body: some View {
         ScrollView {
@@ -284,6 +285,31 @@ struct ManageProfilesView: View {
                                 SharedDataStore.shared.saveAutoSwitchThreshold(newValue)
                             }
                             Text("auto_switch.threshold_description".localized)
+                                .font(DesignTokens.Typography.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Weekly (all-models + Fable) switch threshold
+                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+                            HStack {
+                                Text("auto_switch.weekly_threshold_title".localized)
+                                    .font(DesignTokens.Typography.body)
+                                Spacer()
+                                Text("\(Int(autoSwitchWeeklyThreshold))%")
+                                    .font(DesignTokens.Typography.body)
+                                    .foregroundColor(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Slider(
+                                value: $autoSwitchWeeklyThreshold,
+                                in: SharedDataStore.autoSwitchThresholdRange,
+                                step: 1
+                            )
+                            .controlSize(.small)
+                            .onChange(of: autoSwitchWeeklyThreshold) { _, newValue in
+                                SharedDataStore.shared.saveAutoSwitchWeeklyThreshold(newValue)
+                            }
+                            Text("auto_switch.weekly_threshold_description".localized)
                                 .font(DesignTokens.Typography.caption)
                                 .foregroundColor(.secondary)
                         }

@@ -96,30 +96,34 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 100, fable: nil), now: now))
     }
 
-    // MARK: - Proactive threshold (default 95%)
+    // MARK: - Proactive thresholds (session 95% / weekly 99% defaults)
 
-    func testProactiveThresholdFiresBelowHardLimit() {
+    func testSessionThresholdFiresBelowHardLimit() {
         // The point of the threshold: at 95% the account is exhausted for
         // auto-switch purposes even though the API would still accept requests.
-        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 95, weekly: 20), threshold: 95, now: now))
-        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 94.9, weekly: 20), threshold: 95, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 95, weekly: 20), sessionThreshold: 95, weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 94.9, weekly: 20), sessionThreshold: 95, weeklyThreshold: 99, now: now))
     }
 
-    func testProactiveThresholdAppliesToWeeklyAndFableWindows() {
-        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 95), threshold: 95, now: now))
-        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 95, fableResetIn: 86_400), threshold: 95, now: now))
-        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 94, fable: 94, fableResetIn: 86_400), threshold: 95, now: now))
+    func testWeeklyWindowsUseTheTighterWeeklyThreshold() {
+        // Forfeited weekly quota is gone until the weekly reset, so weekly and
+        // Fable windows wait until 99% — 95% weekly must NOT trigger even while
+        // the session threshold sits at 95%.
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 95), sessionThreshold: 95, weeklyThreshold: 99, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 99), sessionThreshold: 95, weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 98.9, fableResetIn: 86_400), sessionThreshold: 95, weeklyThreshold: 99, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 99, fableResetIn: 86_400), sessionThreshold: 95, weeklyThreshold: 99, now: now))
     }
 
     func testProactiveThresholdStillRespectsRolledOverWindows() {
-        // Rolled-over windows mean full quota regardless of the threshold.
-        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 96, sessionResetIn: -60, weekly: 20), threshold: 95, now: now))
-        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 96, weeklyResetIn: -60), threshold: 95, now: now))
-        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 96, fableResetIn: -60), threshold: 95, now: now))
+        // Rolled-over windows mean full quota regardless of the thresholds.
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 96, sessionResetIn: -60, weekly: 20), sessionThreshold: 95, weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 99.5, weeklyResetIn: -60), sessionThreshold: 95, weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 20, weekly: 40, fable: 99.5, fableResetIn: -60), sessionThreshold: 95, weeklyThreshold: 99, now: now))
     }
 
-    func testThresholdDefaultsToExactLimit() {
-        // Callers that don't pass a threshold keep the historical >= 100 semantics.
+    func testThresholdsDefaultToExactLimit() {
+        // Callers that don't pass thresholds keep the historical >= 100 semantics.
         XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 99.9, weekly: 99.9), now: now))
     }
 
@@ -132,12 +136,12 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         // the account as having no capacity.
         var throttled = usage(session: 16, weekly: 24, fable: 29, fableResetIn: 86_400)
         throttled.rateLimitedUntil = now.addingTimeInterval(2918)
-        XCTAssertTrue(MenuBarManager.isQuotaExhausted(throttled, threshold: 95, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(throttled, sessionThreshold: 95, weeklyThreshold: 99, now: now))
     }
 
     func testExpiredThrottleStampIsNotExhausted() {
         var recovered = usage(session: 16, weekly: 24)
         recovered.rateLimitedUntil = now.addingTimeInterval(-1)
-        XCTAssertFalse(MenuBarManager.isQuotaExhausted(recovered, threshold: 95, now: now))
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(recovered, sessionThreshold: 95, weeklyThreshold: 99, now: now))
     }
 }
