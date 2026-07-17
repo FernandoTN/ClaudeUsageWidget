@@ -240,7 +240,12 @@ final class StatusBarUIManager {
             let orderedProfiles = Self.multiProfileCreationOrder(for: profiles)
             multiProfileOrder = orderedProfiles.map(\.id)
 
-            // Create one status item per selected profile
+            // Create one status item per selected profile. Deliberately NO
+            // autosaveName: naming the items makes the window server remember
+            // per-name positions in a private store the app cannot reliably
+            // clear or overwrite — a pinning experiment (2026-07-17) left the
+            // group SPLIT across remembered positions with no code-side way
+            // back. Anonymous items always place by fresh creation order.
             for profile in orderedProfiles {
                 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -262,16 +267,20 @@ final class StatusBarUIManager {
 
     /// True when on-screen x-positions no longer strictly DESCEND in creation
     /// order (creation order maps right-to-left, so each later-created item
-    /// must sit further left). macOS can strand one tile far from the group:
-    /// when the menu bar overflows (many accounts + a notch) a hidden tile
-    /// that reappears after a display change is re-placed at an arbitrary
-    /// position — a real report: one Codex tile stranded at the far right of
-    /// the whole menu bar, past other apps' icons, instead of at the group's
-    /// left edge. Pure so it is unit-testable.
-    nonisolated static func layoutDivergesFromCreationOrder(_ xPositions: [CGFloat]) -> Bool {
+    /// must sit further left), OR when the group is SPLIT — adjacent tiles
+    /// separated by more than `maxAdjacentGap` points (a rejected pin drops a
+    /// tile into the system default slot with other apps' icons in between;
+    /// legitimate tiles pack at ~27pt). A real report: one Codex tile stranded
+    /// at the far right of the whole menu bar, past other apps' icons, instead
+    /// of at the group's left edge. Pure so it is unit-testable.
+    nonisolated static func layoutDivergesFromCreationOrder(
+        _ xPositions: [CGFloat],
+        maxAdjacentGap: CGFloat = 90
+    ) -> Bool {
         guard xPositions.count > 1 else { return false }
-        for i in 1..<xPositions.count where xPositions[i] >= xPositions[i - 1] {
-            return true
+        for i in 1..<xPositions.count {
+            if xPositions[i] >= xPositions[i - 1] { return true }
+            if xPositions[i - 1] - xPositions[i] > maxAdjacentGap { return true }
         }
         return false
     }
@@ -281,24 +290,59 @@ final class StatusBarUIManager {
     /// flicker the whole group twice a minute.
     private var lastLayoutHealAt: Date = .distantPast
 
+    /// Signature of a broken layout a heal-rebuild already failed to fix — the
+    /// system reproduces some placements deterministically, so retrying the
+    /// same layout forever only flickers the bar. A DIFFERENT broken layout
+    /// (display change, new profile count) gets a fresh attempt.
+    private var healFailedSignature: String?
+    private var lastEvaluatedSignature: String?
+
     /// True when every item's window is measurable on ONE shared screen and
     /// the x-order contradicts the creation order. Bails out (false) whenever
     /// any window is missing, off-screen, or on another display — a hidden
-    /// tile can't be judged, only a visibly misplaced one.
+    /// tile can't be judged, only a visibly misplaced one. Each evaluation
+    /// records a layout snapshot in UserDefaults (`debugTileLayout`) so a
+    /// stranded tile can be diagnosed from outside a Release build.
     private func strandedTileDetected() -> Bool {
-        guard multiProfileOrder.count > 1,
-              Date().timeIntervalSince(lastLayoutHealAt) > 300 else { return false }
+        guard multiProfileOrder.count > 1 else { return false }
         var xPositions: [CGFloat] = []
         var screens = Set<ObjectIdentifier>()
+        var snapshot: [String] = []
+        var unmeasurable = false
         for profileId in multiProfileOrder {
-            guard let window = multiProfileStatusItems[profileId]?.button?.window,
-                  let screen = window.screen,
-                  window.frame.minX > 0 else { return false }
+            let window = multiProfileStatusItems[profileId]?.button?.window
+            let x = window.map { Int($0.frame.minX) } ?? -1
+            let screenId = window?.screen.map { String(UInt(bitPattern: ObjectIdentifier($0).hashValue) % 1000) } ?? "nil"
+            snapshot.append("\(String(profileId.uuidString.prefix(4))):x=\(x),s=\(screenId)")
+            guard let window, let screen = window.screen, window.frame.minX > 0 else {
+                unmeasurable = true
+                continue
+            }
             screens.insert(ObjectIdentifier(screen))
             xPositions.append(window.frame.minX)
         }
-        guard screens.count == 1 else { return false }
-        return Self.layoutDivergesFromCreationOrder(xPositions)
+        let signature = xPositions.map { Int($0) }.description
+        lastEvaluatedSignature = signature
+        var verdict: String
+        let broken: Bool
+        if unmeasurable {
+            verdict = "unmeasurable"
+            broken = false
+        } else if screens.count != 1 {
+            verdict = "multi-screen(\(screens.count))"
+            broken = false
+        } else {
+            broken = Self.layoutDivergesFromCreationOrder(xPositions)
+            verdict = broken ? "STRANDED" : "ok"
+        }
+        if broken, signature == healFailedSignature {
+            verdict = "STRANDED-unfixable"
+        }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        UserDefaults.standard.set("\(stamp) \(verdict) | \(snapshot.joined(separator: " "))", forKey: "debugTileLayout")
+        guard broken, signature != healFailedSignature,
+              Date().timeIntervalSince(lastLayoutHealAt) > 300 else { return false }
+        return true
     }
 
     /// Updates all multi-profile status items
@@ -318,6 +362,9 @@ final class StatusBarUIManager {
         } else if strandedTileDetected() {
             rebuildReason = "a tile was relocated out of the group by the system"
             lastLayoutHealAt = Date()
+            // One attempt per distinct broken layout: if the rebuild reproduces
+            // this same arrangement, stop retrying until something changes.
+            healFailedSignature = lastEvaluatedSignature
         }
         if let rebuildReason,
            let target = multiProfileTarget, let action = multiProfileAction {

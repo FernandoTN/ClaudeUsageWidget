@@ -157,9 +157,10 @@ final class MenuBarOrderingTests: XCTestCase {
 
     // MARK: - Stranded-tile layout check
 
-    func testDescendingXPositionsMatchCreationOrder() {
-        // Creation order maps right-to-left: strictly descending x is healthy.
-        XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 850, 800, 750]))
+    func testDescendingContiguousXPositionsMatchCreationOrder() {
+        // Creation order maps right-to-left: strictly descending, tightly
+        // packed x (~27pt tiles) is healthy.
+        XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 873, 846, 819]))
         XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([100]))
         XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([]))
     }
@@ -167,9 +168,16 @@ final class MenuBarOrderingTests: XCTestCase {
     func testStrandedTileIsDetected() {
         // The incident shape: the LAST-created tile (expected leftmost) sitting
         // at the far right of the bar.
-        XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 850, 800, 1650]))
+        XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 873, 846, 1650]))
         // Equal positions (overlapping/unresolved windows) also count as broken
         // rather than silently accepted — the caller filters unmeasurable cases.
         XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 900]))
     }
+
+    func testSplitGroupIsDetected() {
+        // Order intact but the group torn in two (other apps' icons in the
+        // middle — a rejected pin's fallback placement): a >90pt adjacent gap.
+        XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([1509, 1482, 1321, 1294]))
+    }
+
 }
