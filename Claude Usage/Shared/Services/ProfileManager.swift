@@ -735,6 +735,7 @@ class ProfileManager: ObservableObject {
         // know whether a codex profile already exists.
         autoImportCodexAccountIfNeeded()
         autoImportGrokAccountIfNeeded()
+        backfillGrokDisplayDefaultsIfNeeded()
 
         // Resolve/repair the per-provider active accounts now that credentials are
         // hydrated (before hydration every profile looks credential-less).
@@ -993,6 +994,29 @@ class ProfileManager: ObservableObject {
         profileStore.saveProfiles(profiles)
         UserDefaults.standard.set(true, forKey: flagKey)
         LoggingService.shared.log("ProfileManager: ✅ Auto-imported Grok account '\(email ?? "unknown")' as profile 'Grok'")
+    }
+
+    /// One-time: a Grok profile imported by an earlier build was named "GROK"
+    /// with no menu-bar label ("GROK".prefix(3) == "GRO"). Normalize it to the
+    /// display defaults the current import uses — name "Grok", tile label "Grk"
+    /// — without disturbing a name/label the user has since customized.
+    private func backfillGrokDisplayDefaultsIfNeeded() {
+        let flagKey = "grokDisplayBackfill_v1"
+        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
+        var changed = false
+        for i in profiles.indices where profiles[i].hasGrokAccount {
+            if profiles[i].name == "GROK" { profiles[i].name = "Grok"; changed = true }
+            if profiles[i].menuBarLabel == nil { profiles[i].menuBarLabel = "Grk"; changed = true }
+        }
+        if changed {
+            profileStore.saveProfiles(profiles)
+            LoggingService.shared.log("ProfileManager: backfilled Grok display defaults (name 'Grok', tile 'Grk')")
+        }
+        // Only latch the flag once a grok profile actually exists to normalize,
+        // so a backfill that ran before the import doesn't skip the real one.
+        if profiles.contains(where: { $0.hasGrokAccount }) {
+            UserDefaults.standard.set(true, forKey: flagKey)
+        }
     }
 
     /// Syncs CLI credentials to default profile on first launch only.
