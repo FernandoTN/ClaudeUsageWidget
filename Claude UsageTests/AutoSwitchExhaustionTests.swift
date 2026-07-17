@@ -122,4 +122,22 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         // Callers that don't pass a threshold keep the historical >= 100 semantics.
         XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 99.9, weekly: 99.9), now: now))
     }
+
+    // MARK: - Account-level throttle stamp
+
+    func testThrottledAccountIsExhaustedDespiteLowCachedPercentages() {
+        // The Stanford incident: cache frozen at 16/24/29 while the account's
+        // usage endpoint 429s with a long Retry-After. The stamp must make the
+        // trigger (and, via the shared threshold, candidate selection) treat
+        // the account as having no capacity.
+        var throttled = usage(session: 16, weekly: 24, fable: 29, fableResetIn: 86_400)
+        throttled.rateLimitedUntil = now.addingTimeInterval(2918)
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(throttled, threshold: 95, now: now))
+    }
+
+    func testExpiredThrottleStampIsNotExhausted() {
+        var recovered = usage(session: 16, weekly: 24)
+        recovered.rateLimitedUntil = now.addingTimeInterval(-1)
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(recovered, threshold: 95, now: now))
+    }
 }

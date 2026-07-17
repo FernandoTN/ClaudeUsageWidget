@@ -9,9 +9,27 @@ struct ClaudeUsage: Codable, Equatable {
     var sessionResetTime: Date
 
     /// Returns 0% if the 5-hour session window has expired, otherwise the raw percentage.
+    /// While the account is under an account-level API throttle (see
+    /// `rateLimitedUntil`), reports 100%: the account has zero usable capacity
+    /// right now REGARDLESS of what the last readable percentage said, and this
+    /// property is the single seam through which the tiles, popover, auto-switch
+    /// trigger, and candidate headroom checks all read session capacity.
     var effectiveSessionPercentage: Double {
-        sessionResetTime < Date() ? 0.0 : sessionPercentage
+        if let until = rateLimitedUntil, until > Date() {
+            return max(sessionPercentage, 100.0)
+        }
+        return sessionResetTime < Date() ? 0.0 : sessionPercentage
     }
+
+    /// Set when the usage API itself refused to answer for this ACCOUNT with a
+    /// long Retry-After (HTTP 429). A heavily-used/exhausted account throttles
+    /// its own oauth/usage endpoint — exactly when the number matters most —
+    /// so the cached percentages silently freeze at their last readable values
+    /// (a real incident: an account sat at a cached 16% while `/usage` showed
+    /// 100%, and nothing flagged it). The throttle response IS the usage signal:
+    /// until this stamp expires the account is treated as having no capacity.
+    /// Optional with nil default so previously cached usage JSON still decodes.
+    var rateLimitedUntil: Date? = nil
 
     // Weekly data (all models)
     var weeklyTokensUsed: Int

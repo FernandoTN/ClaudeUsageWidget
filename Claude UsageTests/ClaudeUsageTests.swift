@@ -69,6 +69,44 @@ final class ClaudeUsageTests: XCTestCase {
         XCTAssertEqual(original, decoded)
     }
 
+    // MARK: - Account-Level Throttle (rateLimitedUntil)
+
+    func testActiveThrottleReportsFullSessionRegardlessOfCachedPercentage() {
+        // The incident shape: cache frozen at 16% while the account is actually
+        // exhausted and its usage endpoint 429s. The stamp must win everywhere
+        // effectiveSessionPercentage is read.
+        var usage = createUsage(sessionPercentage: 16)
+        usage.rateLimitedUntil = Date().addingTimeInterval(2918)
+        XCTAssertEqual(usage.effectiveSessionPercentage, 100)
+        XCTAssertEqual(usage.remainingPercentage, 0)
+    }
+
+    func testActiveThrottleWinsOverRolledOverSessionWindow() {
+        // Even if the cached session window has expired (normally 0%), a live
+        // throttle means the account still cannot be used.
+        var usage = createUsage(sessionPercentage: 16)
+        usage.sessionResetTime = Date().addingTimeInterval(-60)
+        usage.rateLimitedUntil = Date().addingTimeInterval(600)
+        XCTAssertEqual(usage.effectiveSessionPercentage, 100)
+    }
+
+    func testExpiredThrottleStampRestoresNormalSemantics() {
+        var usage = createUsage(sessionPercentage: 16)
+        usage.rateLimitedUntil = Date().addingTimeInterval(-1)
+        XCTAssertEqual(usage.effectiveSessionPercentage, 16)
+    }
+
+    func testDecodingLegacyJSONWithoutThrottleField() throws {
+        // Cached usage persisted before the field existed must decode with a
+        // nil stamp (same back-compat contract as the Fable fields).
+        var legacy = createUsage(sessionPercentage: 45.5)
+        legacy.rateLimitedUntil = nil
+        let data = try JSONEncoder().encode(legacy)
+        XCTAssertFalse(String(data: data, encoding: .utf8)!.contains("rateLimitedUntil"))
+        let decoded = try JSONDecoder().decode(ClaudeUsage.self, from: data)
+        XCTAssertNil(decoded.rateLimitedUntil)
+    }
+
     // MARK: - Helpers
 
     private func createUsage(sessionPercentage: Double) -> ClaudeUsage {

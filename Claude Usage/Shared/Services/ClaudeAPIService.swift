@@ -311,7 +311,10 @@ class ClaudeAPIService {
                 throw AppError.apiUnauthorized()
 
             case 429:
-                throw AppError.apiRateLimited()
+                var rateLimited = AppError.apiRateLimited()
+                rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
+                    .flatMap(TimeInterval.init)
+                throw rateLimited
 
             case 500...599:
                 throw AppError.apiServerError(statusCode: httpResponse.statusCode)
@@ -425,6 +428,16 @@ class ClaudeAPIService {
         }
 
         guard httpResponse.statusCode == 200 else {
+            // A 429 here can be ACCOUNT-level: a heavily-used account throttles
+            // its own usage endpoint (with a Retry-After of minutes), so the
+            // caller must be able to tell this apart from a generic failure —
+            // it IS the "this account is out of capacity" signal.
+            if httpResponse.statusCode == 429 {
+                var rateLimited = AppError.apiRateLimited()
+                rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
+                    .flatMap(TimeInterval.init)
+                throw rateLimited
+            }
             throw AppError(
                 code: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
                     ? .apiUnauthorized : .apiGenericError,
@@ -604,13 +617,16 @@ class ClaudeAPIService {
             )
 
         case 429:
-            throw AppError(
+            var rateLimited = AppError(
                 code: .apiRateLimited,
                 message: "Rate limited by Claude API",
                 technicalDetails: "Endpoint: \(endpoint)",
                 isRecoverable: true,
                 recoverySuggestion: "Please wait a few minutes before trying again"
             )
+            rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
+                .flatMap(TimeInterval.init)
+            throw rateLimited
 
         case 500...599:
             let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"

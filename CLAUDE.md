@@ -164,6 +164,18 @@ in Claude Code — a real incident). A gated switch keeps the outgoing login and
 provider-active pointer in place, notifies once, and returns false so the
 auto-switch tries the next ranked candidate instead of no-op'ing.
 
+**Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
+exhausted account 429s its OWN `oauth/usage` endpoint with a Retry-After of
+MINUTES (measured 2918s) — the widget cannot read the account's state exactly
+when it matters, and the cached percentages silently freeze at pre-throttle
+values (an account sat at a cached 16% while `/usage` showed 100%). The 429 is
+therefore treated as usage information: `stampAccountThrottleIfNeeded` records
+`ClaudeUsage.rateLimitedUntil` (Retry-After ≥ 60s = account-level, below =
+per-IP burst noise), `effectiveSessionPercentage` reports 100% while the stamp
+is live (propagating to tiles, popover, auto-switch trigger AND candidate
+eligibility through the one shared seam), and sweeps skip fetching the
+throttled profile until the stamp expires.
+
 **Candidate preflight**: as a provider-active account crosses 25/50/75/90% of its
 session window, `MenuBarManager.preflightCandidates` validates the auto-switch's
 predicted target in the background — refreshing a stale token early (proving the

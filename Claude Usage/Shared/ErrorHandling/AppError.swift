@@ -36,6 +36,12 @@ struct AppError: Error, LocalizedError, CustomStringConvertible {
     /// Context information (file, line, function)
     let context: ErrorContext?
 
+    /// For `.apiRateLimited`: the server's Retry-After, in seconds, when the
+    /// response carried one. A long value (minutes) marks an ACCOUNT-level
+    /// throttle rather than per-IP burst limiting — callers use it to treat
+    /// the throttle itself as usage information.
+    var retryAfterSeconds: TimeInterval? = nil
+
     // MARK: - Initialization
 
     init(

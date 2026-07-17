@@ -833,51 +833,77 @@ private func observeCredentialChanges() {
                     break
                 }
 
-                // Self-heal a stale CLI OAuth token before fetching
-                await self.ensureFreshCLICredentialsIfNeeded(for: profile)
-                if let updated = self.profileManager.profiles.first(where: { $0.id == profile.id }) {
-                    profile = updated
-                }
-
-                LoggingService.shared.log("MenuBarManager: Fetching usage for profile '\(profile.name)'")
-
-                do {
-                    let newUsage = try await fetchUsageForProfile(profile)
-
-                    // Save to profile
-                    self.profileManager.saveClaudeUsage(newUsage, for: profile.id)
-                    LoggingService.shared.log("MenuBarManager: Saved usage for profile '\(profile.name)' - session: \(newUsage.sessionPercentage)%")
-
-                    // If this is the active profile, also update the manager's usage
-                    if profile.id == self.profileManager.activeProfile?.id {
-                        self.usage = newUsage
+                // While an account-level throttle is in force the usage endpoint
+                // keeps 429ing — don't burn the sweep's rate-limit budget on it.
+                // The stamp keeps the account reported as exhausted; fetching
+                // resumes automatically once the Retry-After expires (and a
+                // still-throttled account just gets a fresh stamp). Only the
+                // CLAUDE usage fetch is skipped — the API-console fetch below
+                // hits a different, unthrottled endpoint and must keep flowing.
+                let usageThrottled = profile.claudeUsage?.rateLimitedUntil.map { $0 > Date() } ?? false
+                if usageThrottled {
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — endpoint throttled until \(profile.claudeUsage?.rateLimitedUntil ?? Date())")
+                } else {
+                    // Self-heal a stale CLI OAuth token before fetching
+                    await self.ensureFreshCLICredentialsIfNeeded(for: profile)
+                    if let updated = self.profileManager.profiles.first(where: { $0.id == profile.id }) {
+                        profile = updated
                     }
-                    sweepSuccesses += 1
-                    self.credentialErrorProfileIds.remove(profile.id)
 
-                    // Check auto-switch NOW for the accounts actually in use
-                    // instead of waiting for the end of the sweep: rate-limit
-                    // spacing makes a full sweep take ~2s per profile, and near
-                    // the threshold those seconds are when parallel sessions hit
-                    // the hard limit. Idempotent with the end-of-sweep check
-                    // (autoSwitchedProfileIds de-dupes the trigger).
-                    if profile.id == self.profileManager.activeProfile?.id
-                        || profile.id == self.profileManager.activeClaudeProfileId
-                        || profile.id == self.profileManager.activeCodexProfileId {
-                        self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                    LoggingService.shared.log("MenuBarManager: Fetching usage for profile '\(profile.name)'")
+
+                    do {
+                        let newUsage = try await fetchUsageForProfile(profile)
+
+                        // Save to profile
+                        self.profileManager.saveClaudeUsage(newUsage, for: profile.id)
+                        LoggingService.shared.log("MenuBarManager: Saved usage for profile '\(profile.name)' - session: \(newUsage.sessionPercentage)%")
+
+                        // If this is the active profile, also update the manager's usage
+                        if profile.id == self.profileManager.activeProfile?.id {
+                            self.usage = newUsage
+                        }
+                        sweepSuccesses += 1
+                        self.credentialErrorProfileIds.remove(profile.id)
+
+                        // Check auto-switch NOW for the accounts actually in use
+                        // instead of waiting for the end of the sweep: rate-limit
+                        // spacing makes a full sweep take ~2s per profile, and near
+                        // the threshold those seconds are when parallel sessions hit
+                        // the hard limit. Idempotent with the end-of-sweep check
+                        // (autoSwitchedProfileIds de-dupes the trigger).
+                        if profile.id == self.profileManager.activeProfile?.id
+                            || profile.id == self.profileManager.activeClaudeProfileId
+                            || profile.id == self.profileManager.activeCodexProfileId {
+                            self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                        }
+                    } catch {
+                        let appError = AppError.wrap(error)
+                        sweepFailures += 1
+                        sweepLastErrorMessage = appError.message
+                        if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
+                            sweepCredentialError = true
+                            self.credentialErrorProfileIds.insert(profile.id)
+                        }
+                        // An account-level 429 IS usage information: the account is
+                        // out of capacity and its cached percentages are frozen at
+                        // pre-throttle values. Stamp it so the tiles and auto-switch
+                        // see 100% instead of trusting the stale cache — and check
+                        // the switch NOW if this account is one actually in use.
+                        if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: profile) {
+                            if profile.id == self.profileManager.activeProfile?.id
+                                || profile.id == self.profileManager.activeClaudeProfileId
+                                || profile.id == self.profileManager.activeCodexProfileId {
+                                self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
+                            }
+                        }
+                        LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                     }
-                } catch {
-                    let appError = AppError.wrap(error)
-                    sweepFailures += 1
-                    sweepLastErrorMessage = appError.message
-                    if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
-                        sweepCredentialError = true
-                        self.credentialErrorProfileIds.insert(profile.id)
-                    }
-                    LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                 }
 
                 // Fetch API usage if this profile has API console credentials
+                // (independent billing-console endpoint — runs even while the
+                // profile's oauth/usage endpoint is throttled)
                 if let apiSessionKey = profile.apiSessionKey,
                    let orgId = profile.apiOrganizationId {
                     do {
@@ -1126,6 +1152,15 @@ private func observeCredentialChanges() {
                     }
                 }
 
+                // Account-level throttle: reflect it instead of keeping a
+                // frozen pre-throttle percentage on screen (see the sweep-path
+                // twin of this call for the full rationale).
+                if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: profile) {
+                    self.usage = stamped
+                    self.updateAllStatusBarIcons()
+                    self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
+                }
+
                 // Check if this refresh was triggered within last 5 seconds
                 // (indicates user-initiated action like saving session key)
                 if abs(self.lastRefreshTriggerTime.timeIntervalSinceNow) < 5 {
@@ -1215,6 +1250,36 @@ private func observeCredentialChanges() {
             profileManager.loadProfiles()
             LoggingService.shared.log("MenuBarManager: CLI credentials self-healed for '\(profile.name)'")
         }
+    }
+
+    // MARK: - Account-Level Throttle Stamping
+
+    /// Floor separating an ACCOUNT-level usage-endpoint throttle from the
+    /// endpoint's ordinary per-IP burst limiting. Burst 429s carry a
+    /// seconds-scale (or no) Retry-After; an exhausted/heavily-used account
+    /// refuses its own usage reads with a Retry-After of MINUTES (a real
+    /// incident measured 2918s).
+    nonisolated static let accountThrottleRetryAfterFloor: TimeInterval = 60
+
+    /// When a usage fetch is refused with a long account-level Retry-After,
+    /// record the throttle on the profile's cached usage. From then on
+    /// `effectiveSessionPercentage` reports 100% until the stamp expires, so
+    /// the frozen pre-throttle cache can no longer masquerade as headroom —
+    /// in the tiles, the popover, the auto-switch trigger, or candidate
+    /// selection. Returns the stamped usage, or nil if the error isn't an
+    /// account-level throttle.
+    @discardableResult
+    private func stampAccountThrottleIfNeeded(_ error: AppError, profile: Profile) -> ClaudeUsage? {
+        guard error.code == .apiRateLimited,
+              let retryAfter = error.retryAfterSeconds,
+              retryAfter >= Self.accountThrottleRetryAfterFloor else { return nil }
+
+        var usage = profile.claudeUsage ?? .empty
+        usage.rateLimitedUntil = Date().addingTimeInterval(retryAfter)
+        usage.lastUpdated = Date()
+        profileManager.saveClaudeUsage(usage, for: profile.id)
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage endpoint throttled for \(Int(retryAfter))s — treating account as exhausted until the throttle lifts")
+        return usage
     }
 
     // MARK: - Auto-Switch Profile on Session Limit
