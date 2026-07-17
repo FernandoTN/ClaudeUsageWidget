@@ -171,15 +171,16 @@ final class MenuBarOrderingTests: XCTestCase {
         XCTAssertEqual(order(profiles), ["Claude-Soon", "Claude-Late", "Codex-Soon", "Codex-Late"])
     }
 
-    func testThreeProviderLayoutPutsGrokLeftmost() {
+    func testThreeProviderLayoutKeepsGrokVisibleLeftOfClaude() {
         let profiles = [
             grokProfile("Grok", weeklyReset: now.addingTimeInterval(3 * 24 * 3600)),
             codexProfile("Codex", weeklyReset: now.addingTimeInterval(1 * 24 * 3600)),
             claudeProfile("Claude", weeklyReset: now.addingTimeInterval(2 * 24 * 3600))
         ]
-        // Creation order maps right-to-left: Claude rightmost, Codex next,
-        // Grok created last = leftmost on screen.
-        XCTAssertEqual(order(profiles), ["Claude", "Codex", "Grok"])
+        // Creation order maps right-to-left, and the leftmost item clips first
+        // on a full bar: Claude rightmost, then Grok, then Codex at the
+        // overflow edge — so a newly-added Grok tile stays visible.
+        XCTAssertEqual(order(profiles), ["Claude", "Grok", "Codex"])
     }
 
     // MARK: - Stranded-tile layout check

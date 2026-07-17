@@ -181,13 +181,16 @@ final class StatusBarUIManager {
 
     /// Creation order for the multi-profile status items. Each new item is
     /// inserted to the LEFT of the app's existing items, so creation order maps
-    /// right-to-left on screen. Desired layout: Grok accounts at the far left,
-    /// Codex accounts next, all Claude accounts to their right; within each
-    /// group the account whose weekly limit resets SOONEST sits rightmost —
-    /// the same "use it or lose it" ranking the auto-switch uses, so the
-    /// rightmost account of a group is always the one to burn first. Name
-    /// breaks ties so equal resets (e.g. two profiles with no cached usage)
-    /// don't reshuffle. Static and `now`-injectable so the
+    /// right-to-left on screen, and macOS clips the LEFTMOST items first when
+    /// the bar overflows. Desired layout right-to-left: the Claude group
+    /// (usually the largest), then Grok, then Codex at the overflow edge —
+    /// Grok sits immediately left of Claude so a freshly-added Grok account
+    /// stays visible on a full bar, and Codex (rather than Grok) is what clips
+    /// when there is no room. Within each group the account whose weekly limit
+    /// resets SOONEST sits rightmost — the same "use it or lose it" ranking the
+    /// auto-switch uses, so the rightmost account of a group is always the one
+    /// to burn first. Name breaks ties so equal resets (e.g. two profiles with
+    /// no cached usage) don't reshuffle. Static and `now`-injectable so the
     /// ordering/quantization rules are unit-testable.
     static func multiProfileCreationOrder(for profiles: [Profile], now: Date = Date()) -> [Profile] {
         // The usage API reports the SAME weekly boundary with ±1s jitter between
@@ -209,8 +212,8 @@ final class StatusBarUIManager {
         }
         let selected = profiles.filter { $0.isSelectedForDisplay }
         return ranked(selected.filter { $0.providerKind == .claude })
-            + ranked(selected.filter { $0.providerKind == .codex })
             + ranked(selected.filter { $0.providerKind == .grok })
+            + ranked(selected.filter { $0.providerKind == .codex })
     }
 
     /// Sets up status bar for multi-profile display mode
@@ -463,7 +466,7 @@ final class StatusBarUIManager {
                         weekPercentage: config.showWeek ? weekDisplay : 0,
                         sessionStatus: sessionStatus,
                         weekStatus: weekStatus,
-                        profileName: profile.name,
+                        profileName: profile.menuBarDisplayName,
                         monochromeMode: useMonochrome,
                         isDarkMode: menuBarIsDark,
                         useSystemColor: false,
@@ -496,7 +499,7 @@ final class StatusBarUIManager {
                     weekPercentage: config.showWeek ? weekDisplay : nil,
                     sessionStatus: sessionStatus,
                     weekStatus: weekStatus,
-                    profileName: config.showProfileLabel ? profile.name : nil,
+                    profileName: config.showProfileLabel ? profile.menuBarDisplayName : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
                     useSystemColor: false,
@@ -523,7 +526,7 @@ final class StatusBarUIManager {
                     weekPercentage: config.showWeek ? weekDisplay : nil,
                     sessionStatus: sessionStatus,
                     weekStatus: weekStatus,
-                    profileName: config.showProfileLabel ? profile.name : nil,
+                    profileName: config.showProfileLabel ? profile.menuBarDisplayName : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
                     useSystemColor: false,

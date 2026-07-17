@@ -976,7 +976,7 @@ class ProfileManager: ObservableObject {
 
         let email = grokService.extractEmail(from: authJSON)
         let newProfile = Profile(
-            name: "GROK",
+            name: "Grok",
             grokCredentialsJSON: authJSON,
             grokEmail: email,
             grokAccountSyncedAt: Date(),
@@ -984,13 +984,15 @@ class ProfileManager: ObservableObject {
             refreshInterval: 60.0,
             checkOverageLimitEnabled: false,
             notificationSettings: NotificationSettings(),
-            isSelectedForDisplay: true
+            isSelectedForDisplay: true,
+            // "Grok".prefix(3) == "Gro"; the operator wants "Grk" on the tile.
+            menuBarLabel: "Grk"
         )
 
         profiles.append(newProfile)
         profileStore.saveProfiles(profiles)
         UserDefaults.standard.set(true, forKey: flagKey)
-        LoggingService.shared.log("ProfileManager: ✅ Auto-imported Grok account '\(email ?? "unknown")' as profile 'GROK'")
+        LoggingService.shared.log("ProfileManager: ✅ Auto-imported Grok account '\(email ?? "unknown")' as profile 'Grok'")
     }
 
     /// Syncs CLI credentials to default profile on first launch only.

@@ -68,6 +68,17 @@ struct Profile: Codable, Identifiable, Equatable {
 
     // MARK: - Display Configuration
     var isSelectedForDisplay: Bool  // For multi-profile menu bar mode
+    /// Optional override for the abbreviation shown on the menu-bar tile. The
+    /// tile otherwise shows the first 3 letters of `name` (e.g. "Memori" →
+    /// "Mem"), which can't express a label like "Grk" for "Grok". Nil = use the
+    /// name. Kept short; the renderer still truncates to 3 characters.
+    var menuBarLabel: String?
+
+    /// The string the menu-bar tile abbreviates (override, else the name).
+    var menuBarDisplayName: String {
+        if let menuBarLabel, !menuBarLabel.isEmpty { return menuBarLabel }
+        return name
+    }
 
     // MARK: - Auto-Switch Eligibility
     /// Whether this profile may be chosen as a TARGET by the session-limit
@@ -113,6 +124,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case checkOverageLimitEnabled
         case notificationSettings
         case isSelectedForDisplay
+        case menuBarLabel
         case includeInAutoSwitch
         case createdAt
         case lastUsedAt
@@ -147,6 +159,7 @@ struct Profile: Codable, Identifiable, Equatable {
         checkOverageLimitEnabled: Bool = true,
         notificationSettings: NotificationSettings = NotificationSettings(),
         isSelectedForDisplay: Bool = true,
+        menuBarLabel: String? = nil,
         includeInAutoSwitch: Bool? = nil,
         createdAt: Date = Date(),
         lastUsedAt: Date = Date()
@@ -177,6 +190,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.checkOverageLimitEnabled = checkOverageLimitEnabled
         self.notificationSettings = notificationSettings
         self.isSelectedForDisplay = isSelectedForDisplay
+        self.menuBarLabel = menuBarLabel
         self.includeInAutoSwitch = includeInAutoSwitch
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt

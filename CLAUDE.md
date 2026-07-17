@@ -138,9 +138,11 @@ refresh: `POST auth.x.ai/oauth2/token` with the entry's client_id; rotated
 refresh tokens persist to the profile store AND back to auth.json
 (same-`user_id` only). A one-time auto-import (`grokAutoImported_v1`) creates
 a profile named "GROK" from an existing CLI login. Grok is its own
-auto-switch/menu group (`Profile.providerKind` — grok tiles sit at the far
-LEFT, left of Codex); with one account there is nothing to rotate, and no
-shared-login pointer exists yet (a Grok switch only changes focus).
+auto-switch/menu group (`Profile.providerKind`); the menu order is
+right-to-left Claude → Grok → Codex, so a freshly-added Grok tile stays
+visible next to the Claude group and Codex clips first when the bar
+overflows. With one account there is nothing to rotate, and no shared-login
+pointer exists yet (a Grok switch only changes focus).
 
 ## Codex accounts
 
