@@ -99,38 +99,50 @@ class ClaudeCodeSyncService {
     }
 
     /// Rewrites ~/.claude/.credentials.json from the shared Keychain item when
-    /// the two diverge. The CLI writes /login results and silent refreshes ONLY
-    /// to the Keychain, while this app rewrites the file only on profile
+    /// the file has drifted. The CLI writes /login results and silent refreshes
+    /// ONLY to the Keychain, while this app rewrites the file only on profile
     /// switches — so a CLI-side /login leaves the file holding the PREVIOUS
     /// account's token, and headless `claude --bg` sessions, which read the
     /// FILE, stay stuck presenting an old (possibly exhausted) login (real
     /// incident 2026-07-17: the whole background fleet kept erroring on an
     /// exhausted account's session limit after a /login to a fresh one).
-    /// Called once per sweep. The Keychain wins whenever it holds valid JSON
-    /// that differs from the file — EXCEPT when the file's token outlives the
-    /// Keychain's (mirrors readSystemCredentials: a mid-switch window can
-    /// briefly leave the fresher token in the file).
+    ///
+    /// The file is ONLY overwritten with a Keychain payload the widget has
+    /// already reconciled as the active account's login — byte-equal to the
+    /// active Claude profile's stored credentials (`expectedKeychainJSON`,
+    /// captured on the main actor together with the not-switching check). The
+    /// original expiry-based tiebreak is deliberately GONE: it raced
+    /// activateProfile's two-store write and rewrote a freshly applied login
+    /// back to the OUTGOING account's token, after which identity adoption
+    /// flipped the active pointer backwards (second real incident,
+    /// 2026-07-17: switch to one account left the file on the previous one).
     /// Shells out to `security` — never call on the main thread.
-    private func healCredentialsFileFromKeychain() {
+    private func healCredentialsFileFromKeychain(expectedKeychainJSON: String) {
         guard let raw = try? readKeychainCredentials(),
+              raw == expectedKeychainJSON,
               let data = raw.data(using: .utf8),
               (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil else { return }
-        if let file = readCredentialsFile() {
-            if file == raw { return }
-            let fileExpiry = extractTokenExpiry(from: file) ?? .distantPast
-            let keychainExpiry = extractTokenExpiry(from: raw) ?? .distantPast
-            if fileExpiry > keychainExpiry { return }
-        }
+        if readCredentialsFile() == raw { return }
         writeCredentialsFile(raw)
         LoggingService.shared.log("ClaudeCodeSyncService: credentials file was stale vs the Keychain login — healed so file-reading sessions see the current account")
     }
 
     /// Off-main wrapper for `healCredentialsFileFromKeychain` (same suspension
-    /// pattern as readSystemCredentialsOffMain). Safe to call from the main actor.
+    /// pattern as readSystemCredentialsOffMain). Captures the switch-in-flight
+    /// state and the active Claude profile's stored credentials ON THE MAIN
+    /// ACTOR before hopping off — no-op while a switch is rewriting the
+    /// stores, or when the widget has not yet reconciled the Keychain's login
+    /// into a profile (identity adoption runs first each sweep).
     func healCredentialsFileFromKeychainOffMain() async {
+        let manager = ProfileManager.shared
+        guard !manager.isSwitchingProfile,
+              let activeClaudeId = manager.activeClaudeProfileId,
+              let expected = manager.profiles.first(where: { $0.id == activeClaudeId })?.cliCredentialsJSON else {
+            return
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .utility).async {
-                self.healCredentialsFileFromKeychain()
+                self.healCredentialsFileFromKeychain(expectedKeychainJSON: expected)
                 continuation.resume()
             }
         }
