@@ -211,6 +211,31 @@ struct PopoverContentView: View {
                 .padding(.top, 6)
             }
 
+            // Grok account note — only the weekly bar is meaningful (SuperGrok
+            // bills a weekly credit window; there is no 5-hour session concept,
+            // so the session bar always reads 0%).
+            if let viewingProfile = manager.clickedProfileId.flatMap({ id in
+                   profileManager.profiles.first(where: { $0.id == id })
+               }) ?? profileManager.activeProfile,
+               viewingProfile.isGrokOnlyProfile {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.orange)
+
+                    Text(viewingProfile.grokEmail.map {
+                        String(format: "popover.grok_note_email".localized, $0)
+                    } ?? "popover.grok_note".localized)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+            }
+
             // Codex account note — the session/weekly bars below show the OpenAI
             // Codex plan windows, not Claude usage
             if let viewingProfile = manager.clickedProfileId.flatMap({ id in

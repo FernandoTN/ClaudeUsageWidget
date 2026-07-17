@@ -204,6 +204,9 @@
 /* ==================== */
 /* MARK: - Auto-Switch Profile */
 /* ==================== */
+"popover.grok_note" = "Grok account — weekly bar shows the SuperGrok credit window (no 5h session)";
+"popover.grok_note_email" = "Grok · %@ — weekly bar shows the SuperGrok credit window";
+
 "auto_switch.title" = "Auto-Switch Profile";
 "auto_switch.subtitle" = "Automatically switch as an account approaches its usage limit";
 "auto_switch.enable_title" = "Enable Auto-Switch";

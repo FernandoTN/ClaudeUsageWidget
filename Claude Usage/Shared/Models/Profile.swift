@@ -233,7 +233,7 @@ struct Profile: Codable, Identifiable, Equatable {
     /// (isCodexOnlyProfile) stopped being a partition when the third provider
     /// arrived — a Grok profile is not codex-only, and grouping it with Claude
     /// would let the auto-switch hand a Claude session a Grok login.
-    enum ProviderKind: Equatable {
+    nonisolated enum ProviderKind: Equatable {
         case claude, codex, grok
     }
 
@@ -324,6 +324,7 @@ struct ProfileCredentials {
     var apiSessionKeyExpiry: Date?
     var cliCredentialsJSON: String?
     var codexCredentialsJSON: String?
+    var grokCredentialsJSON: String?
 
     var hasClaudeAI: Bool {
         claudeSessionKey != nil && organizationId != nil

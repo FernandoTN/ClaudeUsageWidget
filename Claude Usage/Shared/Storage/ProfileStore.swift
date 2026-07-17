@@ -487,6 +487,7 @@ class ProfileStore {
         profiles[index].apiOrganizationId = credentials.apiOrganizationId
         profiles[index].cliCredentialsJSON = credentials.cliCredentialsJSON
         profiles[index].codexCredentialsJSON = credentials.codexCredentialsJSON
+        profiles[index].grokCredentialsJSON = credentials.grokCredentialsJSON
 
         // saveProfiles persists credentials to the Keychain (cache + background queue)
         // and non-credential data to UserDefaults.
@@ -507,7 +508,8 @@ class ProfileStore {
             apiOrganizationId: profile.apiOrganizationId,
             apiSessionKeyExpiry: profile.apiSessionKeyExpiry,
             cliCredentialsJSON: profile.cliCredentialsJSON,
-            codexCredentialsJSON: profile.codexCredentialsJSON
+            codexCredentialsJSON: profile.codexCredentialsJSON,
+            grokCredentialsJSON: profile.grokCredentialsJSON
         )
     }
 

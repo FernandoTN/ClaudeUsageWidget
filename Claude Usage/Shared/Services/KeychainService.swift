@@ -337,7 +337,7 @@ class KeychainService {
     /// Deletes all per-profile credentials from the Keychain
     /// - Parameter profileId: The UUID of the profile whose credentials should be deleted
     func deleteProfileCredentials(profileId: UUID) {
-        for key in ["claude-key", "api-key", "cli-creds", "codex-creds"] {
+        for key in ["claude-key", "api-key", "cli-creds", "codex-creds", "grok-creds"] {
             deleteProfileCredential(profileId: profileId, key: key)
         }
     }

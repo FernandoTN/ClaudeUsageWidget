@@ -1349,6 +1349,17 @@ private func observeCredentialChanges() {
         let profiles = profileManager.profiles
         guard profiles.count > 1 else { return }
 
+        // Guard: the trigger only ever rotates WITHIN a provider group
+        // (candidates are same-providerKind by construction), so a provider
+        // with no other account — Grok today — must not arm the machinery at
+        // all: there is nothing to switch to, and another provider's limits
+        // must never reach for this account.
+        guard profiles.contains(where: {
+            $0.id != currentProfile.id
+                && $0.providerKind == currentProfile.providerKind
+                && $0.hasUsageCredentials
+        }) else { return }
+
         // Proactive: as usage climbs toward the limit, validate the predicted next
         // candidate's login so the eventual switch is seamless (or the user learns
         // about a dead account while there is still headroom to re-login).
@@ -1508,6 +1519,15 @@ private func observeCredentialChanges() {
                 _ = await CodexUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600)
                 if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.codexCredentialsJSON {
                     alive = !CodexUsageService.shared.isTokenExpired(json)
+                }
+            } else if candidate.isGrokOnlyProfile {
+                // Structurally dead today (a grok CURRENT never crosses a session
+                // milestone — grok session% is always 0 — and candidates are
+                // same-provider), but kept correct for a future multi-account
+                // grok group rather than falling into the claude branches.
+                _ = await GrokUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600)
+                if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.grokCredentialsJSON {
+                    alive = !GrokUsageService.shared.isTokenExpired(json)
                 }
             } else if candidate.cliCredentialsJSON != nil {
                 _ = await ClaudeCodeSyncService.shared.ensureFreshCredentials(
