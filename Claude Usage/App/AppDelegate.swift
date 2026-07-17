@@ -8,6 +8,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var setupWindowCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single-instance guard, BEFORE any side effects: duplicate instances
+        // double every API sweep (feeding oauth/usage 429s), double Keychain
+        // writes, and duplicate the menu-bar icons. macOS resurrects killed
+        // login-item agents, and a resurrection racing a manual relaunch has
+        // produced two live copies (2026-07-16). Lowest PID wins so N
+        // simultaneous copies deterministically collapse to one instead of
+        // all quitting (and being resurrected) together.
+        // (Never inside a test run: the guard would terminate the XCTest host
+        // whenever a real instance of the app is running on the same machine.)
+        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        let siblings = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
+        ).filter { !$0.isTerminated && $0.processIdentifier != myPid }
+        if !isTestRun, siblings.contains(where: { $0.processIdentifier < myPid }) {
+            LoggingService.shared.log("AppDelegate: another instance (pid \(siblings.map(\.processIdentifier).min() ?? -1)) is already running — exiting duplicate pid \(myPid)")
+            NSApp.terminate(nil)
+            return
+        }
+
         // FIRST: one-time preferences migration for the bundle-id rename — must
         // run before anything reads (or writes) UserDefaults.standard.
         MigrationService.shared.migrateLegacyBundleDefaultsIfNeeded()
