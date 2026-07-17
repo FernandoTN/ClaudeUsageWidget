@@ -181,13 +181,14 @@ final class StatusBarUIManager {
 
     /// Creation order for the multi-profile status items. Each new item is
     /// inserted to the LEFT of the app's existing items, so creation order maps
-    /// right-to-left on screen. Desired layout: all Codex accounts grouped at
-    /// the far left, all Claude accounts to their right; within each group the
-    /// account whose weekly limit resets SOONEST sits rightmost — the same
-    /// "use it or lose it" ranking the auto-switch uses, so the rightmost
-    /// account of a group is always the one to burn first. Name breaks ties so
-    /// equal resets (e.g. two profiles with no cached usage) don't reshuffle.
-    /// Static and `now`-injectable so the ordering/quantization rules are unit-testable.
+    /// right-to-left on screen. Desired layout: Grok accounts at the far left,
+    /// Codex accounts next, all Claude accounts to their right; within each
+    /// group the account whose weekly limit resets SOONEST sits rightmost —
+    /// the same "use it or lose it" ranking the auto-switch uses, so the
+    /// rightmost account of a group is always the one to burn first. Name
+    /// breaks ties so equal resets (e.g. two profiles with no cached usage)
+    /// don't reshuffle. Static and `now`-injectable so the
+    /// ordering/quantization rules are unit-testable.
     static func multiProfileCreationOrder(for profiles: [Profile], now: Date = Date()) -> [Profile] {
         // The usage API reports the SAME weekly boundary with ±1s jitter between
         // fetches (22:59:59.8 one sweep, 23:00:00.1 the next), and two accounts can
@@ -207,8 +208,9 @@ final class StatusBarUIManager {
             }
         }
         let selected = profiles.filter { $0.isSelectedForDisplay }
-        return ranked(selected.filter { !$0.isCodexOnlyProfile })
-            + ranked(selected.filter { $0.isCodexOnlyProfile })
+        return ranked(selected.filter { $0.providerKind == .claude })
+            + ranked(selected.filter { $0.providerKind == .codex })
+            + ranked(selected.filter { $0.providerKind == .grok })
     }
 
     /// Sets up status bar for multi-profile display mode

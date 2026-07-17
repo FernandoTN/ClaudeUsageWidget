@@ -798,9 +798,9 @@ private func observeCredentialChanges() {
         // every ~2.5 minutes without tripping the limit. Codex profiles hit a
         // different host and are never throttled.
         let priorityIds = Set([profileManager.activeProfile?.id, profileManager.activeClaudeProfileId].compactMap { $0 })
-        let priorityClaudeCount = allSelected.filter { !$0.isCodexOnlyProfile && priorityIds.contains($0.id) }.count
+        let priorityClaudeCount = allSelected.filter { $0.providerKind == .claude && priorityIds.contains($0.id) }.count
         let rotationBudget = max(1, 2 - priorityClaudeCount)
-        let backgroundClaude = allSelected.filter { !$0.isCodexOnlyProfile && !priorityIds.contains($0.id) }
+        let backgroundClaude = allSelected.filter { $0.providerKind == .claude && !priorityIds.contains($0.id) }
         var rotating: [Profile] = []
         if !backgroundClaude.isEmpty {
             for offset in 0..<min(rotationBudget, backgroundClaude.count) {
@@ -809,8 +809,10 @@ private func observeCredentialChanges() {
             claudeFetchCursor = (claudeFetchCursor + rotating.count) % backgroundClaude.count
         }
         let rotatingIds = Set(rotating.map(\.id))
+        // Codex and Grok profiles hit their own hosts (never the throttled
+        // oauth/usage endpoint), so they refresh every sweep.
         let selectedProfiles = allSelected.filter {
-            $0.isCodexOnlyProfile || priorityIds.contains($0.id) || rotatingIds.contains($0.id)
+            $0.providerKind != .claude || priorityIds.contains($0.id) || rotatingIds.contains($0.id)
         }
 
         LoggingService.shared.log("MenuBarManager: Refreshing \(selectedProfiles.count) of \(allSelected.count) selected profiles for multi-profile mode")
@@ -1010,6 +1012,11 @@ private func observeCredentialChanges() {
             return try await CodexUsageService.shared.fetchUsage(for: profile.id)
         }
 
+        // Grok-only profiles fetch from the Grok billing endpoint
+        if profile.isGrokOnlyProfile {
+            return try await GrokUsageService.shared.fetchUsage(for: profile.id)
+        }
+
         // Priority 1: claude.ai session key (cookie-based)
         if let sessionKey = profile.claudeSessionKey,
            let orgId = profile.organizationId {
@@ -1120,6 +1127,8 @@ private func observeCredentialChanges() {
                 var newUsage: ClaudeUsage
                 if profile.isCodexOnlyProfile {
                     newUsage = try await CodexUsageService.shared.fetchUsage(for: profile.id)
+                } else if profile.isGrokOnlyProfile {
+                    newUsage = try await GrokUsageService.shared.fetchUsage(for: profile.id)
                 } else {
                     newUsage = try await apiService.fetchUsageData()
                 }
@@ -1539,7 +1548,7 @@ private func observeCredentialChanges() {
     /// subscription are skipped.
     private func findNextAvailableProfile(after currentProfile: Profile, excluding: Set<UUID> = []) -> Profile? {
         let now = Date()
-        let switchingCodex = currentProfile.isCodexOnlyProfile
+        let switchingProvider = currentProfile.providerKind
         // Candidates are held to the SAME per-window thresholds the trigger
         // fires at: a profile at ≥threshold is exactly what the switch is
         // escaping, so landing on one (and ping-ponging between two
@@ -1551,8 +1560,8 @@ private func observeCredentialChanges() {
             guard candidate.id != currentProfile.id, candidate.hasUsageCredentials,
                   !excluding.contains(candidate.id) else { return false }
 
-            // Same-provider rule: never cross between Claude and Codex accounts
-            guard candidate.isCodexOnlyProfile == switchingCodex else { return false }
+            // Same-provider rule: never cross between Claude, Codex, and Grok accounts
+            guard candidate.providerKind == switchingProvider else { return false }
 
             // Respect the per-profile eligibility toggle (Settings → Profiles → Auto-Switch)
             guard candidate.isAutoSwitchEnabled else {
@@ -1561,7 +1570,7 @@ private func observeCredentialChanges() {
             }
 
             // Skip Claude CLI-only accounts on a free plan — no paid quota to take over
-            if !switchingCodex,
+            if switchingProvider == .claude,
                !candidate.hasClaudeAI,
                let cliJSON = candidate.cliCredentialsJSON,
                let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),

@@ -144,6 +144,22 @@ final class MenuBarOrderingTests: XCTestCase {
         XCTAssertEqual(order(profiles), ["Alpha", "Zeta"])
     }
 
+    private func grokProfile(_ name: String, weeklyReset: Date?, selected: Bool = true) -> Profile {
+        var usage: ClaudeUsage?
+        if let weeklyReset {
+            var u = ClaudeUsage.empty
+            u.weeklyResetTime = weeklyReset
+            usage = u
+        }
+        return Profile(
+            name: name,
+            grokCredentialsJSON: "{\"https://auth.x.ai::client\":{\"key\":\"jwt\"}}",
+            grokEmail: "grok@example.com",
+            claudeUsage: usage,
+            isSelectedForDisplay: selected
+        )
+    }
+
     func testFullTwoProviderLayout() {
         let profiles = [
             codexProfile("Codex-Late", weeklyReset: now.addingTimeInterval(6 * 24 * 3600)),
@@ -153,6 +169,17 @@ final class MenuBarOrderingTests: XCTestCase {
         ]
         // Rightmost → leftmost: Claude group (soonest first), then Codex group.
         XCTAssertEqual(order(profiles), ["Claude-Soon", "Claude-Late", "Codex-Soon", "Codex-Late"])
+    }
+
+    func testThreeProviderLayoutPutsGrokLeftmost() {
+        let profiles = [
+            grokProfile("Grok", weeklyReset: now.addingTimeInterval(3 * 24 * 3600)),
+            codexProfile("Codex", weeklyReset: now.addingTimeInterval(1 * 24 * 3600)),
+            claudeProfile("Claude", weeklyReset: now.addingTimeInterval(2 * 24 * 3600))
+        ]
+        // Creation order maps right-to-left: Claude rightmost, Codex next,
+        // Grok created last = leftmost on screen.
+        XCTAssertEqual(order(profiles), ["Claude", "Codex", "Grok"])
     }
 
     // MARK: - Stranded-tile layout check

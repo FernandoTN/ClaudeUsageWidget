@@ -34,6 +34,7 @@ class ProfileStore {
         var apiSessionKey: String?
         var cliCredentialsJSON: String?
         var codexCredentialsJSON: String?
+        var grokCredentialsJSON: String?
 
         subscript(key: CredentialKey) -> String? {
             get {
@@ -42,6 +43,7 @@ class ProfileStore {
                 case .apiSessionKey: return apiSessionKey
                 case .cliCredentials: return cliCredentialsJSON
                 case .codexCredentials: return codexCredentialsJSON
+                case .grokCredentials: return grokCredentialsJSON
                 }
             }
             set {
@@ -50,6 +52,7 @@ class ProfileStore {
                 case .apiSessionKey: apiSessionKey = newValue
                 case .cliCredentials: cliCredentialsJSON = newValue
                 case .codexCredentials: codexCredentialsJSON = newValue
+                case .grokCredentials: grokCredentialsJSON = newValue
                 }
             }
         }
@@ -64,6 +67,7 @@ class ProfileStore {
         case apiSessionKey = "api-key"
         case cliCredentials = "cli-creds"
         case codexCredentials = "codex-creds"
+        case grokCredentials = "grok-creds"
     }
 
     private enum Keys {
@@ -166,7 +170,8 @@ class ProfileStore {
                 (.claudeSessionKey, creds.claudeSessionKey),
                 (.apiSessionKey, creds.apiSessionKey),
                 (.cliCredentials, creds.cliCredentialsJSON),
-                (.codexCredentials, creds.codexCredentialsJSON)
+                (.codexCredentials, creds.codexCredentialsJSON),
+                (.grokCredentials, creds.grokCredentialsJSON)
             ]
             for (key, value) in values {
                 guard let value else { continue }
@@ -266,7 +271,8 @@ class ProfileStore {
                 claudeSessionKey: keychainService.loadProfileCredential(profileId: id, key: "claude-key"),
                 apiSessionKey: keychainService.loadProfileCredential(profileId: id, key: "api-key"),
                 cliCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "cli-creds"),
-                codexCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "codex-creds")
+                codexCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "codex-creds"),
+                grokCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "grok-creds")
             )
             cacheLock.lock()
             credentialCache[id] = cached
@@ -324,7 +330,8 @@ class ProfileStore {
                 claudeSessionKey: profile.claudeSessionKey,
                 apiSessionKey: profile.apiSessionKey,
                 cliCredentialsJSON: profile.cliCredentialsJSON,
-                codexCredentialsJSON: profile.codexCredentialsJSON
+                codexCredentialsJSON: profile.codexCredentialsJSON,
+                grokCredentialsJSON: profile.grokCredentialsJSON
             )
 
             cacheLock.lock()
@@ -333,7 +340,8 @@ class ProfileStore {
                 claudeSessionKey: incoming.claudeSessionKey ?? old?.claudeSessionKey,
                 apiSessionKey: incoming.apiSessionKey ?? old?.apiSessionKey,
                 cliCredentialsJSON: incoming.cliCredentialsJSON ?? old?.cliCredentialsJSON,
-                codexCredentialsJSON: incoming.codexCredentialsJSON ?? old?.codexCredentialsJSON
+                codexCredentialsJSON: incoming.codexCredentialsJSON ?? old?.codexCredentialsJSON,
+                grokCredentialsJSON: incoming.grokCredentialsJSON ?? old?.grokCredentialsJSON
             )
             credentialCache[profile.id] = merged
             cacheLock.unlock()
@@ -544,6 +552,7 @@ class ProfileStore {
         case .apiSessionKey: cached.apiSessionKey = nil
         case .cliCredentials: cached.cliCredentialsJSON = nil
         case .codexCredentials: cached.codexCredentialsJSON = nil
+        case .grokCredentials: cached.grokCredentialsJSON = nil
         }
         credentialCache[profileId] = cached
         cacheLock.unlock()
@@ -578,5 +587,6 @@ class ProfileStore {
         profile.apiSessionKey = cached?.apiSessionKey
         profile.cliCredentialsJSON = cached?.cliCredentialsJSON
         profile.codexCredentialsJSON = cached?.codexCredentialsJSON
+        profile.grokCredentialsJSON = cached?.grokCredentialsJSON
     }
 }

@@ -114,8 +114,33 @@ the prompt needs the main thread; the main thread is blocked waiting for it → 
 ## Networking
 
 The app contacts only `claude.ai`, `api.anthropic.com`, `console.anthropic.com`,
-`status.claude.com`, and — for Codex accounts — `chatgpt.com` (usage) and
-`auth.openai.com` (token refresh). There is no telemetry — keep it that way.
+`status.claude.com`; for Codex accounts — `chatgpt.com` (usage) and
+`auth.openai.com` (token refresh); and for Grok accounts —
+`cli-chat-proxy.grok.com` (usage/billing) and `auth.x.ai` (token refresh).
+There is no telemetry — keep it that way.
+
+## Grok accounts
+
+`GrokUsageService` is the third provider, mirroring the Codex design: a
+profile's `grokCredentialsJSON` (Keychain key `grok-creds`) holds a full copy
+of `~/.grok/auth.json` — an OIDC login keyed `"<issuer>::<client_id>"` whose
+entry carries `key` (JWT access token, ~6h), a rotating `refresh_token`,
+ISO-8601 `expires_at` (6-digit fractional seconds — `parseISODate` normalizes),
+and identity (`user_id`/`email`/`team_id`). Usage comes from
+`GET cli-chat-proxy.grok.com/v1/billing?format=credits` (Bearer +
+`x-grok-client-mode: grok-build` — the CLI's own billing call, endpoints
+reverse-engineered from the grok binary's `billing.rs` strings and verified
+live 2026-07-17): `config.currentPeriod` (WEEKLY for SuperGrok) →
+`weeklyResetTime`, `creditUsagePercent` (omitted while zero; numeric fields
+may be `{"val": n}`-wrapped) → `weeklyPercentage`. Grok has no 5h session
+window, so `sessionPercentage` is 0 with the period end as its reset. Token
+refresh: `POST auth.x.ai/oauth2/token` with the entry's client_id; rotated
+refresh tokens persist to the profile store AND back to auth.json
+(same-`user_id` only). A one-time auto-import (`grokAutoImported_v1`) creates
+a profile named "GROK" from an existing CLI login. Grok is its own
+auto-switch/menu group (`Profile.providerKind` — grok tiles sit at the far
+LEFT, left of Codex); with one account there is nothing to rotate, and no
+shared-login pointer exists yet (a Grok switch only changes focus).
 
 ## Codex accounts
 

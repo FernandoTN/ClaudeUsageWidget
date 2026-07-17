@@ -44,6 +44,14 @@ struct Profile: Codable, Identifiable, Equatable {
     var codexEmail: String?
     var codexAccountSyncedAt: Date?
 
+    // MARK: - Grok Account (xAI Grok CLI)
+    /// Full contents of the account's ~/.grok/auth.json — Keychain-only, never
+    /// serialized to UserDefaults (excluded from CodingKeys, like the other secrets).
+    var grokCredentialsJSON: String?
+    /// Display metadata (non-secret, persisted normally).
+    var grokEmail: String?
+    var grokAccountSyncedAt: Date?
+
     // MARK: - Usage Data (Per-Profile)
     var claudeUsage: ClaudeUsage?
     var apiUsage: APIUsage?
@@ -96,6 +104,8 @@ struct Profile: Codable, Identifiable, Equatable {
         case claudeOrganizationUUID
         case codexEmail
         case codexAccountSyncedAt
+        case grokEmail
+        case grokAccountSyncedAt
         case claudeUsage
         case apiUsage
         case iconConfig
@@ -107,7 +117,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case createdAt
         case lastUsedAt
         // EXCLUDED (Keychain-only): claudeSessionKey, apiSessionKey, cliCredentialsJSON,
-        // codexCredentialsJSON
+        // codexCredentialsJSON, grokCredentialsJSON
     }
 
     init(
@@ -127,6 +137,9 @@ struct Profile: Codable, Identifiable, Equatable {
         codexCredentialsJSON: String? = nil,
         codexEmail: String? = nil,
         codexAccountSyncedAt: Date? = nil,
+        grokCredentialsJSON: String? = nil,
+        grokEmail: String? = nil,
+        grokAccountSyncedAt: Date? = nil,
         claudeUsage: ClaudeUsage? = nil,
         apiUsage: APIUsage? = nil,
         iconConfig: MenuBarIconConfiguration = .default,
@@ -154,6 +167,9 @@ struct Profile: Codable, Identifiable, Equatable {
         self.codexCredentialsJSON = codexCredentialsJSON
         self.codexEmail = codexEmail
         self.codexAccountSyncedAt = codexAccountSyncedAt
+        self.grokCredentialsJSON = grokCredentialsJSON
+        self.grokEmail = grokEmail
+        self.grokAccountSyncedAt = grokAccountSyncedAt
         self.claudeUsage = claudeUsage
         self.apiUsage = apiUsage
         self.iconConfig = iconConfig
@@ -187,16 +203,42 @@ struct Profile: Codable, Identifiable, Equatable {
         hasCodexAccount && !hasClaudeUsageSource
     }
 
+    /// True if this profile holds an xAI Grok CLI account
+    var hasGrokAccount: Bool {
+        grokCredentialsJSON != nil
+    }
+
+    /// True if this profile's ONLY usage source is a Grok account. Such profiles
+    /// fetch from the Grok billing endpoint instead of the Claude/ChatGPT ones.
+    var isGrokOnlyProfile: Bool {
+        hasGrokAccount && !hasClaudeUsageSource && !hasCodexAccount
+    }
+
+    /// Same-provider grouping key: the auto-switch only rotates among accounts
+    /// of ONE provider, and the menu bar groups tiles per provider. A boolean
+    /// (isCodexOnlyProfile) stopped being a partition when the third provider
+    /// arrived — a Grok profile is not codex-only, and grouping it with Claude
+    /// would let the auto-switch hand a Claude session a Grok login.
+    enum ProviderKind: Equatable {
+        case claude, codex, grok
+    }
+
+    var providerKind: ProviderKind {
+        if isGrokOnlyProfile { return .grok }
+        if isCodexOnlyProfile { return .codex }
+        return .claude
+    }
+
     /// True if profile can fetch CLAUDE usage (claude.ai session, API Console, or CLI OAuth)
     var hasClaudeUsageSource: Bool {
         hasClaudeAI || hasAPIConsole || hasUsableCLIOAuth
     }
 
     /// True if profile has credentials that can fetch usage data (Claude.ai, CLI OAuth,
-    /// API Console, or a Codex account)
+    /// API Console, a Codex account, or a Grok account)
     /// Note: System keychain fallback is handled in ClaudeAPIService.getAuthentication() during actual API calls
     var hasUsageCredentials: Bool {
-        hasClaudeUsageSource || hasCodexAccount
+        hasClaudeUsageSource || hasCodexAccount || hasGrokAccount
     }
 
     /// True if profile has CLI OAuth credentials that are not expired
@@ -218,6 +260,7 @@ struct Profile: Codable, Identifiable, Equatable {
 
     var hasAnyCredentials: Bool {
         hasClaudeAI || hasAPIConsole || cliCredentialsJSON != nil || codexCredentialsJSON != nil
+            || grokCredentialsJSON != nil
     }
 
     // MARK: - Provider Exclusivity
@@ -236,6 +279,11 @@ struct Profile: Codable, Identifiable, Equatable {
     /// True if this profile carries a Codex account.
     var carriesCodexAccount: Bool {
         hasCodexAccount || codexEmail != nil
+    }
+
+    /// True if this profile carries a Grok account.
+    var carriesGrokAccount: Bool {
+        hasGrokAccount || grokEmail != nil
     }
 
     /// The profile's next weekly reset boundary. Cached usage may be days old

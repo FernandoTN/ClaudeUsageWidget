@@ -734,6 +734,7 @@ class ProfileManager: ObservableObject {
         // startup) because the Keychain credential cache must be hydrated first to
         // know whether a codex profile already exists.
         autoImportCodexAccountIfNeeded()
+        autoImportGrokAccountIfNeeded()
 
         // Resolve/repair the per-provider active accounts now that credentials are
         // hydrated (before hydration every profile looks credential-less).
@@ -953,6 +954,43 @@ class ProfileManager: ObservableObject {
         profileStore.saveProfiles(profiles)
         UserDefaults.standard.set(true, forKey: flagKey)
         LoggingService.shared.log("ProfileManager: ✅ Auto-imported Codex account '\(email ?? "unknown")' as profile '\(newProfile.name)'")
+    }
+
+    /// One-time: import the xAI Grok CLI login (~/.grok/auth.json) into its own
+    /// profile — the Codex twin, for the third provider. Named "GROK" per the
+    /// operator's convention for this account.
+    private func autoImportGrokAccountIfNeeded() {
+        let flagKey = "grokAutoImported_v1"
+        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
+        guard !profiles.contains(where: { $0.hasGrokAccount }) else {
+            UserDefaults.standard.set(true, forKey: flagKey)
+            return
+        }
+
+        let grokService = GrokUsageService.shared
+        guard let authJSON = grokService.readAuthFile(),
+              grokService.extractAccessToken(from: authJSON) != nil else {
+            // Not logged into grok — retry next launch (don't set the flag).
+            return
+        }
+
+        let email = grokService.extractEmail(from: authJSON)
+        let newProfile = Profile(
+            name: "GROK",
+            grokCredentialsJSON: authJSON,
+            grokEmail: email,
+            grokAccountSyncedAt: Date(),
+            iconConfig: .default,
+            refreshInterval: 60.0,
+            checkOverageLimitEnabled: false,
+            notificationSettings: NotificationSettings(),
+            isSelectedForDisplay: true
+        )
+
+        profiles.append(newProfile)
+        profileStore.saveProfiles(profiles)
+        UserDefaults.standard.set(true, forKey: flagKey)
+        LoggingService.shared.log("ProfileManager: ✅ Auto-imported Grok account '\(email ?? "unknown")' as profile 'GROK'")
     }
 
     /// Syncs CLI credentials to default profile on first launch only.
