@@ -154,4 +154,22 @@ final class MenuBarOrderingTests: XCTestCase {
         // Rightmost → leftmost: Claude group (soonest first), then Codex group.
         XCTAssertEqual(order(profiles), ["Claude-Soon", "Claude-Late", "Codex-Soon", "Codex-Late"])
     }
+
+    // MARK: - Stranded-tile layout check
+
+    func testDescendingXPositionsMatchCreationOrder() {
+        // Creation order maps right-to-left: strictly descending x is healthy.
+        XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 850, 800, 750]))
+        XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([100]))
+        XCTAssertFalse(StatusBarUIManager.layoutDivergesFromCreationOrder([]))
+    }
+
+    func testStrandedTileIsDetected() {
+        // The incident shape: the LAST-created tile (expected leftmost) sitting
+        // at the far right of the bar.
+        XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 850, 800, 1650]))
+        // Equal positions (overlapping/unresolved windows) also count as broken
+        // rather than silently accepted — the caller filters unmeasurable cases.
+        XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([900, 900]))
+    }
 }

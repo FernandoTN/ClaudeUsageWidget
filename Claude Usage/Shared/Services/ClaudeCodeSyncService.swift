@@ -98,6 +98,44 @@ class ClaudeCodeSyncService {
         }
     }
 
+    /// Rewrites ~/.claude/.credentials.json from the shared Keychain item when
+    /// the two diverge. The CLI writes /login results and silent refreshes ONLY
+    /// to the Keychain, while this app rewrites the file only on profile
+    /// switches — so a CLI-side /login leaves the file holding the PREVIOUS
+    /// account's token, and headless `claude --bg` sessions, which read the
+    /// FILE, stay stuck presenting an old (possibly exhausted) login (real
+    /// incident 2026-07-17: the whole background fleet kept erroring on an
+    /// exhausted account's session limit after a /login to a fresh one).
+    /// Called once per sweep. The Keychain wins whenever it holds valid JSON
+    /// that differs from the file — EXCEPT when the file's token outlives the
+    /// Keychain's (mirrors readSystemCredentials: a mid-switch window can
+    /// briefly leave the fresher token in the file).
+    /// Shells out to `security` — never call on the main thread.
+    private func healCredentialsFileFromKeychain() {
+        guard let raw = try? readKeychainCredentials(),
+              let data = raw.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil else { return }
+        if let file = readCredentialsFile() {
+            if file == raw { return }
+            let fileExpiry = extractTokenExpiry(from: file) ?? .distantPast
+            let keychainExpiry = extractTokenExpiry(from: raw) ?? .distantPast
+            if fileExpiry > keychainExpiry { return }
+        }
+        writeCredentialsFile(raw)
+        LoggingService.shared.log("ClaudeCodeSyncService: credentials file was stale vs the Keychain login — healed so file-reading sessions see the current account")
+    }
+
+    /// Off-main wrapper for `healCredentialsFileFromKeychain` (same suspension
+    /// pattern as readSystemCredentialsOffMain). Safe to call from the main actor.
+    func healCredentialsFileFromKeychainOffMain() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                self.healCredentialsFileFromKeychain()
+                continuation.resume()
+            }
+        }
+    }
+
     // MARK: - Private Credential Sources
 
     /// Reads credentials from ~/.claude/.credentials.json or ~/.claude/credentials.json file

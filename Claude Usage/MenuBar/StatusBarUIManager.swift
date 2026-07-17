@@ -260,6 +260,47 @@ final class StatusBarUIManager {
         observeAppearanceChanges()
     }
 
+    /// True when on-screen x-positions no longer strictly DESCEND in creation
+    /// order (creation order maps right-to-left, so each later-created item
+    /// must sit further left). macOS can strand one tile far from the group:
+    /// when the menu bar overflows (many accounts + a notch) a hidden tile
+    /// that reappears after a display change is re-placed at an arbitrary
+    /// position — a real report: one Codex tile stranded at the far right of
+    /// the whole menu bar, past other apps' icons, instead of at the group's
+    /// left edge. Pure so it is unit-testable.
+    nonisolated static func layoutDivergesFromCreationOrder(_ xPositions: [CGFloat]) -> Bool {
+        guard xPositions.count > 1 else { return false }
+        for i in 1..<xPositions.count where xPositions[i] >= xPositions[i - 1] {
+            return true
+        }
+        return false
+    }
+
+    /// Rebuild-on-heal is rate-limited: if a rebuild cannot fix the layout
+    /// (e.g. the bar is genuinely overflowing), retrying every sweep would
+    /// flicker the whole group twice a minute.
+    private var lastLayoutHealAt: Date = .distantPast
+
+    /// True when every item's window is measurable on ONE shared screen and
+    /// the x-order contradicts the creation order. Bails out (false) whenever
+    /// any window is missing, off-screen, or on another display — a hidden
+    /// tile can't be judged, only a visibly misplaced one.
+    private func strandedTileDetected() -> Bool {
+        guard multiProfileOrder.count > 1,
+              Date().timeIntervalSince(lastLayoutHealAt) > 300 else { return false }
+        var xPositions: [CGFloat] = []
+        var screens = Set<ObjectIdentifier>()
+        for profileId in multiProfileOrder {
+            guard let window = multiProfileStatusItems[profileId]?.button?.window,
+                  let screen = window.screen,
+                  window.frame.minX > 0 else { return false }
+            screens.insert(ObjectIdentifier(screen))
+            xPositions.append(window.frame.minX)
+        }
+        guard screens.count == 1 else { return false }
+        return Self.layoutDivergesFromCreationOrder(xPositions)
+    }
+
     /// Updates all multi-profile status items
     func updateMultiProfileButtons(profiles: [Profile], config: MultiProfileDisplayConfig) {
         guard isMultiProfileMode else { return }
@@ -267,10 +308,20 @@ final class StatusBarUIManager {
         // Fresh usage may have reshuffled the weekly-reset ranking (or changed the
         // selected set). Status items cannot be reordered in place, so rebuild the
         // group when the desired order differs — rare, so the flicker is acceptable.
+        // Same remedy when macOS has physically relocated a tile out of the group
+        // (see strandedTileDetected): recreating the whole group in one burst
+        // restores contiguity.
         let desiredOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
-        if desiredOrder != multiProfileOrder,
+        var rebuildReason: String?
+        if desiredOrder != multiProfileOrder {
+            rebuildReason = "weekly-reset order changed"
+        } else if strandedTileDetected() {
+            rebuildReason = "a tile was relocated out of the group by the system"
+            lastLayoutHealAt = Date()
+        }
+        if let rebuildReason,
            let target = multiProfileTarget, let action = multiProfileAction {
-            LoggingService.shared.logUIEvent("Multi-profile: weekly-reset order changed, rebuilding status items")
+            LoggingService.shared.logUIEvent("Multi-profile: \(rebuildReason), rebuilding status items")
             setupMultiProfile(profiles: profiles, target: target, action: action)
 
             // Buttons created microseconds ago still report a provisional

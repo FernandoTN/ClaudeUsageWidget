@@ -986,6 +986,11 @@ private func observeCredentialChanges() {
             // relaunching the app. Identity is cached per token, so this only
             // touches the network when the CLI's login actually changes.
             await self.profileManager.adoptSystemLoginByIdentity()
+
+            // A CLI-side /login only writes the Keychain; keep the credentials
+            // FILE in step so headless sessions that read the file aren't left
+            // presenting the previous (possibly exhausted) account's token.
+            await ClaudeCodeSyncService.shared.healCredentialsFileFromKeychainOffMain()
         }
     }
 
