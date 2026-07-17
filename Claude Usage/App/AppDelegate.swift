@@ -7,26 +7,53 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var setupWindow: NSWindow?
     private var setupWindowCloseObserver: NSObjectProtocol?
 
+    /// True when another live instance of this app should win and this one must
+    /// exit. Oldest `launchDate` wins — PID comparison is NOT a launch-order
+    /// tiebreak (PID wraparound handed a freshly launched duplicate a lower PID
+    /// than the long-running original, a real incident); identical launch dates
+    /// fall back to PID so simultaneous copies still collapse deterministically
+    /// to exactly one instead of all quitting (and being resurrected) together.
+    /// Never true inside a test run: the guard would terminate the XCTest host
+    /// whenever the real app is running on the same machine.
+    private static func isDuplicateInstance() -> Bool {
+        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        guard !isTestRun else { return false }
+
+        let me = NSRunningApplication.current
+        let siblings = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
+        ).filter { !$0.isTerminated && $0.processIdentifier != me.processIdentifier }
+
+        let myDate = me.launchDate ?? .distantPast
+        let olderSiblingExists = siblings.contains { sib in
+            let sibDate = sib.launchDate ?? .distantPast
+            if sibDate != myDate { return sibDate < myDate }
+            return sib.processIdentifier < me.processIdentifier
+        }
+        if olderSiblingExists {
+            LoggingService.shared.log("AppDelegate: an older instance of this app is already running — exiting duplicate pid \(me.processIdentifier)")
+        }
+        return olderSiblingExists
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single-instance guard, BEFORE any side effects: duplicate instances
         // double every API sweep (feeding oauth/usage 429s), double Keychain
         // writes, and duplicate the menu-bar icons. macOS resurrects killed
         // login-item agents, and a resurrection racing a manual relaunch has
-        // produced two live copies (2026-07-16). Lowest PID wins so N
-        // simultaneous copies deterministically collapse to one instead of
-        // all quitting (and being resurrected) together.
-        // (Never inside a test run: the guard would terminate the XCTest host
-        // whenever a real instance of the app is running on the same machine.)
-        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
-        let myPid = ProcessInfo.processInfo.processIdentifier
-        let siblings = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
-        ).filter { !$0.isTerminated && $0.processIdentifier != myPid }
-        if !isTestRun, siblings.contains(where: { $0.processIdentifier < myPid }) {
-            LoggingService.shared.log("AppDelegate: another instance (pid \(siblings.map(\.processIdentifier).min() ?? -1)) is already running — exiting duplicate pid \(myPid)")
-            NSApp.terminate(nil)
-            return
+        // produced two live copies (2026-07-16). exit(0), not
+        // NSApp.terminate — terminate can be swallowed mid-didFinishLaunching.
+        if Self.isDuplicateInstance() {
+            exit(0)
+        }
+        // Simultaneous launches can each miss the other before LaunchServices
+        // registers them (observed: resurrection racing a manual `open`) —
+        // re-check once after the window has safely passed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if Self.isDuplicateInstance() {
+                exit(0)
+            }
         }
 
         // FIRST: one-time preferences migration for the bundle-id rename — must
