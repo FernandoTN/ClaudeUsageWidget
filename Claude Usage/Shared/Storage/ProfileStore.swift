@@ -533,6 +533,7 @@ class ProfileStore {
         syncCredentialItem(credentials.apiSessionKey, profileId: profileId, key: CredentialKey.apiSessionKey.rawValue)
         syncCredentialItem(credentials.cliCredentialsJSON, profileId: profileId, key: CredentialKey.cliCredentials.rawValue)
         syncCredentialItem(credentials.codexCredentialsJSON, profileId: profileId, key: CredentialKey.codexCredentials.rawValue)
+        syncCredentialItem(credentials.grokCredentialsJSON, profileId: profileId, key: CredentialKey.grokCredentials.rawValue)
     }
 
     private func syncCredentialItem(_ value: String?, profileId: UUID, key: String) {
