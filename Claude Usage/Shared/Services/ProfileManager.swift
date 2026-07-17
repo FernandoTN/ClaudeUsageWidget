@@ -403,6 +403,14 @@ class ProfileManager: ObservableObject {
         switchingSemaphore = false
         isSwitchingProfile = false
 
+        // An explicit user choice must stick: tell the auto-switch machinery so
+        // it doesn't immediately rotate away from an account the user picked
+        // while it sits above a switch threshold (it re-arms on its own once
+        // the account regains headroom).
+        if userInitiated {
+            NotificationCenter.default.post(name: .profileManuallyActivated, object: id)
+        }
+
         LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
         return true
     }

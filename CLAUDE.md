@@ -198,7 +198,11 @@ weekly/Fable default 99% (`loadAutoSwitchWeeklyThreshold`; tighter because
 forfeited weekly quota is gone until the weekly reset) — so running CLI
 sessions never hit the hard limit while the ~30s sweep catches up. The SAME
 per-window thresholds gate candidate eligibility, which is what makes
-ping-pong between two nearly-full accounts impossible. The check runs mid-sweep for the
+ping-pong between two nearly-full accounts impossible. A USER-initiated
+activation is never yanked away by the next sweep even when the chosen
+account is over a threshold (`.profileManuallyActivated` marks it in
+`autoSwitchedProfileIds`; the mark clears once the account regains
+headroom). The check runs mid-sweep for the
 provider-active accounts (not just at sweep end), and a sweep ends early if a
 switch starts while it is walking profiles (Keychain-adoption contamination
 hazard); in multi-profile mode both

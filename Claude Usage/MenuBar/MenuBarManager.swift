@@ -67,6 +67,7 @@ class MenuBarManager: NSObject, ObservableObject {
 
     // Observer for credential changes (add, remove, update)
     private var credentialsObserver: NSObjectProtocol?
+    private var manualActivationObserver: NSObjectProtocol?
 
     // Observer for display mode changes (single/multi profile)
     private var displayModeObserver: NSObjectProtocol?
@@ -176,6 +177,7 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Observe session key updates
         observeCredentialChanges()
+        observeManualActivations()
 
         // Observe display mode changes (single/multi profile)
         observeDisplayModeChanges()
@@ -220,6 +222,10 @@ class MenuBarManager: NSObject, ObservableObject {
         if let credentialsObserver = credentialsObserver {
             NotificationCenter.default.removeObserver(credentialsObserver)
             self.credentialsObserver = nil
+        }
+        if let manualActivationObserver = manualActivationObserver {
+            NotificationCenter.default.removeObserver(manualActivationObserver)
+            self.manualActivationObserver = nil
         }
         if let displayModeObserver = displayModeObserver {
             NotificationCenter.default.removeObserver(displayModeObserver)
@@ -623,6 +629,25 @@ private func observeCredentialChanges() {
                 self.lastRefreshTriggerTime = Date()
 
                 self.refreshUsage()
+            }
+        }
+    }
+
+    private func observeManualActivations() {
+        manualActivationObserver = NotificationCenter.default.addObserver(
+            forName: .profileManuallyActivated,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self, let profileId = notification.object as? UUID else { return }
+            Task { @MainActor in
+                // Respect the explicit choice: marking the profile as already-
+                // switched keeps the sweep from rotating away from it while it
+                // sits above a switch threshold. The existing re-arm (usage back
+                // below every threshold) clears the mark, so a profile the user
+                // picked with real headroom behaves exactly as before.
+                self.autoSwitchedProfileIds.insert(profileId)
+                LoggingService.shared.log("MenuBarManager: user manually activated profile \(profileId) — auto-switch-away suppressed until it regains headroom")
             }
         }
     }

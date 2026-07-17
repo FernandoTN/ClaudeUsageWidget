@@ -27,4 +27,9 @@ extension Notification.Name {
     /// Posted to jump an already-open settings window to a specific section.
     /// The object is the target SettingsSection's rawValue.
     static let settingsSectionRequested = Notification.Name("settingsSectionRequested")
+
+    /// Posted (object = profile UUID) after a USER-initiated profile activation
+    /// succeeds — the auto-switch must respect the explicit choice instead of
+    /// yanking an over-threshold account away on the next sweep.
+    static let profileManuallyActivated = Notification.Name("profileManuallyActivated")
 }
