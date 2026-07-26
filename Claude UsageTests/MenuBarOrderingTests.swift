@@ -208,4 +208,23 @@ final class MenuBarOrderingTests: XCTestCase {
         XCTAssertTrue(StatusBarUIManager.layoutDivergesFromCreationOrder([1509, 1482, 1321, 1294]))
     }
 
+    // MARK: - Overflow-parked detection
+
+    func testDistinctPositionsAreNotOverflowParked() {
+        XCTAssertFalse(StatusBarUIManager.containsOverflowParkedTiles([1471, 1444, 1417, 1390]))
+        XCTAssertFalse(StatusBarUIManager.containsOverflowParkedTiles([100]))
+        XCTAssertFalse(StatusBarUIManager.containsOverflowParkedTiles([]))
+    }
+
+    func testDuplicatePositionsAreOverflowParked() {
+        // Real snapshot 2026-07-25: four of twelve tiles hidden by menu-bar
+        // overflow, all parked at the same x=1701 — an overflowing bar, not a
+        // stranded layout. Healing must not fire (a rebuild can't make the
+        // tiles fit, and retrying every rate-limit window flickers the whole
+        // group forever).
+        XCTAssertTrue(StatusBarUIManager.containsOverflowParkedTiles(
+            [1471, 1444, 1701, 1390, 1701, 1701, 1309, 1282, 1255, 1228, 1201, 1701]
+        ))
+    }
+
 }

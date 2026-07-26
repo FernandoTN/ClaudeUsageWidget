@@ -53,6 +53,19 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         )
     }
 
+    // MARK: - Burst-429 backoff curve
+
+    func testBurstBackoffDoublesAndCaps() {
+        // 2min, 4, 8, … capped at 30min; a defensive streak of 0 still backs
+        // off the minimum interval.
+        XCTAssertEqual(MenuBarManager.burstBackoffInterval(streak: 0), 120)
+        XCTAssertEqual(MenuBarManager.burstBackoffInterval(streak: 1), 120)
+        XCTAssertEqual(MenuBarManager.burstBackoffInterval(streak: 2), 240)
+        XCTAssertEqual(MenuBarManager.burstBackoffInterval(streak: 3), 480)
+        XCTAssertEqual(MenuBarManager.burstBackoffInterval(streak: 5), 1800)
+        XCTAssertEqual(MenuBarManager.burstBackoffInterval(streak: 50), 1800)
+    }
+
     func testHealthyUsageIsNotExhausted() {
         XCTAssertFalse(MenuBarManager.isQuotaExhausted(usage(session: 40, weekly: 60, fable: 70, fableResetIn: 86_400), now: now))
     }

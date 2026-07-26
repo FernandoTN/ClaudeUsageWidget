@@ -201,7 +201,20 @@ therefore treated as usage information: `stampAccountThrottleIfNeeded` records
 per-IP burst noise), `effectiveSessionPercentage` reports 100% while the stamp
 is live (propagating to tiles, popover, auto-switch trigger AND candidate
 eligibility through the one shared seam), and sweeps skip fetching the
-throttled profile until the stamp expires.
+throttled profile until the stamp expires. A 429 with NO account-level
+Retry-After never stamps — exhaustion is unknown — but must still stop the
+sweep from re-fetching every 30s (a real profile drew 90 identical 429s in an
+hour): `registerBurstBackoff` backs that profile's usage fetch off
+exponentially (2min doubling to a 30min cap, in-memory, cleared by the first
+successful fetch).
+
+**Menu-bar overflow vs stranded tiles**: when the bar overflows, macOS hides
+the clipped status items and parks them all at one shared off-edge frame —
+`strandedTileDetected` treats duplicate minX values as "overflow-hidden" and
+never heals on them (a rebuild cannot make the tiles fit; retrying every
+rate-limit window flickered the whole group every ~5 minutes for days). The
+failed-heal signature is quantized to 10pt buckets so usage repaints drifting
+tile widths a few points can't mint a "new" broken layout each evaluation.
 
 **Candidate preflight**: as a provider-active account crosses 25/50/75/90% of its
 session window, `MenuBarManager.preflightCandidates` validates the auto-switch's

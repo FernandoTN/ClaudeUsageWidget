@@ -868,8 +868,12 @@ private func observeCredentialChanges() {
                 // CLAUDE usage fetch is skipped — the API-console fetch below
                 // hits a different, unthrottled endpoint and must keep flowing.
                 let usageThrottled = profile.claudeUsage?.rateLimitedUntil.map { $0 > Date() } ?? false
+                let burstBackoffUntil = burstBackoffs[profile.id]?.until
+                let usageBackedOff = burstBackoffUntil.map { $0 > Date() } ?? false
                 if usageThrottled {
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — endpoint throttled until \(profile.claudeUsage?.rateLimitedUntil ?? Date())")
+                } else if usageBackedOff {
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off burst 429s until \(burstBackoffUntil ?? Date())")
                 } else {
                     // Self-heal a stale CLI OAuth token before fetching
                     await self.ensureFreshCLICredentialsIfNeeded(for: profile)
@@ -892,6 +896,7 @@ private func observeCredentialChanges() {
                         }
                         sweepSuccesses += 1
                         self.credentialErrorProfileIds.remove(profile.id)
+                        self.burstBackoffs.removeValue(forKey: profile.id)
 
                         // Check auto-switch NOW for the accounts actually in use
                         // instead of waiting for the end of the sweep: rate-limit
@@ -923,6 +928,11 @@ private func observeCredentialChanges() {
                                 || profile.id == self.profileManager.activeCodexProfileId {
                                 self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
                             }
+                        } else if appError.code == .apiRateLimited {
+                            // Burst-class 429 (no account-level Retry-After):
+                            // exhaustion is unknown, so don't stamp — but stop
+                            // re-fetching every sweep.
+                            self.registerBurstBackoff(for: profile)
                         }
                         LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                     }
@@ -1289,6 +1299,33 @@ private func observeCredentialChanges() {
             profileManager.loadProfiles()
             LoggingService.shared.log("MenuBarManager: CLI credentials self-healed for '\(profile.name)'")
         }
+    }
+
+    // MARK: - Burst-429 Fetch Backoff
+
+    /// A 429 WITHOUT an account-level Retry-After (header absent or
+    /// seconds-scale) never stamps `rateLimitedUntil`, so nothing stopped the
+    /// sweep from re-fetching — and re-429ing — the same profile every 30s
+    /// forever (a real profile drew 90 identical 429s in one hour, flipping
+    /// its tile's error state on every sweep). Back that profile's usage
+    /// fetch off exponentially instead: 2min, 4, 8, … capped at 30min, reset
+    /// by the first successful fetch. In-memory only — retrying immediately
+    /// after a relaunch is fine.
+    private struct BurstBackoff {
+        var until: Date
+        var streak: Int
+    }
+    private var burstBackoffs: [UUID: BurstBackoff] = [:]
+
+    nonisolated static func burstBackoffInterval(streak: Int) -> TimeInterval {
+        min(120 * pow(2, Double(max(0, streak - 1))), 1800)
+    }
+
+    private func registerBurstBackoff(for profile: Profile) {
+        let streak = (burstBackoffs[profile.id]?.streak ?? 0) + 1
+        let interval = Self.burstBackoffInterval(streak: streak)
+        burstBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (no account-level Retry-After) — backing usage fetch off for \(Int(interval))s (streak \(streak))")
     }
 
     // MARK: - Account-Level Throttle Stamping

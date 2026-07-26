@@ -290,6 +290,16 @@ final class StatusBarUIManager {
         return false
     }
 
+    /// True when two or more tiles report the SAME x-position. Visible status
+    /// items each own a distinct ~27pt frame, so identical minX values can only
+    /// mean macOS has hidden those tiles — an overflowing bar parks every
+    /// clipped item at one shared off-edge frame (a real bar showed four of
+    /// twelve tiles all at x=1701). Overflow is not a broken layout: a rebuild
+    /// cannot make the tiles fit, so the heal must not fire on it.
+    nonisolated static func containsOverflowParkedTiles(_ xPositions: [CGFloat]) -> Bool {
+        Set(xPositions.map { Int($0) }).count != xPositions.count
+    }
+
     /// Rebuild-on-heal is rate-limited: if a rebuild cannot fix the layout
     /// (e.g. the bar is genuinely overflowing), retrying every sweep would
     /// flicker the whole group twice a minute.
@@ -326,7 +336,12 @@ final class StatusBarUIManager {
             screens.insert(ObjectIdentifier(screen))
             xPositions.append(window.frame.minX)
         }
-        let signature = xPositions.map { Int($0) }.description
+        // Quantized to 10pt buckets: tile widths change with every usage
+        // repaint, drifting positions a few points between evaluations. The
+        // failed-heal latch compares signatures, so pixel drift must not mint
+        // a "new" broken layout every rate-limit window (that was an infinite
+        // rebuild loop — the whole group flickered every ~5 minutes for days).
+        let signature = xPositions.map { Int(($0 / 10).rounded() * 10) }.description
         lastEvaluatedSignature = signature
         var verdict: String
         let broken: Bool
@@ -335,6 +350,11 @@ final class StatusBarUIManager {
             broken = false
         } else if screens.count != 1 {
             verdict = "multi-screen(\(screens.count))"
+            broken = false
+        } else if Self.containsOverflowParkedTiles(xPositions) {
+            // Hidden tiles can't be judged, and their duplicate frames would
+            // read as an order violation below.
+            verdict = "overflow-hidden"
             broken = false
         } else {
             broken = Self.layoutDivergesFromCreationOrder(xPositions)
