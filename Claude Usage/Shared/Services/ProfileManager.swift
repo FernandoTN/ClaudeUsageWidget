@@ -34,6 +34,11 @@ class ProfileManager: ObservableObject {
     /// Observer that re-reads profiles once the background Keychain credential load completes.
     private var credentialsReadyObserver: NSObjectProtocol?
 
+    /// In-memory usage updates waiting for a single disk write at a flush boundary.
+    /// Re-applied after every store reload so unflushed usage is never dropped, and
+    /// flushed via `applyUsagePatches` (usage-only — never writes credentials).
+    private var pendingUsageByProfileID: [UUID: ProfileStore.UsagePatch] = [:]
+
     private init() {}
 
     // MARK: - Initialization
@@ -42,6 +47,7 @@ class ProfileManager: ObservableObject {
         registerCredentialsReadyObserverIfNeeded()
 
         profiles = profileStore.loadProfiles()
+        applyPendingOverlay(to: &profiles)
 
         // Ensure minimum profiles exist
         if profiles.isEmpty {
@@ -201,6 +207,11 @@ class ProfileManager: ObservableObject {
     /// was already sent — a silent no-op on a manual click reads as a broken
     /// button, not as a safety gate.
     func activateProfile(_ id: UUID, userInitiated: Bool = false) async -> Bool {
+        // Flush deferred usage BEFORE any switch work so a mid-switch store reload
+        // cannot drop unflushed percentages, and so the switch never races a later
+        // usage-only patch against credential handoff.
+        flushPendingUsage()
+
         guard !switchingSemaphore else {
             LoggingService.shared.log("Profile switch already in progress, ignoring")
             return false
@@ -230,6 +241,7 @@ class ProfileManager: ObservableObject {
         // can differ (e.g. focused on Claude while a Codex account is also active).
 
         profiles = profileStore.loadProfiles()
+        applyPendingOverlay(to: &profiles)
         let target = profiles.first(where: { $0.id == id })
 
         // 1. Claude side: the CLI Keychain login is about to be replaced — re-adopt
@@ -249,6 +261,7 @@ class ProfileManager: ObservableObject {
                 LoggingService.shared.logError("Failed to re-sync outgoing Claude account (non-fatal)", error: error)
             }
             profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
         }
 
         // 2. Codex side: auth.json is about to be replaced — adopt the codex CLI's
@@ -260,6 +273,7 @@ class ProfileManager: ObservableObject {
                 CodexUsageService.shared.adoptAuthFileIfSameAccount(for: outgoingId)
             }
             profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
         }
 
         // Get the updated target profile from the reloaded data
@@ -285,6 +299,7 @@ class ProfileManager: ObservableObject {
             // applyProfileCredentials writes the credentials to the system right after.
             if await cliSyncService.ensureFreshCredentials(for: id, adoptSystemKeychain: false, syncToSystem: false) {
                 profiles = profileStore.loadProfiles()
+                applyPendingOverlay(to: &profiles)
                 if let refreshed = profiles.first(where: { $0.id == id }) {
                     updatedProfile = refreshed
                 }
@@ -342,6 +357,7 @@ class ProfileManager: ObservableObject {
             // copy is still applied so a transient refresh failure isn't fatal.
             if await CodexUsageService.shared.ensureFreshCredentials(for: id, freshFor: 24 * 3600) {
                 profiles = profileStore.loadProfiles()
+                applyPendingOverlay(to: &profiles)
                 if let refreshed = profiles.first(where: { $0.id == id }) {
                     updatedProfile = refreshed
                 }
@@ -533,12 +549,15 @@ class ProfileManager: ObservableObject {
     func saveClaudeUsage(_ usage: ClaudeUsage, for profileId: UUID) {
         // Re-read the store FIRST: this runs right after a fetch, and the fetch may
         // have rotated this profile's credentials (Codex/CLI adoption or an OAuth
-        // refresh) store-direct. saveProfiles syncs the credential cache from the
-        // Profile objects it's given, so saving a stale in-memory array would
-        // clobber the rotated tokens with the CONSUMED refresh token — which the
-        // next refresh attempt then trips OpenAI/Anthropic reuse detection on
-        // ("refresh token was revoked").
+        // refresh) store-direct. A stale in-memory array would miss those rotations
+        // in the published state. Disk persistence of usage is deferred (see
+        // pendingUsageByProfileID / flushPendingUsage) and applied via usage-only
+        // patches so a later flush can never overwrite a concurrent credential
+        // rotation with a stale non-nil copy.
         var updated = profileStore.loadProfiles()
+        // Re-apply unflushed usage for OTHER profiles (and any prior patch for this
+        // one) so assigning `profiles = updated` cannot resurrect stale percentages.
+        applyPendingOverlay(to: &updated)
 
         guard let index = updated.firstIndex(where: { $0.id == profileId }) else {
             LoggingService.shared.logError("saveClaudeUsage: Profile not found with ID: \(profileId)")
@@ -561,8 +580,10 @@ class ProfileManager: ObservableObject {
             activeProfile = updated[index]
         }
 
-        // Save to persistent storage
-        profileStore.saveProfiles(profiles)
+        // Defer the disk write: merge into the pending usage-only patch.
+        var patch = pendingUsageByProfileID[profileId] ?? ProfileStore.UsagePatch()
+        patch.claudeUsage = usage
+        pendingUsageByProfileID[profileId] = patch
         LoggingService.shared.log("Saved Claude usage for profile: \(profiles[index].name)")
     }
 
@@ -573,9 +594,10 @@ class ProfileManager: ObservableObject {
 
     /// Saves API usage data for a specific profile
     func saveAPIUsage(_ usage: APIUsage, for profileId: UUID) {
-        // Same store re-read as saveClaudeUsage — never clobber credentials that
-        // rotated during the fetch this call is reporting on.
+        // Same store re-read as saveClaudeUsage — adopt credential rotations into
+        // the published state, overlay unflushed usage, and defer the disk write.
         var updated = profileStore.loadProfiles()
+        applyPendingOverlay(to: &updated)
 
         guard let index = updated.firstIndex(where: { $0.id == profileId }) else {
             LoggingService.shared.logError("saveAPIUsage: Profile not found with ID: \(profileId)")
@@ -592,9 +614,37 @@ class ProfileManager: ObservableObject {
             activeProfile = updated[index]
         }
 
-        // Save to persistent storage
-        profileStore.saveProfiles(profiles)
+        // Defer the disk write: merge into the pending usage-only patch.
+        var patch = pendingUsageByProfileID[profileId] ?? ProfileStore.UsagePatch()
+        patch.apiUsage = usage
+        pendingUsageByProfileID[profileId] = patch
         LoggingService.shared.log("Saved API usage for profile: \(profiles[index].name)")
+    }
+
+    /// Writes all deferred usage patches to disk in one store operation and clears
+    /// the pending map. Safe to call when empty (no-op). Call at defined flush
+    /// boundaries: end of multi-profile sweep, end of single-profile refresh,
+    /// before profile switch, app termination.
+    func flushPendingUsage() {
+        guard !pendingUsageByProfileID.isEmpty else { return }
+        profileStore.applyUsagePatches(pendingUsageByProfileID)
+        pendingUsageByProfileID.removeAll()
+    }
+
+    /// Re-applies unflushed usage onto a freshly loaded profile array so a store
+    /// reload cannot resurrect pre-patch percentages for profiles with pending
+    /// updates. Shared by every `profiles = profileStore.loadProfiles()` site.
+    private func applyPendingOverlay(to profiles: inout [Profile]) {
+        guard !pendingUsageByProfileID.isEmpty else { return }
+        for index in profiles.indices {
+            guard let patch = pendingUsageByProfileID[profiles[index].id] else { continue }
+            if let claudeUsage = patch.claudeUsage {
+                profiles[index].claudeUsage = claudeUsage
+            }
+            if let apiUsage = patch.apiUsage {
+                profiles[index].apiUsage = apiUsage
+            }
+        }
     }
 
     /// Loads API usage data for a specific profile
@@ -728,7 +778,8 @@ class ProfileManager: ObservableObject {
     /// Re-reads profiles after the background Keychain credential load completes, so the
     /// UI picks up credentials that were not yet available at the synchronous startup load.
     private func reloadAfterCredentialSync() {
-        let reloaded = profileStore.loadProfiles()
+        var reloaded = profileStore.loadProfiles()
+        applyPendingOverlay(to: &reloaded)
         guard !reloaded.isEmpty else { return }
 
         profiles = reloaded
@@ -855,6 +906,7 @@ class ProfileManager: ObservableObject {
         }
 
         var reloaded = profileStore.loadProfiles()
+        applyPendingOverlay(to: &reloaded)
         let owner = reloaded.first(where: { $0.claudeAccountUUID == identity.accountUUID })
             ?? reloaded.first(where: {
                 $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
@@ -920,6 +972,7 @@ class ProfileManager: ObservableObject {
         if changed {
             profileStore.saveProfiles(reloaded)
             profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
             if let activeId = activeProfile?.id,
                let updatedActive = profiles.first(where: { $0.id == activeId }) {
                 activeProfile = updatedActive
@@ -1075,6 +1128,7 @@ class ProfileManager: ObservableObject {
 
             // Back on the main actor: reload so the UI picks up the credentials.
             profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
             if let activeId = activeProfile?.id,
                let updated = profiles.first(where: { $0.id == activeId }) {
                 activeProfile = updated

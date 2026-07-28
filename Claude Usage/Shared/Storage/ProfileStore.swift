@@ -315,6 +315,62 @@ class ProfileStore {
 
     // MARK: - Profile Management
 
+    /// Usage-only field update for a single profile. `nil` means "leave this field alone"
+    /// (not "clear it"). Patches never carry credentials.
+    struct UsagePatch {
+        var claudeUsage: ClaudeUsage?
+        var apiUsage: APIUsage?
+    }
+
+    /// Atomically patches usage fields on the CURRENT persisted profile array.
+    ///
+    /// Decodes from defaults, sets only non-nil usage fields by UUID, encodes, and
+    /// writes back. NEVER touches the credential cache, enqueues Keychain work,
+    /// calls `saveProfiles`, or accepts a caller-supplied `[Profile]` — a stale
+    /// reconstructed array could overwrite a concurrent credential rotation
+    /// (`saveProfiles` merge only protects against nil, not stale non-nil).
+    ///
+    /// Note: persisted JSON already excludes credentials (`Profile.CodingKeys`), so
+    /// decode → patch usage → encode inherently cannot write secrets; the forbidden
+    /// list above is belt-and-suspenders against future regressions.
+    func applyUsagePatches(_ patches: [UUID: UsagePatch]) {
+        guard !patches.isEmpty else { return }
+
+        guard let data = defaults.data(forKey: Keys.profiles) else {
+            LoggingService.shared.log("ProfileStore: applyUsagePatches skipped — no profiles in storage")
+            return
+        }
+
+        do {
+            // Decode the CURRENT persisted array (not any caller-supplied snapshot).
+            var profiles = try JSONDecoder().decode([Profile].self, from: data)
+            var applied = 0
+
+            for (id, patch) in patches {
+                guard let index = profiles.firstIndex(where: { $0.id == id }) else { continue }
+                if let claudeUsage = patch.claudeUsage {
+                    profiles[index].claudeUsage = claudeUsage
+                }
+                if let apiUsage = patch.apiUsage {
+                    profiles[index].apiUsage = apiUsage
+                }
+                applied += 1
+            }
+
+            // Always re-encode when at least one UUID matched so a no-op unknown-id
+            // patch set does not rewrite storage needlessly.
+            if applied > 0 {
+                let encoder = JSONEncoder()
+                let encoded = try encoder.encode(profiles)
+                defaults.set(encoded, forKey: Keys.profiles)
+            }
+
+            LoggingService.shared.log("ProfileStore: applied \(applied) usage patches")
+        } catch {
+            LoggingService.shared.logStorageError("applyUsagePatches", error: error)
+        }
+    }
+
     func saveProfiles(_ profiles: [Profile]) {
         // 1. Sync credentials into the in-memory cache; persist changes to the
         //    Keychain on a background queue (never blocks the caller).

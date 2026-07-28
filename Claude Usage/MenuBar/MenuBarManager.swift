@@ -820,7 +820,12 @@ private func observeCredentialChanges() {
 
         isRefreshing = true
         Task {
-            defer { self.isRefreshing = false }
+            // Flush deferred usage once when the sweep ends — covers normal completion,
+            // early break on mid-sweep switch, and thrown/cancelled paths.
+            defer {
+                self.profileManager.flushPendingUsage()
+                self.isRefreshing = false
+            }
 
             // Per-sweep outcome tracking — the error banners must reflect reality:
             // resetting the failure counters unconditionally at sweep end used to
@@ -1122,6 +1127,12 @@ private func observeCredentialChanges() {
         Task {
             // Set loading state (keep existing data visible during refresh)
             self.isRefreshing = true
+            // One deferred usage write for this single-profile refresh — covers
+            // Claude/API saves, throttle-stamp saves, and cancelled/error exits.
+            defer {
+                self.profileManager.flushPendingUsage()
+                self.isRefreshing = false
+            }
 
             // Self-heal a stale CLI OAuth token before fetching (this is what used to
             // require a manual Settings → CLI → Resync)
@@ -1254,9 +1265,6 @@ private func observeCredentialChanges() {
                     LoggingService.shared.log("MenuBarManager: Failed to fetch API usage - [\(appError.code.rawValue)] \(appError.message)")
                 }
             }
-
-            // Clear loading state
-            self.isRefreshing = false
 
             // Show success notification if this was user-triggered and successful
             if usageSuccess && abs(self.lastRefreshTriggerTime.timeIntervalSinceNow) < 5 {

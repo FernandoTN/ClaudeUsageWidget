@@ -247,6 +247,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Persist any deferred usage patches before teardown so a quit mid-sweep
+        // does not drop the last fetched percentages.
+        ProfileManager.shared.flushPendingUsage()
         // Cleanup
         menuBarManager?.cleanup()
     }
