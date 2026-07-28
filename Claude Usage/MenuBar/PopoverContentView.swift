@@ -306,21 +306,7 @@ struct ProfileSwitcherCompact: View {
     /// appears to do nothing. Derived from the cached credential JSON and the
     /// services' persisted dead-login flags — no Keychain reads.
     private func hasDeadLogin(_ profile: Profile) -> Bool {
-        if let json = profile.cliCredentialsJSON {
-            if ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id) { return true }
-            if case .expired = StoredTokenStatus(
-                expiry: ClaudeCodeSyncService.shared.extractTokenExpiry(from: json),
-                hasRefreshToken: ClaudeCodeSyncService.shared.extractRefreshToken(from: json) != nil
-            ) { return true }
-        }
-        if let json = profile.codexCredentialsJSON {
-            if CodexUsageService.shared.isLoginMarkedDead(profile.id) { return true }
-            if case .expired = StoredTokenStatus(
-                expiry: CodexUsageService.shared.extractTokenExpiry(from: json),
-                hasRefreshToken: CodexUsageService.shared.extractRefreshToken(from: json) != nil
-            ) { return true }
-        }
-        return false
+        ProfileCredentialStatusCache.hasDeadLogin(profile)
     }
 
     var body: some View {

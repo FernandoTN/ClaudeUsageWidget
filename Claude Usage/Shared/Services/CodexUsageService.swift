@@ -70,26 +70,31 @@ class CodexUsageService {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    private func tokens(from json: String) -> [String: Any]? {
+    /// Single JSON parse of the top-level `tokens` object — shared by token-field extractors.
+    private func parseTokens(from json: String) -> [String: Any]? {
         parse(json)?["tokens"] as? [String: Any]
     }
 
+    private func tokens(from json: String) -> [String: Any]? {
+        parseTokens(from: json)
+    }
+
     func extractAccessToken(from json: String) -> String? {
-        tokens(from: json)?["access_token"] as? String
+        parseTokens(from: json)?["access_token"] as? String
     }
 
     func extractRefreshToken(from json: String) -> String? {
-        tokens(from: json)?["refresh_token"] as? String
+        parseTokens(from: json)?["refresh_token"] as? String
     }
 
     func extractAccountId(from json: String) -> String? {
-        tokens(from: json)?["account_id"] as? String
+        parseTokens(from: json)?["account_id"] as? String
     }
 
     /// Access-token expiry, decoded from the JWT `exp` claim (no signature check —
     /// we only need the timestamp, the backend does the real verification).
     func extractTokenExpiry(from json: String) -> Date? {
-        guard let accessToken = extractAccessToken(from: json),
+        guard let accessToken = parseTokens(from: json)?["access_token"] as? String,
               let exp = decodeJWTClaims(accessToken)?["exp"] as? TimeInterval else {
             return nil
         }

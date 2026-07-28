@@ -362,7 +362,6 @@ class ProfileStore {
         //    so the JSON written to UserDefaults contains NO secrets.
         do {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
             let data = try encoder.encode(profiles)
             defaults.set(data, forKey: Keys.profiles)
             LoggingService.shared.log("ProfileStore: Saved \(profiles.count) profiles (\(data.count) bytes, credentials in Keychain)")

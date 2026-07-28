@@ -495,11 +495,19 @@ class ClaudeCodeSyncService {
         return (subType, scopes)
     }
 
-    /// Extracts the token expiry date from CLI credentials JSON
-    func extractTokenExpiry(from jsonData: String) -> Date? {
+    /// Single JSON parse of the `claudeAiOauth` object — shared by token-field extractors.
+    private func parseClaudeAiOauth(from jsonData: String) -> [String: Any]? {
         guard let data = jsonData.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any] else {
+            return nil
+        }
+        return oauth
+    }
+
+    /// Extracts the token expiry date from CLI credentials JSON
+    func extractTokenExpiry(from jsonData: String) -> Date? {
+        guard let oauth = parseClaudeAiOauth(from: jsonData),
               let expiresAt = oauth["expiresAt"] as? TimeInterval else {
             return nil
         }
@@ -520,9 +528,7 @@ class ClaudeCodeSyncService {
 
     /// Extracts the OAuth refresh token from CLI credentials JSON
     func extractRefreshToken(from jsonData: String) -> String? {
-        guard let data = jsonData.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["claudeAiOauth"] as? [String: Any],
+        guard let oauth = parseClaudeAiOauth(from: jsonData),
               let token = oauth["refreshToken"] as? String else {
             return nil
         }

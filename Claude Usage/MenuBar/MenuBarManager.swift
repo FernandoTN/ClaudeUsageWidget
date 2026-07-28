@@ -407,6 +407,7 @@ class MenuBarManager: NSObject, ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refreshUsage()
         }
+        refreshTimer?.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
 
         LoggingService.shared.log("Updated refresh interval to \(interval)s")
     }
@@ -1777,6 +1778,19 @@ extension MenuBarManager: NSPopoverDelegate {
 
         return window
     }
+
+    func popoverDidClose(_ notification: Notification) {
+        // Drop the hosting controller so SwiftUI stops re-rendering on every
+        // ProfileManager publish while the popover is closed. Per-open paths
+        // already recreate contentViewController before show.
+        // Defer one turn so a same-runloop re-show (e.g. switching tiles)
+        // can install new content first; only tear down if still closed.
+        guard let popover = notification.object as? NSPopover else { return }
+        DispatchQueue.main.async { [weak popover] in
+            guard let popover, !popover.isShown else { return }
+            popover.contentViewController = nil
+        }
+    }
 }
 
 // MARK: - StatusBarUIManagerDelegate
@@ -1799,6 +1813,8 @@ extension MenuBarManager: NSWindowDelegate {
                 NSApp.setActivationPolicy(.accessory)
                 settingsWindow = nil
             } else if window == detachedWindow {
+                // Release SwiftUI hosting graph (same rationale as popoverDidClose)
+                window.contentViewController = nil
                 // Clear detached window reference when closed
                 detachedWindow = nil
             }

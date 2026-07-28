@@ -312,6 +312,12 @@ final class StatusBarUIManager {
     private var healFailedSignature: String?
     private var lastEvaluatedSignature: String?
 
+    /// Last `debugTileLayout` payload written without its timestamp — suppress
+    /// identical rewrites every sweep.
+    private var lastDebugTileLayoutValue: String?
+
+    private static let debugTileLayoutDateFormatter = ISO8601DateFormatter()
+
     /// True when every item's window is measurable on ONE shared screen and
     /// the x-order contradicts the creation order. Bails out (false) whenever
     /// any window is missing, off-screen, or on another display — a hidden
@@ -364,8 +370,13 @@ final class StatusBarUIManager {
         if broken, signature == healFailedSignature {
             verdict = "STRANDED-unfixable"
         }
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        UserDefaults.standard.set("\(stamp) \(verdict) | \(snapshot.joined(separator: " "))", forKey: "debugTileLayout")
+        // Write only when the verdict (minus timestamp) actually changed.
+        let layoutValue = "\(verdict) | \(snapshot.joined(separator: " "))"
+        if layoutValue != lastDebugTileLayoutValue {
+            lastDebugTileLayoutValue = layoutValue
+            let stamp = Self.debugTileLayoutDateFormatter.string(from: Date())
+            UserDefaults.standard.set("\(stamp) \(layoutValue)", forKey: "debugTileLayout")
+        }
         guard broken, signature != healFailedSignature,
               Date().timeIntervalSince(lastLayoutHealAt) > 300 else { return false }
         return true

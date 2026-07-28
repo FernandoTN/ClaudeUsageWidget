@@ -91,6 +91,7 @@ class ProfileManager: ObservableObject {
 
         profiles.append(newProfile)
         profileStore.saveProfiles(profiles)
+        ProfileCredentialStatusCache.invalidateAll()
 
         LoggingService.shared.log("Created new profile: \(newProfile.name)")
         return newProfile
@@ -139,6 +140,7 @@ class ProfileManager: ObservableObject {
         profileStore.deleteProfileCredentials(profileId: id)
 
         profiles.removeAll { $0.id == id }
+        ProfileCredentialStatusCache.invalidateAll()
 
         // Switch to first profile if deleted active
         if activeProfile?.id == id {
@@ -536,9 +538,9 @@ class ProfileManager: ObservableObject {
         // clobber the rotated tokens with the CONSUMED refresh token — which the
         // next refresh attempt then trips OpenAI/Anthropic reuse detection on
         // ("refresh token was revoked").
-        profiles = profileStore.loadProfiles()
+        var updated = profileStore.loadProfiles()
 
-        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
+        guard let index = updated.firstIndex(where: { $0.id == profileId }) else {
             LoggingService.shared.logError("saveClaudeUsage: Profile not found with ID: \(profileId)")
             return
         }
@@ -546,13 +548,17 @@ class ProfileManager: ObservableObject {
         // Defense in depth: never persist a sentinel reset stamp. Fetch paths heal
         // before display; this catches any save that skipped them (idempotent).
         var usage = usage
-        usage.healMissingResetStamps(previous: profiles[index].claudeUsage)
+        usage.healMissingResetStamps(previous: updated[index].claudeUsage)
 
-        profiles[index].claudeUsage = usage
+        updated[index].claudeUsage = usage
 
-        // Update activeProfile reference if it's the same profile
-        if activeProfile?.id == profileId {
-            activeProfile = profiles[index]
+        // Single publish for the array; only republish activeProfile when it is
+        // this profile AND a visible field actually differs (usage or a credential
+        // rotation adopted by the load above).
+        let shouldUpdateActive = activeProfile?.id == profileId && activeProfile != updated[index]
+        profiles = updated
+        if shouldUpdateActive {
+            activeProfile = updated[index]
         }
 
         // Save to persistent storage
@@ -569,18 +575,21 @@ class ProfileManager: ObservableObject {
     func saveAPIUsage(_ usage: APIUsage, for profileId: UUID) {
         // Same store re-read as saveClaudeUsage — never clobber credentials that
         // rotated during the fetch this call is reporting on.
-        profiles = profileStore.loadProfiles()
+        var updated = profileStore.loadProfiles()
 
-        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
+        guard let index = updated.firstIndex(where: { $0.id == profileId }) else {
             LoggingService.shared.logError("saveAPIUsage: Profile not found with ID: \(profileId)")
             return
         }
 
-        profiles[index].apiUsage = usage
+        updated[index].apiUsage = usage
 
-        // Update activeProfile reference if it's the same profile
-        if activeProfile?.id == profileId {
-            activeProfile = profiles[index]
+        // Single publish for the array; only republish activeProfile when it is
+        // this profile AND a visible field actually differs.
+        let shouldUpdateActive = activeProfile?.id == profileId && activeProfile != updated[index]
+        profiles = updated
+        if shouldUpdateActive {
+            activeProfile = updated[index]
         }
 
         // Save to persistent storage

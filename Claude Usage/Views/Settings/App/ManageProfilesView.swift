@@ -554,37 +554,15 @@ struct ProfileRow: View {
     }
 
     private var claudeTokenStatus: StoredTokenStatus? {
-        guard let json = profile.cliCredentialsJSON else { return nil }
-        if ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id) { return .expired }
-        return StoredTokenStatus(
-            expiry: ClaudeCodeSyncService.shared.extractTokenExpiry(from: json),
-            hasRefreshToken: ClaudeCodeSyncService.shared.extractRefreshToken(from: json) != nil
-        )
+        ProfileCredentialStatusCache.claudeTokenStatus(for: profile)
     }
 
     private var codexTokenStatus: StoredTokenStatus? {
-        guard let json = profile.codexCredentialsJSON else { return nil }
-        if CodexUsageService.shared.isLoginMarkedDead(profile.id) { return .expired }
-        return StoredTokenStatus(
-            expiry: CodexUsageService.shared.extractTokenExpiry(from: json),
-            hasRefreshToken: CodexUsageService.shared.extractRefreshToken(from: json) != nil
-        )
+        ProfileCredentialStatusCache.codexTokenStatus(for: profile)
     }
 
     private var profileInfo: String {
-        var parts: [String] = []
-
-        if profile.hasCliAccount {
-            parts.append("profiles.cli_synced".localized)
-        }
-
-        if profile.hasCodexAccount {
-            parts.append(profile.codexEmail.map { "Codex: \($0)" } ?? "profiles.codex_synced".localized)
-        }
-
-        parts.append("\("profiles.created".localized) \(profile.createdAt.formatted(date: .abbreviated, time: .omitted))")
-
-        return parts.joined(separator: " • ")
+        ProfileCredentialStatusCache.profileInfo(for: profile)
     }
 
     private func saveProfileName() {
@@ -602,6 +580,151 @@ struct ProfileRow: View {
         } catch {
             // Error handled by ProfileManager
         }
+    }
+}
+
+// MARK: - Credential status memo
+
+/// Main-actor memo for per-row credential status used by settings rows and the
+/// popover switcher. Avoids re-parsing credentials JSON + reformatting dates on
+/// every SwiftUI body evaluation during a publish storm.
+///
+/// Invalidated wholesale on `.credentialsChanged` and profile add/remove; also
+/// keyed by a cheap credentials fingerprint so a rotated token refreshes without
+/// an explicit notification.
+@MainActor
+enum ProfileCredentialStatusCache {
+    private struct Entry {
+        let fingerprint: Int
+        let claudeStatus: StoredTokenStatus?
+        let codexStatus: StoredTokenStatus?
+        let createdAtFormatted: String
+        let profileInfo: String
+        let hasDeadLogin: Bool
+    }
+
+    private static var cache: [UUID: Entry] = [:]
+    private static var observerInstalled = false
+
+    static func invalidateAll() {
+        cache.removeAll()
+    }
+
+    private static func ensureObserver() {
+        guard !observerInstalled else { return }
+        observerInstalled = true
+        NotificationCenter.default.addObserver(
+            forName: .credentialsChanged,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                invalidateAll()
+            }
+        }
+    }
+
+    /// Cheap fingerprint: credentials string hash + identity fields + dead flags.
+    private static func fingerprint(for profile: Profile) -> Int {
+        var hasher = Hasher()
+        hasher.combine(profile.cliCredentialsJSON)
+        hasher.combine(profile.codexCredentialsJSON)
+        hasher.combine(profile.createdAt)
+        hasher.combine(profile.hasCliAccount)
+        hasher.combine(profile.hasCodexAccount)
+        hasher.combine(profile.codexEmail)
+        hasher.combine(ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id))
+        hasher.combine(CodexUsageService.shared.isLoginMarkedDead(profile.id))
+        return hasher.finalize()
+    }
+
+    private static func entry(for profile: Profile) -> Entry {
+        ensureObserver()
+        let fp = fingerprint(for: profile)
+        if let existing = cache[profile.id], existing.fingerprint == fp {
+            return existing
+        }
+
+        let claudeDead = ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
+        let codexDead = CodexUsageService.shared.isLoginMarkedDead(profile.id)
+
+        let claudeStatus: StoredTokenStatus?
+        if let json = profile.cliCredentialsJSON {
+            if claudeDead {
+                claudeStatus = .expired
+            } else {
+                // extractTokenExpiry / extractRefreshToken share an internal parse helper
+                claudeStatus = StoredTokenStatus(
+                    expiry: ClaudeCodeSyncService.shared.extractTokenExpiry(from: json),
+                    hasRefreshToken: ClaudeCodeSyncService.shared.extractRefreshToken(from: json) != nil
+                )
+            }
+        } else {
+            claudeStatus = nil
+        }
+
+        let codexStatus: StoredTokenStatus?
+        if let json = profile.codexCredentialsJSON {
+            if codexDead {
+                codexStatus = .expired
+            } else {
+                codexStatus = StoredTokenStatus(
+                    expiry: CodexUsageService.shared.extractTokenExpiry(from: json),
+                    hasRefreshToken: CodexUsageService.shared.extractRefreshToken(from: json) != nil
+                )
+            }
+        } else {
+            codexStatus = nil
+        }
+
+        let createdAtFormatted = profile.createdAt.formatted(date: .abbreviated, time: .omitted)
+
+        var parts: [String] = []
+        if profile.hasCliAccount {
+            parts.append("profiles.cli_synced".localized)
+        }
+        if profile.hasCodexAccount {
+            parts.append(profile.codexEmail.map { "Codex: \($0)" } ?? "profiles.codex_synced".localized)
+        }
+        parts.append("\("profiles.created".localized) \(createdAtFormatted)")
+        let profileInfo = parts.joined(separator: " • ")
+
+        var hasDeadLogin = false
+        if profile.cliCredentialsJSON != nil {
+            if claudeDead { hasDeadLogin = true }
+            else if case .expired = claudeStatus { hasDeadLogin = true }
+        }
+        if !hasDeadLogin, profile.codexCredentialsJSON != nil {
+            if codexDead { hasDeadLogin = true }
+            else if case .expired = codexStatus { hasDeadLogin = true }
+        }
+
+        let built = Entry(
+            fingerprint: fp,
+            claudeStatus: claudeStatus,
+            codexStatus: codexStatus,
+            createdAtFormatted: createdAtFormatted,
+            profileInfo: profileInfo,
+            hasDeadLogin: hasDeadLogin
+        )
+        cache[profile.id] = built
+        return built
+    }
+
+    static func claudeTokenStatus(for profile: Profile) -> StoredTokenStatus? {
+        entry(for: profile).claudeStatus
+    }
+
+    static func codexTokenStatus(for profile: Profile) -> StoredTokenStatus? {
+        entry(for: profile).codexStatus
+    }
+
+    static func profileInfo(for profile: Profile) -> String {
+        entry(for: profile).profileInfo
+    }
+
+    static func hasDeadLogin(_ profile: Profile) -> Bool {
+        entry(for: profile).hasDeadLogin
     }
 }
 
