@@ -319,6 +319,7 @@ final class StatusBarUIManager {
     /// records a layout snapshot in UserDefaults (`debugTileLayout`) so a
     /// stranded tile can be diagnosed from outside a Release build.
     private func strandedTileDetected() -> Bool {
+        RenderInstrumentation.strandedTileEvaluations += 1
         guard multiProfileOrder.count > 1 else { return false }
         var xPositions: [CGFloat] = []
         var screens = Set<ObjectIdentifier>()
@@ -372,6 +373,7 @@ final class StatusBarUIManager {
 
     /// Updates all multi-profile status items
     func updateMultiProfileButtons(profiles: [Profile], config: MultiProfileDisplayConfig) {
+        RenderInstrumentation.updateMultiProfileButtonsCalls += 1
         guard isMultiProfileMode else { return }
 
         // Fresh usage may have reshuffled the weekly-reset ranking (or changed the
@@ -477,6 +479,7 @@ final class StatusBarUIManager {
             }()
 
             // Create icon based on selected style
+            RenderInstrumentation.tileRenders += 1
             let image: NSImage
             switch config.iconStyle {
             case .concentric:
@@ -748,11 +751,13 @@ final class StatusBarUIManager {
     private func setButtonImage(_ button: NSStatusBarButton, image: NSImage) {
         let buttonId = ObjectIdentifier(button)
         guard let newData = image.tiffRepresentation else {
+            RenderInstrumentation.setButtonImageAssignments += 1
             button.image = image
             return
         }
         if lastImageData[buttonId] == newData { return }
         lastImageData[buttonId] = newData
+        RenderInstrumentation.setButtonImageAssignments += 1
         button.image = image
     }
 

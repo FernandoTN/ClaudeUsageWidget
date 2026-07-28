@@ -56,6 +56,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             }
         }
 
+        // Phase 0 lab path: synthetic tiles only. Skips migration, profile load,
+        // credential sync, notifications, network, and MenuBarManager so lab
+        // runs never touch real profiles / Keychain / UserDefaults / network.
+        // Single-instance guard above is kept (lab builds use a distinct bundle id).
+        if LabMode.isEnabled {
+            NSApp.setActivationPolicy(.accessory)
+            LabController.shared.start()
+            RenderInstrumentation.startIfNeeded()
+            LoggingService.shared.log("AppDelegate: lab mode active (CUW_LAB=1) — normal startup skipped")
+            return
+        }
+
         // FIRST: one-time preferences migration for the bundle-id rename — must
         // run before anything reads (or writes) UserDefaults.standard.
         MigrationService.shared.migrateLegacyBundleDefaultsIfNeeded()
@@ -107,6 +119,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 self.menuBarManager?.setup()
             }
         }
+
+        // Phase 0 render instrumentation (normal mode; lab path starts it above).
+        RenderInstrumentation.startIfNeeded()
     }
 
     private func requestNotificationPermissions() {
