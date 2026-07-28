@@ -658,44 +658,6 @@ final class StatusBarUIManager {
         }
     }
 
-    /// Updates a specific metric's button
-    func updateButton(
-        for metricType: MenuBarMetricType,
-        usage: ClaudeUsage,
-        apiUsage: APIUsage?
-    ) {
-        guard let statusItem = statusItems[metricType],
-              let button = statusItem.button else {
-            return
-        }
-
-        // Get config from active profile
-        let config = ProfileManager.shared.activeProfile?.iconConfig ?? .default
-        guard let metricConfig = config.config(for: metricType) else {
-            return
-        }
-
-        // Get the actual menu bar appearance from the button's effective appearance
-        let menuBarIsDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-
-        // Create image directly using our renderer
-        let image = renderer.createImage(
-            for: metricType,
-            config: metricConfig,
-            globalConfig: config,
-            usage: usage,
-            apiUsage: apiUsage,
-            isDarkMode: menuBarIsDark,
-            colorMode: config.colorMode,
-            singleColorHex: config.singleColorHex,
-            showIconName: config.showIconNames,
-            showNextSessionTime: metricConfig.showNextSessionTime
-        )
-
-        image.isTemplate = config.colorMode == .monochrome && !config.showPaceMarker
-        setButtonImage(button, image: image)
-    }
-
     /// Get button for a specific metric (used for popover positioning)
     func button(for metricType: MenuBarMetricType) -> NSStatusBarButton? {
         return statusItems[metricType]?.button
