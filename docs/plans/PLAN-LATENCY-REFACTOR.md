@@ -38,7 +38,11 @@ Non-findings (do NOT spend effort): minute-quantized ranking keys work; stranded
 
 Per phase: Grok write-children implement from prescriptive packets in the worktree; Claude audits every diff line-by-line, builds (`DEVELOPER_DIR=... xcodebuild`), runs tests, iterates, commits. Grok children never build, never commit, never touch credential-merge logic unreviewed.
 
-### Phase 0 — Causality gate for R1 (FIRST; decides Phase 1's shape)
+### Phase 0 — Causality gate for R1 — **EXECUTED 2026-07-28, VERDICT IN**
+Lab harness results (synthetic tiles, separate bundle id `com.claudeusagewidget.lab`, 120s steady-state each): 14 frozen static tiles **0.0% CPU / 0 CA flushes**; 7 frozen **0.0%**; 14 tiles with full repaint every 30s (14 renders + 14 TIFF + 14 assignments, counter-verified) **4.3%**; 14 frozen + open popover with stub content **0.0%**. Production app same moment: **23.5%**.
+**Conclusions:** (a) static NSStatusItem window population — even overflowed — is free; R1's "structural window count" branch is FALSIFIED; condensed tile mode is NOT needed for CPU (remains a UX option only). (b) The repaint path accounts for only ~4%. (c) The dominant ~19% comes from what the lab omitted: sweep-driven persistence amplification + SwiftUI publish storm re-rendering the popover's live `PopoverContentView` while closed (idle `sample` caught its body evaluating; the stub-content popover cost 0%). **Phase ordering updated: Phase 2 (persistence/publish) is the primary CPU fix and runs FIRST, joined by popover content-teardown-on-close; Phase 1 render work follows for the repaint ~4% and settings-interaction latency.**
+
+*(Original gate design, retained for reference:)*
 Staged isolation, each step changing ONE variable, measuring steady-state CPU (`ps`) + CA-flush share (`sample`) + occlusion rate (`log stream`):
 - 0.1 **Window census & identification.** Instrumented build (env-gated `CUW_RENDER_LOG=1`, os_log signposts) that logs every NSWindow the app creates (class, frame, level) — identify the four 1728×33 layer-0 strips, the 685×30 layer-1000 window, and map the occlusion-storm window number to a concrete window. (These may be AppKit status-bar internals or app-created; must know before optimizing.)
 - 0.2 **Popover isolation.** Compare: popover window fully destroyed (not just closed) vs. persistent-closed vs. open, at constant tile count. The persistent window + idle `PopoverContentView.body` evaluation makes this a prime suspect.
