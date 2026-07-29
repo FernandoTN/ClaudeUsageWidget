@@ -266,8 +266,6 @@ struct SettingsView: View {
             Group {
                 switch selectedSection {
                 // Credentials
-                case .claudeAI:
-                    PersonalUsageView()
                 case .cliAccount:
                     CLIAccountView()
                 case .codexAccount:
@@ -516,7 +514,6 @@ struct BottomBarSection: View {
 
 enum SettingsSection: String, CaseIterable {
     // Credentials (not shown in sidebar)
-    case claudeAI
     case cliAccount
     case codexAccount
 
@@ -533,7 +530,6 @@ enum SettingsSection: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .claudeAI: return "section.claudeai_title".localized
         case .cliAccount: return "section.cli_account_title".localized
         case .codexAccount: return "section.codex_account_title".localized
         case .appearance: return "section.appearance_title".localized
@@ -548,7 +544,6 @@ enum SettingsSection: String, CaseIterable {
 
     var icon: String {
         switch self {
-        case .claudeAI: return "key.fill"
         case .cliAccount: return "terminal.fill"
         case .codexAccount: return "chevron.left.forwardslash.chevron.right"
         case .appearance: return "paintbrush.fill"
@@ -563,7 +558,6 @@ enum SettingsSection: String, CaseIterable {
 
     var description: String {
         switch self {
-        case .claudeAI: return "section.claudeai_desc".localized
         case .cliAccount: return "section.cli_account_desc".localized
         case .codexAccount: return "section.codex_account_desc".localized
         case .appearance: return "section.appearance_desc".localized
@@ -585,7 +579,7 @@ enum SettingsSection: String, CaseIterable {
 
     var isCredential: Bool {
         switch self {
-        case .claudeAI, .cliAccount, .codexAccount:
+        case .cliAccount, .codexAccount:
             return true
         default:
             return false
@@ -658,7 +652,6 @@ struct SidebarItem: View {
 struct ProfileCredentialCardsRow: View {
     @Binding var selectedSection: SettingsSection
     @StateObject private var profileManager = ProfileManager.shared
-    @State private var credentials: ProfileCredentials?
 
     // Provider exclusivity: a Codex profile never offers the Claude credential
     // sections and vice versa. A profile with no credentials yet offers both.
@@ -673,19 +666,6 @@ struct ProfileCredentialCardsRow: View {
     var body: some View {
         VStack(spacing: 4) {
             if showsClaudeSections {
-                // Claude.ai Card
-                Button {
-                    selectedSection = .claudeAI
-                } label: {
-                    CredentialMiniCard(
-                        icon: "key.fill",
-                        title: "Claude.ai",
-                        isConnected: credentials?.hasClaudeAI ?? false,
-                        isSelected: selectedSection == .claudeAI
-                    )
-                }
-                .buttonStyle(.plain)
-
                 // CLI Account Card
                 Button {
                     selectedSection = .cliAccount
@@ -716,21 +696,14 @@ struct ProfileCredentialCardsRow: View {
             }
         }
         .onAppear {
-            loadCredentials()
             normalizeSelection()
         }
         .onChange(of: profileManager.activeProfile?.id) { _, _ in
-            loadCredentials()
             normalizeSelection()
         }
         .onChange(of: profileManager.profiles) { _, _ in
             normalizeSelection()
         }
-    }
-
-    private func loadCredentials() {
-        guard let profile = profileManager.activeProfile else { return }
-        credentials = try? ProfileStore.shared.loadProfileCredentials(profile.id)
     }
 
     /// Moves the selection off a credential section the focused profile doesn't
@@ -739,8 +712,7 @@ struct ProfileCredentialCardsRow: View {
     private func normalizeSelection() {
         if !showsCodexSection, selectedSection == .codexAccount {
             selectedSection = .cliAccount
-        } else if !showsClaudeSections,
-                  [.claudeAI, .cliAccount].contains(selectedSection) {
+        } else if !showsClaudeSections, selectedSection == .cliAccount {
             selectedSection = .codexAccount
         }
     }

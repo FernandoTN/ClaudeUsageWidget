@@ -331,11 +331,6 @@ extension AppError {
             return appError
         }
 
-        // If it's a SessionKeyValidationError, convert it
-        if let validationError = error as? SessionKeyValidationError {
-            return fromSessionKeyValidationError(validationError, file: file, line: line, function: function)
-        }
-
         // If it's a URLBuilderError, convert it
         if let urlError = error as? URLBuilderError {
             return fromURLBuilderError(urlError, file: file, line: line, function: function)
@@ -355,27 +350,6 @@ extension AppError {
     }
 
     // MARK: - Conversion from Other Errors
-
-    private static func fromSessionKeyValidationError(_ error: SessionKeyValidationError, file: String, line: Int, function: String) -> AppError {
-        switch error {
-        case .empty:
-            return sessionKeyNotFound(file: file, line: line, function: function)
-        case .tooShort(let min, let actual):
-            return AppError(code: .sessionKeyTooShort, message: "Session key too short", technicalDetails: "Min: \(min), Actual: \(actual)", file: file, line: line, function: function)
-        case .tooLong(let max, let actual):
-            return AppError(code: .sessionKeyTooLong, message: "Session key too long", technicalDetails: "Max: \(max), Actual: \(actual)", file: file, line: line, function: function)
-        case .invalidPrefix:
-            return AppError(code: .sessionKeyInvalidPrefix, message: "Invalid session key prefix", file: file, line: line, function: function)
-        case .invalidCharacters:
-            return AppError(code: .sessionKeyInvalidCharacters, message: "Invalid characters in session key", file: file, line: line, function: function)
-        case .invalidFormat:
-            return AppError(code: .sessionKeyInvalidFormat, message: "Invalid session key format", file: file, line: line, function: function)
-        case .potentiallyMalicious:
-            return AppError(code: .sessionKeyMalicious, message: "Potentially malicious session key", file: file, line: line, function: function)
-        case .containsWhitespace:
-            return AppError(code: .sessionKeyWhitespace, message: "Session key contains whitespace", file: file, line: line, function: function)
-        }
-    }
 
     private static func fromURLBuilderError(_ error: URLBuilderError, file: String, line: Int, function: String) -> AppError {
         switch error {

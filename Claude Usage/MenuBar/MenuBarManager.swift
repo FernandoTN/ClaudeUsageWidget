@@ -1158,20 +1158,14 @@ private func observeCredentialChanges() {
             return try await GrokUsageService.shared.fetchUsage(for: profile.id)
         }
 
-        // Priority 1: claude.ai session key (cookie-based)
-        if let sessionKey = profile.claudeSessionKey,
-           let orgId = profile.organizationId {
-            return try await apiService.fetchUsageData(sessionKey: sessionKey, organizationId: orgId)
-        }
-
-        // Priority 2: Saved CLI OAuth token from profile
+        // Priority 1: Saved CLI OAuth token from profile
         if let cliJSON = profile.cliCredentialsJSON,
            !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: cliJSON) {
             return try await apiService.fetchUsageData(oauthAccessToken: accessToken)
         }
 
-        // Priority 3: System Keychain CLI OAuth token — the shared Keychain item always
+        // Priority 2: System Keychain CLI OAuth token — the shared Keychain item always
         // holds the active CLAUDE account's login, so this fallback is only correct
         // for that profile. Using it for another profile would display the active
         // account's usage under that profile's name.

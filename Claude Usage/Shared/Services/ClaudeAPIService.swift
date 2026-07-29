@@ -4,72 +4,19 @@ import Foundation
 class ClaudeAPIService {
     // MARK: - Types
 
-    /// Authentication method for API requests
+    /// Authentication method for API requests (CLI OAuth only)
     private enum AuthenticationType {
-        case claudeAISession(String)      // Cookie: sessionKey=...
         case cliOAuth(String)              // Authorization: Bearer ... (with anthropic-beta header)
     }
 
-    // MARK: - Properties
-
-    private let sessionKeyPath: URL
-    private let sessionKeyValidator: SessionKeyValidator
-    let baseURL = Constants.APIEndpoints.claudeBase
-
     // MARK: - Initialization
 
-    init(sessionKeyPath: URL? = nil, sessionKeyValidator: SessionKeyValidator = SessionKeyValidator()) {
-        // Default path: ~/.claude-session-key
-        self.sessionKeyPath = sessionKeyPath ?? Constants.ClaudePaths.homeDirectory
-            .appendingPathComponent(".claude-session-key")
-        self.sessionKeyValidator = sessionKeyValidator
-    }
+    init() {}
 
-    // MARK: - Session Key Management
-
-    /// Reads and validates the session key from active profile
-    private func readSessionKey() throws -> String {
-        do {
-            // Load from active profile only
-            guard let activeProfile = ProfileManager.shared.activeProfile else {
-                LoggingService.shared.logError("ClaudeAPIService.readSessionKey: No active profile")
-                throw AppError.sessionKeyNotFound()
-            }
-
-            LoggingService.shared.log("ClaudeAPIService.readSessionKey: Profile '\(activeProfile.name)'")
-            LoggingService.shared.log("  - claudeSessionKey: \(activeProfile.claudeSessionKey == nil ? "NIL" : "EXISTS")")
-
-            guard let key = activeProfile.claudeSessionKey else {
-                LoggingService.shared.logError("ClaudeAPIService.readSessionKey: Profile has NIL claudeSessionKey - throwing sessionKeyNotFound")
-                throw AppError.sessionKeyNotFound()
-            }
-
-            let validatedKey = try sessionKeyValidator.validate(key)
-            LoggingService.shared.log("ClaudeAPIService.readSessionKey: Key validated successfully")
-            return validatedKey
-
-        } catch let error as SessionKeyValidationError {
-            // Convert validation errors to AppError
-            throw AppError.wrap(error)
-        } catch let error as AppError {
-            // Re-throw AppError as-is
-            throw error
-        } catch {
-            let appError = AppError(
-                code: .storageReadFailed,
-                message: "Failed to read session key from profile",
-                technicalDetails: error.localizedDescription,
-                underlyingError: error,
-                isRecoverable: true,
-                recoverySuggestion: "Please check your session key configuration in the active profile"
-            )
-            ErrorLogger.shared.log(appError)
-            throw appError
-        }
-    }
+    // MARK: - Authentication
 
     /// Gets the best available authentication method with fallback support
-    /// Priority: 1) claude.ai session → 2) saved CLI OAuth → 3) system Keychain CLI OAuth
+    /// Priority: 1) saved CLI OAuth → 2) system Keychain CLI OAuth
     /// Async so the system Keychain fallback can shell out to `security` OFF the main
     /// thread (see the CLAUDE.md rule about Keychain reads on the main thread).
     private func getAuthentication() async throws -> AuthenticationType {
@@ -78,22 +25,11 @@ class ClaudeAPIService {
             throw AppError.sessionKeyNotFound()
         }
 
-        // Try claude.ai session key first
-        if let sessionKey = activeProfile.claudeSessionKey {
-            do {
-                let validatedKey = try sessionKeyValidator.validate(sessionKey)
-                LoggingService.shared.log("ClaudeAPIService: Using claude.ai session key")
-                return .claudeAISession(validatedKey)
-            } catch {
-                LoggingService.shared.logError("ClaudeAPIService: claude.ai session key validation failed: \(error.localizedDescription)")
-            }
-        }
-
-        // Fall back to saved CLI OAuth token if available and not expired
+        // Prefer saved CLI OAuth token if available and not expired
         if let cliJSON = activeProfile.cliCredentialsJSON {
             if !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON),
                let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: cliJSON) {
-                LoggingService.shared.log("ClaudeAPIService: Falling back to saved CLI OAuth token")
+                LoggingService.shared.log("ClaudeAPIService: Using saved CLI OAuth token")
                 return .cliOAuth(accessToken)
             } else {
                 LoggingService.shared.log("ClaudeAPIService: Saved CLI OAuth token is expired or invalid")
@@ -130,11 +66,6 @@ class ClaudeAPIService {
         var request = URLRequest(url: url)
 
         switch auth {
-        case .claudeAISession(let sessionKey):
-            // Existing claude.ai authentication
-            request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-
         case .cliOAuth(let accessToken):
             // CLI OAuth authentication (requires specific headers)
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
@@ -147,203 +78,7 @@ class ClaudeAPIService {
         return request
     }
 
-    // MARK: - Organization ID Caching
-
-    /// Cache organization ID to reduce API calls
-    private var cachedOrgId: String?
-    private var cachedOrgIdSessionKey: String?
-
-    /// Clears the cached organization ID (call when session key changes)
-    func clearOrganizationIdCache() {
-        cachedOrgId = nil
-        cachedOrgIdSessionKey = nil
-    }
-
     // MARK: - API Requests
-
-    /// Fetches all organizations for the authenticated user
-    func fetchAllOrganizations(sessionKey: String? = nil) async throws -> [AccountInfo] {
-        return try await ErrorRecovery.shared.executeWithRetry(maxAttempts: 3) {
-            let sessionKey = try sessionKey ?? self.readSessionKey()
-
-            // Build URL safely
-            let url: URL
-            do {
-                url = try URLBuilder(baseURL: self.baseURL)
-                    .appendingPath("/organizations")
-                    .build()
-            } catch {
-                throw AppError.wrap(error)
-            }
-
-            var request = URLRequest(url: url)
-            request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.httpMethod = "GET"
-            request.timeoutInterval = 30
-
-            let (data, response): (Data, URLResponse)
-            do {
-                (data, response) = try await URLSession.shared.data(for: request)
-            } catch {
-                // Network errors
-                let appError = AppError(
-                    code: .networkGenericError,
-                    message: "Failed to connect to Claude API",
-                    technicalDetails: error.localizedDescription,
-                    underlyingError: error,
-                    isRecoverable: true,
-                    recoverySuggestion: "Please check your internet connection and try again"
-                )
-                ErrorLogger.shared.log(appError)
-                throw appError
-            }
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw AppError(
-                    code: .apiInvalidResponse,
-                    message: "Invalid response from server",
-                    isRecoverable: true
-                )
-            }
-
-            switch httpResponse.statusCode {
-            case 200:
-                // Parse organizations array
-                do {
-                    let organizations = try JSONDecoder().decode([AccountInfo].self, from: data)
-                    guard !organizations.isEmpty else {
-                        throw AppError(
-                            code: .apiParsingFailed,
-                            message: "No organizations found",
-                            technicalDetails: "Organizations array is empty",
-                            isRecoverable: false,
-                            recoverySuggestion: "Please ensure your Claude account has access to organizations"
-                        )
-                    }
-
-                    // Log all available organizations for debugging
-                    LoggingService.shared.logInfo("Found \(organizations.count) organization(s):")
-                    for (index, org) in organizations.enumerated() {
-                        LoggingService.shared.logInfo("  [\(index)] \(org.name) (ID: \(org.uuid))")
-                    }
-
-                    return organizations
-                } catch {
-                    let appError = AppError(
-                        code: .apiParsingFailed,
-                        message: "Failed to parse organizations",
-                        technicalDetails: error.localizedDescription,
-                        underlyingError: error,
-                        isRecoverable: false
-                    )
-                    ErrorLogger.shared.log(appError)
-                    throw appError
-                }
-
-            case 401, 403:
-                throw AppError.apiUnauthorized()
-
-            case 429:
-                var rateLimited = AppError.apiRateLimited()
-                rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
-                    .flatMap(TimeInterval.init)
-                throw rateLimited
-
-            case 500...599:
-                throw AppError.apiServerError(statusCode: httpResponse.statusCode)
-
-            default:
-                throw AppError(
-                    code: .apiGenericError,
-                    message: "Unexpected API response",
-                    technicalDetails: "HTTP \(httpResponse.statusCode)",
-                    isRecoverable: true
-                )
-            }
-        }
-    }
-
-    // MARK: - Read-Only Testing
-
-    /// Tests a session key without saving to Keychain
-    /// Returns available organizations if successful
-    func testSessionKey(_ key: String) async throws -> [AccountInfo] {
-        // Validate using professional validator
-        let validatedKey = try sessionKeyValidator.validate(key)
-
-        // Fetch organizations using the test key (don't save it)
-        let organizations = try await fetchAllOrganizations(sessionKey: validatedKey)
-
-        LoggingService.shared.logInfo("Tested session key - found \(organizations.count) organization(s)")
-
-        return organizations
-    }
-
-    /// Fetches the organization ID for the authenticated user
-    /// Uses stored org ID if available, otherwise fetches all orgs and auto-selects
-    func fetchOrganizationId(sessionKey: String? = nil) async throws -> String {
-        let sessionKey = try sessionKey ?? self.readSessionKey()
-
-        // Check for stored organization ID in active profile first
-        if let storedOrgId = ProfileManager.shared.activeProfile?.organizationId {
-            LoggingService.shared.logInfo("Using stored organization ID from profile: \(storedOrgId)")
-            return storedOrgId
-        }
-
-        // No stored org ID - fetch all organizations
-        LoggingService.shared.logInfo("No stored organization ID - fetching all organizations")
-        let organizations = try await fetchAllOrganizations(sessionKey: sessionKey)
-
-        // Auto-select organization (prefer first one for now - user can change later)
-        guard let selectedOrg = organizations.first else {
-            throw AppError(
-                code: .apiParsingFailed,
-                message: "No organizations available",
-                technicalDetails: "fetchAllOrganizations returned a non-empty array but .first was nil",
-                isRecoverable: false,
-                recoverySuggestion: "Please ensure your Claude account has access to organizations"
-            )
-        }
-        LoggingService.shared.logInfo("Auto-selected organization: \(selectedOrg.name) (ID: \(selectedOrg.uuid))")
-
-        // Store the selected org ID in active profile
-        if let profileId = ProfileManager.shared.activeProfile?.id {
-            ProfileManager.shared.updateOrganizationId(selectedOrg.uuid, for: profileId)
-        }
-
-        return selectedOrg.uuid
-    }
-
-    /// Fetches usage data for a specific profile using provided credentials
-    /// - Parameters:
-    ///   - sessionKey: The Claude.ai session key
-    ///   - organizationId: The organization ID
-    /// - Returns: ClaudeUsage data for the profile
-    func fetchUsageData(sessionKey: String, organizationId: String) async throws -> ClaudeUsage {
-        async let usageDataTask = performRequest(endpoint: "/organizations/\(organizationId)/usage", sessionKey: sessionKey)
-        async let overageDataTask: Data? = performRequest(endpoint: "/organizations/\(organizationId)/overage_spend_limit", sessionKey: sessionKey)
-        async let creditGrantTask: Data? = performRequest(endpoint: "/organizations/\(organizationId)/overage_credit_grant", sessionKey: sessionKey)
-
-        let usageData = try await usageDataTask
-        var claudeUsage = try parseUsageResponse(usageData)
-
-        if let data = try? await overageDataTask,
-           let overage = try? JSONDecoder().decode(OverageSpendLimitResponse.self, from: data),
-           overage.isEnabled == true {
-            claudeUsage.costUsed = overage.usedCredits
-            claudeUsage.costLimit = overage.monthlyCreditLimit
-            claudeUsage.costCurrency = overage.currency
-        }
-
-        if let creditData = try? await creditGrantTask,
-           let creditGrant = try? JSONDecoder().decode(OverageCreditGrantResponse.self, from: creditData) {
-            claudeUsage.overageBalance = creditGrant.remainingBalance
-            claudeUsage.overageBalanceCurrency = creditGrant.currency
-        }
-
-        return claudeUsage
-    }
 
     /// Fetches usage data via OAuth access token (CLI credential flow)
     func fetchUsageData(oauthAccessToken: String) async throws -> ClaudeUsage {
@@ -383,194 +118,61 @@ class ClaudeAPIService {
         return try parseUsageResponse(data)
     }
 
-    /// Fetches real usage data from Claude's API
+    /// Fetches real usage data from Claude's API using the active profile's CLI OAuth credentials
     func fetchUsageData() async throws -> ClaudeUsage {
         let auth = try await getAuthentication()
 
-        switch auth {
-        case .claudeAISession(let sessionKey):
-            // Use existing claude.ai flow
-            let orgId = try await fetchOrganizationId(sessionKey: sessionKey)
+        // The dedicated OAuth usage endpoint (api.anthropic.com/api/oauth/usage) is disabled
+        // for the active-profile path in some environments. Instead, make a minimal Messages
+        // API call and extract usage from response headers.
+        LoggingService.shared.log("ClaudeAPIService: Fetching usage via Messages API headers (OAuth)")
 
-            async let usageDataTask = performRequest(endpoint: "/organizations/\(orgId)/usage", sessionKey: sessionKey)
-
-            // Use active profile's checkOverageLimitEnabled setting
-            let checkOverage = ProfileManager.shared.activeProfile?.checkOverageLimitEnabled ?? true
-            async let overageDataTask: Data? = checkOverage ? performRequest(endpoint: "/organizations/\(orgId)/overage_spend_limit", sessionKey: sessionKey) : nil
-            async let creditGrantTask: Data? = checkOverage ? performRequest(endpoint: "/organizations/\(orgId)/overage_credit_grant", sessionKey: sessionKey) : nil
-
-            let usageData = try await usageDataTask
-            var claudeUsage = try parseUsageResponse(usageData)
-
-            if checkOverage,
-               let data = try? await overageDataTask,
-               let overage = try? JSONDecoder().decode(OverageSpendLimitResponse.self, from: data),
-               overage.isEnabled == true {
-                claudeUsage.costUsed = overage.usedCredits
-                claudeUsage.costLimit = overage.monthlyCreditLimit
-                claudeUsage.costCurrency = overage.currency
-            }
-
-            if checkOverage,
-               let creditData = try? await creditGrantTask,
-               let creditGrant = try? JSONDecoder().decode(OverageCreditGrantResponse.self, from: creditData) {
-                claudeUsage.overageBalance = creditGrant.remainingBalance
-                claudeUsage.overageBalanceCurrency = creditGrant.currency
-            }
-
-            return claudeUsage
-
-        case .cliOAuth:
-            // The dedicated OAuth usage endpoint (api.anthropic.com/api/oauth/usage) is disabled.
-            // Instead, make a minimal Messages API call and extract usage from response headers.
-            LoggingService.shared.log("ClaudeAPIService: Fetching usage via Messages API headers (OAuth)")
-
-            guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
-                throw AppError(
-                    code: .urlMalformed,
-                    message: "Invalid Messages API endpoint",
-                    isRecoverable: false
-                )
-            }
-
-            var request = buildAuthenticatedRequest(url: url, auth: auth)
-            request.httpMethod = "POST"
-            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-            request.timeoutInterval = 30
-
-            // IMPORTANT: This sends a real (minimal) API message because no dedicated
-            // OAuth usage endpoint exists. We use the cheapest model, max_tokens=1, and
-            // the shortest possible prompt to minimize cost. Usage data is extracted from
-            // the rate-limit response headers rather than the message content.
-            let body: [String: Any] = [
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 1,
-                "messages": [["role": "user", "content": "hi"]]
-            ]
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-            let (data, response) = try await URLSession.shared.data(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw AppError(
-                    code: .apiInvalidResponse,
-                    message: "Invalid response from Messages API",
-                    isRecoverable: true
-                )
-            }
-
-            guard httpResponse.statusCode == 200 else {
-                let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"
-                throw AppError(
-                    code: .apiUnauthorized,
-                    message: "OAuth Messages API request failed",
-                    technicalDetails: "Status: \(httpResponse.statusCode)\nResponse: \(responsePreview)",
-                    isRecoverable: true,
-                    recoverySuggestion: "Please re-sync your CLI account in Settings"
-                )
-            }
-
-            return parseUsageFromRateLimitHeaders(httpResponse)
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw AppError(
+                code: .urlMalformed,
+                message: "Invalid Messages API endpoint",
+                isRecoverable: false
+            )
         }
-    }
 
-    private func performRequest(endpoint: String, sessionKey: String) async throws -> Data {
-        // Build URL safely
-        let url = try URLBuilder(baseURL: baseURL)
-            .appendingPath(endpoint)
-            .build()
-
-        var request = URLRequest(url: url)
-        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpMethod = "GET"
+        var request = buildAuthenticatedRequest(url: url, auth: auth)
+        request.httpMethod = "POST"
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.timeoutInterval = 30
 
-        LoggingService.shared.logAPIRequest(endpoint)
+        // IMPORTANT: This sends a real (minimal) API message because no dedicated
+        // OAuth usage endpoint exists. We use the cheapest model, max_tokens=1, and
+        // the shortest possible prompt to minimize cost. Usage data is extracted from
+        // the rate-limit response headers rather than the message content.
+        let body: [String: Any] = [
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1,
+            "messages": [["role": "user", "content": "hi"]]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            // Network-level errors
-            LoggingService.shared.logAPIError(endpoint, error: error)
-            let appError = AppError(
-                code: .networkGenericError,
-                message: "Failed to connect to Claude API",
-                technicalDetails: "Endpoint: \(endpoint)\nError: \(error.localizedDescription)",
-                underlyingError: error,
-                isRecoverable: true,
-                recoverySuggestion: "Please check your internet connection and try again"
-            )
-            throw appError
-        }
+        let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AppError(
                 code: .apiInvalidResponse,
-                message: "Invalid response from server",
-                technicalDetails: "Endpoint: \(endpoint)",
+                message: "Invalid response from Messages API",
                 isRecoverable: true
             )
         }
 
-        LoggingService.shared.logAPIResponse(endpoint, statusCode: httpResponse.statusCode)
-
-        // Log raw response if debug logging is enabled
-        if SharedDataStore.shared.loadDebugAPILoggingEnabled() {
-            if let responseString = String(data: data, encoding: .utf8) {
-                // Truncate to first 500 chars to avoid huge logs
-                let truncated = responseString.prefix(500)
-                LoggingService.shared.logDebug("API Response [\(endpoint)]: \(truncated)...")
-            }
-        }
-
-        switch httpResponse.statusCode {
-        case 200:
-            return data
-
-        case 401, 403:
-            // Include response body in error for debugging
+        guard httpResponse.statusCode == 200 else {
             let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"
             throw AppError(
                 code: .apiUnauthorized,
-                message: "Unauthorized. Your session key may have expired.",
-                technicalDetails: "Endpoint: \(endpoint)\nStatus: \(httpResponse.statusCode)\nResponse: \(responsePreview)",
+                message: "OAuth Messages API request failed",
+                technicalDetails: "Status: \(httpResponse.statusCode)\nResponse: \(responsePreview)",
                 isRecoverable: true,
-                recoverySuggestion: "Please update your session key in Settings"
-            )
-
-        case 429:
-            var rateLimited = AppError(
-                code: .apiRateLimited,
-                message: "Rate limited by Claude API",
-                technicalDetails: "Endpoint: \(endpoint)",
-                isRecoverable: true,
-                recoverySuggestion: "Please wait a few minutes before trying again"
-            )
-            rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
-                .flatMap(TimeInterval.init)
-            throw rateLimited
-
-        case 500...599:
-            let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"
-            throw AppError(
-                code: .apiServerError,
-                message: "Claude API server error",
-                technicalDetails: "Endpoint: \(endpoint)\nStatus: \(httpResponse.statusCode)\nResponse: \(responsePreview)",
-                isRecoverable: true,
-                recoverySuggestion: "Please try again later"
-            )
-
-        default:
-            let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"
-            throw AppError(
-                code: .apiGenericError,
-                message: "Unexpected API response",
-                technicalDetails: "Endpoint: \(endpoint)\nStatus: \(httpResponse.statusCode)\nResponse: \(responsePreview)",
-                isRecoverable: true
+                recoverySuggestion: "Please re-sync your CLI account in Settings"
             )
         }
+
+        return parseUsageFromRateLimitHeaders(httpResponse)
     }
 
     // MARK: - Date Formatters (cached)

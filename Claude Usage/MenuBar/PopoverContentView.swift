@@ -367,12 +367,6 @@ struct ProfileSwitcherCompact: View {
                                     .foregroundColor(.adaptiveGreen)
                             }
 
-                            if profile.claudeSessionKey != nil {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.blue)
-                            }
-
                             if profile.id == profileManager.activeProfile?.id {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 10, weight: .semibold))
