@@ -124,3 +124,17 @@ Grok settings UI parity; condensed tile mode (if Phase 0 shows window count is t
 ## 7. Consult log
 - **Codex (gpt-5.6-sol, reasoning=max), 2026-07-28: verdict REWORK.** 14 findings; all accepted and folded into v2: Phase 0 redesigned as a staged causality gate (popover/freeze/parked/harness) after finding the original experiment confounded; Phase 2 redesigned around an atomic `applyUsagePatches` repository op + pending-usage overlay + credential-revision events (stale-non-nil overwrite race; per-save reload's hidden sync role); Phase 3 upgraded from queue-hops to a persistence actor + tri-state hydration readiness + strict checking on touched components; Phase 4 staleness target corrected to respect the 429 budget (5-min SLO, provider token bucket); Phase 5 hardened (two-step `.api` enum retirement, `organizationId` preservation, ErrorLogger forwarder); settings race generalized to all three deferred manager setters; renderer cache keys made pixel-quantized + parity-gated; line-anchor/count corrections applied.
 - Fable (this session): synthesized v1 from 3 research reports + live profiling; pre-Codex self-review caught selection-fetch gap, first-paint skip hazard, in-memory-immediacy requirement for auto-switch, shared-UserDefaults experiment hazard, toggle-ordering smell.
+
+---
+
+## 8. Execution record (2026-07-28, completed)
+All phases landed on `refactor/latency-14-accounts` (14 commits, pushed). Measured outcomes on the live 14-account install:
+- **Idle CPU 23–30% → 0.0%** (root cause: closed popover's SwiftUI graph re-rendering on every publish; fixed by content teardown on close + publish reduction; confirmed by lab harness + fresh-launch diagnostic).
+- Store writes: ~120 full 14-profile saves/15min → ~21 usage-only atomic patches + rare credential-path saves; pretty-printing dropped.
+- Settings: cosmetic toggles repaint-only (no teardown, no network); structural changes fetch only newly-added profiles.
+- Sweep: Claude-only 2s pacing (Codex/Grok unblocked, ~6s/sweep saved); status.claude.com on 5-min cadence; per-profile "Updated Xm ago" staleness visible; ~5-min background SLO documented + logged.
+- Startup: main-thread Keychain semaphore removed; tri-state hydration gates sweeps/auto-switch/preflight/status-cache.
+- De-bloat: ~7,000 lines removed (dead code, API-Console billing, claude.ai session-key cluster, DataStore, URLBuilder, design-system duplicate, ErrorLogger buffer) with decode-compat pinned by tests; `organizationId`/identity-adoption preserved per consult.
+- User-reported popover same-tile toggle bug fixed (semitransient auto-close race).
+- **Incident during execution:** parallel test hosts + shared real UserDefaults clobbered `profiles_v3` with a test fixture (tearDown aborted mid-restore). Roster fully reconstructed from Keychain UUIDs + legacy-bundle plist + tile-layout diagnostic; credentials never lost. Hardened: ProfileStore uses an isolated defaults suite under XCTest; scheme test parallelization disabled.
+- Follow-ups (§Phase 6 still open): Grok settings UI; condensed tile mode (optional; window count proved non-causal for CPU); '2026' missing-credential surfacing; residual loadProfiles dedup in services (§2.6, ~16 loads/min, cosmetic at 0% CPU); 6 orphan `cli-creds` Keychain items from deleted/test profiles (left untouched); Hotmail login needs `/login` re-sync.
