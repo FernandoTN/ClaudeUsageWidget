@@ -50,6 +50,13 @@ enum LabMode {
     /// (the pattern the production ignition window contained). Ignition probe.
     static let popoverStress: Bool = ProcessInfo.processInfo.environment["CUW_LAB_POPOVER_STRESS"] == "1"
 
+    /// `CUW_LAB_RESHUFFLE=1` — every other 30s repaint, rotate the synthetic
+    /// profiles' weekly-reset ranking so `updateMultiProfileButtons` sees a
+    /// changed desired order. With the in-place remap fix this must produce
+    /// ZERO rebuilds and a flat CAContext count; before it, every flip tore
+    /// down and recreated the whole group. Validation probe for the fix.
+    static let reshuffle: Bool = ProcessInfo.processInfo.environment["CUW_LAB_RESHUFFLE"] == "1"
+
     /// `CUW_LAB_REBUILD_SEC=<n>` — force a full status-item group rebuild
     /// (`setupMultiProfile` teardown+recreate, the same path the weekly-reset
     /// ranking reshuffle takes in production) every n seconds. Ignition probe

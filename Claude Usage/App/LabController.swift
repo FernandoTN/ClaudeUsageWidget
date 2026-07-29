@@ -91,7 +91,10 @@ final class LabController: NSObject {
 
     // MARK: - Repaint
 
+    private var repaintCount = 0
+
     private func nudgeAndRepaint() {
+        repaintCount += 1
         for i in profiles.indices {
             guard var usage = profiles[i].claudeUsage else { continue }
             let sessionDelta = Bool.random() ? 1.0 : -1.0
@@ -100,6 +103,21 @@ final class LabController: NSObject {
             usage.weeklyPercentage = min(90, max(20, usage.weeklyPercentage + weekDelta))
             usage.lastUpdated = Date()
             profiles[i].claudeUsage = usage
+        }
+        // Reshuffle probe: rotate the weekly-reset ranking within each provider
+        // group every other repaint by pushing the soonest-resetting profile's
+        // reset a week out — the desired creation order changes, exercising the
+        // remap-not-rebuild path exactly like production ranking jitter.
+        if LabMode.reshuffle, repaintCount % 2 == 0 {
+            let ordered = StatusBarUIManager.multiProfileCreationOrder(for: profiles)
+            if let first = ordered.first,
+               let idx = profiles.firstIndex(where: { $0.id == first.id }),
+               var usage = profiles[idx].claudeUsage {
+                usage.weeklyResetTime = (usage.weeklyResetTime ?? Date())
+                    .addingTimeInterval(7 * 24 * 3600)
+                profiles[idx].claudeUsage = usage
+                LoggingService.shared.log("LabController: reshuffle probe rotated '\(profiles[idx].name)'")
+            }
         }
         statusBarUIManager.updateMultiProfileButtons(
             profiles: profiles,
