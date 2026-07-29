@@ -1495,6 +1495,17 @@ private func observeCredentialChanges() {
 
     private func registerBurstBackoff(for profile: Profile, retryAfter: TimeInterval? = nil) {
         let streak = (burstBackoffs[profile.id]?.streak ?? 0) + 1
+        // The ACTIVE accounts (focused + provider-active) are the ones whose
+        // usage is actually moving — they own the CLI logins being burned right
+        // now, and their percentages gate the auto-switch trigger. Cap their
+        // backoff at 120s (≈ retry every other sweep) so a burst-429ing active
+        // account is never more than ~2.5 min stale; only one account per
+        // provider can be active, so the extra retry volume is one request per
+        // ~2 sweeps at worst. Background rotation profiles keep the 8-min cap.
+        let isActiveAccount = profile.id == profileManager.activeProfile?.id
+            || profile.id == profileManager.activeClaudeProfileId
+            || profile.id == profileManager.activeCodexProfileId
+        let cap: TimeInterval = isActiveAccount ? 120 : 480
         let interval: TimeInterval
         if let retryAfter, retryAfter > 0 {
             // The endpoint SAID when to come back (a seconds-scale, sub-account-
@@ -1503,10 +1514,10 @@ private func observeCredentialChanges() {
             // time. Small floor so a "1s" header can't turn into hammering.
             interval = max(retryAfter, 30)
         } else {
-            interval = Self.burstBackoffInterval(streak: streak)
+            interval = min(Self.burstBackoffInterval(streak: streak), cap)
         }
         burstBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
-        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (retry-after: \(retryAfter.map { "\(Int($0))s" } ?? "none")) — backing usage fetch off for \(Int(interval))s (streak \(streak))")
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (retry-after: \(retryAfter.map { "\(Int($0))s" } ?? "none"), active: \(isActiveAccount)) — backing usage fetch off for \(Int(interval))s (streak \(streak))")
     }
 
     // MARK: - Account-Level Throttle Stamping
