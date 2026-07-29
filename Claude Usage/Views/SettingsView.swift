@@ -106,19 +106,27 @@ struct SidebarVisualEffect: NSViewRepresentable {
 final class BorderlessSettingsWindow: NSWindow {
     override init(contentRect: NSRect, styleMask: NSWindow.StyleMask,
                   backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        // TITLED (with the titlebar hidden), NOT .borderless — this was the root
+        // of the window-server storm family plaguing the app since profiling
+        // began. A transparent borderless window's event shape is derived from
+        // its content's ALPHA and recomputed continuously ("Window event shape
+        // became non empty" storms, thousands/min), and every tracking-area
+        // change forces a synchronous structural-region re-registration with
+        // the window server — sampled repeatedly as the main-thread mach_msg
+        // storm behind the settings freezes (scrolling a hover-dense view
+        // re-registers regions per frame). A titled+fullSizeContentView window
+        // looks the same, has a fixed rectangular event shape, native rounded
+        // corners/shadow, and real traffic lights.
         super.init(contentRect: contentRect,
-                   styleMask: [.borderless, .miniaturizable],
+                   styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                    backing: backing, defer: flag)
-        isOpaque = false
-        backgroundColor = .clear
+        titlebarAppearsTransparent = true
+        titleVisibility = .hidden
+        isOpaque = true
+        backgroundColor = .windowBackgroundColor
         hasShadow = true
         isMovableByWindowBackground = true
         isRestorable = false
-
-        // Round corners via the content view's layer
-        contentView?.wantsLayer = true
-        contentView?.layer?.cornerRadius = 10
-        contentView?.layer?.masksToBounds = true
     }
 
     override var canBecomeKey: Bool { true }
@@ -234,13 +242,10 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             // Sidebar with Profile Switcher
             VStack(spacing: 0) {
-                // Traffic light buttons
-                HStack {
-                    TrafficLightButtons()
-                    Spacer()
-                }
-                .padding(.leading, 12)
-                .padding(.top, 12)
+                // Native traffic lights live in the (transparent) titlebar now —
+                // reserve their space instead of drawing SwiftUI lookalikes.
+                Spacer()
+                    .frame(height: 28)
 
                 // Profile Section (Switcher + Credentials + Settings)
                 ProfileSectionContainer(selectedSection: $selectedSection)
