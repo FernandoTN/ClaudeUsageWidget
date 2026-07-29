@@ -222,7 +222,7 @@ struct MetricIconConfig: Codable, Equatable {
 }
 
 /// Icon style for multi-profile display
-enum MultiProfileIconStyle: String, Codable, CaseIterable {
+enum MultiProfileIconStyle: String, Codable, CaseIterable, Hashable {
     case concentric   // Concentric circles (session inner, week outer)
     case progressBar  // Horizontal progress bars stacked
     case compact      // Minimal dot indicators
@@ -283,7 +283,7 @@ enum MultiProfileIconStyle: String, Codable, CaseIterable {
 }
 
 /// Configuration for multi-profile display mode
-struct MultiProfileDisplayConfig: Codable, Equatable {
+struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
     var iconStyle: MultiProfileIconStyle
     var showWeek: Bool        // If false, only show session
     var showProfileLabel: Bool // Show profile name below icon

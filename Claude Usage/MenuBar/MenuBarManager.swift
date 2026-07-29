@@ -75,8 +75,12 @@ class MenuBarManager: NSObject, ObservableObject {
     private var credentialsObserver: NSObjectProtocol?
     private var manualActivationObserver: NSObjectProtocol?
 
-    // Observer for display mode changes (single/multi profile)
+    // Observer for display mode changes (single/multi profile) — legacy posters
     private var displayModeObserver: NSObjectProtocol?
+
+    // Typed structural/cosmetic multi-profile display observers (Phase 1)
+    private var displayStructureObserver: NSObjectProtocol?
+    private var displayCosmeticsObserver: NSObjectProtocol?
 
     // Observer for screen/display changes (headless mode support)
     private var screenObserver: NSObjectProtocol?
@@ -185,8 +189,10 @@ class MenuBarManager: NSObject, ObservableObject {
         observeCredentialChanges()
         observeManualActivations()
 
-        // Observe display mode changes (single/multi profile)
+        // Observe display mode changes (single/multi profile) + typed structure/cosmetics
         observeDisplayModeChanges()
+        observeDisplayStructureChanges()
+        observeDisplayCosmeticsChanges()
 
         // Setup headless mode observer if enabled (for Remote Desktop support)
         setupHeadlessModeObserver()
@@ -236,6 +242,14 @@ class MenuBarManager: NSObject, ObservableObject {
         if let displayModeObserver = displayModeObserver {
             NotificationCenter.default.removeObserver(displayModeObserver)
             self.displayModeObserver = nil
+        }
+        if let displayStructureObserver = displayStructureObserver {
+            NotificationCenter.default.removeObserver(displayStructureObserver)
+            self.displayStructureObserver = nil
+        }
+        if let displayCosmeticsObserver = displayCosmeticsObserver {
+            NotificationCenter.default.removeObserver(displayCosmeticsObserver)
+            self.displayCosmeticsObserver = nil
         }
         if let screenObserver = screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
@@ -692,7 +706,7 @@ private func observeCredentialChanges() {
     }
 
     private func observeDisplayModeChanges() {
-        // Observe display mode changes (single/multi profile)
+        // Legacy `.displayModeChanged` posters (if any remain) route to structural setup.
         displayModeObserver = NotificationCenter.default.addObserver(
             forName: .displayModeChanged,
             object: nil,
@@ -706,18 +720,62 @@ private func observeCredentialChanges() {
         }
     }
 
-    private func handleDisplayModeChange() {
-        let displayMode = profileManager.displayMode
+    private func observeDisplayStructureChanges() {
+        displayStructureObserver = NotificationCenter.default.addObserver(
+            forName: .profileDisplayStructureChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleDisplayStructureChange(userInfo: notification.userInfo)
+            }
+        }
+    }
 
-        LoggingService.shared.log("MenuBarManager: Display mode changed to \(displayMode.rawValue)")
+    private func observeDisplayCosmeticsChanges() {
+        displayCosmeticsObserver = NotificationCenter.default.addObserver(
+            forName: .profileDisplayCosmeticsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleDisplayCosmeticsChange()
+            }
+        }
+    }
+
+    private func handleDisplayModeChange() {
+        // Legacy `.displayModeChanged` posters route to the same structural path
+        // (rebuild items, no full network sweep).
+        LoggingService.shared.log("MenuBarManager: Display mode changed (legacy notification)")
+        handleDisplayStructureChange(userInfo: nil)
+    }
+
+    /// Structural change: rebuild status items, but do NOT full-network-sweep.
+    /// If selection grew, fetch only newly-added profiles that lack cached usage.
+    private func handleDisplayStructureChange(userInfo: [AnyHashable: Any]?) {
+        let displayMode = profileManager.displayMode
+        LoggingService.shared.log("MenuBarManager: Display structure changed (mode=\(displayMode.rawValue))")
 
         if displayMode == .multi {
-            // Switch to multi-profile mode
-            setupMultiProfileMode()
+            setupMultiProfileMode(refreshAll: false)
+            let addedIds = (userInfo?["addedProfileIds"] as? [String])?
+                .compactMap { UUID(uuidString: $0) } ?? []
+            if !addedIds.isEmpty {
+                fetchUsageForAddedProfilesLackingCache(addedIds)
+            }
         } else {
-            // Switch back to single profile mode
             setupSingleProfileMode()
         }
+    }
+
+    /// Cosmetic change: repaint existing tiles only — no teardown, no network.
+    private func handleDisplayCosmeticsChange() {
+        guard profileManager.displayMode == .multi else { return }
+        LoggingService.shared.log("MenuBarManager: Display cosmetics changed — repainting tiles")
+        updateAllStatusBarIcons()
     }
 
     // MARK: - Headless Mode (Remote Desktop Support)
@@ -745,6 +803,11 @@ private func observeCredentialChanges() {
         if !uiManager.hasValidStatusBar {
             LoggingService.shared.log("MenuBarManager: Headless mode - display connected, retrying status bar setup (screens: \(NSScreen.screens.count))")
             setup()
+        } else {
+            // Screen geometry changed: clear parked-tile skip state and force one
+            // full repaint so un-parked tiles refresh within one cycle.
+            uiManager.clearOverflowParkedState()
+            updateAllStatusBarIcons()
         }
     }
 
@@ -753,7 +816,7 @@ private func observeCredentialChanges() {
         return statusBarUIManager?.hasValidStatusBar ?? false
     }
 
-    private func setupMultiProfileMode() {
+    private func setupMultiProfileMode(refreshAll: Bool = true) {
         let selectedProfiles = profileManager.getSelectedProfiles()
         let config = profileManager.multiProfileConfig
 
@@ -771,8 +834,41 @@ private func observeCredentialChanges() {
 
         LoggingService.shared.log("MenuBarManager: Multi-profile mode enabled with \(selectedProfiles.count) profiles, style=\(config.iconStyle.rawValue)")
 
-        // Refresh data for all selected profiles that have credentials
-        refreshAllSelectedProfiles()
+        // Full network sweep only when requested (startup / icon-config multi path).
+        // Structural selection changes fetch only newly-added profiles lacking cache.
+        if refreshAll {
+            refreshAllSelectedProfiles()
+        }
+    }
+
+    /// Fetch usage for profiles newly added to the multi-profile selection that
+    /// have no cached `claudeUsage` yet — avoids a full sweep on every toggle.
+    private func fetchUsageForAddedProfilesLackingCache(_ ids: [UUID]) {
+        let toFetch = ids.compactMap { id -> Profile? in
+            guard let profile = profileManager.profiles.first(where: { $0.id == id }),
+                  profile.hasUsageCredentials,
+                  profile.claudeUsage == nil else { return nil }
+            return profile
+        }
+        guard !toFetch.isEmpty else { return }
+
+        Task { @MainActor in
+            for profile in toFetch {
+                do {
+                    let newUsage = try await self.fetchUsageForProfile(profile)
+                    self.profileManager.saveClaudeUsage(newUsage, for: profile.id)
+                    LoggingService.shared.log(
+                        "MenuBarManager: Fetched usage for newly-selected profile '\(profile.name)'"
+                    )
+                } catch {
+                    LoggingService.shared.logError(
+                        "Failed to fetch usage for newly-selected profile '\(profile.name)': \(error.localizedDescription)"
+                    )
+                }
+            }
+            self.profileManager.flushPendingUsage()
+            self.updateAllStatusBarIcons()
+        }
     }
 
     /// Refreshes usage data for all profiles selected for multi-profile display

@@ -162,14 +162,22 @@ class ProfileManager: ObservableObject {
     }
 
     func toggleProfileSelection(_ id: UUID) {
-        // Use async to avoid "Publishing changes from within view updates" warning
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if let index = self.profiles.firstIndex(where: { $0.id == id }) {
-                self.profiles[index].isSelectedForDisplay.toggle()
-                self.profileStore.saveProfiles(self.profiles)
-            }
+        // Mutate synchronously (main-actor) so observers never rebuild from stale
+        // selection; post structural notification AFTER the mutation.
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let wasSelected = profiles[index].isSelectedForDisplay
+        profiles[index].isSelectedForDisplay.toggle()
+        profileStore.saveProfiles(profiles)
+
+        var userInfo: [AnyHashable: Any]? = nil
+        if !wasSelected && profiles[index].isSelectedForDisplay {
+            userInfo = ["addedProfileIds": [id.uuidString]]
         }
+        NotificationCenter.default.post(
+            name: .profileDisplayStructureChanged,
+            object: nil,
+            userInfo: userInfo
+        )
     }
 
     func getSelectedProfiles() -> [Profile] {
@@ -179,21 +187,19 @@ class ProfileManager: ObservableObject {
     }
 
     func updateDisplayMode(_ mode: ProfileDisplayMode) {
-        // Use async to avoid "Publishing changes from within view updates" warning
-        DispatchQueue.main.async { [weak self] in
-            self?.displayMode = mode
-            self?.profileStore.saveDisplayMode(mode)
-            LoggingService.shared.log("Updated display mode to: \(mode.rawValue)")
-        }
+        // Mutate synchronously then notify — structural (which status items exist).
+        displayMode = mode
+        profileStore.saveDisplayMode(mode)
+        LoggingService.shared.log("Updated display mode to: \(mode.rawValue)")
+        NotificationCenter.default.post(name: .profileDisplayStructureChanged, object: nil)
     }
 
     func updateMultiProfileConfig(_ config: MultiProfileDisplayConfig) {
-        // Use async to avoid "Publishing changes from within view updates" warning
-        DispatchQueue.main.async { [weak self] in
-            self?.multiProfileConfig = config
-            self?.profileStore.saveMultiProfileConfig(config)
-            LoggingService.shared.log("Updated multi-profile config: style=\(config.iconStyle.rawValue), showWeek=\(config.showWeek)")
-        }
+        // Mutate synchronously then notify — cosmetic (how existing tiles look).
+        multiProfileConfig = config
+        profileStore.saveMultiProfileConfig(config)
+        LoggingService.shared.log("Updated multi-profile config: style=\(config.iconStyle.rawValue), showWeek=\(config.showWeek)")
+        NotificationCenter.default.post(name: .profileDisplayCosmeticsChanged, object: nil)
     }
 
     // MARK: - Profile Activation (Centralized)

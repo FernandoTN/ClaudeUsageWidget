@@ -227,4 +227,29 @@ final class MenuBarOrderingTests: XCTestCase {
         ))
     }
 
+    // MARK: - Overflow-parked profile-id derivation
+
+    func testOverflowParkedProfileIdsMatchesDuplicatedPositions() {
+        // Given four tiles where the 2nd and 4th share the off-edge parking x
+        let ids = (0..<4).map { _ in UUID() }
+        let parked = StatusBarUIManager.overflowParkedProfileIds(
+            order: ids,
+            xPositions: [1471, 1701, 1390, 1701]
+        )
+        // Then exactly the duplicated-x tiles are parked
+        XCTAssertEqual(parked, Set([ids[1], ids[3]]))
+    }
+
+    func testOverflowParkedProfileIdsEmptyForDistinctPositionsAndMismatchedInput() {
+        let ids = (0..<3).map { _ in UUID() }
+        // Distinct positions: nothing parked
+        XCTAssertTrue(StatusBarUIManager.overflowParkedProfileIds(
+            order: ids, xPositions: [100, 200, 300]
+        ).isEmpty)
+        // Count mismatch: fail safe to empty (never skip renders on bad input)
+        XCTAssertTrue(StatusBarUIManager.overflowParkedProfileIds(
+            order: ids, xPositions: [100, 100]
+        ).isEmpty)
+    }
+
 }

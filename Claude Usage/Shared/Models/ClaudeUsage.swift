@@ -168,7 +168,7 @@ struct ClaudeUsage: Codable, Equatable {
 
 /// Usage status level for color coding
 /// Thresholds depend on display mode (used vs remaining percentage)
-enum UsageStatusLevel {
+enum UsageStatusLevel: Hashable {
     case safe       // Used mode: 0-50% used | Remaining mode: >20% remaining
     case moderate   // Used mode: 50-80% used | Remaining mode: 10-20% remaining
     case critical   // Used mode: 80-100% used | Remaining mode: <10% remaining

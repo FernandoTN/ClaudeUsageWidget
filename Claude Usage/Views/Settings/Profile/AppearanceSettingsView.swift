@@ -30,8 +30,8 @@ struct AppearanceSettingsView: View {
                 if isMultiProfileMode {
                     MultiProfileModeWarningCard(
                         onDisableMultiProfile: {
+                            // Manager mutates then posts .profileDisplayStructureChanged
                             profileManager.updateDisplayMode(.single)
-                            NotificationCenter.default.post(name: .displayModeChanged, object: nil)
                         }
                     )
                 }

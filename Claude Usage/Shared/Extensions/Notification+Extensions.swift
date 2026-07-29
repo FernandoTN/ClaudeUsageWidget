@@ -20,6 +20,18 @@ extension Notification.Name {
     /// Posted when the display mode changes (single/multi profile)
     static let displayModeChanged = Notification.Name("displayModeChanged")
 
+    /// Posted after a structural multi-profile display change: single↔multi mode
+    /// or selection add/remove (anything that changes WHICH status items exist).
+    /// userInfo may include "addedProfileIds": [String] (UUID strings) when
+    /// selection grew — observers should fetch only those lacking cached usage.
+    static let profileDisplayStructureChanged = Notification.Name("profileDisplayStructureChanged")
+
+    /// Posted after a cosmetic multi-profile display change: icon style, show
+    /// week/label, time/pace markers, system color, pace coloring — anything
+    /// that only changes how existing tiles LOOK. Observers should repaint only
+    /// (no teardown, no network).
+    static let profileDisplayCosmeticsChanged = Notification.Name("profileDisplayCosmeticsChanged")
+
     /// Posted when the background Keychain credential load finishes populating the
     /// in-memory cache, so observers can re-read fully-hydrated profiles.
     static let profileCredentialsReady = Notification.Name("profileCredentialsReady")

@@ -32,10 +32,63 @@ final class StatusBarUIManager {
     // Image cache to avoid redundant button.image assignments (which trigger KVO)
     private var lastImageData: [ObjectIdentifier: Data] = [:]
 
+    // Per-profile render-input key: skip the NSImage render when nothing visible changed.
+    // TIFF comparison in setButtonImage remains the correctness guard on assignment.
+    private var lastRenderKey: [UUID: TileRenderKey] = [:]
+
+    /// Profile ids whose status items are overflow-parked off-screen (duplicate
+    /// x-positions). Recomputed each layout evaluation; skipped in the paint loop
+    /// except for first paint (button.image == nil).
+    private var overflowParkedIds: Set<UUID> = []
+
     // Icon renderer for creating menu bar images
     private let renderer = MenuBarIconRenderer()
 
+    /// Multi-profile progress-bar width used by the renderer for marker ticks
+    /// (`round(barWidth * fraction)`). Shared so the render-key quantizes identically.
+    private static let multiProfileBarWidth: CGFloat = 24
+
     weak var delegate: StatusBarUIManagerDelegate?
+
+    /// Inputs the multi-profile render path consumes — hash-equal ⇒ skip re-render.
+    private struct TileRenderKey: Hashable {
+        /// Display percentages after `getDisplayPercentage`, quantized to 0.1
+        var sessionDisplayQ: Int
+        var weekDisplayQ: Int
+        var sessionStatus: UsageStatusLevel
+        var weekStatus: UsageStatusLevel
+        var sessionPace: PaceStatus?
+        var weekPace: PaceStatus?
+        /// Marker tick quantized to the style's pixel/degree step (nil when marker off)
+        var sessionMarkerTick: Int?
+        var weekMarkerTick: Int?
+        /// 3-char (or 1-char) label actually passed to the renderer
+        var label: String
+        var config: MultiProfileDisplayConfig
+        var isDarkMode: Bool
+        /// Backing scale × 100 when reachable, else 0
+        var backingScaleQ: Int
+    }
+
+    /// Quantize a time-marker fraction to the same discrete step the active
+    /// style's renderer uses. Progress bars: `round(barWidth * fraction)`.
+    /// Concentric rings: whole degrees (`round(360 * fraction)`) matching the
+    /// angle formula. False-misses are acceptable; false-hits are not.
+    private static func quantizeMarkerTick(
+        _ fraction: CGFloat?,
+        style: MultiProfileIconStyle
+    ) -> Int? {
+        guard let fraction else { return nil }
+        switch style {
+        case .progressBar:
+            return Int(round(multiProfileBarWidth * fraction))
+        case .concentric:
+            return Int(round(360 * fraction))
+        case .compact, .percentage:
+            // Markers are not drawn; keep a stable integer if present.
+            return Int(round(multiProfileBarWidth * fraction))
+        }
+    }
 
     // MARK: - Initialization
 
@@ -171,10 +224,19 @@ final class StatusBarUIManager {
         // may reuse (same address) — a stale cache hit would skip drawing its
         // icon after a rebuild, so drop the cache with the items.
         lastImageData.removeAll()
+        lastRenderKey.removeAll()
+        overflowParkedIds.removeAll()
 
         isMultiProfileMode = false
 
         LoggingService.shared.logUIEvent("Status bar cleaned up")
+    }
+
+    /// Clears overflow-parked state so the next paint re-evaluates parking and
+    /// re-renders any tile that became visible after a screen geometry change.
+    func clearOverflowParkedState() {
+        overflowParkedIds.removeAll()
+        lastRenderKey.removeAll()
     }
 
     // MARK: - Multi-Profile Mode
@@ -324,10 +386,16 @@ final class StatusBarUIManager {
     /// tile can't be judged, only a visibly misplaced one. Each evaluation
     /// records a layout snapshot in UserDefaults (`debugTileLayout`) so a
     /// stranded tile can be diagnosed from outside a Release build.
+    /// Also recomputes `overflowParkedIds` (tiles parked at a duplicated
+    /// off-edge x) every evaluation so the paint loop can skip them.
     private func strandedTileDetected() -> Bool {
         RenderInstrumentation.strandedTileEvaluations += 1
-        guard multiProfileOrder.count > 1 else { return false }
+        guard multiProfileOrder.count > 1 else {
+            overflowParkedIds = []
+            return false
+        }
         var xPositions: [CGFloat] = []
+        var measuredIds: [UUID] = []
         var screens = Set<ObjectIdentifier>()
         var snapshot: [String] = []
         var unmeasurable = false
@@ -342,6 +410,7 @@ final class StatusBarUIManager {
             }
             screens.insert(ObjectIdentifier(screen))
             xPositions.append(window.frame.minX)
+            measuredIds.append(profileId)
         }
         // Quantized to 10pt buckets: tile widths change with every usage
         // repaint, drifting positions a few points between evaluations. The
@@ -355,17 +424,25 @@ final class StatusBarUIManager {
         if unmeasurable {
             verdict = "unmeasurable"
             broken = false
+            overflowParkedIds = []
         } else if screens.count != 1 {
             verdict = "multi-screen(\(screens.count))"
             broken = false
+            overflowParkedIds = []
         } else if Self.containsOverflowParkedTiles(xPositions) {
             // Hidden tiles can't be judged, and their duplicate frames would
-            // read as an order violation below.
+            // read as an order violation below. Surface the parked id set so
+            // the paint loop can skip re-rendering overflow-hidden tiles.
             verdict = "overflow-hidden"
             broken = false
+            overflowParkedIds = Self.overflowParkedProfileIds(
+                order: measuredIds,
+                xPositions: xPositions
+            )
         } else {
             broken = Self.layoutDivergesFromCreationOrder(xPositions)
             verdict = broken ? "STRANDED" : "ok"
+            overflowParkedIds = []
         }
         if broken, signature == healFailedSignature {
             verdict = "STRANDED-unfixable"
@@ -380,6 +457,28 @@ final class StatusBarUIManager {
         guard broken, signature != healFailedSignature,
               Date().timeIntervalSince(lastLayoutHealAt) > 300 else { return false }
         return true
+    }
+
+    /// Profile ids whose window x is a duplicated off-edge parking slot
+    /// (overflow-hidden). Visible tiles each own a distinct minX; overflowed
+    /// tiles share one frame. Pure so it is unit-testable.
+    nonisolated static func overflowParkedProfileIds(
+        order: [UUID],
+        xPositions: [CGFloat]
+    ) -> Set<UUID> {
+        guard order.count == xPositions.count, !order.isEmpty else { return [] }
+        var counts: [Int: Int] = [:]
+        let intXs = xPositions.map { Int($0) }
+        for x in intXs {
+            counts[x, default: 0] += 1
+        }
+        var parked = Set<UUID>()
+        for (i, id) in order.enumerated() {
+            if counts[intXs[i], default: 0] > 1 {
+                parked.insert(id)
+            }
+        }
+        return parked
     }
 
     /// Updates all multi-profile status items
@@ -397,13 +496,20 @@ final class StatusBarUIManager {
         var rebuildReason: String?
         if desiredOrder != multiProfileOrder {
             rebuildReason = "weekly-reset order changed"
+            // Order change skips strandedTileDetected — clear parked set so a
+            // later evaluation re-derives it rather than skipping newly visible tiles.
+            overflowParkedIds = []
         } else if strandedTileDetected() {
+            // strandedTileDetected always refreshes overflowParkedIds on this path.
             rebuildReason = "a tile was relocated out of the group by the system"
             lastLayoutHealAt = Date()
             // One attempt per distinct broken layout: if the rebuild reproduces
             // this same arrangement, stop retrying until something changes.
             healFailedSignature = lastEvaluatedSignature
         }
+        // When order is stable, the else-if above always runs strandedTileDetected
+        // (updating overflowParkedIds even when the heal verdict is not stranded).
+
         if let rebuildReason,
            let target = multiProfileTarget, let action = multiProfileAction {
             LoggingService.shared.logUIEvent("Multi-profile: \(rebuildReason), rebuilding status items")
@@ -423,6 +529,11 @@ final class StatusBarUIManager {
         for profile in profiles where profile.isSelectedForDisplay {
             guard let statusItem = multiProfileStatusItems[profile.id],
                   let button = statusItem.button else {
+                continue
+            }
+
+            // Skip overflow-parked tiles except first paint (must always render).
+            if overflowParkedIds.contains(profile.id), button.image != nil {
                 continue
             }
 
@@ -488,6 +599,51 @@ final class StatusBarUIManager {
                 guard config.showPaceMarker, let elapsed = weekElapsed else { return nil }
                 return PaceStatus.calculate(usedPercentage: weekUsed, elapsedFraction: elapsed)
             }()
+
+            // Label string actually consumed by the active style
+            let label: String = {
+                switch config.iconStyle {
+                case .concentric:
+                    return config.showProfileLabel
+                        ? String(profile.menuBarDisplayName.prefix(3))
+                        : String(profile.name.prefix(1))
+                case .progressBar, .percentage:
+                    return config.showProfileLabel
+                        ? String(profile.menuBarDisplayName.prefix(3))
+                        : ""
+                case .compact:
+                    return config.showProfileLabel
+                        ? String(profile.name.prefix(1))
+                        : ""
+                }
+            }()
+
+            let weekDisplayForKey = config.showWeek ? weekDisplay : 0
+            let weekMarkerForKey: CGFloat? = config.showWeek ? weekMarker : nil
+            let weekPaceForKey: PaceStatus? = config.showWeek ? weekPaceStatus : nil
+            let backingScale = button.window?.backingScaleFactor
+                ?? button.superview?.window?.backingScaleFactor
+                ?? 0
+
+            let renderKey = TileRenderKey(
+                sessionDisplayQ: Int((sessionDisplay * 10).rounded()),
+                weekDisplayQ: Int((weekDisplayForKey * 10).rounded()),
+                sessionStatus: sessionStatus,
+                weekStatus: weekStatus,
+                sessionPace: sessionPaceStatus,
+                weekPace: weekPaceForKey,
+                sessionMarkerTick: Self.quantizeMarkerTick(sessionMarker, style: config.iconStyle),
+                weekMarkerTick: Self.quantizeMarkerTick(weekMarkerForKey, style: config.iconStyle),
+                label: label,
+                config: config,
+                isDarkMode: menuBarIsDark,
+                backingScaleQ: Int((backingScale * 100).rounded())
+            )
+
+            // Skip-not-replace: unchanged inputs + existing image ⇒ no render.
+            if lastRenderKey[profile.id] == renderKey, button.image != nil {
+                continue
+            }
 
             // Create icon based on selected style
             RenderInstrumentation.tileRenders += 1
@@ -571,6 +727,7 @@ final class StatusBarUIManager {
             }
 
             image.isTemplate = useMonochrome && !config.showPaceMarker
+            lastRenderKey[profile.id] = renderKey
             setButtonImage(button, image: image)
         }
     }
@@ -714,6 +871,7 @@ final class StatusBarUIManager {
             self.lastObservedAppearanceName = newName
             // Clear image cache so next update re-renders with new appearance
             self.lastImageData.removeAll()
+            self.lastRenderKey.removeAll()
             self.delegate?.statusBarAppearanceDidChange()
         }
         appearanceObservers.append(appObserver)
