@@ -1112,8 +1112,9 @@ private func observeCredentialChanges() {
                         } else if appError.code == .apiRateLimited {
                             // Burst-class 429 (no account-level Retry-After):
                             // exhaustion is unknown, so don't stamp — but stop
-                            // re-fetching every sweep.
-                            self.registerBurstBackoff(for: profile)
+                            // re-fetching every sweep. Pass the server's own
+                            // (sub-floor) Retry-After when present.
+                            self.registerBurstBackoff(for: profile, retryAfter: appError.retryAfterSeconds)
                         }
                         LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                     }
@@ -1480,15 +1481,32 @@ private func observeCredentialChanges() {
     }
     private var burstBackoffs: [UUID: BurstBackoff] = [:]
 
+    /// Exponential cap is 8 min, not the original 30: the 30-min cap defended
+    /// against the pre-refactor sweep re-fetching a 429ing profile every 30s
+    /// (90 429s/hour measured). Per-account fetches are now spaced ~5 min by
+    /// the rotation budget + Claude-only pacing, so the residual retry volume
+    /// is tiny — while a 30-min blind window on a HEAVILY-USED account (the
+    /// ones most likely to 429) let its displayed session % drift 15-20pp
+    /// behind reality and fed the auto-switch stale candidate data (observed
+    /// live 2026-07-29 on a profile stuck at 51% vs ~70% real).
     nonisolated static func burstBackoffInterval(streak: Int) -> TimeInterval {
-        min(120 * pow(2, Double(max(0, streak - 1))), 1800)
+        min(120 * pow(2, Double(max(0, streak - 1))), 480)
     }
 
-    private func registerBurstBackoff(for profile: Profile) {
+    private func registerBurstBackoff(for profile: Profile, retryAfter: TimeInterval? = nil) {
         let streak = (burstBackoffs[profile.id]?.streak ?? 0) + 1
-        let interval = Self.burstBackoffInterval(streak: streak)
+        let interval: TimeInterval
+        if let retryAfter, retryAfter > 0 {
+            // The endpoint SAID when to come back (a seconds-scale, sub-account-
+            // floor Retry-After). Honor it instead of an exponential guess —
+            // discarding it was how a busy account went blind for minutes at a
+            // time. Small floor so a "1s" header can't turn into hammering.
+            interval = max(retryAfter, 30)
+        } else {
+            interval = Self.burstBackoffInterval(streak: streak)
+        }
         burstBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
-        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (no account-level Retry-After) — backing usage fetch off for \(Int(interval))s (streak \(streak))")
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (retry-after: \(retryAfter.map { "\(Int($0))s" } ?? "none")) — backing usage fetch off for \(Int(interval))s (streak \(streak))")
     }
 
     // MARK: - Account-Level Throttle Stamping
@@ -1603,6 +1621,49 @@ private func observeCredentialChanges() {
                     self.autoSwitchedProfileIds.remove(profileId)
                     LoggingService.shared.log("AutoSwitch: another switch is in flight, deferring to next sweep")
                     return
+                }
+
+                // Verify a STALE Claude candidate's real usage before taking the
+                // switch: rotation + burst-429 backoff can leave a candidate's
+                // cached percentages minutes old, and a heavily-used account (the
+                // kind that 429s its own usage endpoint) can climb 15-20pp in that
+                // window — landing the switch on an account that is about to hit
+                // the very limit we are escaping (observed live 2026-07-29:
+                // cached 51% vs ~70% real). One probe per candidate per switch;
+                // Codex/Grok candidates refresh every sweep and never need it.
+                if nextProfile.providerKind == .claude,
+                   let cached = nextProfile.claudeUsage,
+                   Date().timeIntervalSince(cached.lastUpdated) > 180 {
+                    do {
+                        let fresh = try await self.fetchUsageForProfile(nextProfile)
+                        self.profileManager.saveClaudeUsage(fresh, for: nextProfile.id)
+                        self.burstBackoffs.removeValue(forKey: nextProfile.id)
+                        var verified = nextProfile
+                        verified.claudeUsage = fresh
+                        guard self.hasSessionHeadroom(verified, threshold: sessionThreshold),
+                              self.hasWeeklyHeadroom(verified, threshold: weeklyThreshold, now: Date()),
+                              self.hasFableWeeklyHeadroom(verified, threshold: weeklyThreshold, now: Date()) else {
+                            excluded.insert(nextProfile.id)
+                            LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' cached headroom was stale — fresh fetch shows none, trying next candidate")
+                            continue
+                        }
+                    } catch {
+                        let appError = AppError.wrap(error)
+                        if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: nextProfile) {
+                            // Account-level throttle = exhausted: never switch onto it.
+                            _ = stamped
+                            excluded.insert(nextProfile.id)
+                            LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' usage endpoint is account-throttled — treating as exhausted, trying next candidate")
+                            continue
+                        }
+                        if appError.code == .apiRateLimited {
+                            self.registerBurstBackoff(for: nextProfile, retryAfter: appError.retryAfterSeconds)
+                        }
+                        // Burst 429 / transient error: exhaustion unknown — proceed
+                        // on the cached estimate rather than refusing to switch at
+                        // all (the outgoing account is definitively at its limit).
+                        LoggingService.shared.log("AutoSwitch: could not verify '\(nextProfile.name)' usage (\(appError.code.rawValue)) — proceeding on cached estimate")
+                    }
                 }
                 LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
 
