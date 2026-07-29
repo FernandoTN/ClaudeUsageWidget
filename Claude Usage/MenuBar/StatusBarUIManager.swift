@@ -39,7 +39,16 @@ final class StatusBarUIManager {
     /// Profile ids whose status items are overflow-parked off-screen (duplicate
     /// x-positions). Recomputed each layout evaluation; skipped in the paint loop
     /// except for first paint (button.image == nil).
-    private var overflowParkedIds: Set<UUID> = []
+    /// A tile that leaves the parked set may be showing an image baked while it
+    /// was hidden (possibly under a provisional appearance) — drop its render key
+    /// so the next paint re-renders it unconditionally.
+    private var overflowParkedIds: Set<UUID> = [] {
+        didSet {
+            for id in oldValue.subtracting(overflowParkedIds) {
+                lastRenderKey.removeValue(forKey: id)
+            }
+        }
+    }
 
     // Icon renderer for creating menu bar images
     private let renderer = MenuBarIconRenderer()
@@ -65,7 +74,11 @@ final class StatusBarUIManager {
         /// 3-char (or 1-char) label actually passed to the renderer
         var label: String
         var config: MultiProfileDisplayConfig
-        var isDarkMode: Bool
+        /// Full appearance NAME, not a dark bool: freshly created buttons pass
+        /// through provisional appearance variants that can resolve dynamic
+        /// system colors differently while agreeing on "is dark" — the name
+        /// transition is what guarantees a re-render once AppKit settles.
+        var appearanceName: String
         /// Backing scale × 100 when reachable, else 0
         var backingScaleQ: Int
     }
@@ -522,6 +535,11 @@ final class StatusBarUIManager {
             // resolved the real menu-bar appearance (the order is now recorded, so
             // this cannot recurse into another rebuild).
             DispatchQueue.main.async { [weak self] in
+                // The repaint below this rebuild ran under provisional button
+                // appearances and populated render keys for those bakes — drop
+                // them so THIS resolved-appearance paint re-renders every tile
+                // instead of key-matching against a provisional-appearance image.
+                self?.lastRenderKey.removeAll()
                 self?.updateMultiProfileButtons(profiles: profiles, config: config)
             }
         }
@@ -636,7 +654,7 @@ final class StatusBarUIManager {
                 weekMarkerTick: Self.quantizeMarkerTick(weekMarkerForKey, style: config.iconStyle),
                 label: label,
                 config: config,
-                isDarkMode: menuBarIsDark,
+                appearanceName: button.effectiveAppearance.name.rawValue,
                 backingScaleQ: Int((backingScale * 100).rounded())
             )
 
@@ -645,9 +663,15 @@ final class StatusBarUIManager {
                 continue
             }
 
-            // Create icon based on selected style
+            // Create icon based on selected style. Render inside the BUTTON's
+            // appearance context: bar fills use dynamic system colors
+            // (systemGreen/Orange/Red) that resolve against the thread's current
+            // drawing appearance at setFill time, NOT the isDarkMode flag — a
+            // render outside this context can bake desaturated/dark bars that the
+            // render key cannot detect.
             RenderInstrumentation.tileRenders += 1
-            let image: NSImage
+            var image = NSImage()
+            button.effectiveAppearance.performAsCurrentDrawingAppearance {
             switch config.iconStyle {
             case .concentric:
                 if config.showProfileLabel {
@@ -724,6 +748,7 @@ final class StatusBarUIManager {
                     weekPaceStatus: config.showWeek ? weekPaceStatus : nil,
                     showPaceMarker: config.showPaceMarker
                 )
+            }
             }
 
             image.isTemplate = useMonochrome && !config.showPaceMarker
