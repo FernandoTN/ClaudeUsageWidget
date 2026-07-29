@@ -602,6 +602,12 @@ enum ProfileCredentialStatusCache {
         cache.removeAll()
     }
 
+    /// True once Keychain warm has finished (ready or failed). While loading,
+    /// nil credentials mean "not hydrated yet" and must not be memoized.
+    private static var isCredentialHydrationSettled: Bool {
+        ProfileStore.shared.credentialHydrationState != .loading
+    }
+
     private static func ensureObserver() {
         guard !observerInstalled else { return }
         observerInstalled = true
@@ -704,19 +710,31 @@ enum ProfileCredentialStatusCache {
     }
 
     static func claudeTokenStatus(for profile: Profile) -> StoredTokenStatus? {
-        entry(for: profile).claudeStatus
+        // While hydrating, do not negative-cache unhydrated (nil) credentials.
+        guard isCredentialHydrationSettled else { return nil }
+        return entry(for: profile).claudeStatus
     }
 
     static func codexTokenStatus(for profile: Profile) -> StoredTokenStatus? {
-        entry(for: profile).codexStatus
+        guard isCredentialHydrationSettled else { return nil }
+        return entry(for: profile).codexStatus
     }
 
     static func profileInfo(for profile: Profile) -> String {
-        entry(for: profile).profileInfo
+        // profileInfo is mostly non-secret flags + created date; still avoid
+        // memoizing while credentials are mid-hydrate so a later fingerprint
+        // change is not racing a half-built entry.
+        guard isCredentialHydrationSettled else {
+            let created = profile.createdAt.formatted(date: .abbreviated, time: .omitted)
+            return "\("profiles.created".localized) \(created)"
+        }
+        return entry(for: profile).profileInfo
     }
 
     static func hasDeadLogin(_ profile: Profile) -> Bool {
-        entry(for: profile).hasDeadLogin
+        // Unhydrated profiles are not dead — credentials simply have not loaded.
+        guard isCredentialHydrationSettled else { return false }
+        return entry(for: profile).hasDeadLogin
     }
 }
 

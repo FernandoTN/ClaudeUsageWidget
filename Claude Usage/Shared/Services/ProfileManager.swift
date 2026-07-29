@@ -29,6 +29,12 @@ class ProfileManager: ObservableObject {
     private let profileStore = ProfileStore.shared
     private let cliSyncService = ClaudeCodeSyncService.shared
 
+    /// Passthrough of ProfileStore's credential-cache readiness so menu-bar /
+    /// settings code can gate without reaching for the store singleton.
+    var credentialHydrationState: ProfileStore.CredentialHydrationState {
+        profileStore.credentialHydrationState
+    }
+
     private var switchingSemaphore = false
 
     /// Observer that re-reads profiles once the background Keychain credential load completes.

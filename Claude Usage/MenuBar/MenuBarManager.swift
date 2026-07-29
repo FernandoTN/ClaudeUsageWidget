@@ -77,6 +77,10 @@ class MenuBarManager: NSObject, ObservableObject {
     /// profile count (F4). Recomputed only at first multi-profile sweep of the run.
     private var hasLoggedBackgroundStalenessEstimate = false
 
+    /// Coalesces the 2s retry scheduled while credential hydration is still
+    /// `.loading` so overlapping timer/network triggers do not stack retries.
+    private var credentialHydrationRetryScheduled = false
+
     // Observer for icon configuration changes
     private var iconConfigObserver: NSObjectProtocol?
 
@@ -865,8 +869,38 @@ private func observeCredentialChanges() {
         }
     }
 
+    /// Returns true when credential hydration is still `.loading`, in which case
+    /// the caller should skip credential-dependent work. Schedules at most ONE
+    /// 2s retry that re-invokes `retry` (stacking prevented by the boolean).
+    /// `.ready` and `.failed` both return false so work proceeds.
+    @discardableResult
+    private func deferIfCredentialHydrationLoading(retry: @escaping () -> Void) -> Bool {
+        guard profileManager.credentialHydrationState == .loading else { return false }
+        if !credentialHydrationRetryScheduled {
+            credentialHydrationRetryScheduled = true
+            LoggingService.shared.log(
+                "MenuBarManager: credential hydration still loading — deferring refresh, retry in 2s"
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self else { return }
+                self.credentialHydrationRetryScheduled = false
+                retry()
+            }
+        }
+        return true
+    }
+
     /// Refreshes usage data for all profiles selected for multi-profile display
     private func refreshAllSelectedProfiles() {
+        // Gate on credential hydration: nil credentials while `.loading` mean
+        // "not loaded yet", not "has no credentials" — sweeping now would skip
+        // every profile and mis-route provider kind.
+        if deferIfCredentialHydrationLoading(retry: { [weak self] in
+            self?.refreshAllSelectedProfiles()
+        }) {
+            return
+        }
+
         // Reentrancy guard: a sweep does per-profile Keychain healing plus one
         // network fetch per profile, so it can outlast the 30s timer — and profile
         // switches used to fire it twice. Overlapping sweeps interleave half-fresh
@@ -1223,6 +1257,14 @@ private func observeCredentialChanges() {
             return
         }
 
+        // Gate the single-profile fetch path the same way as the multi sweep:
+        // unhydrated credentials must not be treated as missing.
+        if deferIfCredentialHydrationLoading(retry: { [weak self] in
+            self?.refreshUsage()
+        }) {
+            return
+        }
+
         // Single profile mode - refresh only active profile
         guard let profile = profileManager.activeProfile else {
             LoggingService.shared.log("MenuBarManager.refreshUsage: No active profile")
@@ -1492,6 +1534,11 @@ private func observeCredentialChanges() {
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }
 
+        // Guard: credential cache still hydrating — candidates may look
+        // credential-less only because Keychain warm has not finished. A switch
+        // decision on unhydrated profiles could pick (or skip) the wrong one.
+        guard profileManager.credentialHydrationState != .loading else { return }
+
         // Guard: a switch is already rewriting the shared logins (other provider's
         // rotation, or a user-initiated switch). Don't stack a second one —
         // activateProfile would refuse via its semaphore and the candidate walk
@@ -1652,6 +1699,10 @@ private func observeCredentialChanges() {
     /// Walks the ranked same-provider candidates until one holds a LIVE login,
     /// notifying (via the services) about every dead one found on the way.
     private func preflightCandidates(after currentProfile: Profile, milestone: Double) async {
+        // Unhydrated candidates look credential-less — never refresh/rotate on
+        // that false signal. Ready/failed both proceed (partial cache on failed).
+        guard profileManager.credentialHydrationState != .loading else { return }
+
         var excluded: Set<UUID> = []
         while let candidate = findNextAvailableProfile(after: currentProfile, excluding: excluded) {
             // A candidate that already owns its provider's shared login is being

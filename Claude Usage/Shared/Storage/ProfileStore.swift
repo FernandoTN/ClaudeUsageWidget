@@ -19,14 +19,38 @@ import Security
 /// a modal SecurityAgent prompt, and if that happens on the main thread the app deadlocks
 /// (the prompt needs the very thread that is blocked waiting for it). `loadProfiles()`
 /// therefore never touches the Keychain on the calling thread.
+///
+/// Startup hydration is async: `credentialHydrationState` is `.loading` until the
+/// background Keychain read finishes. Callers that would treat nil credentials as
+/// "has no credentials" must gate on `.ready` / `.failed` so an unhydrated profile
+/// is never misclassified.
 class ProfileStore {
     static let shared = ProfileStore()
+
+    /// Tri-state readiness for the in-memory credential cache.
+    /// - `.loading`: Keychain warm still in flight — nil credentials mean "not loaded yet"
+    /// - `.ready`: warm completed successfully (cache matches Keychain at warm time)
+    /// - `.failed`: warm hit an error or wall-clock deadline; partial cache may exist
+    ///   (`.failed` is terminal for the run but still posts `.profileCredentialsReady`)
+    enum CredentialHydrationState: Equatable {
+        case loading
+        case ready
+        case failed
+    }
+
+    /// Main-actor-visible hydration readiness. Starts `.loading`; transitions once
+    /// per warm to `.ready` or `.failed`, then posts `.profileCredentialsReady`.
+    private(set) var credentialHydrationState: CredentialHydrationState = .loading
 
     private let defaults: UserDefaults
     private let keychainService = KeychainService.shared
 
     /// Serial queue for all Keychain I/O — keeps it off the main thread.
     private let keychainQueue = DispatchQueue(label: "com.claudewidget.profilestore.keychain", qos: .userInitiated)
+
+    /// Wall-clock budget for a single async Keychain warm. Beyond this we mark
+    /// `.failed` with whatever partial cache was filled and still notify observers.
+    private static let hydrationWallClockDeadline: TimeInterval = 15.0
 
     /// In-memory credential cache. `loadProfiles()` hydrates from here, not the Keychain.
     private struct CachedCredentials: Equatable {
@@ -101,27 +125,57 @@ class ProfileStore {
         }
     }
 
-    /// v2-already-done path: load credentials from the Keychain into the cache.
-    /// The main-thread wait is bounded — permissive Keychain items resolve in
-    /// microseconds, and a background pass finishes + notifies observers regardless.
+    /// v2-already-done path: load credentials from the Keychain into the cache
+    /// asynchronously. Never blocks the main thread — readiness is published via
+    /// `credentialHydrationState` and `.profileCredentialsReady`.
     private func warmCacheFromKeychain() {
         let ids = storedProfileIds()
-        guard !ids.isEmpty else { return }
+        let startedAt = Date()
+        let deadline = startedAt.addingTimeInterval(Self.hydrationWallClockDeadline)
 
-        let sem = DispatchSemaphore(value: 0)
         keychainQueue.async { [weak self] in
-            self?.readCredentialsIntoCache(profileIds: ids)
-            sem.signal()
+            guard let self else { return }
+            var success = true
+            if !ids.isEmpty {
+                success = self.readCredentialsIntoCache(profileIds: ids, deadline: deadline)
+            }
             DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
+                self.finishCredentialHydration(success: success)
             }
             // One-time: recreate every item through the security CLI so rebuilds
             // of this (ad-hoc signed) app stop triggering SecurityAgent prompts.
-            self?.rebuildKeychainItemsViaSecurityToolIfNeeded()
+            // Runs after the readiness notification is scheduled so observers are
+            // not blocked on the (slow) rebuild pass.
+            if !ids.isEmpty {
+                self.rebuildKeychainItemsViaSecurityToolIfNeeded()
+            }
         }
-        // Insurance: never block the main thread more than 2s, even on an
-        // unexpected authorization prompt. The background pass still completes.
-        _ = sem.wait(timeout: .now() + 2.0)
+    }
+
+    /// Terminal transition for a warm attempt. Always posts `.profileCredentialsReady`
+    /// — even on `.failed` — so ProfileManager reloads whatever partial cache we have.
+    private func finishCredentialHydration(success: Bool) {
+        if success {
+            credentialHydrationState = .ready
+            LoggingService.shared.log("ProfileStore: credential hydration ready")
+        } else {
+            credentialHydrationState = .failed
+            LoggingService.shared.logError(
+                "ProfileStore: credential hydration failed — proceeding with partial cache"
+            )
+        }
+        NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
+    }
+
+    /// Clears the in-memory credential cache and re-runs async Keychain hydration.
+    /// Used by tests that need a real `.loading` → `.ready` transition without
+    /// constructing a second ProfileStore singleton.
+    func resetAndRewarmCredentialCacheForTesting() {
+        cacheLock.lock()
+        credentialCache.removeAll()
+        cacheLock.unlock()
+        credentialHydrationState = .loading
+        warmCacheFromKeychain()
     }
 
     /// One-time (v3): rebuilds every per-profile Keychain item through the
@@ -259,14 +313,25 @@ class ProfileStore {
             self.defaults.set(true, forKey: Keys.keychainRebuiltV3)
             LoggingService.shared.log("ProfileStore: Keychain credential repair (v2) complete for \(ids.count) profile(s)")
             DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
+                // v2 repair is the first-run hydration path — mark ready and notify
+                // the same way warmCacheFromKeychain does.
+                self.finishCredentialHydration(success: true)
             }
         }
     }
 
-    /// Reads each profile's three credential items from the Keychain into the cache.
-    private func readCredentialsIntoCache(profileIds: [UUID]) {
+    /// Reads each profile's credential items from the Keychain into the cache.
+    /// Returns `false` if the wall-clock deadline was exceeded mid-loop (partial
+    /// cache is still better than none — caller marks `.failed` and notifies).
+    @discardableResult
+    private func readCredentialsIntoCache(profileIds: [UUID], deadline: Date) -> Bool {
         for id in profileIds {
+            if Date() > deadline {
+                LoggingService.shared.logError(
+                    "ProfileStore: credential hydration hit \(Int(Self.hydrationWallClockDeadline))s deadline with partial cache"
+                )
+                return false
+            }
             let cached = CachedCredentials(
                 claudeSessionKey: keychainService.loadProfileCredential(profileId: id, key: "claude-key"),
                 apiSessionKey: keychainService.loadProfileCredential(profileId: id, key: "api-key"),
@@ -278,6 +343,7 @@ class ProfileStore {
             credentialCache[id] = cached
             cacheLock.unlock()
         }
+        return true
     }
 
     /// Removes the three credential keys from the stored profiles JSON.
@@ -376,8 +442,8 @@ class ProfileStore {
         //    Keychain on a background queue (never blocks the caller).
         //
         //    MERGE semantics: a nil credential field NEVER implies deletion here.
-        //    Profile values may predate the background Keychain hydration (the
-        //    startup cache warm-up waits at most 2s) — saving such a stale profile
+        //    Profile values may predate the background Keychain hydration
+        //    (`credentialHydrationState == .loading`) — saving such a stale profile
         //    used to diff nil-vs-cached and enqueue Keychain deletions, silently
         //    destroying every credential on a slow Keychain. Intentional removal
         //    goes through clearProfileCredential(_:key:) instead.
