@@ -831,7 +831,7 @@ final class StatusBarUIManager {
 
     /// Get the first enabled metric's button (for backwards compatibility)
     var primaryButton: NSStatusBarButton? {
-        let config = DataStore.shared.loadMenuBarIconConfiguration()
+        let config = MenuBarIconConfiguration.load()
         guard let firstMetric = config.enabledMetrics.first else {
             return nil
         }

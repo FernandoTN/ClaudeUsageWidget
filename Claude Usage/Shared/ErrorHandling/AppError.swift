@@ -331,11 +331,6 @@ extension AppError {
             return appError
         }
 
-        // If it's a URLBuilderError, convert it
-        if let urlError = error as? URLBuilderError {
-            return fromURLBuilderError(urlError, file: file, line: line, function: function)
-        }
-
         // Generic wrap
         return AppError(
             code: .unknown,
@@ -347,20 +342,5 @@ extension AppError {
             line: line,
             function: function
         )
-    }
-
-    // MARK: - Conversion from Other Errors
-
-    private static func fromURLBuilderError(_ error: URLBuilderError, file: String, line: Int, function: String) -> AppError {
-        switch error {
-        case .invalidBaseURL(let url):
-            return AppError(code: .urlInvalidBase, message: "Invalid base URL", technicalDetails: url, file: file, line: line, function: function)
-        case .invalidPath(let path):
-            return AppError(code: .urlInvalidPath, message: "Invalid URL path", technicalDetails: path, file: file, line: line, function: function)
-        case .invalidQueryParameter(let key, let value):
-            return AppError(code: .urlInvalidQuery, message: "Invalid query parameter", technicalDetails: "\(key)=\(value)", file: file, line: line, function: function)
-        case .malformedURL(let details):
-            return AppError(code: .urlMalformed, message: "Malformed URL", technicalDetails: details, file: file, line: line, function: function)
-        }
     }
 }

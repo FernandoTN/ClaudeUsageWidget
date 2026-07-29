@@ -31,48 +31,48 @@ struct SettingsCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             if title != nil || subtitle != nil {
-                VStack(alignment: .leading, spacing: Spacing.xs) {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
                     if let title = title {
                         Text(title)
-                            .font(Typography.subtitle)
+                            .font(DesignTokens.Typography.subtitle)
                             .foregroundColor(.primary)
                     }
 
                     if let subtitle = subtitle {
                         Text(subtitle)
-                            .font(Typography.caption)
+                            .font(DesignTokens.Typography.caption)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(.horizontal, Spacing.cardPadding)
-                .padding(.top, Spacing.cardPadding)
-                .padding(.bottom, Spacing.md)
+                .padding(.horizontal, DesignTokens.Spacing.settingsCardPadding)
+                .padding(.top, DesignTokens.Spacing.settingsCardPadding)
+                .padding(.bottom, DesignTokens.Spacing.medium)
             }
 
             // Content
             content
-                .padding(.horizontal, Spacing.cardPadding)
-                .padding(.bottom, footer == nil ? Spacing.cardPadding : Spacing.md)
+                .padding(.horizontal, DesignTokens.Spacing.settingsCardPadding)
+                .padding(.bottom, footer == nil ? DesignTokens.Spacing.settingsCardPadding : DesignTokens.Spacing.medium)
 
             // Footer
             if let footer = footer {
                 Text(footer)
-                    .font(Typography.caption)
+                    .font(DesignTokens.Typography.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, Spacing.cardPadding)
-                    .padding(.bottom, Spacing.cardPadding)
+                    .padding(.horizontal, DesignTokens.Spacing.settingsCardPadding)
+                    .padding(.bottom, DesignTokens.Spacing.settingsCardPadding)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Spacing.radiusLarge)
-                .fill(SettingsColors.cardBackground)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.large)
+                .fill(DesignTokens.Colors.cardBackground)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Spacing.radiusLarge)
-                .strokeBorder(SettingsColors.border, lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.large)
+                .strokeBorder(DesignTokens.Colors.cardBorder, lineWidth: 0.5)
         )
     }
 }
@@ -102,12 +102,12 @@ extension SettingsCard {
 
 #Preview("Basic Card") {
     SettingsCard {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             Text("Card content goes here")
-                .font(Typography.body)
+                .font(DesignTokens.Typography.bodyRegular)
 
             Text("More content")
-                .font(Typography.caption)
+                .font(DesignTokens.Typography.caption)
                 .foregroundColor(.secondary)
         }
     }
@@ -116,7 +116,7 @@ extension SettingsCard {
 
 #Preview("Card with Title") {
     SettingsCard(title: "Notification Settings") {
-        VStack(spacing: Spacing.formRowSpacing) {
+        VStack(spacing: DesignTokens.Spacing.medium) {
             SettingToggle(
                 title: "Enable notifications",
                 description: "Show notifications when usage thresholds are reached",
@@ -138,13 +138,13 @@ extension SettingsCard {
         title: "API Tracking",
         subtitle: "Configure your console.anthropic.com API tracking settings"
     ) {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             Text("Session Key")
-                .font(Typography.label)
+                .font(DesignTokens.Typography.body)
                 .foregroundColor(.secondary)
 
             Text("sk-ant-api03-...")
-                .font(Typography.monospacedInput)
+                .font(DesignTokens.Typography.monospaced)
                 .foregroundColor(.primary)
         }
     }
@@ -156,15 +156,15 @@ extension SettingsCard {
         title: "Refresh Interval",
         footer: "Shorter intervals provide more real-time data but may impact battery life"
     ) {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             HStack {
                 Text("Update every:")
-                    .font(Typography.body)
+                    .font(DesignTokens.Typography.bodyRegular)
 
                 Spacer()
 
                 Text("5 minutes")
-                    .font(Typography.body)
+                    .font(DesignTokens.Typography.bodyRegular)
                     .foregroundColor(.secondary)
             }
 
@@ -175,7 +175,7 @@ extension SettingsCard {
 }
 
 #Preview("Multiple Cards") {
-    VStack(spacing: Spacing.cardSpacing) {
+    VStack(spacing: DesignTokens.Spacing.cardPadding) {
         SettingsCard(title: "General") {
             SettingToggle(
                 title: "Start at login",

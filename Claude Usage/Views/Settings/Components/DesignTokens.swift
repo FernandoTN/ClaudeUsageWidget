@@ -16,6 +16,10 @@ enum DesignTokens {
         /// Main page title (18px, semibold)
         static let pageTitle = Font.system(size: 18, weight: .semibold)
 
+        /// Section headers and important labels (14pt, semibold)
+        /// Migrated from DesignSystem.Typography.subtitle
+        static let subtitle = Font.system(size: 14, weight: .semibold)
+
         /// Page subtitle (13px, regular)
         static let pageSubtitle = Font.system(size: 13)
 
@@ -24,6 +28,9 @@ enum DesignTokens {
 
         /// Section subtitle (12px, regular)
         static let sectionSubtitle = Font.system(size: 12)
+
+        /// Body text at 13pt regular (migrated from DesignSystem.Typography.body)
+        static let bodyRegular = Font.system(size: 13, weight: .regular)
 
         /// Body text (12-13px)
         static let body = Font.system(size: 12)
@@ -50,6 +57,9 @@ enum DesignTokens {
         /// Card padding (16px)
         static let cardPadding: CGFloat = 16
 
+        /// Settings-card inner padding (20px) — migrated from DesignSystem.Spacing.cardPadding
+        static let settingsCardPadding: CGFloat = 20
+
         /// Small padding (12px)
         static let medium: CGFloat = 12
 
@@ -69,6 +79,9 @@ enum DesignTokens {
     // MARK: - Corner Radius
 
     enum Radius {
+        /// Large radius for settings cards (12px) — migrated from DesignSystem.Spacing.radiusLarge
+        static let large: CGFloat = 12
+
         /// Main card radius (8px)
         static let card: CGFloat = 8
 
@@ -123,7 +136,16 @@ enum DesignTokens {
         /// Warning state
         static let warning = Color.orange
 
-        /// Info/accent
+        /// Info/accent (system accent)
         static let accent = Color.accentColor
+
+        /// Informational blue — migrated from DesignSystem.SettingsColors.info
+        static let info = Color.blue
+
+        /// Pro feature badge — migrated from DesignSystem.SettingsColors.proBadge
+        static let proBadge = Color.purple
+
+        /// Medium usage threshold (yellow) — migrated from DesignSystem.SettingsColors.usageMedium
+        static let usageMedium = Color.yellow
     }
 }

@@ -25,9 +25,9 @@ struct SettingsButton: View {
 
         var backgroundColor: Color {
             switch self {
-            case .primary: return SettingsColors.primary
-            case .secondary: return SettingsColors.cardBackground
-            case .destructive: return SettingsColors.error
+            case .primary: return DesignTokens.Colors.accent
+            case .secondary: return DesignTokens.Colors.cardBackground
+            case .destructive: return DesignTokens.Colors.error
             case .subtle: return Color.clear
             }
         }
@@ -44,7 +44,7 @@ struct SettingsButton: View {
         var borderColor: Color {
             switch self {
             case .primary: return .clear
-            case .secondary: return SettingsColors.border
+            case .secondary: return DesignTokens.Colors.cardBorder
             case .destructive: return .clear
             case .subtle: return .clear
             }
@@ -55,11 +55,11 @@ struct SettingsButton: View {
 
             switch self {
             case .primary:
-                return SettingsColors.primary.opacity(0.85)
+                return DesignTokens.Colors.accent.opacity(0.85)
             case .secondary:
                 return Color.primary.opacity(0.08)
             case .destructive:
-                return SettingsColors.error.opacity(0.85)
+                return DesignTokens.Colors.error.opacity(0.85)
             case .subtle:
                 return Color.gray.opacity(0.1)
             }
@@ -80,24 +80,24 @@ struct SettingsButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Spacing.iconTextSpacing) {
+            HStack(spacing: DesignTokens.Spacing.small) {
                 if let icon = icon {
                     Image(systemName: icon)
                         .font(.system(size: 12))
                 }
 
                 Text(title)
-                    .font(Typography.body)
+                    .font(DesignTokens.Typography.bodyRegular)
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm)
+            .padding(.horizontal, DesignTokens.Spacing.medium)
+            .padding(.vertical, DesignTokens.Spacing.small)
             .frame(maxWidth: style == .primary ? .infinity : nil)
             .background(
-                RoundedRectangle(cornerRadius: Spacing.radiusMedium)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.small)
                     .fill(style.hoverBackgroundColor(isHovered: isHovered))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: Spacing.radiusMedium)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.small)
                     .strokeBorder(style.borderColor, lineWidth: 0.5)
             )
             .foregroundColor(style.foregroundColor)
@@ -153,7 +153,7 @@ extension SettingsButton {
 // MARK: - Previews
 
 #Preview("Primary Button") {
-    VStack(spacing: Spacing.md) {
+    VStack(spacing: DesignTokens.Spacing.medium) {
         SettingsButton.primary(title: "Save Changes") {
             print("Save")
         }
@@ -166,7 +166,7 @@ extension SettingsButton {
 }
 
 #Preview("Secondary Button") {
-    VStack(spacing: Spacing.md) {
+    VStack(spacing: DesignTokens.Spacing.medium) {
         SettingsButton(title: "Cancel") {
             print("Cancel")
         }
@@ -179,7 +179,7 @@ extension SettingsButton {
 }
 
 #Preview("Destructive Button") {
-    VStack(spacing: Spacing.md) {
+    VStack(spacing: DesignTokens.Spacing.medium) {
         SettingsButton.destructive(title: "Delete Account") {
             print("Delete")
         }
@@ -192,7 +192,7 @@ extension SettingsButton {
 }
 
 #Preview("Subtle Button") {
-    VStack(spacing: Spacing.md) {
+    VStack(spacing: DesignTokens.Spacing.medium) {
         SettingsButton.subtle(title: "Learn More") {
             print("Learn more")
         }
@@ -205,7 +205,7 @@ extension SettingsButton {
 }
 
 #Preview("Button Row") {
-    HStack(spacing: Spacing.buttonRowSpacing) {
+    HStack(spacing: DesignTokens.Spacing.iconText) {
         SettingsButton(title: "Cancel") {
             print("Cancel")
         }
@@ -218,9 +218,9 @@ extension SettingsButton {
 }
 
 #Preview("All Styles") {
-    VStack(spacing: Spacing.cardSpacing) {
+    VStack(spacing: DesignTokens.Spacing.cardPadding) {
         SettingsCard(title: "Button Styles") {
-            VStack(spacing: Spacing.md) {
+            VStack(spacing: DesignTokens.Spacing.medium) {
                 SettingsButton.primary(title: "Primary Button", icon: "star.fill") {
                     print("Primary")
                 }

@@ -30,9 +30,9 @@ struct SettingToggle: View {
 
         var color: Color {
             switch self {
-            case .beta: return SettingsColors.betaBadge
-            case .pro: return SettingsColors.proBadge
-            case .new: return SettingsColors.info
+            case .beta: return DesignTokens.Colors.warning
+            case .pro: return DesignTokens.Colors.proBadge
+            case .new: return DesignTokens.Colors.info
             }
         }
     }

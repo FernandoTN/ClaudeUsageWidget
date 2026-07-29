@@ -506,7 +506,7 @@ struct BottomBarSection: View {
         .frame(height: 36)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isSelected ? SettingsColors.primary : (isHovered ? (hoverColor ?? Color.primary.opacity(0.06)) : Color.clear))
+                .fill(isSelected ? DesignTokens.Colors.accent : (isHovered ? (hoverColor ?? Color.primary.opacity(0.06)) : Color.clear))
         )
         .contentShape(Rectangle())
     }
@@ -633,7 +633,7 @@ struct SidebarItem: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(isSelected ? SettingsColors.primary : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
+                    .fill(isSelected ? DesignTokens.Colors.accent : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
             )
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -749,7 +749,7 @@ struct CredentialMiniCard: View {
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isSelected ? SettingsColors.primary : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
+                .fill(isSelected ? DesignTokens.Colors.accent : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
         )
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
@@ -784,7 +784,7 @@ struct SettingMiniButton: View {
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isSelected ? SettingsColors.primary : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
+                .fill(isSelected ? DesignTokens.Colors.accent : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
         )
         .padding(.horizontal, 4)
         .padding(.vertical, 1)

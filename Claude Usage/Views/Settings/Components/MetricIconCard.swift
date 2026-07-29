@@ -14,17 +14,17 @@ struct MetricIconCard: View {
     let onConfigChanged: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             // Header with enable toggle
             HStack {
                 Image(systemName: metricType.icon)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(SettingsColors.primary)
+                    .foregroundColor(DesignTokens.Colors.accent)
                     .frame(width: 20)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(metricType.displayName)
-                        .font(Typography.sectionHeader)
+                        .font(DesignTokens.Typography.sectionTitle)
 
                     Text(metricType.description)
                         .font(.system(size: 10))
@@ -49,9 +49,9 @@ struct MetricIconCard: View {
                 switch metricType {
                 case .session, .week:
                     Divider()
-                        .padding(.vertical, Spacing.xs)
+                        .padding(.vertical, DesignTokens.Spacing.extraSmall)
 
-                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
                         Text("ui.icon_style".localized)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.secondary)
@@ -73,11 +73,11 @@ struct MetricIconCard: View {
                 switch metricType {
                 case .session where config.iconStyle == .battery || config.iconStyle == .progressBar:
                     Divider()
-                        .padding(.vertical, Spacing.xs)
+                        .padding(.vertical, DesignTokens.Spacing.extraSmall)
                     SessionDisplayOptions(config: $config, onConfigChanged: onConfigChanged)
                 case .week where config.iconStyle == .percentageOnly:
                     Divider()
-                        .padding(.vertical, Spacing.xs)
+                        .padding(.vertical, DesignTokens.Spacing.extraSmall)
                     WeekDisplayOptions(config: $config, onConfigChanged: onConfigChanged)
                 case .api:
                     // decode-only legacy case — no options UI
@@ -87,15 +87,15 @@ struct MetricIconCard: View {
                 }
             }
         }
-        .padding(Spacing.md)
+        .padding(DesignTokens.Spacing.medium)
         .background(
-            RoundedRectangle(cornerRadius: Spacing.radiusMedium)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.small)
                 .fill(DesignTokens.Colors.cardBackground)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Spacing.radiusMedium)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.small)
                 .strokeBorder(
-                    config.isEnabled ? SettingsColors.success.opacity(0.3) : DesignTokens.Colors.cardBorder,
+                    config.isEnabled ? DesignTokens.Colors.success.opacity(0.3) : DesignTokens.Colors.cardBorder,
                     lineWidth: 1
                 )
         )
@@ -109,7 +109,7 @@ private struct SessionDisplayOptions: View {
     let onConfigChanged: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
             Toggle(isOn: Binding(
                 get: { config.showNextSessionTime },
                 set: { newValue in
@@ -137,7 +137,7 @@ private struct WeekDisplayOptions: View {
     let onConfigChanged: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
             Text("ui.display_mode".localized)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.secondary)

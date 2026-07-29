@@ -101,7 +101,7 @@ struct GeneralSettingsView: View {
                                     VStack(spacing: DesignTokens.Spacing.small) {
                                         ThresholdToggleRow(
                                             level: "75%",
-                                            color: SettingsColors.usageMedium,
+                                            color: DesignTokens.Colors.usageMedium,
                                             label: "notifications.threshold.warning".localized,
                                             isOn: Binding(
                                                 get: { profile.notificationSettings.threshold75Enabled },
@@ -114,7 +114,7 @@ struct GeneralSettingsView: View {
                                         )
                                         ThresholdToggleRow(
                                             level: "90%",
-                                            color: SettingsColors.usageHigh,
+                                            color: DesignTokens.Colors.warning,
                                             label: "notifications.threshold.high".localized,
                                             isOn: Binding(
                                                 get: { profile.notificationSettings.threshold90Enabled },
@@ -127,7 +127,7 @@ struct GeneralSettingsView: View {
                                         )
                                         ThresholdToggleRow(
                                             level: "95%",
-                                            color: SettingsColors.usageCritical,
+                                            color: DesignTokens.Colors.error,
                                             label: "notifications.threshold.critical".localized,
                                             isOn: Binding(
                                                 get: { profile.notificationSettings.threshold95Enabled },
@@ -138,7 +138,7 @@ struct GeneralSettingsView: View {
                                                 }
                                             )
                                         )
-                                        ThresholdIndicator(level: "0%", color: SettingsColors.usageLow, label: "notifications.threshold.session_reset".localized)
+                                        ThresholdIndicator(level: "0%", color: DesignTokens.Colors.success, label: "notifications.threshold.session_reset".localized)
                                     }
                                 }
 
@@ -315,10 +315,10 @@ struct CustomThresholdsEditor: View {
 
     private func colorForThreshold(_ threshold: Int) -> Color {
         switch threshold {
-        case 90...: return SettingsColors.usageCritical
-        case 70..<90: return SettingsColors.usageHigh
-        case 50..<70: return SettingsColors.usageMedium
-        default: return SettingsColors.usageLow
+        case 90...: return DesignTokens.Colors.error
+        case 70..<90: return DesignTokens.Colors.warning
+        case 50..<70: return DesignTokens.Colors.usageMedium
+        default: return DesignTokens.Colors.success
         }
     }
 }

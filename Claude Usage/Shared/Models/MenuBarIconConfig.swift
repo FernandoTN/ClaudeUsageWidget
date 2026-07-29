@@ -7,6 +7,45 @@
 
 import Foundation
 
+/// Menu bar icon style options
+enum MenuBarIconStyle: String, CaseIterable, Codable {
+    case battery
+    case progressBar
+    case percentageOnly
+    case icon
+    case compact
+
+    var displayName: String {
+        switch self {
+        case .battery:
+            return "Battery (Classic)"
+        case .progressBar:
+            return "Progress Bar"
+        case .percentageOnly:
+            return "Percentage"
+        case .icon:
+            return "Icon with Bar"
+        case .compact:
+            return "Compact"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .battery:
+            return "Original battery-style bar with Claude text below"
+        case .progressBar:
+            return "Clean horizontal progress bar only"
+        case .percentageOnly:
+            return "Just the percentage in color-coded text"
+        case .icon:
+            return "Circular ring with progress indicator"
+        case .compact:
+            return "Minimalist dot indicator"
+        }
+    }
+}
+
 /// Types of metrics that can be displayed in the menu bar
 enum MenuBarMetricType: String, Codable, CaseIterable, Identifiable {
     case session
@@ -443,5 +482,58 @@ struct MenuBarIconConfiguration: Codable, Equatable {
     /// Default configuration (session only, like current behavior)
     static var `default`: MenuBarIconConfiguration {
         MenuBarIconConfiguration()
+    }
+
+    // MARK: - Persistence (UserDefaults)
+
+    /// Loads complete menu bar icon configuration from UserDefaults.
+    /// Migrates from legacy single-icon keys when the multi-metric config is absent.
+    static func load() -> MenuBarIconConfiguration {
+        let defaults = UserDefaults.standard
+
+        if let data = defaults.data(forKey: Constants.UserDefaultsKeys.menuBarIconConfiguration) {
+            do {
+                return try JSONDecoder().decode(MenuBarIconConfiguration.self, from: data)
+            } catch {
+                LoggingService.shared.logStorageError("loadMenuBarIconConfiguration", error: error)
+            }
+        }
+
+        return migrateFromLegacySettings()
+    }
+
+    /// Migrates from legacy single-icon settings to the multi-metric system.
+    private static func migrateFromLegacySettings() -> MenuBarIconConfiguration {
+        var config = MenuBarIconConfiguration.default
+        let defaults = UserDefaults.standard
+
+        // Migrate monochrome mode (key: monochromeMode)
+        let monochrome = defaults.bool(forKey: Constants.UserDefaultsKeys.monochromeMode)
+        config.colorMode = monochrome ? .monochrome : .multiColor
+
+        // Migrate icon style for session (key: menuBarIconStyle; was the only option before)
+        let legacyStyle: MenuBarIconStyle
+        if let rawValue = defaults.string(forKey: Constants.UserDefaultsKeys.menuBarIconStyle),
+           let style = MenuBarIconStyle(rawValue: rawValue) {
+            legacyStyle = style
+        } else {
+            legacyStyle = .battery
+        }
+
+        if var sessionConfig = config.config(for: .session) {
+            sessionConfig.iconStyle = legacyStyle
+            sessionConfig.isEnabled = true  // Session was always enabled before
+            config.updateConfig(sessionConfig)
+        }
+
+        // Save migrated config under the same multi-metric key
+        do {
+            let data = try JSONEncoder().encode(config)
+            defaults.set(data, forKey: Constants.UserDefaultsKeys.menuBarIconConfiguration)
+        } catch {
+            LoggingService.shared.logStorageError("saveMenuBarIconConfiguration", error: error)
+        }
+
+        return config
     }
 }

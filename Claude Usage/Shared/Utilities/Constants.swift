@@ -80,9 +80,6 @@ enum Constants {
     // Refresh intervals (in seconds)
     enum RefreshIntervals {
         static let menuBar: TimeInterval = 30        // 30 seconds
-        static let widgetSmall: TimeInterval = 900   // 15 minutes
-        static let widgetMedium: TimeInterval = 900  // 15 minutes
-        static let widgetLarge: TimeInterval = 1800  // 30 minutes
     }
 
     // Session window (5 hours in seconds)

@@ -17,13 +17,8 @@ class ClaudeStatusService {
     // MARK: - Initialization
 
     init() {
-        // Build URL safely with fallback to hardcoded URL
-        if let url = try? URLBuilder.claudeStatus(endpoint: "/status.json").build() {
-            self.statusURL = url
-        } else {
-            // Fallback to hardcoded URL (should never happen, but prevents crashes)
-            self.statusURL = URL(string: "https://status.claude.com/api/v2/status.json")!
-        }
+        // Statuspage API — same URL URLBuilder.claudeStatus("/status.json") produced
+        self.statusURL = URL(string: "https://status.claude.com/api/v2/status.json")!
     }
 
     // MARK: - Status Fetching

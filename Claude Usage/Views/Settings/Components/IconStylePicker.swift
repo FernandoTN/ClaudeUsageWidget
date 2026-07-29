@@ -46,12 +46,12 @@ private struct IconStyleCard: View {
                     .frame(width: cardWidth, height: 50)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(isSelected ? SettingsColors.success.opacity(0.1) : Color.clear)
+                            .fill(isSelected ? DesignTokens.Colors.success.opacity(0.1) : Color.clear)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
                             .strokeBorder(
-                                isSelected ? SettingsColors.success : Color.gray.opacity(0.2),
+                                isSelected ? DesignTokens.Colors.success : Color.gray.opacity(0.2),
                                 lineWidth: isSelected ? 2 : 1
                             )
                     )
