@@ -1,7 +1,7 @@
 # Deep diagnosis report — recurring UI hang + idle-CPU regrowth (2026-07-29)
 
 **Session:** Fable sibling, deep-architecture diagnosis. **Branch:** `fix/statusitem-rebuild-storm` → draft PR #20.
-**Verdict confidence:** sustain mechanism HIGH (live-sampled), accumulation HIGH (lab-quantified, reproduced twice independently), exact final ignition spark MEDIUM (two candidate sparks, both closed by the fix).
+**Verdict confidence:** sustain mechanism HIGH (live-sampled), accumulation HIGH (lab-quantified, reproduced twice independently), ignition HIGH-correlation / MEDIUM-HIGH-causation (fence-race forensics below; the spark paths are closed by the fix either way).
 
 ## TL;DR
 
@@ -16,7 +16,13 @@ The recurring 15–25% idle burn is **not** a leak in app objects, not the popov
 
    The WindowServer's notify path (`remote_context_notify → CFArrayApplyFunction`) iterates **every registered context** per datagram — leaked generations are a standing per-frame tax and the precondition for the loop.
 
-**Causal story:** rebuilds happened routinely — (a) **reliably once per launch**: profiles paint before Keychain hydration, so Codex/Grok profiles briefly classify `.claude`; hydration regroups them → creation order changes → full rebuild (Codex's find; fits "clean at launch, burning by minute ~15" on *every* run); (b) weekly-reset ranking jitter; (c) stranded-tile heals. Each rebuild banks a generation. With generations banked, an interaction spark — production ignited *during* a burst of rapid cross-tile popover re-anchoring (three tiles within 6s at 11:30, same-turn `performClose`+re-show) — tips AppKit into the non-converging tracking-region loop. Population is the amplifier; **non-convergence is the disease** (Grok's framing, adopted).
+**Causal story (refined by leak-hunter forensics, landed after PR cut):** the ignition of THIS run is pinned to a **CoreAnimation fence-protocol race on the popover lifecycle**, timeline reconstructed from persisted logs + cumulative-CPU back-fit:
+
+- 11:29:39 — profile activated FROM INSIDE the popover → `handleProfileSwitch` called `recreatePopover()` synchronously (destroying the popover and building a new `NSHostingController` while the popover's own button action was on the stack, mid CA commit);
+- 11:29:40.7 — `E [com.apple.coreanimation:API] cannot add handler to 2 from 2 - dropping` — a commit-handler registration dropped mid-commit. **This precursor appears in 3 of 6 app runs in 24h of history, always 0.5–0.8s after "Popover recreated for profile switch", never anywhere else.** It is the observable regression marker for this bug.
+- 11:32:48.2 — `E [com.apple.coreanimation:Render] fence tx observer … timed out after 0.6` (the ONLY fence timeout in 24h) after a popover close; the system then re-issued `NSSceneFenceAction` to all 42 status-item variant scenes 4×, the AutomaticTermination window-bookkeeping wedged permanently, and the per-frame echo storm began (~11:31–11:33 by CPU back-fit).
+
+Rebuild-driven CAContext accumulation (real, lab-proven, +42/rebuild) is the **amplifier and standing tax** — the sustain loop iterates every registered context — but ignition did not require banked generations: it's a low-probability race on a path the app exercised at every popover-initiated profile switch. Rebuilds still happened routinely and needlessly ((a) reliably once per launch via post-hydration provider regrouping — Codex's find; (b) ranking jitter; (c) heals), so both layers get fixed. Population is the amplifier; **non-convergence is the disease** (Grok's framing, adopted). Leak-hunter also settled the census mysteries: the 685×30 layer-1000 strip and the 28 replicant views are the fullscreen menu-bar-reveal machinery (685pt ≈ the tile-group width), and the three scene variants per item are Variant[1]/Variant[2]/Variant[Presentation].
 
 Both symptoms are one bug: the storm saturates the main thread with per-frame synchronous WindowServer calls → "Manage Profiles" scrolling lags → and the burn is the same loop measured at idle.
 
@@ -38,7 +44,7 @@ Invariant established: **after initial construction, the live multi-profile grou
 
 1. **Remap, don't rebuild** (`StatusBarUIManager`): tile identity is 100% painted into the image, so a ranking/grouping change re-keys the existing items to the new profile order and repaints in place (`remapProfilesToExistingItems`). This also neutralizes the guaranteed post-hydration rebuild. Full rebuild remains only for selection-set changes (count/membership) — a rare user action.
 2. **Heal cap**: the stranded-tile heal (physical relocation repair) is capped at **2 rebuilds per launch**, then logs only. Bounded worst case: 84 leaked contexts per process lifetime vs unbounded before.
-3. **Popover destroyed on close, created lazily per open** (`MenuBarManager`): no more permanent offscreen borderless `_NSPopoverWindow` in the per-frame tracking pass; profile switches no longer build SwiftUI hosting graphs for a closed popover. Cross-tile re-anchor now closes, then shows a **fresh** popover on the **next runloop turn** (the same-turn re-anchor across scene-hosted buttons was the strongest interaction-spark candidate).
+3. **Popover destroyed on close, created lazily per open** (`MenuBarManager`): no more permanent offscreen borderless `_NSPopoverWindow` in the per-frame tracking pass; profile switches no longer build SwiftUI hosting graphs for a closed popover. Cross-tile re-anchor closes, then shows a **fresh** popover on the **next runloop turn**; and `recreatePopover()` on the switch path is likewise deferred one turn — no popover teardown ever runs inside an in-flight CA commit again, which removes the reproducible `cannot add handler to 2 from 2` fence-race precursor directly.
 4. **`setup()` idempotency**: re-entry (headless screen recovery, AppDelegate retry) tears down prior state first — previously it would orphan an entire scene generation and double-register every observer/timer.
 5. **StormWatchdog** (new, guardrail): every 2 min, process-CPU sample; ≥12% of a core ×3 consecutive samples while popover/settings/detached are all closed → loud `logError` + one user notification per launch. The failure class regressed invisibly for days, twice; now it self-reports in ~6 minutes.
 6. **Lab knobs** for this bug class (`CUW_LAB_REBUILD_SEC`, `CUW_LAB_POPOVER_CYCLE`, `CUW_LAB_POPOVER_STRESS`, `CUW_LAB_ACTIVATE`, `CUW_LAB_RESHUFFLE`) — inert without `CUW_LAB=1`.
@@ -53,6 +59,10 @@ Invariant established: **after initial construction, the live multi-profile grou
 
 ## Deliberately not changed (owner's call, flagged)
 
+- **Fixed-width tiles** (arch-critic 1a): replace `variableLength` with per-style fixed `NSStatusItem.length` so a repaint can never trigger a menu-bar relayout — enforces "repaint never touches window structure" mechanically and stabilizes overflow. Small diff, but visually validatable only by hand — recommended as the first follow-up.
+- **Rebuild-rate alarm + always-on window census + runloop-storm detector** (arch-critic guardrails 2–4): cheap extensions to StormWatchdog/RenderInstrumentation; with the remap invariant, expected rebuild count is ~0, making any rebuild an alarm.
+- **Dead SwiftUI `Settings` scene** in `ClaudeUsageTrackerApp.swift` (registered but unused; the real settings window is hand-built) — remove so there's one settings path.
+
 - **Setup wizard activation-policy flips** (`AppDelegate` ~:203) — a known scene re-registration hazard (Codex), but wizard UX untestable headlessly; only runs on first-run/reset.
 - **`.percentage` style variable-width images** — digit-width changes reshape tracking regions per repaint (Codex). Production uses `progressBar` (fixed canvas), so not in today's path.
 - **Composite single-item rendering** (all accounts in 1–3 status items, 42 scenes → ≤9): the robust fallback if the OS beta ever ignites even with a stable pool. Larger UX/a11y change; not needed on current evidence.
@@ -62,7 +72,9 @@ Invariant established: **after initial construction, the live multi-profile grou
 
 - **Codex (gpt-5.6-sol, xhigh, ~35 min, own lab experiments):** two-layer verdict (OS-bug sustain + rebuild-driven CAContext retention); quantified 42/rebuild; identified post-hydration regroup as the reliable delayed rebuild; recommended stable-pool invariant + popover re-anchor deferral + `setup()` idempotency; verification contract adopted into PR checklist. **Adopted nearly wholesale.**
 - **Grok (grok-4.5, high, advisory):** agreed sustain mechanism; correctly rejected "3 leaked generations of windows" (42 = 14×3 structural — confirmed by lab); pushed time-marker/`variableLength` mutation surface and "state-not-count" framing; recommended remove-parked-items and marker decoupling (not adopted — repaint-only labs showed no ignition; kept as fallbacks). **Dissent materially improved the verdict.**
-- **Fable subagents:** leak-hunter (live forensics — captured `prod_default.log`, the production default-level history that pinned the ignition window; ran independent lab instances), architecture-critic (invariants/guardrail lens → StormWatchdog). Three Opus research sweeps (statusbar lifecycle, window machinery, post-refactor regression) were dispatched in parallel; their reports had not landed when the PR was cut — anything material they add will be appended to the PR as comments.
+- **Fable leak-hunter (landed post-PR-cut; folded in):** pinned ignition to the popover fence-protocol race with a reproducible precursor marker (`cannot add handler to 2 from 2`, 3/6 runs, always after "Popover recreated for profile switch") and the sole 24h fence timeout at the storm's start; falsified generation-banking as *this* run's ignition requirement; identified the 685×30 strip + replicants as fullscreen menu-bar-reveal machinery and the 3 variants as Variant[1]/[2]/[Presentation]. Its three recommended minimal changes were already implemented (destroy-on-close, watchdog) except the switch-path deferral — added as the final hardening commit.
+- **Fable architecture-critic (landed post-PR-cut):** systemic framing — "data-plane churn can escalate into control-plane window operations and nothing prevents, counts, or observes the escalation"; invariants live in comments, not code. Its top recommendations (stable slots/remap, popover destruction, CPU watchdog, rebuild alarm) match the shipped fix; the residue is in follow-ups below.
+- **Opus sweeps** (statusbar lifecycle, window machinery, post-refactor regression): dispatched in parallel; superseded by the above before their reports were needed.
 - **Synthesis & verdict:** this session. Disagreements resolved by experiment (lab reproductions), not vote count.
 
 ## Corrections to prior beliefs (docs/plans/PLAN-LATENCY-REFACTOR.md §8)
