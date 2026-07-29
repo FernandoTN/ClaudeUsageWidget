@@ -64,9 +64,20 @@ class MenuBarManager: NSObject, ObservableObject {
     private var autoSwitchedProfileIds: Set<UUID> = []
 
     /// Round-robin cursor over the non-active Claude profiles: the usage endpoint
-    /// sustains ~3 requests per 30s window, so each sweep fetches only two of them
-    /// (plus the provider-active/focused ones) instead of all six at once.
+    /// sustains ~2 requests per 30s window per IP, so each sweep fetches only a
+    /// budgeted slice of them (plus the provider-active/focused ones).
     private var claudeFetchCursor: Int = 0
+
+    /// Last time `status.claude.com` was polled. Initialized to `.distantPast` so
+    /// the first sweep after launch always fetches; subsequent polls wait for
+    /// `statusPollInterval` (status is not usage-critical and need not ride every
+    /// 30s sweep).
+    private var lastStatusFetch: Date = .distantPast
+    private let statusPollInterval: TimeInterval = 300
+
+    /// One-shot log of the background-Claude staleness estimate for the current
+    /// profile count (F4). Recomputed only at first multi-profile sweep of the run.
+    private var hasLoggedBackgroundStalenessEstimate = false
 
     // Observer for icon configuration changes
     private var iconConfigObserver: NSObjectProtocol?
@@ -901,13 +912,16 @@ private func observeCredentialChanges() {
         }
 
         // api.anthropic.com/api/oauth/usage sustains only ~2 requests per 30s
-        // window per IP (3/sweep still drew one 429 per sweep in measurement) —
-        // with 6 Claude profiles per sweep, the SAME tail three were 429'd on
-        // most sweeps and went minutes stale. Fetch the provider-active/focused
-        // Claude profiles every sweep and round-robin the remaining ones with
-        // whatever budget is left, so each background profile still refreshes
-        // every ~2.5 minutes without tripping the limit. Codex profiles hit a
-        // different host and are never throttled.
+        // window per IP (3/sweep still drew one 429 per sweep in measurement).
+        // Fetch the provider-active/focused Claude profiles every sweep and
+        // round-robin the remaining ones with whatever budget is left:
+        //   rotationBudget = max(1, 2 - priorityClaudeCount)
+        //   background staleness ≈ ceil(N_background / rotationBudget) sweeps
+        //                         × refresh interval (30s) → minutes
+        // e.g. 10 background Claude @ budget 1 → ~5 min; 3 background @ budget 1
+        // → ~1.5 min. The ~2.5-min figure in older comments assumed 6 profiles and
+        // is wrong at higher N. Codex/Grok hit different hosts and refresh every
+        // sweep (never counted against the Claude budget).
         let priorityIds = Set([profileManager.activeProfile?.id, profileManager.activeClaudeProfileId].compactMap { $0 })
         let priorityClaudeCount = allSelected.filter { $0.providerKind == .claude && priorityIds.contains($0.id) }.count
         let rotationBudget = max(1, 2 - priorityClaudeCount)
@@ -924,6 +938,23 @@ private func observeCredentialChanges() {
         // oauth/usage endpoint), so they refresh every sweep.
         let selectedProfiles = allSelected.filter {
             $0.providerKind != .claude || priorityIds.contains($0.id) || rotatingIds.contains($0.id)
+        }
+
+        // Log the achievable background-staleness SLO once per app run (F4).
+        if !hasLoggedBackgroundStalenessEstimate {
+            hasLoggedBackgroundStalenessEstimate = true
+            let nBackground = backgroundClaude.count
+            let sweepsToCover = nBackground == 0
+                ? 0
+                : Int(ceil(Double(nBackground) / Double(rotationBudget)))
+            // Refresh timer is 30s; report minutes (rounded up to nearest 0.5 for readability).
+            let minutes = sweepsToCover == 0 ? 0.0 : Double(sweepsToCover) * 30.0 / 60.0
+            let minutesLabel = minutes == floor(minutes)
+                ? String(format: "%.0f", minutes)
+                : String(format: "%.1f", minutes)
+            LoggingService.shared.log(
+                "MenuBarManager: \(nBackground) background Claude profiles on rotation budget \(rotationBudget) -> ~\(minutesLabel)min staleness"
+            )
         }
 
         LoggingService.shared.log("MenuBarManager: Refreshing \(selectedProfiles.count) of \(allSelected.count) selected profiles for multi-profile mode")
@@ -946,25 +977,28 @@ private func observeCredentialChanges() {
             var sweepCredentialError = false
             var sweepLastErrorMessage: String?
 
-            // Fetch Claude status (same as single profile mode)
-            do {
-                let newStatus = try await statusService.fetchStatus()
-                self.status = newStatus
-            } catch {
-                let appError = AppError.wrap(error)
-                LoggingService.shared.log("MenuBarManager: Failed to fetch status - [\(appError.code.rawValue)] \(appError.message)")
+            // status.claude.com rides its own 5-min cadence (F2) — not every
+            // 30s sweep. First sweep after launch always fetches (distantPast).
+            if Date().timeIntervalSince(self.lastStatusFetch) >= self.statusPollInterval {
+                self.lastStatusFetch = Date()
+                do {
+                    let newStatus = try await statusService.fetchStatus()
+                    self.status = newStatus
+                } catch {
+                    let appError = AppError.wrap(error)
+                    LoggingService.shared.log("MenuBarManager: Failed to fetch status - [\(appError.code.rawValue)] \(appError.message)")
+                }
             }
+
+            // Claude-only monotonic spacing clock for this sweep (F1). Codex/Grok
+            // hit different hosts and must not inherit Claude's 2s pacing — and
+            // must not reset the Claude clock when interleaved between Claude
+            // fetches. Aggregate Claude request rate stays unchanged.
+            var lastClaudeFetchStart: Date? = nil
+            let claudeFetchSpacing: TimeInterval = 2.0
 
             // Fetch usage for each selected profile
             for var profile in selectedProfiles {
-                // Space the requests out: api.anthropic.com rate-limits bursts, and
-                // six back-to-back oauth/usage GETs got the tail profiles 429'd on
-                // 7 of 10 sweeps (their usage went stale for minutes at a time).
-                // ~2s apart keeps the whole sweep well under the 30s interval.
-                if profile.id != selectedProfiles.first?.id {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
-
                 // The mid-sweep auto-switch below may have started rewriting the
                 // shared logins. Stop the sweep rather than run Keychain healing
                 // beside it — same cross-account-contamination hazard the
@@ -991,6 +1025,20 @@ private func observeCredentialChanges() {
                 } else if usageBackedOff {
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off burst 429s until \(burstBackoffUntil ?? Date())")
                 } else {
+                    // Space Claude-bound fetches only: oauth/usage is the sole
+                    // reason for pacing. Sleep the remainder so Claude starts are
+                    // never < 2s apart even when Codex/Grok sit between them.
+                    if profile.providerKind == .claude {
+                        if let lastStart = lastClaudeFetchStart {
+                            let elapsed = Date().timeIntervalSince(lastStart)
+                            if elapsed < claudeFetchSpacing {
+                                let remainderNs = UInt64((claudeFetchSpacing - elapsed) * 1_000_000_000)
+                                try? await Task.sleep(nanoseconds: remainderNs)
+                            }
+                        }
+                        lastClaudeFetchStart = Date()
+                    }
+
                     // Self-heal a stale CLI OAuth token before fetching
                     await self.ensureFreshCLICredentialsIfNeeded(for: profile)
                     if let updated = self.profileManager.profiles.first(where: { $0.id == profile.id }) {
@@ -1248,7 +1296,19 @@ private func observeCredentialChanges() {
             // require a manual Settings → CLI → Resync)
             await self.ensureFreshCLICredentialsIfNeeded(for: profile)
 
-            async let statusResult = statusService.fetchStatus()
+            // status.claude.com on its own 5-min cadence (F2). Start in parallel
+            // with the usage fetch when due; when skipped, leave `status` untouched.
+            let shouldFetchStatus = Date().timeIntervalSince(self.lastStatusFetch) >= self.statusPollInterval
+            if shouldFetchStatus {
+                self.lastStatusFetch = Date()
+            }
+            // Nested async helper so `async let` stays a single expression both
+            // when a poll is due and when it is a no-op nil.
+            func maybeFetchStatus() async throws -> ClaudeStatus? {
+                guard shouldFetchStatus else { return nil }
+                return try await statusService.fetchStatus()
+            }
+            async let statusResult = maybeFetchStatus()
 
             var usageSuccess = false
 
@@ -1342,10 +1402,12 @@ private func observeCredentialChanges() {
                 }
             }
 
-            // Fetch status separately (don't fail if usage fetch works)
+            // Apply status only when a poll returned a value (don't fail if usage
+            // works). When skipped, statusResult is nil and `status` is untouched.
             do {
-                let newStatus = try await statusResult
-                self.status = newStatus
+                if let newStatus = try await statusResult {
+                    self.status = newStatus
+                }
             } catch {
                 // Convert to AppError and log
                 let appError = AppError.wrap(error)

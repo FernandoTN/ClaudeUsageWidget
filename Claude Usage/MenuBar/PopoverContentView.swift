@@ -74,6 +74,21 @@ struct PopoverContentView: View {
         return "?"
     }
 
+    /// Relative "Updated Xm ago" for multi-profile staleness (F3).
+    /// Returns nil while fresh (≤90s) so the tag stays quiet on a just-fetched profile.
+    /// <60m → "Updated Xm ago"; else "Updated Xh Ym ago".
+    private func relativeUpdatedText(from date: Date) -> String? {
+        let age = Date().timeIntervalSince(date)
+        guard age > 90 else { return nil }
+        let totalMinutes = max(1, Int(age / 60))
+        if totalMinutes < 60 {
+            return "Updated \(totalMinutes)m ago"
+        }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        return "Updated \(hours)h \(minutes)m ago"
+    }
+
     // Computed properties for multi-profile mode support
     private var displayUsage: ClaudeUsage {
         manager.clickedProfileUsage ?? manager.usage
@@ -188,6 +203,16 @@ struct PopoverContentView: View {
                     }
 
                     Spacer()
+
+                    // Per-profile staleness (F3): honest "Updated Xm ago" once
+                    // the viewed profile's usage is older than 90s. Fresh data
+                    // stays silent so the tag doesn't chatter on every open.
+                    if let staleness = relativeUpdatedText(from: displayUsage.lastUpdated) {
+                        Text(staleness)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
 
                     if profileManager.isProviderActive(viewingProfile) {
                         Text("Active")
