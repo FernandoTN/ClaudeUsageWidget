@@ -392,11 +392,23 @@ class MenuBarManager: NSObject, ObservableObject {
     private func recreatePopover() {
         // Close (and thereby destroy) any open popover; the next click builds
         // a fresh one with fresh content via ensurePopover().
-        if popover?.isShown == true {
-            closePopover()
+        //
+        // Deferred one runloop turn: this runs inside handleProfileSwitch,
+        // which the user can trigger from a button INSIDE the popover — i.e.
+        // while the popover's own action is on the stack, mid CA commit.
+        // Tearing the popover down synchronously there raced the fence
+        // protocol ("cannot add handler to 2 from 2 - dropping", followed once
+        // by a fence-tx timeout that wedged all 42 status-item scenes into the
+        // permanent WindowServer echo storm — leak-hunter forensics,
+        // 2026-07-29). Outside any in-flight commit the same teardown is safe.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.popover?.isShown == true {
+                self.closePopover()
+            }
+            self.popover = nil
+            LoggingService.shared.log("MenuBarManager: Popover dropped for profile switch")
         }
-        popover = nil
-        LoggingService.shared.log("MenuBarManager: Popover dropped for profile switch")
     }
 
     private func updateMenuBarDisplay(with config: MenuBarIconConfiguration) {
