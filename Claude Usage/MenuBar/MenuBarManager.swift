@@ -44,6 +44,12 @@ class MenuBarManager: NSObject, ObservableObject {
     // Track which button is currently showing the popover
     private weak var currentPopoverButton: NSStatusBarButton?
 
+    /// Where/when the popover last closed. The .semitransient popover auto-closes
+    /// on the mouse-DOWN of a click on its own anchor button; without this stamp
+    /// the mouse-UP action re-opens it, so a same-tile click can never dismiss.
+    private weak var lastPopoverCloseButton: NSStatusBarButton?
+    private var lastPopoverCloseTime: Date = .distantPast
+
     private let apiService = ClaudeAPIService()
     private let statusService = ClaudeStatusService()
     private let networkMonitor = NetworkMonitor.shared
@@ -502,7 +508,15 @@ class MenuBarManager: NSObject, ObservableObject {
                     startMonitoringForOutsideClicks()
                 }
             } else {
-                // Popover not shown - show it
+                // Popover not shown. If it JUST closed anchored to this same
+                // button, this click is the semitransient auto-close's own
+                // mouse-up — the user meant "dismiss", so swallow the re-open.
+                if let lastButton = lastPopoverCloseButton, lastButton === button,
+                   Date().timeIntervalSince(lastPopoverCloseTime) < 0.3 {
+                    lastPopoverCloseButton = nil
+                    stopMonitoringForOutsideClicks()
+                    return
+                }
                 // Stop any existing monitor first
                 stopMonitoringForOutsideClicks()
                 // Update content view controller for current profile data
@@ -1788,6 +1802,15 @@ extension MenuBarManager: NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        // Record WHERE and WHEN the popover closed. The .semitransient popover
+        // auto-closes on the mouse-DOWN of a click on the anchoring status
+        // button; the button's action then fires on mouse-UP with isShown ==
+        // false and would re-open it — making "click the same tile to dismiss"
+        // impossible. togglePopover consults this stamp to swallow that re-open.
+        lastPopoverCloseButton = currentPopoverButton
+        lastPopoverCloseTime = Date()
+        currentPopoverButton = nil
+
         // Drop the hosting controller so SwiftUI stops re-rendering on every
         // ProfileManager publish while the popover is closed. Per-open paths
         // already recreate contentViewController before show.
