@@ -544,6 +544,25 @@ final class StatusBarUIManager {
             }
         }
 
+        // ONE appearance for the whole tile group, taken from the first VISIBLE
+        // non-parked button. Rationale (two real incidents, 2026-07-28/29):
+        // per-button effectiveAppearance is stale/provisional-LIGHT on some
+        // buttons indefinitely (notably ones created while overflow-parked) —
+        // black labels on a dark bar for a rotating subset of tiles; and the
+        // app-level appearance follows the SYSTEM theme, which is wrong when a
+        // dark wallpaper darkens the menu bar under a light system theme (black
+        // labels on ALL tiles). A visible button's appearance is the only
+        // wallpaper-correct source; all tiles share one physical menu bar.
+        let groupAppearance: NSAppearance = {
+            for id in multiProfileOrder where !overflowParkedIds.contains(id) {
+                if let b = multiProfileStatusItems[id]?.button,
+                   let w = b.window, w.isVisible, w.frame.minY > 0 {
+                    return b.effectiveAppearance
+                }
+            }
+            return NSApp.effectiveAppearance
+        }()
+
         for profile in profiles where profile.isSelectedForDisplay {
             guard let statusItem = multiProfileStatusItems[profile.id],
                   let button = statusItem.button else {
@@ -555,14 +574,7 @@ final class StatusBarUIManager {
                 continue
             }
 
-            // Use the APP-level appearance, not the per-button one: individual
-            // NSStatusBarButton windows can report a stale/provisional LIGHT
-            // appearance indefinitely (notably items created while
-            // overflow-parked), baking black labels and desaturated bars onto a
-            // dark menu bar — observed live 2026-07-28 with a rotating subset of
-            // tiles. The app-level appearance matches the system status items
-            // (clock, control center) rendered alongside our tiles.
-            let renderAppearance = NSApp.effectiveAppearance
+            let renderAppearance = groupAppearance
             let menuBarIsDark = renderAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
             // Get usage data for this profile

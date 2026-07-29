@@ -531,7 +531,14 @@ struct ThresholdField: View {
 
 struct ProfileRow: View {
     let profile: Profile
-    @StateObject private var profileManager = ProfileManager.shared
+    /// Deliberately NOT @StateObject/@ObservedObject: 14 rows each observing the
+    /// shared manager re-evaluated the entire dense view (text fields, hover
+    /// trackers, toggles) on EVERY publish — each re-layout re-registering its
+    /// tracking areas with the window server, which is the synchronous-mach_msg
+    /// storm sampled during the 2026-07-29 settings freezes. The parent list
+    /// already re-renders rows when `profiles` changes; actions call the
+    /// singleton without subscribing.
+    private var profileManager: ProfileManager { ProfileManager.shared }
     @State private var isEditing = false
     @State private var editedName: String = ""
     @State private var showingDeleteConfirmation = false
