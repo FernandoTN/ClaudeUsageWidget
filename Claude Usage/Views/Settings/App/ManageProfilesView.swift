@@ -113,7 +113,7 @@ struct ManageProfilesView: View {
                                 }
 
                                 // Warning if trying to deselect last profile
-                                if profileManager.profiles.filter({ $0.isSelectedForDisplay }).count == 1 {
+                                if profileManager.profiles.lazy.filter({ $0.isSelectedForDisplay }).count == 1 {
                                     HStack(alignment: .top, spacing: 6) {
                                         Image(systemName: "exclamationmark.triangle.fill")
                                             .font(.system(size: 10))
@@ -297,7 +297,7 @@ struct ManageProfilesView: View {
                                     .font(DesignTokens.Typography.body)
                                 Spacer()
                                 Menu("Queue account…") {
-                                    ForEach(profileManager.profiles.filter { !switchQueue.contains($0.id) }) { profile in
+                                    ForEach({ let queued = Set(switchQueue); return profileManager.profiles.filter { !queued.contains($0.id) } }()) { profile in
                                         Button("\(profile.name)  (\(providerLabel(profile)))") {
                                             switchQueue.append(profile.id)
                                             SharedDataStore.shared.saveAutoSwitchQueue(switchQueue)
@@ -363,7 +363,9 @@ struct ManageProfilesView: View {
                             ForEach(profileManager.profiles) { profile in
                                 Toggle(isOn: Binding(
                                     get: {
-                                        profileManager.profiles.first(where: { $0.id == profile.id })?.isAutoSwitchEnabled ?? true
+                                        // The ForEach already handed us this profile —
+                                        // no O(N) re-lookup per binding read.
+                                        profile.isAutoSwitchEnabled
                                     },
                                     set: { enabled in
                                         profileManager.updateAutoSwitchEnabled(enabled, for: profile.id)
@@ -745,11 +747,12 @@ enum ProfileCredentialStatusCache {
         }
     }
 
-    /// Cheap fingerprint: credentials string hash + identity fields + dead flags.
+    /// Constant-cost fingerprint: the store's credential REVISION (bumped on
+    /// every cache mutation — rotation-proof, unlike hashing or sampling the
+    /// multi-KB blobs) + identity/dead flags.
     private static func fingerprint(for profile: Profile) -> Int {
         var hasher = Hasher()
-        hasher.combine(profile.cliCredentialsJSON)
-        hasher.combine(profile.codexCredentialsJSON)
+        hasher.combine(ProfileStore.shared.credentialRevision(for: profile.id))
         hasher.combine(profile.createdAt)
         hasher.combine(profile.hasCliAccount)
         hasher.combine(profile.hasCodexAccount)

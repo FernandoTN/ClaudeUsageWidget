@@ -981,6 +981,10 @@ private func observeCredentialChanges() {
             // Flush deferred usage once when the sweep ends — covers normal completion,
             // early break on mid-sweep switch, and thrown/cancelled paths.
             defer {
+                // ONE publish for all staged usage (idempotent), then one disk
+                // flush. Order matters: in-memory state first so any exit-path
+                // repaint sees fresh values.
+                self.profileManager.publishStagedUsage()
                 self.profileManager.flushPendingUsage()
                 self.isRefreshing = false
             }
@@ -1068,7 +1072,7 @@ private func observeCredentialChanges() {
                         let newUsage = try await fetchUsageForProfile(profile)
 
                         // Save to profile
-                        self.profileManager.saveClaudeUsage(newUsage, for: profile.id)
+                        self.profileManager.stageClaudeUsage(newUsage, for: profile.id)
                         LoggingService.shared.log("MenuBarManager: Saved usage for profile '\(profile.name)' - session: \(newUsage.sessionPercentage)%")
 
                         // If this is the active profile, also update the manager's usage
@@ -1120,6 +1124,10 @@ private func observeCredentialChanges() {
                     }
                 }
             }
+
+            // Publish everything staged this sweep in ONE objectWillChange,
+            // then repaint the tiles from the fresh array.
+            self.profileManager.publishStagedUsage()
 
             // Update all icons once after all profiles are refreshed
             let config = self.profileManager.multiProfileConfig

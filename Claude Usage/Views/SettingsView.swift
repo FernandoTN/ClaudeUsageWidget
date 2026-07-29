@@ -43,13 +43,19 @@ struct SettingsBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        if let tintView = nsView.subviews.last {
+        // No-op unless the resolved appearance actually changed: this runs on
+        // EVERY re-evaluation of the owning SwiftUI tree, and unconditionally
+        // assigning a full-window layer color scheduled a whole-window
+        // recomposite per publish (Codex-validated). Keyed on the VIEW's
+        // effective appearance, not NSApp's.
+        guard let tintView = nsView.subviews.last else { return }
+        let isDark = nsView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let desired = isDark
+            ? NSColor.black.withAlphaComponent(0.35).cgColor
+            : NSColor.white.withAlphaComponent(0.4).cgColor
+        if tintView.layer?.backgroundColor != desired {
             tintView.wantsLayer = true
-            if NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-                tintView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
-            } else {
-                tintView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.4).cgColor
-            }
+            tintView.layer?.backgroundColor = desired
         }
     }
 }
@@ -91,13 +97,16 @@ struct SidebarVisualEffect: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        if let tintView = nsView.subviews.last {
+        // Same guard as SettingsBackground: only touch the layer when the
+        // resolved appearance actually changed.
+        guard let tintView = nsView.subviews.last else { return }
+        let isDark = nsView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let desired = isDark
+            ? NSColor.black.withAlphaComponent(0.55).cgColor
+            : NSColor.white.withAlphaComponent(0.5).cgColor
+        if tintView.layer?.backgroundColor != desired {
             tintView.wantsLayer = true
-            if NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-                tintView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
-            } else {
-                tintView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.5).cgColor
-            }
+            tintView.layer?.backgroundColor = desired
         }
     }
 }
@@ -133,12 +142,15 @@ final class BorderlessSettingsWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-/// Builds the settings window — fully borderless, no system titlebar.
+/// Builds the settings window — titled with a hidden/transparent titlebar
+/// (see BorderlessSettingsWindow's init comment for why it must NOT be
+/// borderless). The styleMask argument is fixed by the initializer; pass the
+/// truthful mask so the call site doesn't mislead.
 enum SettingsWindowBuilder {
     static func makeWindow(size: CGSize, initialSection: SettingsSection? = nil) -> NSWindow {
         let window = BorderlessSettingsWindow(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: .borderless,
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -231,7 +243,6 @@ struct TrafficLightButton: View {
 /// Professional, native macOS Settings interface with multi-profile support
 struct SettingsView: View {
     @State private var selectedSection: SettingsSection
-    @StateObject private var profileManager = ProfileManager.shared
     @Environment(\.colorScheme) private var colorScheme
 
     init(initialSection: SettingsSection? = nil) {
@@ -703,12 +714,18 @@ struct ProfileCredentialCardsRow: View {
         .onAppear {
             normalizeSelection()
         }
-        .onChange(of: profileManager.activeProfile?.id) { _, _ in
+        .onChange(of: activeAvailabilitySignature) { _, _ in
             normalizeSelection()
         }
-        .onChange(of: profileManager.profiles) { _, _ in
-            normalizeSelection()
-        }
+    }
+
+    /// What `normalizeSelection` actually depends on: WHO is focused and which
+    /// credential kinds they carry. Observing the full 14-profile array ran a
+    /// deep ~30-field Equatable compare per publish; observing ids alone missed
+    /// same-id credential-kind transitions (Codex-caught).
+    private var activeAvailabilitySignature: String {
+        let p = profileManager.activeProfile
+        return "\(p?.id.uuidString ?? "-")|\(p?.hasCliAccount == true)|\(p?.hasCodexAccount == true)"
     }
 
     /// Moves the selection off a credential section the focused profile doesn't

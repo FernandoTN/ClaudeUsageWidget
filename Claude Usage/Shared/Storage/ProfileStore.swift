@@ -52,6 +52,29 @@ class ProfileStore {
     /// `.failed` with whatever partial cache was filled and still notify observers.
     private static let hydrationWallClockDeadline: TimeInterval = 15.0
 
+    /// Monotonic per-profile credential revision: bumped on EVERY mutation of
+    /// the in-memory credential cache (hydration, merge-on-save, clear,
+    /// migration restore). Constant-time change detection for UI memo caches —
+    /// replaces hashing multi-KB credential blobs, and unlike a partial-string
+    /// fingerprint it cannot miss a same-length/same-suffix token rotation
+    /// (Codex-caught hazard). Main-actor, like the rest of the class surface.
+    /// Lock-protected like `credentialCache`: bumps happen from both the main
+    /// actor (merge/clear) and `keychainQueue` (hydration, migration restore).
+    private var credentialRevisions: [UUID: Int] = [:]
+    private let revisionLock = NSLock()
+
+    func credentialRevision(for profileId: UUID) -> Int {
+        revisionLock.lock()
+        defer { revisionLock.unlock() }
+        return credentialRevisions[profileId] ?? 0
+    }
+
+    private func bumpCredentialRevision(_ profileId: UUID) {
+        revisionLock.lock()
+        credentialRevisions[profileId, default: 0] += 1
+        revisionLock.unlock()
+    }
+
     /// In-memory credential cache. `loadProfiles()` hydrates from here, not the Keychain.
     private struct CachedCredentials: Equatable {
         var claudeSessionKey: String?
@@ -224,6 +247,7 @@ class ProfileStore {
                 snapshot[profileId]?[key] = backup
                 cacheLock.lock()
                 credentialCache[profileId]?[key] = backup
+                bumpCredentialRevision(profileId)
                 cacheLock.unlock()
             }
         }
@@ -317,6 +341,7 @@ class ProfileStore {
                 self.cacheLock.lock()
                 self.credentialCache[id] = creds
                 self.cacheLock.unlock()
+                self.bumpCredentialRevision(id)
             }
             self.defaults.set(true, forKey: Keys.credentialsRepairedV2)
             // Items were just (re)written through the security CLI, so they are
@@ -352,6 +377,7 @@ class ProfileStore {
             )
             cacheLock.lock()
             credentialCache[id] = cached
+            bumpCredentialRevision(id)
             cacheLock.unlock()
         }
         return true
@@ -477,6 +503,9 @@ class ProfileStore {
                 grokCredentialsJSON: incoming.grokCredentialsJSON ?? old?.grokCredentialsJSON
             )
             credentialCache[profile.id] = merged
+            if merged != old {
+                bumpCredentialRevision(profile.id)
+            }
             cacheLock.unlock()
 
             if merged != incoming {
@@ -690,6 +719,7 @@ class ProfileStore {
         case .grokCredentials: cached.grokCredentialsJSON = nil
         }
         credentialCache[profileId] = cached
+        bumpCredentialRevision(profileId)
         cacheLock.unlock()
 
         keychainQueue.async { [weak self] in

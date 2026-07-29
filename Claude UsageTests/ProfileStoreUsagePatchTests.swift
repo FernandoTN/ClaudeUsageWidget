@@ -14,6 +14,7 @@
 //
 
 import XCTest
+import Combine
 @testable import Claude_Usage
 
 @MainActor
@@ -125,6 +126,70 @@ final class ProfileStoreUsagePatchTests: XCTestCase {
 
     private func persistedProfilesData() -> Data? {
         Self.testDefaults.data(forKey: profilesKey)
+    }
+
+    // MARK: - Staged-usage publish coalescing (scroll-lag P0)
+
+    /// N staged usage updates must produce ZERO `profiles` publishes until the
+    /// single `publishStagedUsage()`, which produces exactly one — the sweep
+    /// used to publish per profile (~15×), re-evaluating every open SwiftUI
+    /// surface each time.
+    @MainActor
+    func testStagedUsagePublishesOnceAtSweepEnd() {
+        let ids = [UUID(), UUID(), UUID()]
+        let seeded = ids.enumerated().map { i, id -> Profile in
+            var p = Profile(id: id, name: "Stage \(i)")
+            return p
+        }
+        store.saveProfiles(seeded)
+        manager.profiles = store.loadProfiles()
+        testProfileIDs = ids
+
+        var publishes = 0
+        let sub = manager.$profiles.dropFirst().sink { _ in publishes += 1 }
+        defer { sub.cancel() }
+
+        for (i, id) in ids.enumerated() {
+            var u = ClaudeUsage.empty
+            u.sessionPercentage = Double(10 * (i + 1))
+            manager.stageClaudeUsage(u, for: id)
+        }
+        XCTAssertEqual(publishes, 0, "staging must not publish per profile")
+
+        manager.publishStagedUsage()
+        XCTAssertEqual(publishes, 1, "exactly one publish for the whole batch")
+        XCTAssertEqual(
+            manager.profiles.first(where: { $0.id == ids[2] })?.claudeUsage?.sessionPercentage,
+            30, "staged values visible after the batch publish")
+
+        manager.publishStagedUsage()
+        XCTAssertEqual(publishes, 1, "idempotent when nothing is staged")
+        manager.flushPendingUsage()
+    }
+
+    // MARK: - Credential revision (rotation-proof memo invalidation)
+
+    /// A same-length credential rotation MUST bump the revision (the old
+    /// blob-hash/partial-fingerprint approaches could miss rotations); an
+    /// unchanged save must NOT bump it.
+    @MainActor
+    func testCredentialRevisionBumpsOnRotationOnly() {
+        let id = UUID()
+        var p = Profile(id: id, name: "Rev")
+        p.cliCredentialsJSON = #"{"claudeAiOauth":{"accessToken":"AAAA1111","refreshToken":"RRRR1111"}}"#
+        store.saveProfiles([p])
+        testProfileIDs = [id]
+        let r1 = store.credentialRevision(for: id)
+
+        // Unchanged save: no bump.
+        store.saveProfiles([p])
+        XCTAssertEqual(store.credentialRevision(for: id), r1, "no-change save must not bump")
+
+        // Same-length, same-suffix rotation: MUST bump.
+        p.cliCredentialsJSON = #"{"claudeAiOauth":{"accessToken":"BBBB2222","refreshToken":"RRRR1111"}}"#
+        store.saveProfiles([p])
+        XCTAssertGreaterThan(store.credentialRevision(for: id), r1,
+                             "same-length rotation must bump the revision")
     }
 
     // MARK: - D1.1

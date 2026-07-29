@@ -633,6 +633,45 @@ class ProfileManager: ObservableObject {
         LoggingService.shared.log("Saved API usage for profile: \(profiles[index].name)")
     }
 
+    /// Sweep-time usage staging: updates land in `pendingUsageByProfileID`
+    /// (disk-deferred, like saveClaudeUsage) but WITHOUT publishing `profiles`.
+    /// The sweep publishes ONCE via `publishStagedUsage()` before its repaint —
+    /// with 14 accounts the per-profile publishes re-evaluated every open
+    /// SwiftUI surface (settings, popover) ~15× per sweep for values only the
+    /// tiles consume (Codex-validated P0 of the Manage Profiles scroll lag).
+    /// Auto-switch safety is unchanged: the active-profile trigger receives
+    /// fresh usage by PARAMETER, and stale candidate estimates are re-verified
+    /// by the pre-switch usage fetch.
+    private var hasStagedUsage = false
+
+    func stageClaudeUsage(_ usage: ClaudeUsage, for profileId: UUID) {
+        var usage = usage
+        let previous = profiles.first(where: { $0.id == profileId })?.claudeUsage
+        usage.healMissingResetStamps(previous: previous)
+        var patch = pendingUsageByProfileID[profileId] ?? ProfileStore.UsagePatch()
+        patch.claudeUsage = usage
+        pendingUsageByProfileID[profileId] = patch
+        hasStagedUsage = true
+        LoggingService.shared.log("Staged usage for profile id \(profileId.uuidString.prefix(8))")
+    }
+
+    /// One publish for everything staged this sweep. Idempotent; no-op when
+    /// nothing is staged. Reads the CURRENT store (adopting any credential
+    /// rotations, same as saveClaudeUsage) and overlays every pending patch.
+    func publishStagedUsage() {
+        guard hasStagedUsage else { return }
+        hasStagedUsage = false
+        var updated = profileStore.loadProfiles()
+        applyPendingOverlay(to: &updated)
+        let shouldUpdateActive = activeProfile.flatMap { active in
+            updated.first(where: { $0.id == active.id }).map { $0 != active }
+        } ?? false
+        profiles = updated
+        if shouldUpdateActive, let id = activeProfile?.id {
+            activeProfile = updated.first(where: { $0.id == id })
+        }
+    }
+
     /// Writes all deferred usage patches to disk in one store operation and clears
     /// the pending map. Safe to call when empty (no-op). Call at defined flush
     /// boundaries: end of multi-profile sweep, end of single-profile refresh,
