@@ -775,8 +775,7 @@ final class StatusBarUIManager {
 
     /// Updates all status bar buttons based on current usage data
     func updateAllButtons(
-        usage: ClaudeUsage,
-        apiUsage: APIUsage?
+        usage: ClaudeUsage
     ) {
         // Get config from active profile
         let profile = ProfileManager.shared.activeProfile
@@ -813,7 +812,6 @@ final class StatusBarUIManager {
                 config: metricConfig,
                 globalConfig: config,
                 usage: usage,
-                apiUsage: apiUsage,
                 isDarkMode: menuBarIsDark,
                 colorMode: config.colorMode,
                 singleColorHex: config.singleColorHex,

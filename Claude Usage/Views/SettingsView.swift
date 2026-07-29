@@ -268,8 +268,6 @@ struct SettingsView: View {
                 // Credentials
                 case .claudeAI:
                     PersonalUsageView()
-                case .apiConsole:
-                    APIBillingView()
                 case .cliAccount:
                     CLIAccountView()
                 case .codexAccount:
@@ -519,7 +517,6 @@ struct BottomBarSection: View {
 enum SettingsSection: String, CaseIterable {
     // Credentials (not shown in sidebar)
     case claudeAI
-    case apiConsole
     case cliAccount
     case codexAccount
 
@@ -537,7 +534,6 @@ enum SettingsSection: String, CaseIterable {
     var title: String {
         switch self {
         case .claudeAI: return "section.claudeai_title".localized
-        case .apiConsole: return "section.api_console_title".localized
         case .cliAccount: return "section.cli_account_title".localized
         case .codexAccount: return "section.codex_account_title".localized
         case .appearance: return "section.appearance_title".localized
@@ -553,7 +549,6 @@ enum SettingsSection: String, CaseIterable {
     var icon: String {
         switch self {
         case .claudeAI: return "key.fill"
-        case .apiConsole: return "dollarsign.circle.fill"
         case .cliAccount: return "terminal.fill"
         case .codexAccount: return "chevron.left.forwardslash.chevron.right"
         case .appearance: return "paintbrush.fill"
@@ -569,7 +564,6 @@ enum SettingsSection: String, CaseIterable {
     var description: String {
         switch self {
         case .claudeAI: return "section.claudeai_desc".localized
-        case .apiConsole: return "section.api_console_desc".localized
         case .cliAccount: return "section.cli_account_desc".localized
         case .codexAccount: return "section.codex_account_desc".localized
         case .appearance: return "section.appearance_desc".localized
@@ -591,7 +585,7 @@ enum SettingsSection: String, CaseIterable {
 
     var isCredential: Bool {
         switch self {
-        case .claudeAI, .apiConsole, .cliAccount, .codexAccount:
+        case .claudeAI, .cliAccount, .codexAccount:
             return true
         default:
             return false
@@ -692,19 +686,6 @@ struct ProfileCredentialCardsRow: View {
                 }
                 .buttonStyle(.plain)
 
-                // API Console Card
-                Button {
-                    selectedSection = .apiConsole
-                } label: {
-                    CredentialMiniCard(
-                        icon: "dollarsign.circle.fill",
-                        title: "API Console",
-                        isConnected: credentials?.apiSessionKey != nil,
-                        isSelected: selectedSection == .apiConsole
-                    )
-                }
-                .buttonStyle(.plain)
-
                 // CLI Account Card
                 Button {
                     selectedSection = .cliAccount
@@ -759,7 +740,7 @@ struct ProfileCredentialCardsRow: View {
         if !showsCodexSection, selectedSection == .codexAccount {
             selectedSection = .cliAccount
         } else if !showsClaudeSections,
-                  [.claudeAI, .apiConsole, .cliAccount].contains(selectedSection) {
+                  [.claudeAI, .cliAccount].contains(selectedSection) {
             selectedSection = .codexAccount
         }
     }

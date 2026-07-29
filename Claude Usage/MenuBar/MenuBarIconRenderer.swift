@@ -18,19 +18,22 @@ final class MenuBarIconRenderer {
         config: MetricIconConfig,
         globalConfig: MenuBarIconConfiguration,
         usage: ClaudeUsage,
-        apiUsage: APIUsage?,
         isDarkMode: Bool,
         colorMode: MenuBarColorMode,
         singleColorHex: String,
         showIconName: Bool,
         showNextSessionTime: Bool
     ) -> NSImage {
+        // decode-only legacy case — API Console billing feature removed 2026-07
+        if metricType == .api {
+            return NSImage(size: NSSize(width: 1, height: 1))
+        }
+
         // Get the metric value and percentage
         let metricData = getMetricData(
             metricType: metricType,
             config: config,
             usage: usage,
-            apiUsage: apiUsage,
             showRemaining: globalConfig.showRemainingPercentage,
             usePaceColoring: globalConfig.usePaceColoring
         )
@@ -46,7 +49,7 @@ final class MenuBarIconRenderer {
 
         // Compute pace status from RAW values (not display-adjusted)
         let paceStatus: PaceStatus? = {
-            guard globalConfig.showPaceMarker, metricType != .api else { return nil }
+            guard globalConfig.showPaceMarker else { return nil }
             // Get raw elapsed fraction (always non-inverted)
             guard let rawElapsed = calculateTimeMarkerFraction(
                 metricType: metricType, usage: usage, showRemaining: false
@@ -61,17 +64,6 @@ final class MenuBarIconRenderer {
             )
         }()
         let showPaceMarker = globalConfig.showPaceMarker
-
-        // API is ALWAYS text-based (no icon styles)
-        if metricType == .api {
-            return createAPITextStyle(
-                metricData: metricData,
-                isDarkMode: isDarkMode,
-                colorMode: colorMode,
-                singleColorHex: singleColorHex,
-                showIconName: showIconName
-            )
-        }
 
         // Render based on icon style for Session and Week
         switch config.iconStyle {
@@ -153,7 +145,6 @@ final class MenuBarIconRenderer {
         metricType: MenuBarMetricType,
         config: MetricIconConfig,
         usage: ClaudeUsage,
-        apiUsage: APIUsage?,
         showRemaining: Bool,
         usePaceColoring: Bool = true
     ) -> MetricData {
@@ -219,39 +210,11 @@ final class MenuBarIconRenderer {
             )
 
         case .api:
-            guard let apiUsage = apiUsage else {
-                return MetricData(
-                    percentage: showRemaining ? 100 : 0,  // 100% remaining or 0% used when no data
-                    displayText: "N/A",
-                    statusLevel: .safe,
-                    sessionResetTime: nil
-                )
-            }
-
-            let usedPercentage = apiUsage.usagePercentage
-            let displayPercentage = UsageStatusCalculator.getDisplayPercentage(
-                usedPercentage: usedPercentage,
-                showRemaining: showRemaining
-            )
-            let statusLevel = UsageStatusCalculator.calculateStatus(
-                usedPercentage: usedPercentage,
-                showRemaining: showRemaining
-            )
-
-            let displayText: String
-            switch config.apiDisplayMode {
-            case .remaining:
-                displayText = apiUsage.formattedRemaining
-            case .used:
-                displayText = apiUsage.formattedUsed
-            case .both:
-                displayText = "\(apiUsage.formattedUsed)/\(apiUsage.formattedTotal)"
-            }
-
+            // decode-only legacy case — never rendered (createImage returns empty image)
             return MetricData(
-                percentage: displayPercentage,
-                displayText: displayText,
-                statusLevel: statusLevel,
+                percentage: 0,
+                displayText: "",
+                statusLevel: .safe,
                 sessionResetTime: nil
             )
         }
@@ -680,45 +643,6 @@ final class MenuBarIconRenderer {
             pace.color.setFill()
             paceDotPath.fill()
         }
-
-        return image
-    }
-
-    // MARK: - API Text Style (Always Text-Based)
-
-    private func createAPITextStyle(
-        metricData: MetricData,
-        isDarkMode: Bool,
-        colorMode: MenuBarColorMode,
-        singleColorHex: String,
-        showIconName: Bool
-    ) -> NSImage {
-        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
-
-        // Use isDarkMode to determine correct foreground color for menu bar
-        let textColor: NSColor = menuBarForegroundColor(isDarkMode: isDarkMode)
-
-        var fullText = ""
-
-        if showIconName {
-            fullText = "API: \(metricData.displayText)"
-        } else {
-            fullText = metricData.displayText
-        }
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: textColor
-        ]
-
-        let textSize = fullText.size(withAttributes: attributes)
-        let image = NSImage(size: NSSize(width: textSize.width + 4, height: 18))
-
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        let textY = (18 - textSize.height) / 2
-        fullText.draw(at: NSPoint(x: 2, y: textY), withAttributes: attributes)
 
         return image
     }
@@ -1404,6 +1328,7 @@ final class MenuBarIconRenderer {
             resetTime = usage.weeklyResetTime
             duration = Constants.weeklyWindow
         case .api:
+            // decode-only legacy case
             return nil
         }
 

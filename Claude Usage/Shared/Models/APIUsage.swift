@@ -2,6 +2,7 @@
 //  APIUsage.swift
 //  Claude Usage
 //
+//  Legacy persisted model — feature removed 2026-07; kept for profiles_v3 decode compatibility.
 //  Created by Claude Code on 2025-12-20.
 //
 

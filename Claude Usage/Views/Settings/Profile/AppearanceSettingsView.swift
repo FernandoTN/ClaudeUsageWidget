@@ -176,20 +176,7 @@ struct AppearanceSettingsView: View {
                                 onConfigChanged: { saveConfiguration() }
                             )
                         }
-
-                        // API Credits
-                        if let apiIndex = configuration.metrics.firstIndex(where: { $0.metricType == .api }) {
-                            MetricIconCard(
-                                metricType: .api,
-                                config: Binding(
-                                    get: { configuration.metrics[apiIndex] },
-                                    set: { newValue in
-                                        configuration.metrics[apiIndex] = newValue
-                                    }
-                                ),
-                                onConfigChanged: { saveConfiguration() }
-                            )
-                        }
+                        // .api metric deliberately omitted — decode-only legacy case
                     }
                 }
                 .disabled(isMultiProfileMode)

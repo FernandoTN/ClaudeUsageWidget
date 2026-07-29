@@ -8,7 +8,6 @@ class ClaudeAPIService {
     private enum AuthenticationType {
         case claudeAISession(String)      // Cookie: sessionKey=...
         case cliOAuth(String)              // Authorization: Bearer ... (with anthropic-beta header)
-        case consoleAPISession(String)     // Cookie: sessionKey=... (different endpoint)
     }
 
     // MARK: - Properties
@@ -16,7 +15,6 @@ class ClaudeAPIService {
     private let sessionKeyPath: URL
     private let sessionKeyValidator: SessionKeyValidator
     let baseURL = Constants.APIEndpoints.claudeBase
-    let consoleBaseURL = Constants.APIEndpoints.consoleBase
 
     // MARK: - Initialization
 
@@ -72,7 +70,6 @@ class ClaudeAPIService {
 
     /// Gets the best available authentication method with fallback support
     /// Priority: 1) claude.ai session → 2) saved CLI OAuth → 3) system Keychain CLI OAuth
-    /// Note: Console API session is NOT used as fallback (it only provides billing data, not usage)
     /// Async so the system Keychain fallback can shell out to `security` OFF the main
     /// thread (see the CLAUDE.md rule about Keychain reads on the main thread).
     private func getAuthentication() async throws -> AuthenticationType {
@@ -145,11 +142,6 @@ class ClaudeAPIService {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
             request.setValue("ClaudeUsageWidget/\(version)", forHTTPHeaderField: "User-Agent")
             request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-
-        case .consoleAPISession(let apiKey):
-            // Console API authentication
-            request.setValue("sessionKey=\(apiKey)", forHTTPHeaderField: "Cookie")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
         }
 
         return request
@@ -479,16 +471,6 @@ class ClaudeAPIService {
             }
 
             return parseUsageFromRateLimitHeaders(httpResponse)
-
-        case .consoleAPISession:
-            // Console API is for billing/credits only, not usage data
-            throw AppError(
-                code: .sessionKeyNotFound,
-                message: "No valid credentials for usage data",
-                technicalDetails: "Console API only provides billing data, not usage statistics",
-                isRecoverable: true,
-                recoverySuggestion: "Please add a claude.ai session key or sync your CLI account"
-            )
         }
     }
 

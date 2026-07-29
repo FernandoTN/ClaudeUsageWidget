@@ -45,8 +45,9 @@ struct MetricIconCard: View {
             }
 
             if config.isEnabled {
-                // Icon style selector (only for Session and Week, not API)
-                if metricType != .api {
+                // Icon style selector (session / week only; .api is decode-only legacy)
+                switch metricType {
+                case .session, .week:
                     Divider()
                         .padding(.vertical, Spacing.xs)
 
@@ -63,24 +64,26 @@ struct MetricIconCard: View {
                             }
                         ))
                     }
+                case .api:
+                    // decode-only legacy case — no UI surface
+                    EmptyView()
                 }
 
                 // Metric-specific options
-                if metricType == .session && (config.iconStyle == .battery || config.iconStyle == .progressBar) {
+                switch metricType {
+                case .session where config.iconStyle == .battery || config.iconStyle == .progressBar:
                     Divider()
                         .padding(.vertical, Spacing.xs)
-
                     SessionDisplayOptions(config: $config, onConfigChanged: onConfigChanged)
-                } else if metricType == .week && config.iconStyle == .percentageOnly {
+                case .week where config.iconStyle == .percentageOnly:
                     Divider()
                         .padding(.vertical, Spacing.xs)
-
                     WeekDisplayOptions(config: $config, onConfigChanged: onConfigChanged)
-                } else if metricType == .api {
-                    Divider()
-                        .padding(.vertical, Spacing.xs)
-
-                    APIDisplayOptions(config: $config, onConfigChanged: onConfigChanged)
+                case .api:
+                    // decode-only legacy case — no options UI
+                    EmptyView()
+                default:
+                    EmptyView()
                 }
             }
         }
@@ -161,40 +164,6 @@ private struct WeekDisplayOptions: View {
     }
 }
 
-// MARK: - API Display Options
-
-private struct APIDisplayOptions: View {
-    @Binding var config: MetricIconConfig
-    let onConfigChanged: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("ui.display_mode".localized)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.secondary)
-
-            Picker("", selection: Binding(
-                get: { config.apiDisplayMode },
-                set: { newValue in
-                    config.apiDisplayMode = newValue
-                    onConfigChanged()
-                }
-            )) {
-                ForEach(APIDisplayMode.allCases, id: \.self) { mode in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(mode.displayName)
-                        Text(mode.description)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    .tag(mode)
-                }
-            }
-            .pickerStyle(.radioGroup)
-        }
-    }
-}
-
 // MARK: - Previews
 
 #Preview("Session Card - Enabled") {
@@ -217,16 +186,6 @@ private struct APIDisplayOptions: View {
             order: 1,
             weekDisplayMode: .percentage
         )),
-        onConfigChanged: {}
-    )
-    .frame(width: 500)
-    .padding()
-}
-
-#Preview("API Card - Disabled") {
-    MetricIconCard(
-        metricType: .api,
-        config: .constant(.apiDefault),
         onConfigChanged: {}
     )
     .frame(width: 500)

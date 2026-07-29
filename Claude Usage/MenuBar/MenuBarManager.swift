@@ -8,7 +8,6 @@ class MenuBarManager: NSObject, ObservableObject {
     private var refreshTimer: Timer?
     @Published private(set) var usage: ClaudeUsage = .empty
     @Published private(set) var status: ClaudeStatus = .unknown
-    @Published private(set) var apiUsage: APIUsage?
     @Published private(set) var isRefreshing: Bool = false
 
     // Error tracking for stale data / credential banners
@@ -24,7 +23,6 @@ class MenuBarManager: NSObject, ObservableObject {
     // Multi-profile mode: track which profile's icon was clicked
     @Published private(set) var clickedProfileId: UUID?
     @Published private(set) var clickedProfileUsage: ClaudeUsage?
-    @Published private(set) var clickedProfileAPIUsage: APIUsage?
 
     // Track when refresh was last triggered (for distinguishing user vs auto refresh)
     private var lastRefreshTriggerTime: Date = .distantPast
@@ -148,13 +146,9 @@ class MenuBarManager: NSObject, ObservableObject {
                 if let savedUsage = profile.claudeUsage {
                     usage = savedUsage
                 }
-                if let savedAPIUsage = profile.apiUsage {
-                    apiUsage = savedAPIUsage
-                }
             } else {
                 // No usage credentials - clear any old usage data and show default logo
                 usage = .empty
-                apiUsage = nil
                 LoggingService.shared.log("MenuBarManager: Profile has no usage credentials, showing default logo")
             }
             updateAllStatusBarIcons()
@@ -336,12 +330,6 @@ class MenuBarManager: NSObject, ObservableObject {
             self.usage = .empty
         }
 
-        if let savedAPIUsage = profile.apiUsage {
-            self.apiUsage = savedAPIUsage
-        } else {
-            self.apiUsage = nil
-        }
-
         // 2. Update refresh interval with profile's setting
         restartAutoRefreshWithInterval(profile.refreshInterval)
 
@@ -498,13 +486,11 @@ class MenuBarManager: NSObject, ObservableObject {
             // Set the clicked profile data
             clickedProfileId = profileId
             clickedProfileUsage = profile.claudeUsage ?? .empty
-            clickedProfileAPIUsage = profile.apiUsage
             LoggingService.shared.log("Multi-profile popover: showing data for '\(profile.name)'")
         } else {
             // Single profile mode - use active profile
             clickedProfileId = profileManager.activeProfile?.id
             clickedProfileUsage = nil  // Will use manager.usage
-            clickedProfileAPIUsage = nil  // Will use manager.apiUsage
         }
 
         // If there's a detached window, close it
@@ -601,10 +587,7 @@ class MenuBarManager: NSObject, ObservableObject {
             )
         } else {
             // Single profile mode - use the standard update
-            statusBarUIManager?.updateAllButtons(
-                usage: usage,
-                apiUsage: apiUsage
-            )
+            statusBarUIManager?.updateAllButtons(usage: usage)
         }
     }
 
@@ -1101,22 +1084,6 @@ private func observeCredentialChanges() {
                         LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                     }
                 }
-
-                // Fetch API usage if this profile has API console credentials
-                // (independent billing-console endpoint — runs even while the
-                // profile's oauth/usage endpoint is throttled)
-                if let apiSessionKey = profile.apiSessionKey,
-                   let orgId = profile.apiOrganizationId {
-                    do {
-                        let newAPIUsage = try await apiService.fetchAPIUsageData(organizationId: orgId, apiSessionKey: apiSessionKey)
-                        self.profileManager.saveAPIUsage(newAPIUsage, for: profile.id)
-                        if profile.id == self.profileManager.activeProfile?.id {
-                            self.apiUsage = newAPIUsage
-                        }
-                    } catch {
-                        LoggingService.shared.logError("Failed to refresh API usage for profile '\(profile.name)': \(error.localizedDescription)")
-                    }
-                }
             }
 
             // Update all icons once after all profiles are refreshed
@@ -1415,27 +1382,6 @@ private func observeCredentialChanges() {
 
                 // Don't show error for status - it's not critical
                 LoggingService.shared.log("MenuBarManager: Failed to fetch status - [\(appError.code.rawValue)] \(appError.message)")
-            }
-
-            // Fetch API usage (using active profile's API credentials)
-            if let profile = self.profileManager.activeProfile,
-               let apiSessionKey = profile.apiSessionKey,
-               let orgId = profile.apiOrganizationId {
-                do {
-                    let newAPIUsage = try await apiService.fetchAPIUsageData(organizationId: orgId, apiSessionKey: apiSessionKey)
-                    self.apiUsage = newAPIUsage
-
-                    // Save to active profile instead of global DataStore
-                    if let profileId = self.profileManager.activeProfile?.id {
-                        self.profileManager.saveAPIUsage(newAPIUsage, for: profileId)
-                    }
-                } catch {
-                    // Convert to AppError and log
-                    let appError = AppError.wrap(error)
-                    ErrorLogger.shared.log(appError, severity: .info)
-
-                    LoggingService.shared.log("MenuBarManager: Failed to fetch API usage - [\(appError.code.rawValue)] \(appError.message)")
-                }
             }
 
             // Show success notification if this was user-triggered and successful

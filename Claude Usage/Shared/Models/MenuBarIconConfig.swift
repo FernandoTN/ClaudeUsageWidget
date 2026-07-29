@@ -11,9 +11,14 @@ import Foundation
 enum MenuBarMetricType: String, Codable, CaseIterable, Identifiable {
     case session
     case week
+    /// Decode-only legacy case — API Console billing feature removed 2026-07.
+    /// Kept so existing MenuBarIconConfiguration JSON with `"api"` still decodes.
     case api
 
     var id: String { rawValue }
+
+    /// Metric types still shown in UI pickers / defaults (excludes decode-only `.api`).
+    static var activeCases: [MenuBarMetricType] { [.session, .week] }
 
     var displayName: String {
         switch self {
@@ -22,6 +27,7 @@ enum MenuBarMetricType: String, Codable, CaseIterable, Identifiable {
         case .week:
             return "Week Usage"
         case .api:
+            // decode-only legacy case
             return "API Credits"
         }
     }
@@ -33,6 +39,7 @@ enum MenuBarMetricType: String, Codable, CaseIterable, Identifiable {
         case .week:
             return "W:"
         case .api:
+            // decode-only legacy case
             return "API:"
         }
     }
@@ -44,6 +51,7 @@ enum MenuBarMetricType: String, Codable, CaseIterable, Identifiable {
         case .week:
             return "Weekly token usage (all models)"
         case .api:
+            // decode-only legacy case
             return "API Console billing credits"
         }
     }
@@ -55,6 +63,7 @@ enum MenuBarMetricType: String, Codable, CaseIterable, Identifiable {
         case .week:
             return "calendar.badge.clock"
         case .api:
+            // decode-only legacy case
             return "dollarsign.circle.fill"
         }
     }
@@ -100,7 +109,9 @@ enum MenuBarColorMode: String, Codable, CaseIterable {
     }
 }
 
-/// Display mode for API usage
+/// Display mode for API usage.
+/// Decode-only legacy — API Console billing feature removed 2026-07; field kept on
+/// `MetricIconConfig` so existing saved JSON still decodes.
 enum APIDisplayMode: String, Codable, CaseIterable {
     case remaining
     case used
@@ -163,7 +174,7 @@ struct MetricIconConfig: Codable, Equatable {
     /// Week-specific configuration
     var weekDisplayMode: WeekDisplayMode
 
-    /// API-specific configuration
+    /// API-specific configuration (decode-only legacy field)
     var apiDisplayMode: APIDisplayMode
 
     /// Session-specific configuration
@@ -206,17 +217,6 @@ struct MetricIconConfig: Codable, Equatable {
             iconStyle: .battery,
             order: 1,
             weekDisplayMode: .percentage
-        )
-    }
-
-    /// Default config for API (disabled by default)
-    static var apiDefault: MetricIconConfig {
-        MetricIconConfig(
-            metricType: .api,
-            isEnabled: false,
-            iconStyle: .battery,
-            order: 2,
-            apiDisplayMode: .remaining
         )
     }
 }
@@ -361,8 +361,7 @@ struct MenuBarIconConfiguration: Codable, Equatable {
         usePaceColoring: Bool = true,
         metrics: [MetricIconConfig] = [
             .sessionDefault,
-            .weekDefault,
-            .apiDefault
+            .weekDefault
         ]
     ) {
         self.colorMode = colorMode
@@ -421,10 +420,11 @@ struct MenuBarIconConfiguration: Codable, Equatable {
         // Note: We don't encode monochromeMode anymore - it's only for reading legacy data
     }
 
-    /// Get enabled metrics sorted by order
+    /// Get enabled metrics sorted by order.
+    /// Excludes decode-only legacy `.api` so old saved configs never mint an API status item.
     var enabledMetrics: [MetricIconConfig] {
         metrics
-            .filter { $0.isEnabled }
+            .filter { $0.isEnabled && $0.metricType != .api }
             .sorted { $0.order < $1.order }
     }
 

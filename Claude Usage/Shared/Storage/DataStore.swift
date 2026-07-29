@@ -415,14 +415,4 @@ class DataStore {
         }
     }
 
-    /// Updates API display mode
-    func updateAPIDisplayMode(_ mode: APIDisplayMode) {
-        var config = loadMenuBarIconConfiguration()
-        if var apiConfig = config.config(for: .api) {
-            apiConfig.apiDisplayMode = mode
-            config.updateConfig(apiConfig)
-            saveMenuBarIconConfiguration(config)
-        }
-    }
-
 }

@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 
 // MARK: - Always-active vibrancy background
 struct VisualEffectBackground: NSViewRepresentable {
@@ -92,15 +91,6 @@ struct PopoverContentView: View {
     // Computed properties for multi-profile mode support
     private var displayUsage: ClaudeUsage {
         manager.clickedProfileUsage ?? manager.usage
-    }
-
-    private var displayAPIUsage: APIUsage? {
-        // When viewing a non-active profile, use only that profile's API data
-        // to avoid leaking the active profile's console data
-        if manager.clickedProfileUsage != nil {
-            return manager.clickedProfileAPIUsage
-        }
-        return manager.apiUsage
     }
 
     /// Name of the VIEWED profile if its last fetch hit a credential error, nil
@@ -293,7 +283,7 @@ struct PopoverContentView: View {
             }
 
             // Usage
-            SmartUsageDashboard(usage: displayUsage, apiUsage: displayAPIUsage)
+            SmartUsageDashboard(usage: displayUsage)
 
             // Contextual Insights
             if showInsights {
@@ -546,7 +536,6 @@ struct HeaderIconButton: View {
 // MARK: - Smart Usage Dashboard
 struct SmartUsageDashboard: View {
     let usage: ClaudeUsage
-    let apiUsage: APIUsage?
     @StateObject private var profileManager = ProfileManager.shared
 
     private var showRemainingPercentage: Bool {
@@ -672,16 +661,6 @@ struct SmartUsageDashboard: View {
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
                             .foregroundColor(.adaptiveGreen)
                     }
-                }
-            }
-
-            // API Usage
-            if let apiUsage = apiUsage {
-                APIUsageCard(apiUsage: apiUsage, showRemaining: showRemainingPercentage, timeDisplay: timeDisplay)
-
-                // API Cost Card (only if cost data is available)
-                if let costCents = apiUsage.apiTokenCostCents, costCents > 0 {
-                    APICostCard(apiUsage: apiUsage)
                 }
             }
         }
@@ -910,330 +889,6 @@ struct Insight {
     let color: Color
     let title: String
     let description: String
-}
-
-// MARK: - API Cost Card
-struct APICostCard: View {
-    let apiUsage: APIUsage
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            // Header
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("API Cost")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.primary)
-
-                    Text("This Month")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                // Total cost
-                if let formatted = apiUsage.formattedAPICost {
-                    Text(formatted)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundColor(.primary)
-                }
-            }
-
-            // Daily cost chart
-            DailyCostChart(dailyCosts: apiUsage.sortedDailyCosts, currency: apiUsage.currency)
-
-            // Per-key breakdown (if multiple sources) or flat model list
-            if apiUsage.hasMultipleSources {
-                VStack(spacing: 6) {
-                    ForEach(apiUsage.sortedCostSources) { source in
-                        APICostSourceRow(source: source, currency: apiUsage.currency)
-                    }
-                }
-            } else {
-                // Single source or no source data — show flat model breakdown
-                let models = apiUsage.sortedModelCosts
-                if !models.isEmpty {
-                    VStack(spacing: 4) {
-                        ForEach(models, id: \.model) { item in
-                            HStack {
-                                Text(item.model)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-
-                                Spacer()
-
-                                Text(item.cost)
-                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
-        )
-    }
-}
-
-// MARK: - Daily Cost Chart
-struct DailyCostChart: View {
-    let dailyCosts: [(date: Date, cents: Double)]
-    let currency: String
-
-    private struct DayCost: Identifiable {
-        let id: Date
-        let dollars: Double
-    }
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d"
-        return f
-    }()
-
-    private var xDomain: ClosedRange<Date> {
-        let cal = Calendar.current
-        let today = Date()
-        let startOfMonth = cal.date(from: cal.dateComponents([.year, .month], from: today))!
-        // End of today (start of tomorrow)
-        let endOfToday = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: today))!
-        return startOfMonth ... endOfToday
-    }
-
-    var body: some View {
-        if !dailyCosts.isEmpty {
-            let data = dailyCosts.map { DayCost(id: $0.date, dollars: $0.cents / 100.0) }
-            let maxValue = data.map(\.dollars).max() ?? 0
-            Chart(data) { item in
-                BarMark(
-                    x: .value("Day", item.id, unit: .day),
-                    y: .value("Cost", item.dollars),
-                    width: .fixed(12)
-                )
-                .foregroundStyle(Color.orange.opacity(0.75))
-                .cornerRadius(2)
-            }
-            .chartXScale(domain: xDomain)
-            .chartXAxis {
-                AxisMarks(values: .stride(by: .day)) { value in
-                    AxisValueLabel(centered: true) {
-                        if let date = value.as(Date.self) {
-                            Text("\(Calendar.current.component(.day, from: date))")
-                                .font(.system(size: 7))
-                                .foregroundColor(.secondary.opacity(0.6))
-                        }
-                    }
-                }
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.3))
-                        .foregroundStyle(Color.secondary.opacity(0.15))
-                    AxisValueLabel {
-                        if let v = value.as(Double.self) {
-                            Text(formatDollars(v, max: maxValue))
-                                .font(.system(size: 7, design: .rounded))
-                                .foregroundColor(.secondary.opacity(0.6))
-                        }
-                    }
-                }
-            }
-            .chartYScale(domain: 0 ... max(maxValue * 1.15, 0.01))
-            .frame(height: 80)
-        }
-    }
-
-    private func formatDollars(_ amount: Double, max: Double) -> String {
-        if max >= 100 {
-            return "$\(Int(amount))"
-        } else if max >= 1 {
-            return String(format: "$%.1f", amount)
-        } else {
-            return String(format: "$%.2f", amount)
-        }
-    }
-}
-
-// MARK: - API Cost Source Row
-struct APICostSourceRow: View {
-    let source: APICostSource
-    let currency: String
-    @State private var isExpanded = false
-
-    var body: some View {
-        VStack(spacing: 4) {
-            // Source header (tappable to expand)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
-                }
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: source.sourceType.icon)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .frame(width: 12)
-
-                    Text(source.keyName)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Text(source.formattedTotal(currency: currency))
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.primary)
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundColor(.secondary.opacity(0.6))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.secondary.opacity(0.06))
-                )
-            }
-            .buttonStyle(.plain)
-
-            // Expanded model breakdown
-            if isExpanded {
-                let models = source.sortedModelCosts(currency: currency)
-                VStack(spacing: 3) {
-                    ForEach(models, id: \.model) { item in
-                        HStack {
-                            Text(item.model)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-
-                            Spacer()
-
-                            Text(item.cost)
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .padding(.leading, 24)
-                .padding(.trailing, 6)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-    }
-}
-
-// MARK: - API Usage Card
-struct APIUsageCard: View {
-    let apiUsage: APIUsage
-    let showRemaining: Bool
-    var timeDisplay: PopoverTimeDisplay = .resetTime
-
-    private var displayPercentage: Double {
-        UsageStatusCalculator.getDisplayPercentage(
-            usedPercentage: apiUsage.usagePercentage,
-            showRemaining: showRemaining
-        )
-    }
-
-    private var statusLevel: UsageStatusLevel {
-        UsageStatusCalculator.calculateStatus(
-            usedPercentage: apiUsage.usagePercentage,
-            showRemaining: showRemaining
-        )
-    }
-
-    private var usageColor: Color {
-        switch statusLevel {
-        case .safe: return .adaptiveGreen
-        case .moderate: return .orange
-        case .critical: return .red
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            // Header
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("menubar.api_credits".localized)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.primary)
-
-                    Text("menubar.anthropic_console".localized)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                Text("\(Int(displayPercentage))%")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundColor(usageColor)
-            }
-
-            // Progress bar
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(Color.primary.opacity(0.08))
-
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(usageColor)
-                        .frame(width: geometry.size.width * min(displayPercentage / 100.0, 1.0))
-                        .animation(.easeInOut(duration: 0.6), value: displayPercentage)
-                }
-            }
-            .frame(height: 4)
-
-            // Used / Remaining
-            HStack {
-                Text(apiUsage.formattedUsed)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
-                Text(apiUsage.formattedRemaining)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            }
-
-            // Reset Time
-            if apiUsage.resetsAt > Date() {
-                Text(resetTimeText(for: apiUsage.resetsAt))
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
-        )
-    }
-
-    private func resetTimeText(for reset: Date) -> String {
-        switch timeDisplay {
-        case .resetTime:
-            return "menubar.resets_time".localized(with: reset.resetTimeString())
-        case .remainingTime:
-            return "menubar.resets_in".localized(with: reset.timeRemainingString())
-        case .both:
-            return "menubar.resets_both".localized(with: reset.timeRemainingString(), reset.resetTimeString())
-        }
-    }
 }
 
 // MARK: - Status Banner View
