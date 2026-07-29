@@ -225,32 +225,22 @@ class SharedDataStore {
         }
     }
 
-    // MARK: - Auto-Switch Custom Order
+    // MARK: - Auto-Switch Queue
 
-    private enum CustomOrderKeys {
-        static let enabled = "autoSwitchCustomOrderEnabled"
-        static let order = "autoSwitchCustomOrder"
+    private enum QueueKeys {
+        static let queue = "autoSwitchQueue"
     }
 
-    /// When ON, the auto-switch walks candidates in the user's saved order
-    /// instead of the default soonest-weekly-reset ranking. Default OFF.
-    func saveAutoSwitchCustomOrderEnabled(_ enabled: Bool) {
-        defaults.set(enabled, forKey: CustomOrderKeys.enabled)
+    /// Consumable FIFO queue of profile UUIDs for the auto-switch: entry #1 is
+    /// the IMMEDIATE next switch target; each auto-switch consumes the entry it
+    /// tried. Empty queue = default behavior (soonest weekly reset). Persisted
+    /// so a queued handoff plan survives relaunches.
+    func saveAutoSwitchQueue(_ queue: [UUID]) {
+        defaults.set(queue.map(\.uuidString), forKey: QueueKeys.queue)
     }
 
-    func loadAutoSwitchCustomOrderEnabled() -> Bool {
-        defaults.bool(forKey: CustomOrderKeys.enabled)
-    }
-
-    /// Ordered profile UUIDs for the custom switch queue. Profiles not in the
-    /// list rank AFTER every listed one (in default order) — a newly added
-    /// account degrades gracefully instead of hijacking the queue.
-    func saveAutoSwitchCustomOrder(_ order: [UUID]) {
-        defaults.set(order.map(\.uuidString), forKey: CustomOrderKeys.order)
-    }
-
-    func loadAutoSwitchCustomOrder() -> [UUID] {
-        (defaults.array(forKey: CustomOrderKeys.order) as? [String] ?? [])
+    func loadAutoSwitchQueue() -> [UUID] {
+        (defaults.array(forKey: QueueKeys.queue) as? [String] ?? [])
             .compactMap(UUID.init(uuidString:))
     }
 

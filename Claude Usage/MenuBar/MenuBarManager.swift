@@ -1623,7 +1623,12 @@ private func observeCredentialChanges() {
         let fromName = currentProfile.name
         Task {
             var excluded: Set<UUID> = []
-            while let nextProfile = self.findNextAvailableProfile(after: currentProfile, excluding: excluded) {
+            while let nextProfile = self.popQueuedSwitchTarget(
+                provider: currentProfile.providerKind,
+                excluding: excluded,
+                sessionThreshold: sessionThreshold,
+                weeklyThreshold: weeklyThreshold
+            ) ?? self.findNextAvailableProfile(after: currentProfile, excluding: excluded) {
                 // Re-check at every iteration: a switch that started after the
                 // guard above (other provider, user click) must not be stacked —
                 // retry cleanly on the next sweep instead of walking candidates
@@ -1882,10 +1887,10 @@ private func observeCredentialChanges() {
             return true
         }
 
-        let customOrder = SharedDataStore.shared.loadAutoSwitchCustomOrderEnabled()
-            ? SharedDataStore.shared.loadAutoSwitchCustomOrder()
-            : nil
-        let ranked = Self.rankAutoSwitchCandidates(candidates, customOrder: customOrder, now: now)
+        // Default ranking only — the consumable switch QUEUE is handled one
+        // level up in the candidate walk (popQueuedSwitchTarget), so an empty
+        // queue falls through to this ranking untouched.
+        let ranked = Self.rankAutoSwitchCandidates(candidates, customOrder: nil, now: now)
 
         for candidate in ranked {
             if hasSessionHeadroom(candidate, threshold: sessionThreshold)
@@ -1894,6 +1899,51 @@ private func observeCredentialChanges() {
                 return candidate
             }
             LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
+        }
+        return nil
+    }
+
+    /// Pops the next queued auto-switch target for this provider. The queue is
+    /// CONSUMABLE: entry #1 is the immediate next switch target, and every entry
+    /// is spent when tried — a queued account that turns out ineligible
+    /// (deleted, excluded this walk, dead, or already over a threshold) is
+    /// consumed and skipped, never retried forever. Entries for OTHER providers
+    /// stay queued for their own provider's switch. Empty queue → nil → the
+    /// caller falls back to the default soonest-weekly-reset walk.
+    private func popQueuedSwitchTarget(
+        provider: Profile.ProviderKind,
+        excluding: Set<UUID>,
+        sessionThreshold: Double,
+        weeklyThreshold: Double
+    ) -> Profile? {
+        var queue = SharedDataStore.shared.loadAutoSwitchQueue()
+        guard !queue.isEmpty else { return nil }
+        defer { SharedDataStore.shared.saveAutoSwitchQueue(queue) }
+
+        var index = 0
+        while index < queue.count {
+            let id = queue[index]
+            guard let profile = profileManager.profiles.first(where: { $0.id == id }) else {
+                queue.remove(at: index)  // profile was deleted — drop the entry
+                continue
+            }
+            guard profile.providerKind == provider else {
+                index += 1  // another provider's turn will consume it
+                continue
+            }
+            // This provider's head entry: consume it now, whatever happens next.
+            queue.remove(at: index)
+            let now = Date()
+            guard !excluding.contains(profile.id),
+                  profile.hasUsageCredentials,
+                  hasSessionHeadroom(profile, threshold: sessionThreshold),
+                  hasWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now),
+                  hasFableWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now) else {
+                LoggingService.shared.log("AutoSwitch: queued '\(profile.name)' is not usable right now (dead, excluded, or no headroom) — consumed, trying next")
+                continue
+            }
+            LoggingService.shared.log("AutoSwitch: taking queued target '\(profile.name)' (\(queue.count) left in queue)")
+            return profile
         }
         return nil
     }

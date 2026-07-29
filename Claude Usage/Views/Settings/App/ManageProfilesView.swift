@@ -14,24 +14,24 @@ struct ManageProfilesView: View {
     @State private var errorMessage: String?
     @State private var autoSwitchThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
     @State private var autoSwitchWeeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
-    @State private var customOrderEnabled = SharedDataStore.shared.loadAutoSwitchCustomOrderEnabled()
-    @State private var customOrder: [UUID] = []
+    @State private var switchQueue: [UUID] = SharedDataStore.shared.loadAutoSwitchQueue()
 
-    /// Saved queue ∪ current profiles: drops deleted profiles, appends new ones
-    /// at the end, persists the reconciled result.
-    private func syncCustomOrderWithProfiles() {
-        let ids = profileManager.profiles.map(\.id)
-        var order = SharedDataStore.shared.loadAutoSwitchCustomOrder().filter { ids.contains($0) }
-        order.append(contentsOf: ids.filter { !order.contains($0) })
-        customOrder = order
-        SharedDataStore.shared.saveAutoSwitchCustomOrder(order)
+    private func providerLabel(_ profile: Profile) -> String {
+        profile.providerKind == .claude ? "Claude"
+            : profile.providerKind == .codex ? "Codex" : "Grok"
     }
 
-    private func moveCustomOrder(_ index: Int, by delta: Int) {
+    private func moveQueueEntry(_ index: Int, by delta: Int) {
         let target = index + delta
-        guard customOrder.indices.contains(index), customOrder.indices.contains(target) else { return }
-        customOrder.swapAt(index, target)
-        SharedDataStore.shared.saveAutoSwitchCustomOrder(customOrder)
+        guard switchQueue.indices.contains(index), switchQueue.indices.contains(target) else { return }
+        switchQueue.swapAt(index, target)
+        SharedDataStore.shared.saveAutoSwitchQueue(switchQueue)
+    }
+
+    private func removeQueueEntry(_ index: Int) {
+        guard switchQueue.indices.contains(index) else { return }
+        switchQueue.remove(at: index)
+        SharedDataStore.shared.saveAutoSwitchQueue(switchQueue)
     }
 
     var body: some View {
@@ -288,53 +288,65 @@ struct ManageProfilesView: View {
 
                         Divider()
 
-                        // Custom switch order: default OFF = soonest-weekly-reset
-                        // ranking; ON = the queue below decides who is tried first.
-                        SettingToggle(
-                            title: "Custom switch order",
-                            description: "Queue exactly which account the auto-switch tries next. Off: the account whose weekly limit resets soonest is picked (default).",
-                            isOn: Binding(
-                                get: { customOrderEnabled },
-                                set: { enabled in
-                                    customOrderEnabled = enabled
-                                    SharedDataStore.shared.saveAutoSwitchCustomOrderEnabled(enabled)
-                                    if enabled { syncCustomOrderWithProfiles() }
+                        // Switch queue: a consumable playlist. #1 is the IMMEDIATE
+                        // next auto-switch target; each switch consumes the entry
+                        // it tried; empty queue = default soonest-weekly-reset.
+                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+                            HStack {
+                                Text("Switch queue")
+                                    .font(DesignTokens.Typography.body)
+                                Spacer()
+                                Menu("Queue account…") {
+                                    ForEach(profileManager.profiles.filter { !switchQueue.contains($0.id) }) { profile in
+                                        Button("\(profile.name)  (\(providerLabel(profile)))") {
+                                            switchQueue.append(profile.id)
+                                            SharedDataStore.shared.saveAutoSwitchQueue(switchQueue)
+                                        }
+                                    }
                                 }
-                            )
-                        )
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                            }
 
-                        if customOrderEnabled {
-                            VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
-                                ForEach(Array(customOrder.enumerated()), id: \.element) { index, id in
+                            if switchQueue.isEmpty {
+                                Text("Queue is empty — the auto-switch uses the default order (account whose weekly limit resets soonest). Queue accounts to hand off in a specific sequence; each entry is used once, then the default order resumes.")
+                                    .font(DesignTokens.Typography.caption)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                ForEach(Array(switchQueue.enumerated()), id: \.element) { index, id in
                                     if let profile = profileManager.profiles.first(where: { $0.id == id }) {
                                         HStack(spacing: DesignTokens.Spacing.small) {
-                                            Text("\(index + 1).")
-                                                .font(DesignTokens.Typography.body)
-                                                .foregroundColor(.secondary)
+                                            Text(index == 0 ? "next" : "\(index + 1).")
+                                                .font(DesignTokens.Typography.caption)
+                                                .foregroundColor(index == 0 ? DesignTokens.Colors.accent : .secondary)
                                                 .monospacedDigit()
-                                                .frame(width: 24, alignment: .trailing)
+                                                .frame(width: 32, alignment: .trailing)
                                             Text(profile.name)
                                                 .font(DesignTokens.Typography.body)
-                                            Text(profile.providerKind == .claude ? "Claude"
-                                                 : profile.providerKind == .codex ? "Codex" : "Grok")
+                                            Text(providerLabel(profile))
                                                 .font(DesignTokens.Typography.caption)
                                                 .foregroundColor(.secondary)
                                             Spacer()
-                                            Button { moveCustomOrder(index, by: -1) } label: {
+                                            Button { moveQueueEntry(index, by: -1) } label: {
                                                 Image(systemName: "chevron.up")
                                             }
                                             .buttonStyle(.plain)
                                             .disabled(index == 0)
-                                            Button { moveCustomOrder(index, by: 1) } label: {
+                                            Button { moveQueueEntry(index, by: 1) } label: {
                                                 Image(systemName: "chevron.down")
                                             }
                                             .buttonStyle(.plain)
-                                            .disabled(index == customOrder.count - 1)
+                                            .disabled(index == switchQueue.count - 1)
+                                            Button { removeQueueEntry(index) } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                         .padding(.vertical, 2)
                                     }
                                 }
-                                Text("The switch still checks headroom and skips exhausted or dead accounts; the queue only sets the order they are tried in. Accounts never cross providers.")
+                                Text("Each auto-switch consumes its entry; after the queue empties, the default order resumes. Headroom and dead-login checks still apply — an unusable queued account is skipped (and consumed). Providers never cross.")
                                     .font(DesignTokens.Typography.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -436,10 +448,15 @@ struct ManageProfilesView: View {
             )
         }
         .onAppear {
-            if customOrderEnabled { syncCustomOrderWithProfiles() }
+            // Reload: the auto-switch consumes entries store-side while this
+            // view is closed; also drop entries whose profile was deleted.
+            let ids = Set(profileManager.profiles.map(\.id))
+            switchQueue = SharedDataStore.shared.loadAutoSwitchQueue().filter { ids.contains($0) }
         }
-        .onChange(of: profileManager.profiles.map(\.id)) { _, _ in
-            if customOrderEnabled { syncCustomOrderWithProfiles() }
+        .onReceive(NotificationCenter.default.publisher(for: .credentialsChanged)) { _ in
+            // Fires on every profile activation (auto or manual) — reload so a
+            // consumed queue entry disappears from the list while it is open.
+            switchQueue = SharedDataStore.shared.loadAutoSwitchQueue()
         }
     }
 

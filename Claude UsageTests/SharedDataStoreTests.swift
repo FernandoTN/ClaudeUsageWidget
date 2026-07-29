@@ -45,21 +45,20 @@ final class SharedDataStoreTests: XCTestCase {
         XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 100)
     }
 
-    func testAutoSwitchCustomOrderRoundTripAndDefaults() {
-        Self.testDefaults.removeObject(forKey: "autoSwitchCustomOrderEnabled")
-        Self.testDefaults.removeObject(forKey: "autoSwitchCustomOrder")
-        // Defaults: disabled, empty queue (= current behavior).
-        XCTAssertFalse(sharedDataStore.loadAutoSwitchCustomOrderEnabled())
-        XCTAssertEqual(sharedDataStore.loadAutoSwitchCustomOrder(), [])
+    func testAutoSwitchQueueRoundTripAndDefault() {
+        Self.testDefaults.removeObject(forKey: "autoSwitchQueue")
+        // Default: empty queue = default switch behavior.
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchQueue(), [])
 
         let ids = [UUID(), UUID(), UUID()]
-        sharedDataStore.saveAutoSwitchCustomOrderEnabled(true)
-        sharedDataStore.saveAutoSwitchCustomOrder(ids)
-        XCTAssertTrue(sharedDataStore.loadAutoSwitchCustomOrderEnabled())
-        XCTAssertEqual(sharedDataStore.loadAutoSwitchCustomOrder(), ids)
+        sharedDataStore.saveAutoSwitchQueue(ids)
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchQueue(), ids)
 
-        sharedDataStore.saveAutoSwitchCustomOrderEnabled(false)
-        Self.testDefaults.removeObject(forKey: "autoSwitchCustomOrder")
+        // Consuming the head persists the remainder in order.
+        sharedDataStore.saveAutoSwitchQueue(Array(ids.dropFirst()))
+        XCTAssertEqual(sharedDataStore.loadAutoSwitchQueue(), Array(ids.dropFirst()))
+
+        Self.testDefaults.removeObject(forKey: "autoSwitchQueue")
     }
 
     func testAutoSwitchWeeklyThresholdDefaultsAndRoundTrips() {
