@@ -31,6 +31,37 @@ enum LabMode {
     /// `CUW_LAB_POPOVER=1` — open a popover against the first tile at launch.
     static let openPopover: Bool = ProcessInfo.processInfo.environment["CUW_LAB_POPOVER"] == "1"
 
+    /// `CUW_LAB_POPOVER_CYCLE=1` — open a production-configured popover
+    /// (semitransient, animated) on the first tile at launch, close it 8s
+    /// later, and keep the NSPopover object alive with its content view
+    /// controller nil'd — reproducing the production app's persistent
+    /// closed-popover window population. Ignition probe.
+    static let popoverCycle: Bool = ProcessInfo.processInfo.environment["CUW_LAB_POPOVER_CYCLE"] == "1"
+
+    /// `CUW_LAB_ACTIVATE=1` — activate the app once at launch (materializes
+    /// the app's menu-bar strip window, as opening Settings does in
+    /// production). Ignition probe.
+    static let activateOnce: Bool = ProcessInfo.processInfo.environment["CUW_LAB_ACTIVATE"] == "1"
+
+    /// `CUW_LAB_POPOVER_STRESS=1` — continuously cycle a semitransient popover
+    /// across tiles: every 3s performClose + immediately re-show anchored to
+    /// the next tile with a fresh hosting controller — the exact dance
+    /// MenuBarManager.togglePopover does when the user clicks tile after tile
+    /// (the pattern the production ignition window contained). Ignition probe.
+    static let popoverStress: Bool = ProcessInfo.processInfo.environment["CUW_LAB_POPOVER_STRESS"] == "1"
+
+    /// `CUW_LAB_REBUILD_SEC=<n>` — force a full status-item group rebuild
+    /// (`setupMultiProfile` teardown+recreate, the same path the weekly-reset
+    /// ranking reshuffle takes in production) every n seconds. Ignition probe
+    /// for the scene-accumulation hypothesis; nil when unset.
+    static let rebuildInterval: TimeInterval? = {
+        if let raw = ProcessInfo.processInfo.environment["CUW_LAB_REBUILD_SEC"],
+           let n = Double(raw), n >= 1 {
+            return n
+        }
+        return nil
+    }()
+
     /// `CUW_RENDER_LOG=1` — window census + render counters (lab AND normal mode).
     static let renderLog: Bool = ProcessInfo.processInfo.environment["CUW_RENDER_LOG"] == "1"
 }

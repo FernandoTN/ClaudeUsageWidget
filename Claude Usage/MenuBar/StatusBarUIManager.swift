@@ -388,6 +388,14 @@ final class StatusBarUIManager {
     /// flicker the whole group twice a minute.
     private var lastLayoutHealAt: Date = .distantPast
 
+    /// Hard lifetime cap on heal rebuilds: every teardown+recreate of the
+    /// group permanently leaks ~42 registered CAContexts on macOS 26/27
+    /// (2026-07-29 storm investigation), so self-repair gets two shots per
+    /// process and then only logs. A genuinely stranded tile after that is a
+    /// cosmetic defect; an unbounded rebuild loop is a CPU incident.
+    private var healRebuildsThisLaunch = 0
+    private static let maxHealRebuildsPerLaunch = 2
+
     /// Signature of a broken layout a heal-rebuild already failed to fix — the
     /// system reproduces some placements deterministically, so retrying the
     /// same layout forever only flickers the bar. A DIFFERENT broken layout
@@ -480,6 +488,29 @@ final class StatusBarUIManager {
         return true
     }
 
+    /// Reassign which profile owns which existing status item so the on-screen
+    /// slot sequence matches `desiredOrder` without tearing anything down.
+    /// Slot k (k-th created item) simply takes the k-th profile of the new
+    /// order; images repaint on the next paint pass because every render key
+    /// is dropped. Returns false (caller falls back to a full rebuild) if any
+    /// expected item is missing.
+    ///
+    /// Overflow-parked slots keep their stale image while hidden (macOS parks
+    /// them off-edge, nothing is visible); `overflowParkedIds` is cleared by
+    /// the caller and re-derived against the new mapping on the next
+    /// evaluation, and un-parking already forces a fresh render via the
+    /// `overflowParkedIds.didSet` key drop.
+    private func remapProfilesToExistingItems(desiredOrder: [UUID]) -> Bool {
+        let slotItems = multiProfileOrder.compactMap { multiProfileStatusItems[$0] }
+        guard slotItems.count == multiProfileOrder.count,
+              slotItems.count == desiredOrder.count else { return false }
+        multiProfileStatusItems = Dictionary(uniqueKeysWithValues: zip(desiredOrder, slotItems))
+        multiProfileOrder = desiredOrder
+        // Profile→button pairing changed everywhere: repaint every tile.
+        lastRenderKey.removeAll()
+        return true
+    }
+
     /// Profile ids whose window x is a duplicated off-edge parking slot
     /// (overflow-hidden). Visible tiles each own a distinct minX; overflowed
     /// tiles share one frame. Pure so it is unit-testable.
@@ -508,25 +539,43 @@ final class StatusBarUIManager {
         guard isMultiProfileMode else { return }
 
         // Fresh usage may have reshuffled the weekly-reset ranking (or changed the
-        // selected set). Status items cannot be reordered in place, so rebuild the
-        // group when the desired order differs — rare, so the flicker is acceptable.
-        // Same remedy when macOS has physically relocated a tile out of the group
-        // (see strandedTileDetected): recreating the whole group in one burst
-        // restores contiguity.
+        // selected set). Status items cannot be reordered in place — but they
+        // don't need to be: every pixel of a tile's identity (label, colors,
+        // bars) is painted into its image, so a pure ORDER change is satisfied
+        // by remapping which profile paints into which existing item. Only a
+        // changed SELECTION SET (different profiles) still requires recreating
+        // items. This distinction is load-bearing on macOS 26/27: each item is
+        // hosted as FrontBoard scenes whose teardown+recreate permanently leaks
+        // ~1 registered CAContext per tile (measured 2026-07-29: +14–21 contexts
+        // per rebuild, never reclaimed) — and the WindowServer iterates every
+        // registered context on each remote-context datagram, so rebuild-per-
+        // reshuffle turned ranking jitter into an unbounded main-thread tax.
         let desiredOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
         var rebuildReason: String?
         if desiredOrder != multiProfileOrder {
-            rebuildReason = "weekly-reset order changed"
+            if Set(desiredOrder) == Set(multiProfileOrder),
+               remapProfilesToExistingItems(desiredOrder: desiredOrder) {
+                LoggingService.shared.logUIEvent(
+                    "Multi-profile: ranking reshuffled — remapped \(desiredOrder.count) tiles in place (no rebuild)")
+            } else {
+                rebuildReason = "selected profile set changed"
+            }
             // Order change skips strandedTileDetected — clear parked set so a
             // later evaluation re-derives it rather than skipping newly visible tiles.
             overflowParkedIds = []
         } else if strandedTileDetected() {
             // strandedTileDetected always refreshes overflowParkedIds on this path.
-            rebuildReason = "a tile was relocated out of the group by the system"
-            lastLayoutHealAt = Date()
-            // One attempt per distinct broken layout: if the rebuild reproduces
-            // this same arrangement, stop retrying until something changes.
-            healFailedSignature = lastEvaluatedSignature
+            if healRebuildsThisLaunch < Self.maxHealRebuildsPerLaunch {
+                healRebuildsThisLaunch += 1
+                rebuildReason = "a tile was relocated out of the group by the system"
+                lastLayoutHealAt = Date()
+                // One attempt per distinct broken layout: if the rebuild reproduces
+                // this same arrangement, stop retrying until something changes.
+                healFailedSignature = lastEvaluatedSignature
+            } else {
+                LoggingService.shared.logWarning(
+                    "Multi-profile: stranded layout detected but heal-rebuild cap (\(Self.maxHealRebuildsPerLaunch)) reached — leaving layout as-is")
+            }
         }
         // When order is stable, the else-if above always runs strandedTileDetected
         // (updating overflowParkedIds even when the heal verdict is not stranded).
