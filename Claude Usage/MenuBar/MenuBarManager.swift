@@ -1948,6 +1948,31 @@ private func observeCredentialChanges() {
         return nil
     }
 
+    /// True when the account's WEEKLY quota is at/over the auto-switch weekly
+    /// threshold — all-models weekly or the Fable weekly for Claude; the single
+    /// weekly window for Codex/Grok. The 5h session window is deliberately NOT
+    /// consulted (owner spec 2026-07-29: session exhaustion regenerates within
+    /// hours and must not mark a tile as maxed). A weekly/Fable reset already in
+    /// the past means the window rolled over since the data was cached — full
+    /// quota again, not maxed. No cached usage -> not maxed. Static +
+    /// injectable so the tile-color rule is unit-testable.
+    nonisolated static func isWeeklyMaxed(
+        _ usage: ClaudeUsage?,
+        weeklyThreshold: Double,
+        now: Date = Date()
+    ) -> Bool {
+        guard let usage else { return false }
+        if usage.weeklyResetTime >= now, usage.weeklyPercentage >= weeklyThreshold {
+            return true
+        }
+        if let fable = usage.fableWeeklyPercentage,
+           usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true,
+           fable >= weeklyThreshold {
+            return true
+        }
+        return false
+    }
+
     /// Ranks auto-switch candidates. Default: soonest weekly reset first
     /// (profiles with no cached usage sort last — their reset time is unknown,
     /// so they serve as the fallback). With a user-defined custom order

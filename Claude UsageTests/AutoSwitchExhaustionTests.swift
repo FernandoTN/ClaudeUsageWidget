@@ -87,6 +87,34 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         )
     }
 
+    // MARK: - Weekly-maxed tile rule
+
+    func testWeeklyMaxedAtOrOverThreshold() {
+        XCTAssertTrue(MenuBarManager.isWeeklyMaxed(usage(weekly: 99), weeklyThreshold: 99, now: now))
+        XCTAssertTrue(MenuBarManager.isWeeklyMaxed(usage(weekly: 100), weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isWeeklyMaxed(usage(weekly: 98.9), weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isWeeklyMaxed(nil, weeklyThreshold: 99, now: now))
+    }
+
+    func testWeeklyMaxedByFableWindowAlone() {
+        XCTAssertTrue(MenuBarManager.isWeeklyMaxed(
+            usage(weekly: 10, fable: 99, fableResetIn: 86_400), weeklyThreshold: 99, now: now))
+        XCTAssertFalse(MenuBarManager.isWeeklyMaxed(
+            usage(weekly: 10, fable: 50, fableResetIn: 86_400), weeklyThreshold: 99, now: now))
+    }
+
+    func testWeeklyMaxedIgnoresRolledOverResetsAndSession() {
+        // Weekly reset already in the past: window rolled over — full quota.
+        XCTAssertFalse(MenuBarManager.isWeeklyMaxed(
+            usage(weekly: 100, weeklyResetIn: -3600), weeklyThreshold: 99, now: now))
+        // Fable reset in the past likewise.
+        XCTAssertFalse(MenuBarManager.isWeeklyMaxed(
+            usage(weekly: 10, fable: 100, fableResetIn: -3600), weeklyThreshold: 99, now: now))
+        // A maxed 5h SESSION never marks the tile (owner spec: weekly only).
+        XCTAssertFalse(MenuBarManager.isWeeklyMaxed(
+            usage(session: 100, weekly: 10), weeklyThreshold: 99, now: now))
+    }
+
     // MARK: - Burst-429 backoff curve
 
     func testBurstBackoffDoublesAndCaps() {
