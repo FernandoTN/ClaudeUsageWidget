@@ -53,6 +53,40 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         )
     }
 
+    // MARK: - Custom switch order ranking
+
+    private func profile(_ name: String, weeklyResetIn: TimeInterval) -> Profile {
+        var p = Profile(id: UUID(), name: name)
+        p.claudeUsage = usage(weeklyResetIn: weeklyResetIn)
+        return p
+    }
+
+    func testRankDefaultsToSoonestWeeklyReset() {
+        let a = profile("A", weeklyResetIn: 3 * 86_400)
+        let b = profile("B", weeklyResetIn: 1 * 86_400)
+        let c = profile("C", weeklyResetIn: 2 * 86_400)
+        let ranked = MenuBarManager.rankAutoSwitchCandidates([a, b, c], customOrder: nil, now: now)
+        XCTAssertEqual(ranked.map(\.name), ["B", "C", "A"])
+    }
+
+    func testRankHonorsCustomOrderAndAppendsUnqueued() {
+        let a = profile("A", weeklyResetIn: 3 * 86_400)
+        let b = profile("B", weeklyResetIn: 1 * 86_400)
+        let c = profile("C", weeklyResetIn: 2 * 86_400)
+        let d = profile("D", weeklyResetIn: 4 * 86_400)
+        // Queue: C first then A; B and D are unqueued and must follow in
+        // DEFAULT order (B's reset is sooner than D's).
+        let ranked = MenuBarManager.rankAutoSwitchCandidates(
+            [a, b, c, d], customOrder: [c.id, a.id], now: now
+        )
+        XCTAssertEqual(ranked.map(\.name), ["C", "A", "B", "D"])
+        // Empty queue behaves like default.
+        XCTAssertEqual(
+            MenuBarManager.rankAutoSwitchCandidates([a, b], customOrder: [], now: now).map(\.name),
+            ["B", "A"]
+        )
+    }
+
     // MARK: - Burst-429 backoff curve
 
     func testBurstBackoffDoublesAndCaps() {

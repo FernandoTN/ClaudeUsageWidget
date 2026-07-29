@@ -14,6 +14,25 @@ struct ManageProfilesView: View {
     @State private var errorMessage: String?
     @State private var autoSwitchThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
     @State private var autoSwitchWeeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+    @State private var customOrderEnabled = SharedDataStore.shared.loadAutoSwitchCustomOrderEnabled()
+    @State private var customOrder: [UUID] = []
+
+    /// Saved queue ∪ current profiles: drops deleted profiles, appends new ones
+    /// at the end, persists the reconciled result.
+    private func syncCustomOrderWithProfiles() {
+        let ids = profileManager.profiles.map(\.id)
+        var order = SharedDataStore.shared.loadAutoSwitchCustomOrder().filter { ids.contains($0) }
+        order.append(contentsOf: ids.filter { !order.contains($0) })
+        customOrder = order
+        SharedDataStore.shared.saveAutoSwitchCustomOrder(order)
+    }
+
+    private func moveCustomOrder(_ index: Int, by delta: Int) {
+        let target = index + delta
+        guard customOrder.indices.contains(index), customOrder.indices.contains(target) else { return }
+        customOrder.swapAt(index, target)
+        SharedDataStore.shared.saveAutoSwitchCustomOrder(customOrder)
+    }
 
     var body: some View {
         ScrollView {
@@ -252,58 +271,73 @@ struct ManageProfilesView: View {
 
                         Divider()
 
-                        // Proactive switch threshold
-                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
-                            HStack {
-                                Text("auto_switch.threshold_title".localized)
-                                    .font(DesignTokens.Typography.body)
-                                Spacer()
-                                Text("\(Int(autoSwitchThreshold))%")
-                                    .font(DesignTokens.Typography.body)
-                                    .foregroundColor(.secondary)
-                                    .monospacedDigit()
-                            }
-                            Slider(
-                                value: $autoSwitchThreshold,
-                                in: SharedDataStore.autoSwitchThresholdRange,
-                                step: 1
-                            )
-                            .controlSize(.small)
-                            // Persist on every value change, not onEditingChanged:
-                            // keyboard and VoiceOver adjustments never report an
-                            // editing session, so a drag-end-only save silently
-                            // drops them.
-                            .onChange(of: autoSwitchThreshold) { _, newValue in
-                                SharedDataStore.shared.saveAutoSwitchThreshold(newValue)
-                            }
-                            Text("auto_switch.threshold_description".localized)
-                                .font(DesignTokens.Typography.caption)
-                                .foregroundColor(.secondary)
-                        }
+                        // Proactive switch threshold — typed percentage, saved on
+                        // commit (Return / focus loss), clamped to the valid range.
+                        ThresholdField(
+                            title: "auto_switch.threshold_title".localized,
+                            description: "auto_switch.threshold_description".localized,
+                            value: $autoSwitchThreshold
+                        ) { SharedDataStore.shared.saveAutoSwitchThreshold($0) }
 
                         // Weekly (all-models + Fable) switch threshold
-                        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
-                            HStack {
-                                Text("auto_switch.weekly_threshold_title".localized)
-                                    .font(DesignTokens.Typography.body)
-                                Spacer()
-                                Text("\(Int(autoSwitchWeeklyThreshold))%")
-                                    .font(DesignTokens.Typography.body)
-                                    .foregroundColor(.secondary)
-                                    .monospacedDigit()
-                            }
-                            Slider(
-                                value: $autoSwitchWeeklyThreshold,
-                                in: SharedDataStore.autoSwitchThresholdRange,
-                                step: 1
+                        ThresholdField(
+                            title: "auto_switch.weekly_threshold_title".localized,
+                            description: "auto_switch.weekly_threshold_description".localized,
+                            value: $autoSwitchWeeklyThreshold
+                        ) { SharedDataStore.shared.saveAutoSwitchWeeklyThreshold($0) }
+
+                        Divider()
+
+                        // Custom switch order: default OFF = soonest-weekly-reset
+                        // ranking; ON = the queue below decides who is tried first.
+                        SettingToggle(
+                            title: "Custom switch order",
+                            description: "Queue exactly which account the auto-switch tries next. Off: the account whose weekly limit resets soonest is picked (default).",
+                            isOn: Binding(
+                                get: { customOrderEnabled },
+                                set: { enabled in
+                                    customOrderEnabled = enabled
+                                    SharedDataStore.shared.saveAutoSwitchCustomOrderEnabled(enabled)
+                                    if enabled { syncCustomOrderWithProfiles() }
+                                }
                             )
-                            .controlSize(.small)
-                            .onChange(of: autoSwitchWeeklyThreshold) { _, newValue in
-                                SharedDataStore.shared.saveAutoSwitchWeeklyThreshold(newValue)
+                        )
+
+                        if customOrderEnabled {
+                            VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
+                                ForEach(Array(customOrder.enumerated()), id: \.element) { index, id in
+                                    if let profile = profileManager.profiles.first(where: { $0.id == id }) {
+                                        HStack(spacing: DesignTokens.Spacing.small) {
+                                            Text("\(index + 1).")
+                                                .font(DesignTokens.Typography.body)
+                                                .foregroundColor(.secondary)
+                                                .monospacedDigit()
+                                                .frame(width: 24, alignment: .trailing)
+                                            Text(profile.name)
+                                                .font(DesignTokens.Typography.body)
+                                            Text(profile.providerKind == .claude ? "Claude"
+                                                 : profile.providerKind == .codex ? "Codex" : "Grok")
+                                                .font(DesignTokens.Typography.caption)
+                                                .foregroundColor(.secondary)
+                                            Spacer()
+                                            Button { moveCustomOrder(index, by: -1) } label: {
+                                                Image(systemName: "chevron.up")
+                                            }
+                                            .buttonStyle(.plain)
+                                            .disabled(index == 0)
+                                            Button { moveCustomOrder(index, by: 1) } label: {
+                                                Image(systemName: "chevron.down")
+                                            }
+                                            .buttonStyle(.plain)
+                                            .disabled(index == customOrder.count - 1)
+                                        }
+                                        .padding(.vertical, 2)
+                                    }
+                                }
+                                Text("The switch still checks headroom and skips exhausted or dead accounts; the queue only sets the order they are tried in. Accounts never cross providers.")
+                                    .font(DesignTokens.Typography.caption)
+                                    .foregroundColor(.secondary)
                             }
-                            Text("auto_switch.weekly_threshold_description".localized)
-                                .font(DesignTokens.Typography.caption)
-                                .foregroundColor(.secondary)
                         }
 
                         Divider()
@@ -401,6 +435,12 @@ struct ManageProfilesView: View {
                 }
             )
         }
+        .onAppear {
+            if customOrderEnabled { syncCustomOrderWithProfiles() }
+        }
+        .onChange(of: profileManager.profiles.map(\.id)) { _, _ in
+            if customOrderEnabled { syncCustomOrderWithProfiles() }
+        }
     }
 
     private func createNewProfile() {
@@ -408,6 +448,65 @@ struct ManageProfilesView: View {
         _ = profileManager.createProfile(name: name)
         showingCreateProfile = false
         newProfileName = ""
+    }
+}
+
+// MARK: - Threshold Field
+
+/// Typed percentage threshold: enter a number (80 → 80%), committed on Return
+/// or focus loss, clamped to `SharedDataStore.autoSwitchThresholdRange` and
+/// saved via the callback. Replaces the previous sliders — a threshold is a
+/// deliberate number, not a drag target.
+struct ThresholdField: View {
+    let title: String
+    let description: String
+    @Binding var value: Double
+    let onSave: (Double) -> Void
+
+    @State private var text: String = ""
+    @FocusState private var focused: Bool
+
+    private var range: ClosedRange<Double> { SharedDataStore.autoSwitchThresholdRange }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+            HStack {
+                Text(title)
+                    .font(DesignTokens.Typography.body)
+                Spacer()
+                TextField("", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .font(DesignTokens.Typography.body.monospacedDigit())
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 56)
+                    .focused($focused)
+                    .onSubmit(commit)
+                    .onChange(of: focused) { _, isFocused in
+                        if !isFocused { commit() }
+                    }
+                Text("%")
+                    .font(DesignTokens.Typography.body)
+                    .foregroundColor(.secondary)
+            }
+            Text("\(description) (\(Int(range.lowerBound))–\(Int(range.upperBound)))")
+                .font(DesignTokens.Typography.caption)
+                .foregroundColor(.secondary)
+        }
+        .onAppear { text = String(Int(value)) }
+        .onChange(of: value) { _, newValue in
+            if !focused { text = String(Int(newValue)) }
+        }
+    }
+
+    private func commit() {
+        guard let entered = Double(text.trimmingCharacters(in: .whitespaces)) else {
+            text = String(Int(value))  // not a number — revert
+            return
+        }
+        let clamped = min(max(entered, range.lowerBound), range.upperBound)
+        value = clamped
+        text = String(Int(clamped))
+        onSave(clamped)
     }
 }
 

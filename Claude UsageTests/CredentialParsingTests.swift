@@ -287,3 +287,40 @@ final class WeeklyResetProjectionTests: XCTestCase {
         XCTAssertEqual(profile(weeklyReset: nil).nextWeeklyReset(after: Date()), .distantFuture)
     }
 }
+
+// MARK: - Usage window classification (2026-07 API change)
+
+extension CodexCredentialParsingTests {
+
+    /// OpenAI collapsed the old 5h-primary/weekly-secondary pair into a single
+    /// 7-day primary with secondary=null — primary must map to WEEKLY.
+    func testWeeklyOnlyPayloadMapsPrimaryToWeekly() throws {
+        let payload = """
+        {"plan_type":"pro","rate_limit":{"allowed":true,"limit_reached":false,
+         "primary_window":{"used_percent":25,"limit_window_seconds":604800,
+                           "reset_after_seconds":563707,"reset_at":1785904233},
+         "secondary_window":null}}
+        """.data(using: .utf8)!
+        let usage = try CodexUsageService.shared.parseUsageResponse(payload)
+        XCTAssertEqual(usage.weeklyPercentage, 25)
+        XCTAssertEqual(usage.sessionPercentage, 0)
+        XCTAssertEqual(usage.hasSessionWindow, false)
+        XCTAssertEqual(usage.weeklyResetTime, Date(timeIntervalSince1970: 1785904233))
+        // Session reset mirrors the weekly boundary (Grok convention).
+        XCTAssertEqual(usage.sessionResetTime, usage.weeklyResetTime)
+    }
+
+    /// Legacy dual-window shape (5h primary + weekly secondary) keeps the old
+    /// mapping and still reports a session window.
+    func testLegacyDualWindowPayloadKeepsSessionMapping() throws {
+        let payload = """
+        {"plan_type":"pro","rate_limit":{
+         "primary_window":{"used_percent":40,"limit_window_seconds":18000,"reset_at":1785904233},
+         "secondary_window":{"used_percent":12,"limit_window_seconds":604800,"reset_at":1786400000}}}
+        """.data(using: .utf8)!
+        let usage = try CodexUsageService.shared.parseUsageResponse(payload)
+        XCTAssertEqual(usage.sessionPercentage, 40)
+        XCTAssertEqual(usage.weeklyPercentage, 12)
+        XCTAssertEqual(usage.hasSessionWindow, true)
+    }
+}

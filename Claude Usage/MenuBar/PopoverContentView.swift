@@ -563,19 +563,23 @@ struct SmartUsageDashboard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Primary: Session Usage
-            UsageRow(
-                title: "menubar.session_usage".localized,
-                subtitle: "menubar.5_hour_window".localized,
-                usedPercentage: usage.effectiveSessionPercentage,
-                showRemaining: showRemainingPercentage,
-                resetTime: usage.sessionResetTime,
-                periodDuration: Constants.sessionWindow,
-                showTimeMarker: showTimeMarker,
-                showPaceMarker: showPaceMarker,
-                usePaceColoring: usePaceColoring,
-                timeDisplay: timeDisplay
-            )
+            // Primary: Session Usage — omitted for weekly-only providers (Grok;
+            // Codex since OpenAI collapsed to a single 7-day window): a
+            // permanent-0% session row is noise, the weekly row IS their usage.
+            if usage.providesSessionWindow {
+                UsageRow(
+                    title: "menubar.session_usage".localized,
+                    subtitle: "menubar.5_hour_window".localized,
+                    usedPercentage: usage.effectiveSessionPercentage,
+                    showRemaining: showRemainingPercentage,
+                    resetTime: usage.sessionResetTime,
+                    periodDuration: Constants.sessionWindow,
+                    showTimeMarker: showTimeMarker,
+                    showPaceMarker: showPaceMarker,
+                    usePaceColoring: usePaceColoring,
+                    timeDisplay: timeDisplay
+                )
+            }
 
             // All Models (Weekly)
             UsageRow(

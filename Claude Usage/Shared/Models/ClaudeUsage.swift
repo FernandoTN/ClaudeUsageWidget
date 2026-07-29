@@ -31,6 +31,19 @@ struct ClaudeUsage: Codable, Equatable {
     /// Optional with nil default so previously cached usage JSON still decodes.
     var rateLimitedUntil: Date? = nil
 
+    /// False when the PROVIDER has no session-scale window at all — Grok has
+    /// always been weekly-only, and Codex became weekly-only when OpenAI
+    /// collapsed the old 5h primary / weekly secondary pair into a single
+    /// 7-day window (observed live 2026-07-29: primary_window
+    /// limit_window_seconds=604800, secondary_window=null). Distinct from
+    /// "session at 0%": tiles and popover collapse to ONE gauge when false.
+    /// Optional with nil default (nil = has a session window) so previously
+    /// cached usage JSON still decodes.
+    var hasSessionWindow: Bool? = nil
+
+    /// Convenience: nil means legacy/Claude data — session window exists.
+    var providesSessionWindow: Bool { hasSessionWindow ?? true }
+
     // Weekly data (all models)
     var weeklyTokensUsed: Int
     var weeklyLimit: Int

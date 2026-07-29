@@ -322,6 +322,7 @@ class GrokUsageService {
             // Grok has no 5h session window; a future reset keeps
             // effectiveSessionPercentage at the raw 0%.
             sessionResetTime: periodEnd,
+            hasSessionWindow: false,
             weeklyTokensUsed: Int(number(config["totalUsed"]) ?? 0),
             weeklyLimit: Int(number(config["monthlyLimit"]) ?? 0),
             weeklyPercentage: percent,

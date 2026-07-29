@@ -39,9 +39,18 @@ class SharedDataStore {
     }
 
     init() {
-        // Use standard UserDefaults (app container)
-        self.defaults = UserDefaults.standard
-        LoggingService.shared.log("SharedDataStore: Using standard app container storage")
+        // Same XCTest isolation as ProfileStore: test runs must never touch the
+        // user's real settings — SharedDataStoreTests' tearDown was deleting the
+        // live auto-switch thresholds on every suite run before this.
+        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        if isTestRun, let suite = UserDefaults(suiteName: "com.claudeusagewidget.tests") {
+            self.defaults = suite
+            LoggingService.shared.log("SharedDataStore: Using isolated TEST defaults suite")
+        } else {
+            self.defaults = UserDefaults.standard
+            LoggingService.shared.log("SharedDataStore: Using standard app container storage")
+        }
     }
 
     // MARK: - Setup State
@@ -214,6 +223,35 @@ class SharedDataStore {
         case .twentyFourHour:
             return true
         }
+    }
+
+    // MARK: - Auto-Switch Custom Order
+
+    private enum CustomOrderKeys {
+        static let enabled = "autoSwitchCustomOrderEnabled"
+        static let order = "autoSwitchCustomOrder"
+    }
+
+    /// When ON, the auto-switch walks candidates in the user's saved order
+    /// instead of the default soonest-weekly-reset ranking. Default OFF.
+    func saveAutoSwitchCustomOrderEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: CustomOrderKeys.enabled)
+    }
+
+    func loadAutoSwitchCustomOrderEnabled() -> Bool {
+        defaults.bool(forKey: CustomOrderKeys.enabled)
+    }
+
+    /// Ordered profile UUIDs for the custom switch queue. Profiles not in the
+    /// list rank AFTER every listed one (in default order) — a newly added
+    /// account degrades gracefully instead of hijacking the queue.
+    func saveAutoSwitchCustomOrder(_ order: [UUID]) {
+        defaults.set(order.map(\.uuidString), forKey: CustomOrderKeys.order)
+    }
+
+    func loadAutoSwitchCustomOrder() -> [UUID] {
+        (defaults.array(forKey: CustomOrderKeys.order) as? [String] ?? [])
+            .compactMap(UUID.init(uuidString:))
     }
 
 }

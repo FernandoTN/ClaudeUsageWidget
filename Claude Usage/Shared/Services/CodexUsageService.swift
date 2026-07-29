@@ -478,7 +478,7 @@ class CodexUsageService {
 
     /// Maps the wham/usage payload onto ClaudeUsage. Only the unified session/weekly
     /// windows are populated — Opus/Sonnet/Fable breakdowns are Claude-specific.
-    private func parseUsageResponse(_ data: Data) throws -> ClaudeUsage {
+    func parseUsageResponse(_ data: Data) throws -> ClaudeUsage {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rateLimit = json["rate_limit"] as? [String: Any] else {
             throw AppError(code: .apiParsingFailed, message: "Failed to parse Codex usage data", isRecoverable: false)
@@ -496,18 +496,35 @@ class CodexUsageService {
         let primary = window("primary_window")
         let secondary = window("secondary_window")
 
-        let sessionPercentage = primary?.percent ?? 0
-        let sessionResetTime = primary?.reset ?? Date().addingTimeInterval(5 * 3600)
-        let weeklyPercentage = secondary?.percent ?? 0
-        let weeklyResetTime = secondary?.reset ?? Date().addingTimeInterval(7 * 24 * 3600)
+        // Classify windows by their actual DURATION, not their slot: OpenAI
+        // collapsed the old 5h-primary/weekly-secondary pair into a single
+        // 7-day primary with secondary=null (observed live 2026-07-29 —
+        // limit_window_seconds=604800). Blindly mapping primary→session showed
+        // the weekly 25% as "session" and froze weekly at 0.
+        func windowSeconds(_ key: String) -> TimeInterval? {
+            (rateLimit[key] as? [String: Any])?["limit_window_seconds"] as? TimeInterval
+        }
+        let primaryIsWeekly = (windowSeconds("primary_window") ?? 0) >= 6 * 24 * 3600
 
-        LoggingService.shared.log("Codex: usage parsed - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"))")
+        let sessionWindow = primaryIsWeekly ? nil : primary
+        let weeklyWindow = primaryIsWeekly ? primary : secondary
+
+        let weeklyPercentage = weeklyWindow?.percent ?? 0
+        let weeklyResetTime = weeklyWindow?.reset ?? Date().addingTimeInterval(7 * 24 * 3600)
+        // No session window (current API): mirror the Grok convention — 0% with
+        // the weekly boundary as its reset — and mark hasSessionWindow=false so
+        // the UI collapses to one gauge.
+        let sessionPercentage = sessionWindow?.percent ?? 0
+        let sessionResetTime = sessionWindow?.reset ?? weeklyResetTime
+
+        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"))")
 
         return ClaudeUsage(
             sessionTokensUsed: 0,
             sessionLimit: 0,
             sessionPercentage: sessionPercentage,
             sessionResetTime: sessionResetTime,
+            hasSessionWindow: sessionWindow != nil,
             weeklyTokensUsed: 0,
             weeklyLimit: Constants.weeklyLimit,
             weeklyPercentage: weeklyPercentage,

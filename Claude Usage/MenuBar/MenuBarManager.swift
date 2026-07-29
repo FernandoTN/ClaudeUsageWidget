@@ -1882,11 +1882,10 @@ private func observeCredentialChanges() {
             return true
         }
 
-        // Soonest weekly reset first. Profiles with no cached usage sort last (their
-        // reset time is unknown, so they serve as the fallback).
-        let ranked = candidates.sorted {
-            $0.nextWeeklyReset(after: now) < $1.nextWeeklyReset(after: now)
-        }
+        let customOrder = SharedDataStore.shared.loadAutoSwitchCustomOrderEnabled()
+            ? SharedDataStore.shared.loadAutoSwitchCustomOrder()
+            : nil
+        let ranked = Self.rankAutoSwitchCandidates(candidates, customOrder: customOrder, now: now)
 
         for candidate in ranked {
             if hasSessionHeadroom(candidate, threshold: sessionThreshold)
@@ -1897,6 +1896,32 @@ private func observeCredentialChanges() {
             LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
         }
         return nil
+    }
+
+    /// Ranks auto-switch candidates. Default: soonest weekly reset first
+    /// (profiles with no cached usage sort last — their reset time is unknown,
+    /// so they serve as the fallback). With a user-defined custom order
+    /// (Settings → Profiles → Auto-Switch → Custom switch order): queue
+    /// position wins; profiles NOT in the queue rank after every queued one,
+    /// in default order. Headroom/eligibility checks are unaffected — the
+    /// queue only decides who gets tried FIRST. Static + injectable for tests.
+    nonisolated static func rankAutoSwitchCandidates(
+        _ candidates: [Profile],
+        customOrder: [UUID]?,
+        now: Date
+    ) -> [Profile] {
+        let byReset = candidates.sorted {
+            $0.nextWeeklyReset(after: now) < $1.nextWeeklyReset(after: now)
+        }
+        guard let customOrder, !customOrder.isEmpty else { return byReset }
+        let position = Dictionary(uniqueKeysWithValues: customOrder.enumerated().map { ($1, $0) })
+        // Stable partition: queued candidates in queue order, then the rest in
+        // default order.
+        let queued = byReset
+            .filter { position[$0.id] != nil }
+            .sorted { position[$0.id]! < position[$1.id]! }
+        let unqueued = byReset.filter { position[$0.id] == nil }
+        return queued + unqueued
     }
 
     /// True while the candidate's session usage is below the SESSION switch
@@ -1934,8 +1959,7 @@ private func observeCredentialChanges() {
         // If settings window already exists, bring it to front (and jump it to the
         // requested section — its SwiftUI state can't be re-seeded from here)
         if let existingWindow = settingsWindow, existingWindow.isVisible {
-            existingWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            Self.bringWindowToForeground(existingWindow)
             if let section {
                 NotificationCenter.default.post(name: .settingsSectionRequested, object: section.rawValue)
             }
@@ -1944,8 +1968,15 @@ private func observeCredentialChanges() {
 
         // Small delay to ensure smooth transition
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            // Temporarily show dock icon for the settings window (like setup wizard)
-            NSApp.setActivationPolicy(.regular)
+            // Deliberately NO setActivationPolicy(.regular) here: flipping an
+            // accessory app's activation policy forces EVERY window — including
+            // all 14 status-item windows — to re-register its remote context and
+            // tracking-area structural regions with the window server. Sampled
+            // live 2026-07-29 while the settings window was "frozen" (20s+
+            // responses): the main thread sat in a remote_context_notify →
+            // _NSTrackingAreaAKManager → add_structural_region storm of
+            // synchronous mach_msg round-trips. A settings window needs no Dock
+            // icon; bringWindowToForeground() handles focus without the flip.
 
             // Create and show the settings window
             let window = SettingsWindowBuilder.makeWindow(size: Constants.WindowSizes.settingsWindow, initialSection: section)
@@ -1956,9 +1987,20 @@ private func observeCredentialChanges() {
 
             self.settingsWindow = window
 
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            Self.bringWindowToForeground(window)
         }
+    }
+
+    /// Foreground a window from this ACCESSORY app assertively. Since macOS 14,
+    /// `NSApp.activate()` is cooperative — called from a menu-bar app after a
+    /// dispatch delay, the click's interaction grant has expired and the system
+    /// DENIES the activation, so the window opens BEHIND the frontmost app and
+    /// looks like nothing happened (real report 2026-07-29: settings "frozen",
+    /// actually open in the background).
+    static func bringWindowToForeground(_ window: NSWindow) {
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     private func switchToNextProfile() {
@@ -2061,8 +2103,10 @@ extension MenuBarManager: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow {
             if window == settingsWindow {
-                // Hide dock icon again when settings window closes
-                NSApp.setActivationPolicy(.accessory)
+                // No policy restore needed — settings no longer flips the
+                // activation policy (see preferencesClicked). Release the SwiftUI
+                // hosting graph like the popover/detached paths do.
+                window.contentViewController = nil
                 settingsWindow = nil
             } else if window == detachedWindow {
                 // Release SwiftUI hosting graph (same rationale as popoverDidClose)
