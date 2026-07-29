@@ -103,6 +103,16 @@ class MenuBarManager: NSObject, ObservableObject {
     private var lastAutoRefreshTime: Date = .distantPast
 
     func setup() {
+        // Idempotency: the headless screen-recovery path and AppDelegate's
+        // delayed retry can call setup() again on a live manager. Without this
+        // teardown, a second pass would orphan the whole status-item group
+        // (leaking its scene CAContexts server-side) and duplicate every
+        // timer/observer registered below (Codex consult 2026-07-29).
+        if statusBarUIManager != nil {
+            LoggingService.shared.logWarning("MenuBarManager: setup() re-entered — cleaning up prior state first")
+            cleanup()
+        }
+
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
@@ -139,8 +149,13 @@ class MenuBarManager: NSObject, ObservableObject {
             statusBarUIManager?.setup(target: self, action: #selector(togglePopover), config: displayConfig)
         }
 
-        // Setup popover
-        setupPopover()
+        // The popover is created lazily on first click (ensurePopover) and
+        // DESTROYED on close: a closed NSPopover keeps its borderless
+        // _NSPopoverWindow alive off-screen forever, and every off-screen
+        // window participates in AppKit's per-display-cycle tracking-area /
+        // structural-region pass (the 2026-07-29 storm investigation found the
+        // WindowServer↔AppKit feedback loop iterating exactly these windows).
+        // The window population while idle should be status items only.
 
         // Load saved data from active profile first (provides immediate feedback)
         // BUT only if profile has usage credentials - CLI alone can't show usage
@@ -211,6 +226,16 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Setup global keyboard shortcuts
         setupShortcuts()
+
+        // Idle-burn guardrail: alarms (log + one notification) when the app
+        // burns CPU with no popover/settings open — the storm failure class.
+        StormWatchdog.shared.isNominallyIdle = { [weak self] in
+            guard let self else { return true }
+            return self.popover == nil
+                && self.settingsWindow == nil
+                && self.detachedWindow == nil
+        }
+        StormWatchdog.shared.start()
     }
 
     private func setupShortcuts() {
@@ -365,22 +390,13 @@ class MenuBarManager: NSObject, ObservableObject {
     }
 
     private func recreatePopover() {
-        // Close existing popover if open
+        // Close (and thereby destroy) any open popover; the next click builds
+        // a fresh one with fresh content via ensurePopover().
         if popover?.isShown == true {
             closePopover()
         }
-
-        // Recreate popover with fresh content
-        let newPopover = NSPopover()
-        newPopover.contentSize = Constants.WindowSizes.popoverSize
-        newPopover.behavior = .semitransient
-        newPopover.animates = true
-        newPopover.delegate = self
-        newPopover.contentViewController = createContentViewController()
-
-        self.popover = newPopover
-
-        LoggingService.shared.log("MenuBarManager: Popover recreated for profile switch")
+        popover = nil
+        LoggingService.shared.log("MenuBarManager: Popover dropped for profile switch")
     }
 
     private func updateMenuBarDisplay(with config: MenuBarIconConfiguration) {
@@ -435,15 +451,17 @@ class MenuBarManager: NSObject, ObservableObject {
         LoggingService.shared.log("Updated refresh interval to \(interval)s")
     }
 
-    private func setupPopover() {
+    /// Returns the live popover, creating it if needed. Created WITHOUT content;
+    /// every show-path installs a fresh contentViewController first.
+    private func ensurePopover() -> NSPopover {
+        if let popover { return popover }
         let popover = NSPopover()
         popover.contentSize = Constants.WindowSizes.popoverSize
-        popover.behavior = .semitransient  // Changed to allow detaching
+        popover.behavior = .semitransient  // Allows detaching
         popover.animates = true
         popover.delegate = self
-
-        popover.contentViewController = createContentViewController()
         self.popover = popover
+        return popover
     }
 
     private func createContentViewController() -> NSHostingController<PopoverContentView> {
@@ -506,40 +524,46 @@ class MenuBarManager: NSObject, ObservableObject {
         }
 
         // Otherwise toggle the popover
-        if let popover = popover {
-            if popover.isShown {
-                // Check if clicking the same button or a different one
-                if currentPopoverButton === button {
-                    // Same button - close the popover
-                    closePopover()
-                } else {
-                    // Different button - close current and show at new position
-                    popover.performClose(nil)
-                    stopMonitoringForOutsideClicks()
-                    // Update content view controller for new profile data
-                    popover.contentViewController = createContentViewController()
-                    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                    currentPopoverButton = button
-                    startMonitoringForOutsideClicks()
-                }
+        if let popover, popover.isShown {
+            // Check if clicking the same button or a different one
+            if currentPopoverButton === button {
+                // Same button - close the popover
+                closePopover()
             } else {
-                // Popover not shown. If it JUST closed anchored to this same
-                // button, this click is the semitransient auto-close's own
-                // mouse-up — the user meant "dismiss", so swallow the re-open.
-                if let lastButton = lastPopoverCloseButton, lastButton === button,
-                   Date().timeIntervalSince(lastPopoverCloseTime) < 0.3 {
-                    lastPopoverCloseButton = nil
-                    stopMonitoringForOutsideClicks()
-                    return
-                }
-                // Stop any existing monitor first
+                // Different button: close now, re-show on the NEXT runloop
+                // turn with a FRESH popover. Closing and re-anchoring the same
+                // popover against a different scene-hosted status button in a
+                // single turn is one of the suspected storm igniters (Codex
+                // consult 2026-07-29); the deferred destroy in popoverDidClose
+                // runs first, so the re-show always builds a clean popover.
+                popover.performClose(nil)
                 stopMonitoringForOutsideClicks()
-                // Update content view controller for current profile data
-                popover.contentViewController = createContentViewController()
-                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                currentPopoverButton = button
-                startMonitoringForOutsideClicks()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let fresh = self.ensurePopover()
+                    fresh.contentViewController = self.createContentViewController()
+                    fresh.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                    self.currentPopoverButton = button
+                    self.startMonitoringForOutsideClicks()
+                }
             }
+        } else {
+            // Popover not shown. If it JUST closed anchored to this same
+            // button, this click is the semitransient auto-close's own
+            // mouse-up — the user meant "dismiss", so swallow the re-open.
+            if let lastButton = lastPopoverCloseButton, lastButton === button,
+               Date().timeIntervalSince(lastPopoverCloseTime) < 0.3 {
+                lastPopoverCloseButton = nil
+                stopMonitoringForOutsideClicks()
+                return
+            }
+            // Stop any existing monitor first
+            stopMonitoringForOutsideClicks()
+            let popover = ensurePopover()
+            popover.contentViewController = createContentViewController()
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            currentPopoverButton = button
+            startMonitoringForOutsideClicks()
         }
     }
 
@@ -2157,15 +2181,21 @@ extension MenuBarManager: NSPopoverDelegate {
         lastPopoverCloseTime = Date()
         currentPopoverButton = nil
 
-        // Drop the hosting controller so SwiftUI stops re-rendering on every
-        // ProfileManager publish while the popover is closed. Per-open paths
-        // already recreate contentViewController before show.
+        // DESTROY the popover once closed: dropping only the hosting
+        // controller (the previous fix) still leaves the borderless
+        // _NSPopoverWindow alive off-screen forever, where it joins AppKit's
+        // per-display-cycle tracking-area/structural-region pass — the window
+        // population implicated in the 2026-07-29 WindowServer feedback-loop
+        // storm. ensurePopover() rebuilds it on the next click (~1ms).
         // Defer one turn so a same-runloop re-show (e.g. switching tiles)
-        // can install new content first; only tear down if still closed.
-        guard let popover = notification.object as? NSPopover else { return }
-        DispatchQueue.main.async { [weak popover] in
-            guard let popover, !popover.isShown else { return }
-            popover.contentViewController = nil
+        // can re-show this popover first; only tear down if still closed.
+        guard let closed = notification.object as? NSPopover else { return }
+        DispatchQueue.main.async { [weak self, weak closed] in
+            guard let closed, !closed.isShown else { return }
+            closed.contentViewController = nil
+            if let self, self.popover === closed {
+                self.popover = nil
+            }
         }
     }
 }

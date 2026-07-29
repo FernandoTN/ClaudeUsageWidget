@@ -18,6 +18,8 @@ final class LabController: NSObject {
     private var profiles: [Profile] = []
     private let displayConfig = MultiProfileDisplayConfig.default
     private var repaintTimer: Timer?
+    private var rebuildTimer: Timer?
+    private var rebuildCount = 0
     private var popover: NSPopover?
 
     private override init() {
@@ -46,6 +48,17 @@ final class LabController: NSObject {
             if LabMode.openPopover {
                 self.openPopoverOnFirstTile()
             }
+            if LabMode.popoverCycle {
+                self.cycleProductionStylePopover()
+            }
+            if LabMode.popoverStress {
+                self.startPopoverStress()
+            }
+            if LabMode.activateOnce {
+                NSApp.setActivationPolicy(.accessory)
+                NSApp.activate(ignoringOtherApps: true)
+                LoggingService.shared.log("LabController: activated app once")
+            }
         }
 
         if !LabMode.freeze {
@@ -54,6 +67,14 @@ final class LabController: NSObject {
             }
             RunLoop.main.add(timer, forMode: .common)
             repaintTimer = timer
+        }
+
+        if let interval = LabMode.rebuildInterval {
+            let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+                self?.forceRebuild()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            rebuildTimer = timer
         }
 
         LoggingService.shared.log(
@@ -86,6 +107,28 @@ final class LabController: NSObject {
         )
     }
 
+    /// Mirror the production ranking-reshuffle rebuild: full teardown+recreate
+    /// via `setupMultiProfile`, then repaint on the next runloop (the same
+    /// deferred-repaint dance `updateMultiProfileButtons` does after a rebuild).
+    private func forceRebuild() {
+        rebuildCount += 1
+        let n = rebuildCount
+        statusBarUIManager.setupMultiProfile(
+            profiles: profiles,
+            target: self,
+            action: #selector(tileClicked(_:))
+        )
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.statusBarUIManager.updateMultiProfileButtons(
+                profiles: self.profiles,
+                config: self.displayConfig
+            )
+            LoggingService.shared.log("LabController: forced rebuild #\(n) complete")
+            RenderInstrumentation.logCensus()
+        }
+    }
+
     // MARK: - Popover isolation
 
     private func openPopoverOnFirstTile() {
@@ -107,6 +150,102 @@ final class LabController: NSObject {
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         self.popover = popover
         LoggingService.shared.log("LabController: popover opened on first tile")
+    }
+
+    /// Mirror production's popover lifecycle: semitransient NSPopover shown on
+    /// the first tile, closed 8s later, contentViewController nil'd on close
+    /// (like MenuBarManager.popoverDidClose) with the popover object kept
+    /// alive — leaving the same persistent closed _NSPopoverWindow production
+    /// carries.
+    private func cycleProductionStylePopover() {
+        let ordered = StatusBarUIManager.multiProfileCreationOrder(for: profiles)
+        guard let firstId = ordered.first?.id,
+              let button = statusBarUIManager.button(for: firstId) else {
+            LoggingService.shared.logWarning("LabController: no first tile for popover cycle")
+            return
+        }
+        let popover = NSPopover()
+        popover.contentSize = Constants.WindowSizes.popoverSize
+        popover.behavior = .semitransient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(rootView: LabPopoverStubView())
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        self.popover = popover
+        LoggingService.shared.log("LabController: popover-cycle opened")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self, let popover = self.popover else { return }
+            popover.performClose(nil)
+            // Mirror MenuBarManager.popoverDidClose: release SwiftUI content,
+            // keep the popover (and its window) alive.
+            DispatchQueue.main.async {
+                popover.contentViewController = nil
+                LoggingService.shared.log("LabController: popover-cycle closed, content released")
+            }
+        }
+    }
+
+    private var stressTimer: Timer?
+    private var stressIndex = 0
+
+    /// Continuously re-anchor a semitransient popover across tiles, mirroring
+    /// togglePopover's different-button branch (performClose + fresh content +
+    /// immediate show). Every 4th cycle, close and leave closed for one beat
+    /// (mirroring semitransient auto-close), then resume. Every 7th cycle,
+    /// mirror `recreatePopover()`'s profile-switch parity instead: performClose
+    /// the shown popover and, in the SAME runloop turn, replace it with a
+    /// brand-new NSPopover + fresh hosting controller and show that — the
+    /// production sequence that logs "cannot add handler to 2 from 2 -
+    /// dropping" (the ignition precursor) when it races an in-flight commit.
+    /// Anchors rotate over the first 6 creation-order ids (rightmost tiles,
+    /// least likely to be overflow-parked on a crowded bar).
+    private func startPopoverStress() {
+        let popover = NSPopover()
+        popover.contentSize = Constants.WindowSizes.popoverSize
+        popover.behavior = .semitransient
+        popover.animates = true
+        self.popover = popover
+
+        let ordered = Array(
+            StatusBarUIManager.multiProfileCreationOrder(for: profiles).map(\.id).prefix(6)
+        )
+        guard !ordered.isEmpty else { return }
+
+        let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, let popover = self.popover else { return }
+            self.stressIndex += 1
+            if self.stressIndex % 7 == 0 {
+                // Switch parity: destroy-and-replace while the old one closes.
+                popover.performClose(nil)
+                let fresh = NSPopover()
+                fresh.contentSize = Constants.WindowSizes.popoverSize
+                fresh.behavior = .semitransient
+                fresh.animates = true
+                fresh.contentViewController = NSHostingController(rootView: LabPopoverStubView())
+                self.popover = fresh
+                let id = ordered[self.stressIndex % ordered.count]
+                if let button = self.statusBarUIManager.button(for: id) {
+                    fresh.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                }
+                LoggingService.shared.log("LabController: popover-stress recreate (switch parity)")
+                return
+            }
+            if self.stressIndex % 4 == 0 {
+                popover.performClose(nil)
+                DispatchQueue.main.async {
+                    if !popover.isShown { popover.contentViewController = nil }
+                }
+                LoggingService.shared.log("LabController: popover-stress closed (beat)")
+                return
+            }
+            let id = ordered[self.stressIndex % ordered.count]
+            guard let button = self.statusBarUIManager.button(for: id) else { return }
+            popover.performClose(nil)
+            popover.contentViewController = NSHostingController(rootView: LabPopoverStubView())
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        stressTimer = timer
+        LoggingService.shared.log("LabController: popover stress started over \(ordered.count) tiles")
     }
 
     // MARK: - Synthetic data
