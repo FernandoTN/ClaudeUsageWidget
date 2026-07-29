@@ -668,6 +668,7 @@ final class MenuBarIconRenderer {
         profileInitial: String,
         monochromeMode: Bool,
         isDarkMode: Bool,
+        activeLabelColor: NSColor? = nil,
         useSystemColor: Bool = false,
         sessionTimeMarker: CGFloat? = nil,
         weekTimeMarker: CGFloat? = nil,
@@ -685,7 +686,10 @@ final class MenuBarIconRenderer {
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
-        let textColor: NSColor = foregroundColor
+        // Active-account label highlight (owner request 2026-07-29): overrides the
+        // plain label color; bars/markers keep their normal palette.
+        let labelColor = activeLabelColor ?? foregroundColor
+        let textColor: NSColor = labelColor
         let sessionColor: NSColor = getColor(for: sessionStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
         let weekColor: NSColor = getColor(for: weekStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
         let backgroundColor: NSColor = foregroundColor.withAlphaComponent(0.15)
@@ -805,6 +809,7 @@ final class MenuBarIconRenderer {
         profileName: String,
         monochromeMode: Bool,
         isDarkMode: Bool,
+        activeLabelColor: NSColor? = nil,
         useSystemColor: Bool = false,
         sessionTimeMarker: CGFloat? = nil,
         weekTimeMarker: CGFloat? = nil,
@@ -828,7 +833,10 @@ final class MenuBarIconRenderer {
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
-        let textColor: NSColor = foregroundColor
+        // Active-account label highlight (owner request 2026-07-29): overrides the
+        // plain label color; bars/markers keep their normal palette.
+        let labelColor = activeLabelColor ?? foregroundColor
+        let textColor: NSColor = labelColor
         let sessionColor: NSColor = getColor(for: sessionStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
         let weekColor: NSColor = getColor(for: weekStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
         let backgroundColor: NSColor = foregroundColor.withAlphaComponent(0.15)
@@ -949,6 +957,7 @@ final class MenuBarIconRenderer {
         profileName: String?,
         monochromeMode: Bool,
         isDarkMode: Bool,
+        activeLabelColor: NSColor? = nil,
         useSystemColor: Bool = false,
         sessionTimeMarker: CGFloat? = nil,
         weekTimeMarker: CGFloat? = nil,
@@ -972,6 +981,9 @@ final class MenuBarIconRenderer {
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
+        // Active-account label highlight (owner request 2026-07-29): overrides the
+        // plain label color; bars/markers keep their normal palette.
+        let labelColor = activeLabelColor ?? foregroundColor
         let sessionColor: NSColor = getColor(for: sessionStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
         let weekColor: NSColor = getColor(for: weekStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
         let backgroundColor: NSColor = foregroundColor.withAlphaComponent(0.2)
@@ -1025,7 +1037,7 @@ final class MenuBarIconRenderer {
             let label = String(name.prefix(3))
             let labelAttributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 8, weight: .medium),
-                .foregroundColor: foregroundColor.withAlphaComponent(0.85)
+                .foregroundColor: labelColor.withAlphaComponent(0.85)
             ]
             let labelString = label as NSString
             let labelSize = labelString.size(withAttributes: labelAttributes)
@@ -1045,6 +1057,7 @@ final class MenuBarIconRenderer {
         profileInitial: String?,
         monochromeMode: Bool,
         isDarkMode: Bool,
+        activeLabelColor: NSColor? = nil,
         useSystemColor: Bool = false,
         paceStatus: PaceStatus? = nil,
         showPaceMarker: Bool = false
@@ -1065,6 +1078,9 @@ final class MenuBarIconRenderer {
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
+        // Active-account label highlight (owner request 2026-07-29): overrides the
+        // plain label color; bars/markers keep their normal palette.
+        let labelColor = activeLabelColor ?? foregroundColor
         let dotColor: NSColor = getColor(for: status, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
 
         // Draw main status dot
@@ -1092,7 +1108,7 @@ final class MenuBarIconRenderer {
         if let initial = profileInitial {
             let labelAttributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 8, weight: .bold),
-                .foregroundColor: foregroundColor.withAlphaComponent(0.85)
+                .foregroundColor: labelColor.withAlphaComponent(0.85)
             ]
             let labelString = initial.uppercased() as NSString
             let labelSize = labelString.size(withAttributes: labelAttributes)
@@ -1159,6 +1175,7 @@ final class MenuBarIconRenderer {
         profileName: String?,
         monochromeMode: Bool,
         isDarkMode: Bool,
+        activeLabelColor: NSColor? = nil,
         useSystemColor: Bool = false,
         sessionPaceStatus: PaceStatus? = nil,
         weekPaceStatus: PaceStatus? = nil,
@@ -1166,6 +1183,9 @@ final class MenuBarIconRenderer {
     ) -> NSImage {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
+        // Active-account label highlight (owner request 2026-07-29): overrides the
+        // plain label color; bars/markers keep their normal palette.
+        let labelColor = activeLabelColor ?? foregroundColor
         let separatorColor = foregroundColor.withAlphaComponent(0.4)
 
         let sessionColor: NSColor = getColor(for: sessionStatus, monochromeMode: monochromeMode, useSystemColor: useSystemColor, isDarkMode: isDarkMode)
@@ -1227,7 +1247,7 @@ final class MenuBarIconRenderer {
             let label = String(name.prefix(3))
             let labelAttributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 8, weight: .medium),
-                .foregroundColor: foregroundColor.withAlphaComponent(0.85)
+                .foregroundColor: labelColor.withAlphaComponent(0.85)
             ]
             let labelString = label as NSString
             let labelSize = labelString.size(withAttributes: labelAttributes)

@@ -79,6 +79,8 @@ final class StatusBarUIManager {
         /// system colors differently while agreeing on "is dark" — the name
         /// transition is what guarantees a re-render once AppKit settles.
         var appearanceName: String
+        /// Active accounts render a highlighted label — a switch must repaint them
+        var isActiveAccount: Bool
         /// Backing scale × 100 when reachable, else 0
         var backingScaleQ: Int
     }
@@ -564,6 +566,22 @@ final class StatusBarUIManager {
         // match the system clock deterministically on every repaint.
         let groupAppearance = NSAppearance(named: .darkAqua) ?? NSApp.effectiveAppearance
 
+        // Active accounts get a distinct label color (owner request 2026-07-29):
+        // the provider-active Claude and Codex accounts, and Grok's active one
+        // (Grok has no shared-login pointer — the focused Grok profile counts,
+        // else a sole Grok profile is trivially the active one).
+        let activeIds: Set<UUID> = {
+            let pm = ProfileManager.shared
+            var ids = Set([pm.activeClaudeProfileId, pm.activeCodexProfileId].compactMap { $0 })
+            let groks = profiles.filter { $0.providerKind == .grok }
+            if let focused = pm.activeProfile, focused.providerKind == .grok {
+                ids.insert(focused.id)
+            } else if groks.count == 1, let sole = groks.first {
+                ids.insert(sole.id)
+            }
+            return ids
+        }()
+
         for profile in profiles where profile.isSelectedForDisplay {
             guard let statusItem = multiProfileStatusItems[profile.id],
                   let button = statusItem.button else {
@@ -576,6 +594,7 @@ final class StatusBarUIManager {
             }
 
             let renderAppearance = groupAppearance
+            let isActiveAccount = activeIds.contains(profile.id)
             let menuBarIsDark = renderAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
             // Get usage data for this profile
@@ -682,6 +701,7 @@ final class StatusBarUIManager {
                 label: label,
                 config: config,
                 appearanceName: renderAppearance.name.rawValue,
+                isActiveAccount: isActiveAccount,
                 backingScaleQ: Int((backingScale * 100).rounded())
             )
 
@@ -710,6 +730,7 @@ final class StatusBarUIManager {
                         profileName: profile.menuBarDisplayName,
                         monochromeMode: useMonochrome,
                         isDarkMode: menuBarIsDark,
+                        activeLabelColor: isActiveAccount ? NSColor.systemCyan : nil,
                         useSystemColor: false,
                         sessionTimeMarker: sessionMarker,
                         weekTimeMarker: showWeekSlot ? weekMarker : nil,
@@ -726,6 +747,7 @@ final class StatusBarUIManager {
                         profileInitial: String(profile.name.prefix(1)),
                         monochromeMode: useMonochrome,
                         isDarkMode: menuBarIsDark,
+                        activeLabelColor: isActiveAccount ? NSColor.systemCyan : nil,
                         useSystemColor: false,
                         sessionTimeMarker: sessionMarker,
                         weekTimeMarker: showWeekSlot ? weekMarker : nil,
@@ -743,6 +765,7 @@ final class StatusBarUIManager {
                     profileName: config.showProfileLabel ? profile.menuBarDisplayName : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
+                    activeLabelColor: isActiveAccount ? NSColor.systemCyan : nil,
                     useSystemColor: false,
                     sessionTimeMarker: sessionMarker,
                     weekTimeMarker: showWeekSlot ? weekMarker : nil,
@@ -757,6 +780,7 @@ final class StatusBarUIManager {
                     profileInitial: config.showProfileLabel ? String(profile.name.prefix(1)) : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
+                    activeLabelColor: isActiveAccount ? NSColor.systemCyan : nil,
                     useSystemColor: false,
                     paceStatus: sessionPaceStatus,
                     showPaceMarker: config.showPaceMarker
@@ -770,6 +794,7 @@ final class StatusBarUIManager {
                     profileName: config.showProfileLabel ? profile.menuBarDisplayName : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
+                    activeLabelColor: isActiveAccount ? NSColor.systemCyan : nil,
                     useSystemColor: false,
                     sessionPaceStatus: sessionPaceStatus,
                     weekPaceStatus: showWeekSlot ? weekPaceStatus : nil,
