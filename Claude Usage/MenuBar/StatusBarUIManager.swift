@@ -553,15 +553,16 @@ final class StatusBarUIManager {
         // dark wallpaper darkens the menu bar under a light system theme (black
         // labels on ALL tiles). A visible button's appearance is the only
         // wallpaper-correct source; all tiles share one physical menu bar.
-        let groupAppearance: NSAppearance = {
-            for id in multiProfileOrder where !overflowParkedIds.contains(id) {
-                if let b = multiProfileStatusItems[id]?.button,
-                   let w = b.window, w.isVisible, w.frame.minY > 0 {
-                    return b.effectiveAppearance
-                }
-            }
-            return NSApp.effectiveAppearance
-        }()
+        // FORCED dark appearance -> WHITE labels, always (owner decision
+        // 2026-07-29). Every "detect the menu bar appearance" source proved
+        // unreliable in production: per-button effectiveAppearance goes
+        // stale/provisional-light on a rotating subset of buttons, the
+        // app-level appearance follows the SYSTEM theme rather than the
+        // wallpaper-darkened bar, and even a VISIBLE button's appearance
+        // disagreed with how macOS actually rendered its own white menu-bar
+        // items alongside ours. The owner's bars are always dark; white labels
+        // match the system clock deterministically on every repaint.
+        let groupAppearance = NSAppearance(named: .darkAqua) ?? NSApp.effectiveAppearance
 
         for profile in profiles where profile.isSelectedForDisplay {
             guard let statusItem = multiProfileStatusItems[profile.id],
