@@ -555,8 +555,15 @@ final class StatusBarUIManager {
                 continue
             }
 
-            // Get actual menu bar appearance from the button (based on wallpaper, not system mode)
-            let menuBarIsDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            // Use the APP-level appearance, not the per-button one: individual
+            // NSStatusBarButton windows can report a stale/provisional LIGHT
+            // appearance indefinitely (notably items created while
+            // overflow-parked), baking black labels and desaturated bars onto a
+            // dark menu bar — observed live 2026-07-28 with a rotating subset of
+            // tiles. The app-level appearance matches the system status items
+            // (clock, control center) rendered alongside our tiles.
+            let renderAppearance = NSApp.effectiveAppearance
+            let menuBarIsDark = renderAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
             // Get usage data for this profile
             let usage = profile.claudeUsage ?? ClaudeUsage.empty
@@ -654,7 +661,7 @@ final class StatusBarUIManager {
                 weekMarkerTick: Self.quantizeMarkerTick(weekMarkerForKey, style: config.iconStyle),
                 label: label,
                 config: config,
-                appearanceName: button.effectiveAppearance.name.rawValue,
+                appearanceName: renderAppearance.name.rawValue,
                 backingScaleQ: Int((backingScale * 100).rounded())
             )
 
@@ -671,7 +678,7 @@ final class StatusBarUIManager {
             // render key cannot detect.
             RenderInstrumentation.tileRenders += 1
             var image = NSImage()
-            button.effectiveAppearance.performAsCurrentDrawingAppearance {
+            renderAppearance.performAsCurrentDrawingAppearance {
             switch config.iconStyle {
             case .concentric:
                 if config.showProfileLabel {
