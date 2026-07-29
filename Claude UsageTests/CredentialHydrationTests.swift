@@ -34,7 +34,7 @@ final class CredentialHydrationTests: XCTestCase {
         // .profileCredentialsReady post would otherwise leak into this test's
         // observers (the once-per-warm test raced exactly that).
         waitForHydrationSettled()
-        savedProfilesData = UserDefaults.standard.data(forKey: profilesKey)
+        savedProfilesData = ProfileStoreUsagePatchTests.testDefaults.data(forKey: profilesKey)
         savedManagerProfiles = manager.profiles
         savedActiveProfile = manager.activeProfile
         manager.flushPendingUsage()
@@ -66,9 +66,9 @@ final class CredentialHydrationTests: XCTestCase {
             store.deleteProfileCredentials(profileId: id)
         }
         if let savedProfilesData {
-            UserDefaults.standard.set(savedProfilesData, forKey: profilesKey)
+            ProfileStoreUsagePatchTests.testDefaults.set(savedProfilesData, forKey: profilesKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: profilesKey)
+            ProfileStoreUsagePatchTests.testDefaults.removeObject(forKey: profilesKey)
         }
         if savedProfilesData != nil {
             manager.loadProfiles()

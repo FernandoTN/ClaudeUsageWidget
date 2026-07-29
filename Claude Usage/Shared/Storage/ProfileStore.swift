@@ -105,9 +105,20 @@ class ProfileStore {
     }
 
     init() {
-        // Use standard UserDefaults (app container)
-        self.defaults = UserDefaults.standard
-        LoggingService.shared.log("ProfileStore: Using standard app container storage")
+        // Under XCTest, use an isolated suite so test suites can never touch the
+        // user's real profiles_v3. A real incident (2026-07-28): a tearDown
+        // aborted mid-restore under parallel test hosts and left a test fixture
+        // as the user's entire profile roster. Everything else (app container)
+        // uses standard UserDefaults.
+        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        if isTestRun, let suite = UserDefaults(suiteName: "com.claudeusagewidget.tests") {
+            self.defaults = suite
+            LoggingService.shared.log("ProfileStore: Using isolated TEST defaults suite")
+        } else {
+            self.defaults = UserDefaults.standard
+            LoggingService.shared.log("ProfileStore: Using standard app container storage")
+        }
 
         // Populate the credential cache and repair Keychain ACLs if needed.
         bootstrapCredentials()

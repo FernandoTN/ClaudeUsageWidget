@@ -32,7 +32,7 @@ final class ProfileStoreUsagePatchTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        savedProfilesData = UserDefaults.standard.data(forKey: profilesKey)
+        savedProfilesData = Self.testDefaults.data(forKey: profilesKey)
         savedManagerProfiles = manager.profiles
         savedActiveProfile = manager.activeProfile
         // Drop any deferred usage left by a prior test / live session so assertions
@@ -47,9 +47,9 @@ final class ProfileStoreUsagePatchTests: XCTestCase {
             store.deleteProfileCredentials(profileId: id)
         }
         if let savedProfilesData {
-            UserDefaults.standard.set(savedProfilesData, forKey: profilesKey)
+            Self.testDefaults.set(savedProfilesData, forKey: profilesKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: profilesKey)
+            Self.testDefaults.removeObject(forKey: profilesKey)
         }
         // Restore in-memory manager state from the restored store (or the
         // pre-test snapshot when the store had no profiles key).
@@ -119,8 +119,12 @@ final class ProfileStoreUsagePatchTests: XCTestCase {
         "\(profile.id.uuidString)|\(profile.name)|\(profile.organizationId ?? "")|\(profile.hasCliAccount)|\(profile.refreshInterval)|\(profile.isSelectedForDisplay)|\(profile.menuBarLabel ?? "")"
     }
 
+    /// The store runs against the isolated test suite under XCTest (see
+    /// ProfileStore.init) — assertions must read the same domain.
+    static let testDefaults = UserDefaults(suiteName: "com.claudeusagewidget.tests")!
+
     private func persistedProfilesData() -> Data? {
-        UserDefaults.standard.data(forKey: profilesKey)
+        Self.testDefaults.data(forKey: profilesKey)
     }
 
     // MARK: - D1.1
