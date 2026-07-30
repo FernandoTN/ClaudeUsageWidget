@@ -192,3 +192,152 @@ stable. Production after install (wedge-gap relaunch): 9 scenes / 3 buttons / 15
 0.0% CPU, 0 occlusion. Projected wedged-state cost ~2% (vs 9-11% with 14 tiles, vs 15-25%
 pre-remap). Suite green. Owner hand-validation list: composite look/spacing, per-tile click
 routing + popover anchor, same-tile dismiss, group-level overflow clipping.
+
+## Addendum 6 — composite tiles verified, fixed and hardened (2026-07-29 ~21:30, PR #21)
+
+Ultracode sibling pass over addendum 5's composite work: a 12-agent verification
+workflow (6 dimensions — ordering, click/segment math, paint pipeline, lifecycle,
+auto-switch integration, efficiency — each followed by an adversarial refute agent),
+plus the two council consults the dispatcher had started (Codex gpt-5.6-sol xhigh:
+**NEEDS-FIXES**, 6 findings; Grok advisory: 6 findings). 22 findings survived
+refutation; the duplicates across sources collapse to the list below. Both council
+voices and the workflow's ordering agent independently found the same BLOCKER.
+
+**Verdict on addendum 5 as shipped: correct in structure, wrong in three
+user-visible details, and quietly more expensive per sweep than the tiles it
+replaced.** All fixed in commit `3935429`.
+
+### Correctness
+1. **BLOCKER — within-group order was inverted.** `multiProfileCreationOrder` ranks
+   soonest-weekly-reset FIRST because legacy status items are created right-to-left
+   (first created = rightmost); a composite image draws left-to-right, so the same
+   array painted in order put the soonest-reset account at the LEFT edge. Every
+   provider group read backwards versus the build the owner had been using, and the
+   bar's rightmost Claude tile became the account with the MOST runway — the
+   opposite of the "burn the rightmost first" signal the owner steers by. Addendum
+   5's "ranking = paint order" claim was the error: rank order and paint order are
+   mirror images. Fixed by one named pure function (`compositePaintOrder`) that the
+   popover navigator also consumes, with 17 unit tests
+   (`CompositeTileLayoutTests`) pinning orientation and segment geometry. The
+   pre-existing ordering tests could not have caught it — the rank array is
+   identical either way.
+2. **Keyboard-shortcut popover showed the wrong account.** With `sender == nil`,
+   `togglePopover` looked up the focused profile's button and then threw that
+   knowledge away, resolving the profile by tile POSITION (group's last segment).
+   The intended profile is now passed through explicitly.
+3. **Click routing assumed button space == image space.** An `NSButton` scales its
+   image proportionally DOWN to fit its bounds and centres the result, so a
+   composite taller than the bar's content height is drawn NARROWER than the
+   composite width and every segment boundary shifts. `imageScaling` is pinned at
+   creation and clicks/anchors map through the actual drawn rect
+   (`compositeDrawnRect`).
+4. **The composite lost the event-shape backdrop.** Tiles carry the 2%-alpha
+   full-rect backdrop across their own rect only, so the 3pt gaps, 1pt pads and
+   vertical centring bands were transparent — the group window's alpha-derived
+   event shape became a comb of N rectangles, re-opening the surface addendum 2's
+   backdrop closes. (Kept as defence-in-depth; addendum 3's retraction stands.)
+5. **Monochrome mode stopped being tinted** — template tiles were composited into a
+   non-template image. **`lockFocus` used the MAIN screen's scale**; the composite
+   is now drawn into an explicit `NSBitmapImageRep` at the scale of the display the
+   bar is on, with that scale in the re-assembly key. **Fractional tile widths**
+   (`.percentage` sizes to text metrics) put later tiles on half-pixels; advances
+   are whole points now.
+6. **The empty-profiles placeholder was blank** in BOTH multi-profile modes (the
+   logo path in `updateAllButtons` only covers single-profile `statusItems`) — the
+   app looked like it had left the bar. **Stale segments** of an emptied group could
+   route a click to a deselected/deleted profile; they are cleared.
+7. **StormWatchdog had gone silent again.** Composites cut the wedged-state cost to
+   ~2%, i.e. back UNDER the 6% threshold set for 14-tile storms. Now 1.5% — above
+   the measured 0.0% idle baseline, below the projected composite storm cost.
+8. **Lab probes repaired**: popover-stress anchored to the whole group button and
+   so no longer reproduced tile-to-tile re-anchoring (it anchors per segment
+   again); the rebuild probe now forces a real teardown so it still measures one.
+
+### Efficiency (the composite path was doing MORE work per sweep than 14 tiles)
+`assembleComposites` ran unconditionally once per sweep: one NSImage + lockFocus
+bitmap + N tile draws + a full-strip `tiffRepresentation` and Data compare, per
+group, every 30s, even with nothing changed. It is now memoized on (members,
+per-tile render sequence, template flag, backing scale) — an idle sweep does no
+drawing at all. A profile-selection toggle no longer recreates every group item
+(`canReuseCompositeGroups`): composite mode absorbs membership changes as a
+repaint. Items are still recreated when the provider SET changes, deliberately —
+creation order is the only handle on left-to-right group placement, so a re-added
+Grok item created last would land at the wrong end of the bar. Per-tile images,
+render keys and sequences are pruned when a profile stops being displayed.
+
+### Owner-requested affordance (new)
+A whole provider group now lives in ONE status item, so selecting an account by
+clicking its ~20pt segment is fiddly and nothing showed WHICH account of a group
+is active. The popover gained a **group navigator**: ‹ › buttons, left/right arrow
+keys, and one chip per group member ordered exactly as the tiles are painted. The
+active account's chip carries the same cyan its tile label uses; the viewed one is
+filled. Selecting a chip changes only the published selection — it never re-anchors
+or re-shows the popover, which would add a scene fence/entanglement cycle per
+navigation. "Active" is now ONE definition (`ProfileManager.activeAccountIds`)
+shared by the tile painter and the popover (a Grok account could previously draw a
+cyan tile while the popover called it inactive). An open popover's numbers were a
+snapshot frozen at click time; the viewed account's usage is re-read after each
+sweep, only while something is displaying it.
+
+### Validation
+- Release build green; full suite green — **148 tests, 17 new**.
+- Lab (14 synthetic profiles, `CUW_LAB=1 CUW_LAB_TILES=14 CUW_LAB_FREEZE=1`):
+  **9 scene windows, 3 group items, 0.0% CPU, 89 MB RSS, 14 tile renders → 3 image
+  assignments** (one per group).
+- Within-group order confirmed **visually** on a live 2-member Codex group in the
+  fixed build (`Cd2` left, `Cd1` right, where `Cd1` resets sooner) — screenshot in
+  the session job dir. A larger group could not be photographed: with production's
+  ~15 accounts already on the bar, a second instance's wide Claude group is
+  overflow-hidden behind the system chevron.
+- Production (pid 68958, the addendum-5 build) was left running and untouched;
+  read-only probes only. Group-level order there is correct (left→right Codex,
+  Grok, Claude).
+- Build product for the owner to install:
+  `/tmp/cuw_sibling_build/Build/Products/Release/Claude Usage.app`.
+
+### NOT fixed — flagged for the owner
+- **A whole provider group can be hidden.** Observed live: with the bar crowded, an
+  11-tile (~277pt) Claude composite was clipped ENTIRELY behind the system overflow
+  chevron while the 1- and 2-tile groups stayed visible. Group-level clipping was
+  the approved trade-off, but "the largest and most important group disappears as a
+  unit" is worse than losing one tile. Follow-up worth scoping: split a group that
+  exceeds a width budget into chunks of N tiles (several items, same paint
+  pipeline) so overflow degrades tile-by-tile again.
+- **`.percentage` style breaks the fixed-length invariant**: digit-width changes
+  (9→10%, 99→100%) resize the composite and so can trigger a bar relayout. Not in
+  today's path (production runs `progressBar`), and the memo means the length only
+  moves when a tile genuinely changes size.
+- **One rebuild per launch remains**: group items are created from pre-hydration
+  `providerKind`, so the post-hydration regroup still recreates them once (9 scene
+  windows' worth, versus 42 before).
+- **The popover navigator is compile- and logic-verified but NOT visually
+  verified** — exercising it means clicking real tiles, and the only running
+  instance is the owner's production app doing live auto-switching. Arrow-key
+  cycling in particular depends on the popover holding focus; the ‹ › buttons and
+  chips are the guaranteed affordance.
+
+### Consult log (Reasoning Consult protocol)
+- **Codex (gpt-5.6-sol, xhigh, read-only, live probes):** NEEDS-FIXES — ordering
+  BLOCKER; shortcut-toggle wrong account; blank placeholder; lab stress no longer
+  meaningful; unconditional re-assembly + missing pruning; `.percentage` length
+  invariant. Confirmed WORKING: segment routing/clamping, pair-keyed
+  dismiss-vs-switch, provider-set rebuild detection, appearance invalidation, TIFF
+  guard, legacy and single-profile modes, auto-switch untouched (verified against
+  live production logs), watchdog window-class gate. **Adopted in full.**
+- **Grok (grok-4.5, high, advisory):** same ordering BLOCKER, plus the transparent
+  inter-tile gaps (event shape), the button-space/image-space mapping gap, the
+  `lockFocus` retina hazard, and the fixed-length claim. **Its dissent produced
+  three fixes the workflow ranked only NIT** — the highest-value advisory output so
+  far in this investigation.
+- **Verification workflow (12 agents, 6 dimensions + adversarial refute):**
+  reproduced the ordering BLOCKER from three independent dimensions, killed the
+  weaker claims, and added the AppKit image down-fit hazard, the
+  selection-toggle-rebuild waste, the re-silenced watchdog threshold, the
+  Grok "Active" inconsistency, and the stale deferred anchor rect.
+- **Disagreement resolved by measurement, not vote:** the "9 scene windows / 0.0%
+  CPU" claim held; the "ranking = paint order" claim did not.
+- **Concurrency note:** the dispatching session had applied two uncommitted edits
+  (reversed paint order, composite backdrop) from Grok's verdict before handing the
+  worktree over. Both were re-expressed in the refactored structure rather than
+  kept as-is, since a build on the mixed state had failed; intent preserved, credit
+  recorded here.
