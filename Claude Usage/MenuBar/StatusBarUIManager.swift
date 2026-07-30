@@ -958,6 +958,15 @@ final class StatusBarUIManager {
 
         let activeIds = ProfileManager.shared.activeAccountIds(among: profiles)
 
+        // Capture each group's active account for ambiguous click/shortcut
+        // resolution (profileId(for:atX:) with no usable coordinate).
+        groupActiveIds = Dictionary(
+            profiles
+                .filter { $0.isSelectedForDisplay && activeIds.contains($0.id) }
+                .map { ($0.providerKind, $0.id) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
         for profile in profiles where profile.isSelectedForDisplay {
             let button: NSStatusBarButton?
             if Self.useCompositeTiles {
@@ -1421,18 +1430,35 @@ final class StatusBarUIManager {
         guard Self.useCompositeTiles else { return profileId(for: sender) }
         for (provider, statusItem) in groupItems where statusItem.button === sender {
             guard let segments = groupSegments[provider], !segments.isEmpty else { return nil }
-            guard let rawX = locationInButton else { return segments.last?.profileId }
+            // Ambiguous resolution (no click coordinate) opens the group's
+            // ACTIVE account — the account the user is operating on — not a
+            // positional fallback. `segments.last` here is the soonest-reset
+            // tile, and every ambiguous open landed on that same account
+            // ("always opens Commits", owner report 2026-07-30).
+            guard let rawX = locationInButton else {
+                return groupActiveIds[provider] ?? segments.last?.profileId
+            }
             let totalWidth = segments[segments.count - 1].range.upperBound
             let map = compositeMapping(for: provider, in: sender, totalWidth: totalWidth)
             let x = map.scale > 0 ? (rawX - map.originX) / map.scale : rawX
             if let hit = segments.first(where: { $0.range.contains(x) }) {
+                LoggingService.shared.logUIEvent(
+                    "Composite click: rawX=\(Int(rawX)) mapped=\(Int(x)) → segment hit")
                 return hit.profileId
             }
-            // Off the ends: clamp to nearest.
+            // Off the ends: the ACTIVE account, else clamp to nearest.
+            LoggingService.shared.logUIEvent(
+                "Composite click: rawX=\(Int(rawX)) mapped=\(Int(x)) OFF-SEGMENTS (0..\(Int(totalWidth))) → active/clamp fallback")
+            if let active = groupActiveIds[provider] { return active }
             return x < segments[0].range.lowerBound ? segments[0].profileId : segments.last?.profileId
         }
         return nil
     }
+
+    /// The active account of each provider group, captured during the last
+    /// paint (same derivation the tile highlight uses). Ambiguous click/
+    /// shortcut resolution defaults here.
+    private var groupActiveIds: [Profile.ProviderKind: UUID] = [:]
 
     /// The sub-rect of the group button occupied by a profile's tile —
     /// popover anchoring. Falls back to nil when unknown.
