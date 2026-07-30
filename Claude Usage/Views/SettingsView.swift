@@ -170,6 +170,90 @@ enum SettingsWindowBuilder {
     }
 }
 
+/// Professional, native macOS Settings interface with multi-profile support
+struct SettingsView: View {
+    @State private var selectedSection: SettingsSection
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(initialSection: SettingsSection? = nil) {
+        _selectedSection = State(initialValue: initialSection ?? .appearance)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Sidebar with Profile Switcher
+            VStack(spacing: 0) {
+                // Native traffic lights live in the (transparent) titlebar now —
+                // reserve their space instead of drawing SwiftUI lookalikes.
+                Spacer()
+                    .frame(height: 28)
+
+                // Profile Section (Switcher + Credentials + Settings)
+                ProfileSectionContainer(selectedSection: $selectedSection)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+
+                Spacer()
+
+                // App Settings Section
+                AppSettingsSection(selectedSection: $selectedSection)
+                    .padding(.horizontal, 12)
+
+                // Bottom bar: About, Debug, Support, Updates
+                BottomBarSection(selectedSection: $selectedSection)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .padding(.top, 4)
+            }
+            .background(SidebarVisualEffect())
+            .frame(width: 190)
+
+            // Content
+            Group {
+                switch selectedSection {
+                // Credentials
+                case .cliAccount:
+                    CLIAccountView()
+                case .codexAccount:
+                    CodexAccountView()
+
+                // Profile Settings
+                case .appearance:
+                    AppearanceSettingsView()
+                case .general:
+                    GeneralSettingsView()
+
+                // Shared Settings
+                case .appSettings:
+                    AppSettingsView()
+                case .manageProfiles:
+                    ManageProfilesView()
+                case .shortcuts:
+                    ShortcutsSettingsView()
+                case .popover:
+                    PopoverSettingsView()
+                case .about:
+                    AboutView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                colorScheme == .dark
+                    ? Color.black.opacity(0.15)
+                    : Color.white.opacity(0.3)
+            )
+        }
+        .frame(minWidth: 720, maxWidth: 720, maxHeight: .infinity)
+        .background(SettingsBackground())
+        .onReceive(NotificationCenter.default.publisher(for: .settingsSectionRequested)) { notification in
+            if let rawValue = notification.object as? String,
+               let section = SettingsSection(rawValue: rawValue) {
+                selectedSection = section
+            }
+        }
+    }
+}
+
 // MARK: - Profile Section Container
 
 struct ProfileSectionContainer: View {
