@@ -120,3 +120,25 @@ every tile creator (template default-logo excluded; CUW_TRANSPARENT_TILES=1 for 
 This is the no-relaunch, no-reboot fix. Remaining optional hardening: non-scene-anchored
 NSPanel popover (removes fence exposure that forms the wedge at all); watchdog stays as the
 tripwire.
+
+## Addendum 3 — trigger identified; opaque-backdrop claim RETRACTED; self-healing shipped (2026-07-29, 18:10)
+
+Retro-correlating every churn/quiet epoch of the day against `NSSceneFenceAction` timestamps:
+churn begins when a fullscreen menu-bar-reveal fence burst (broadcast to all 42 variant
+scenes; fired by mousing to the top edge in a fullscreen space) lands on a live process, and
+runs without such bursts stay clean indefinitely. The addendum-2 "opaque event shape fixes
+it" A/B/A was burst-timing coincidence (control run caught a burst at 17:45:16, probe run
+didn't; the "failing" opaque run caught one at 17:52:55) — claim retracted; the backdrop is
+retained as zero-cost defense-in-depth only.
+
+Because the trigger is OS-side and user-activity-driven, PR #21's deliverable is now the
+SELF-HEALING watchdog: sustained idle burn → stage 0 (render-cache clear + repaint) → one
+2-min verification sample → stage 1 (`cycleTileVisibility()`: isVisible off→on across a
+runloop turn for every tile, forcing scene re-establishment) → verification → user
+notification only if both stages fail. Manual live-storm trigger for validating the stages:
+`distnoted post com.claudeusagewidget.remediate`. Merged PR #20's remap fix keeps the churn
+4-10× cheaper when it does occur (contexts pinned at structural 43 vs 172-673 before).
+
+Open validation: the remediation stages have not yet met a live storm — the next fence-burst
+ignition is the test (watchdog handles it automatically; logs record stage outcomes).
+Escalation path if stage 1 fails: composite tiles (14 items → 1-3 windows).
