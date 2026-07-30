@@ -179,3 +179,16 @@ OPEN DECISION (owner): composite tiles (14 status items → 3 provider-group ite
 structural reduction of the wedged-state cost (~9% → ~0.7%) since prevention and remediation
 are both impossible. UX trade-off: overflow clips a whole provider group at once. Scoped,
 not built.
+
+## Addendum 5 — composite provider-group tiles shipped (2026-07-29, ~20:50)
+
+Owner approved the structural fix. One status item per provider group (Claude/Grok/Codex),
+tiles rendered side-by-side in a fixed-length composite image; clicks resolve by x-offset,
+popover anchors to the clicked tile's segment, same-tile dismiss keyed by (button, profile).
+Ranking = paint order; membership changes = composite resize; items recreated only when a
+provider group appears/disappears. Legacy mode: CUW_SEPARATE_TILES=1.
+Lab-verified (14 profiles + reshuffle probe): 9 scene windows / 3 buttons / 10 contexts,
+stable. Production after install (wedge-gap relaunch): 9 scenes / 3 buttons / 15 contexts,
+0.0% CPU, 0 occlusion. Projected wedged-state cost ~2% (vs 9-11% with 14 tiles, vs 15-25%
+pre-remap). Suite green. Owner hand-validation list: composite look/spacing, per-tile click
+routing + popover anchor, same-tile dismiss, group-level overflow clipping.
