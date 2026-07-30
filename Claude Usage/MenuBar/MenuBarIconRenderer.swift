@@ -247,6 +247,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -353,6 +354,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -466,6 +468,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         let textY = (18 - textSize.height) / 2
         fullText.draw(at: NSPoint(x: 2, y: textY), withAttributes: attributes)
@@ -503,6 +506,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -604,6 +608,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -660,16 +665,25 @@ final class MenuBarIconRenderer {
     ///   - isDarkMode: Whether the menu bar is in dark mode
     ///   - useSystemColor: If true, use system accent color instead of status colors
     /// - Returns: NSImage with concentric circles showing both metrics
-    /// Lab probe (`CUW_LAB_OPAQUE=1`): fill the whole canvas with a
-    /// minimal-alpha backdrop so the tile window's alpha-derived event shape
-    /// is a full static rectangle instead of tracking the drawn pixels.
-    /// Tests whether macOS 27's per-frame "event shape" recomputation of
-    /// VISIBLE scene-hosted tiles stops when the shape cannot vary.
-    private func labOpaqueBackdropIfEnabled(width: CGFloat, height: CGFloat) {
-        guard LabMode.opaqueTiles else { return }
+    /// Fill the whole canvas with a minimal-alpha backdrop so the tile
+    /// window's alpha-derived EVENT SHAPE is a full static rectangle instead
+    /// of tracking the drawn pixels. On macOS 26/27's scene-hosted status
+    /// items, tiles whose shape can vary are re-evaluated every display frame
+    /// once the per-bundle host state wedges ("Window 0x0 event shape became
+    /// non empty" storm, ~14 windows × refresh rate, 10-25% CPU + WindowServer
+    /// at 100% — 2026-07-29 incidents). A/B on a LIVE wedged bundle: quick
+    /// relaunch without backdrop re-inherited the churn within ~1 min; with
+    /// backdrop, 0 events/min, 0.0% CPU. Visually imperceptible (2% black on
+    /// a dark bar). `CUW_TRANSPARENT_TILES=1` restores the old behavior for
+    /// experiments.
+    private func opaqueEventShapeBackdrop(in image: NSImage) {
+        guard !Self.transparentTilesOverride else { return }
         NSColor.black.withAlphaComponent(0.02).setFill()
-        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        NSRect(origin: .zero, size: image.size).fill()
     }
+
+    private static let transparentTilesOverride: Bool =
+        ProcessInfo.processInfo.environment["CUW_TRANSPARENT_TILES"] == "1"
 
     func createConcentricIcon(
         sessionPercentage: Double,
@@ -692,7 +706,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
-        labOpaqueBackdropIfEnabled(width: size, height: size)
+        opaqueEventShapeBackdrop(in: image)
 
         let center = NSPoint(x: size / 2, y: size / 2)
 
@@ -840,7 +854,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
-        labOpaqueBackdropIfEnabled(width: totalWidth, height: totalHeight)
+        opaqueEventShapeBackdrop(in: image)
 
         let circleCenter = NSPoint(x: totalWidth / 2, y: totalHeight - circleSize / 2)
 
@@ -991,7 +1005,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
-        labOpaqueBackdropIfEnabled(width: totalWidth, height: totalHeight)
+        opaqueEventShapeBackdrop(in: image)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -1089,6 +1103,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -1159,6 +1174,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        // No backdrop: this image is rendered as a TEMPLATE (system-tinted).
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let color: NSColor = menuBarForegroundColor(isDarkMode: isDarkMode)
@@ -1240,6 +1256,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        opaqueEventShapeBackdrop(in: image)
 
         // Draw percentage text at top, centered (shift left slightly if pace dot present)
         let textX = (totalWidth - textSize.width - paceDotExtra) / 2
