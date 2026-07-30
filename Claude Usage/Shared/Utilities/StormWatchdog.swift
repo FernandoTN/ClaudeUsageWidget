@@ -17,8 +17,13 @@ import UserNotifications
 final class StormWatchdog {
     static let shared = StormWatchdog()
 
-    /// Fraction of one core considered pathological while idle.
-    private static let burnThreshold = 0.12
+    /// Fraction of one core considered pathological while idle. The post-remap
+    /// storm costs this app 8-11% of a core (WindowServer pays a similar share
+    /// invisible to getrusage) — the original 12% threshold was arithmetically
+    /// unreachable and the watchdog stayed silent through a full evening storm
+    /// (2026-07-29). 6% catches every observed storm with margin over the
+    /// ~0-2.5% sweep baseline.
+    private static let burnThreshold = 0.06
     /// Consecutive hot samples before alarming (3 × interval = 6 minutes).
     private static let hotSamplesBeforeAlarm = 3
     private static let interval: TimeInterval = 120
@@ -40,6 +45,7 @@ final class StormWatchdog {
     private var lastCPUTime: TimeInterval = 0
     private var lastSampleAt: Date?
     private var consecutiveHotSamples = 0
+    private var consecutiveCleanSamples = 0
     private var didNotifyThisLaunch = false
     private var remediationStage = 0
 
@@ -56,19 +62,27 @@ final class StormWatchdog {
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
 
-        // Manual trigger for live-storm experiments:
-        //   distnoted post com.claudeusagewidget.remediate
+        // Manual trigger for live-storm experiments (post with
+        // deliverImmediately:true — accessory apps queue plain posts):
+        //   swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(Notification.Name("com.claudeusagewidget.remediate"), object: nil, userInfo: nil, deliverImmediately: true)'
+        // Debounced: queued duplicate deliveries once consumed two stages 3ms
+        // apart, exhausting the ladder without a verification gap.
         DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.claudeusagewidget.remediate"),
             object: nil,
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            let now = Date()
+            guard now.timeIntervalSince(self.lastManualTrigger) > 5 else { return }
+            self.lastManualTrigger = now
             LoggingService.shared.logWarning("StormWatchdog: manual remediation trigger (stage \(self.remediationStage))")
             self.remediate(self.remediationStage)
             self.remediationStage += 1
         }
     }
+
+    private var lastManualTrigger: Date = .distantPast
 
     private func sample() {
         let now = Date()
@@ -82,8 +96,25 @@ final class StormWatchdog {
         guard wall > 0 else { return }
         let usage = (cpu - lastCPUTime) / wall
 
-        guard isNominallyIdle(), usage >= Self.burnThreshold else {
+        guard usage >= Self.burnThreshold else {
+            // A clean sample re-arms the remediation ladder: a storm that was
+            // cleared (or ended) should get fresh stage-0/1 attempts next time
+            // instead of jumping straight to the notification.
+            consecutiveCleanSamples += 1
+            if consecutiveCleanSamples >= 3, remediationStage != 0 {
+                remediationStage = 0
+                LoggingService.shared.log("StormWatchdog: re-armed remediation ladder after 3 clean samples")
+            }
             consecutiveHotSamples = 0
+            return
+        }
+        consecutiveCleanSamples = 0
+        guard isNominallyIdle() else {
+            // Hot but the user has UI open: PAUSE rather than reset (Codex
+            // consult) — brief foreground activity must not erase the hot
+            // history of a storm that keeps burning underneath it.
+            LoggingService.shared.log(
+                "StormWatchdog: hot sample (\(Int(usage * 100))%) while UI open — pausing (hot streak \(consecutiveHotSamples)/\(Self.hotSamplesBeforeAlarm))")
             return
         }
         consecutiveHotSamples += 1

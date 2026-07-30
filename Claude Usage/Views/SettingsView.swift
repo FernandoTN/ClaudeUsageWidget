@@ -155,172 +155,18 @@ enum SettingsWindowBuilder {
             defer: false
         )
 
-        let hostingView = NSHostingView(rootView:
+        // Install via contentViewController — NOT as a bare subview. The
+        // close path (MenuBarManager.windowWillClose) releases the SwiftUI
+        // graph by nilling contentViewController; with the previous
+        // subview-install that line was a proven no-op (the graph survived
+        // close, kept observing ProfileManager, and re-rendered on every
+        // publish — 2026-07-29 evening investigation, empirical probe).
+        window.contentViewController = NSHostingController(rootView:
             SettingsView(initialSection: initialSection)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         )
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
-
-        window.contentView?.addSubview(hostingView)
-        if let contentView = window.contentView {
-            NSLayoutConstraint.activate([
-                hostingView.topAnchor.constraint(equalTo: contentView.topAnchor),
-                hostingView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-                hostingView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                hostingView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            ])
-        }
 
         return window
-    }
-}
-
-// MARK: - Custom Traffic Light Buttons
-
-struct TrafficLightButtons: View {
-    @Environment(\.controlActiveState) private var controlActiveState
-
-    var body: some View {
-        HStack(spacing: 8) {
-            TrafficLightButton(type: .close)
-            TrafficLightButton(type: .miniaturize)
-        }
-    }
-}
-
-struct TrafficLightButton: View {
-    enum ButtonType {
-        case close, miniaturize, zoom
-
-        var activeColor: Color {
-            switch self {
-            case .close: return Color(nsColor: NSColor(red: 1.0, green: 0.38, blue: 0.34, alpha: 1.0))
-            case .miniaturize: return Color(nsColor: NSColor(red: 1.0, green: 0.74, blue: 0.18, alpha: 1.0))
-            case .zoom: return Color(nsColor: NSColor(red: 0.15, green: 0.78, blue: 0.24, alpha: 1.0))
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .close: return "xmark"
-            case .miniaturize: return "minus"
-            case .zoom: return "plus"
-            }
-        }
-    }
-
-    let type: ButtonType
-    @State private var isHovered = false
-    @Environment(\.controlActiveState) private var controlActiveState
-
-    private var isActive: Bool { controlActiveState == .key }
-
-    var body: some View {
-        Circle()
-            .fill(isActive ? type.activeColor : Color.primary.opacity(0.15))
-            .frame(width: 12, height: 12)
-            .overlay {
-                if isHovered && isActive {
-                    Image(systemName: type.icon)
-                        .font(.system(size: 7, weight: .bold))
-                        .foregroundColor(.black.opacity(0.5))
-                }
-            }
-            .onHover { isHovered = $0 }
-            .onTapGesture { performAction() }
-    }
-
-    private func performAction() {
-        guard let window = NSApp.keyWindow else { return }
-        switch type {
-        case .close: window.close()
-        case .miniaturize: window.miniaturize(nil)
-        case .zoom: window.zoom(nil)
-        }
-    }
-}
-
-/// Professional, native macOS Settings interface with multi-profile support
-struct SettingsView: View {
-    @State private var selectedSection: SettingsSection
-    @Environment(\.colorScheme) private var colorScheme
-
-    init(initialSection: SettingsSection? = nil) {
-        _selectedSection = State(initialValue: initialSection ?? .appearance)
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            // Sidebar with Profile Switcher
-            VStack(spacing: 0) {
-                // Native traffic lights live in the (transparent) titlebar now —
-                // reserve their space instead of drawing SwiftUI lookalikes.
-                Spacer()
-                    .frame(height: 28)
-
-                // Profile Section (Switcher + Credentials + Settings)
-                ProfileSectionContainer(selectedSection: $selectedSection)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
-
-                Spacer()
-
-                // App Settings Section
-                AppSettingsSection(selectedSection: $selectedSection)
-                    .padding(.horizontal, 12)
-
-                // Bottom bar: About, Debug, Support, Updates
-                BottomBarSection(selectedSection: $selectedSection)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                    .padding(.top, 4)
-            }
-            .background(SidebarVisualEffect())
-            .frame(width: 190)
-
-            // Content
-            Group {
-                switch selectedSection {
-                // Credentials
-                case .cliAccount:
-                    CLIAccountView()
-                case .codexAccount:
-                    CodexAccountView()
-
-                // Profile Settings
-                case .appearance:
-                    AppearanceSettingsView()
-                case .general:
-                    GeneralSettingsView()
-
-                // Shared Settings
-                case .appSettings:
-                    AppSettingsView()
-                case .manageProfiles:
-                    ManageProfilesView()
-                case .shortcuts:
-                    ShortcutsSettingsView()
-                case .popover:
-                    PopoverSettingsView()
-                case .about:
-                    AboutView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(
-                colorScheme == .dark
-                    ? Color.black.opacity(0.15)
-                    : Color.white.opacity(0.3)
-            )
-        }
-        .frame(minWidth: 720, maxWidth: 720, maxHeight: .infinity)
-        .background(SettingsBackground())
-        .onReceive(NotificationCenter.default.publisher(for: .settingsSectionRequested)) { notification in
-            if let rawValue = notification.object as? String,
-               let section = SettingsSection(rawValue: rawValue) {
-                selectedSection = section
-            }
-        }
     }
 }
 
