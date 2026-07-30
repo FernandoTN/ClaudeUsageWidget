@@ -1276,13 +1276,20 @@ final class StatusBarUIManager {
 
             let layout = Self.compositeLayout(tileWidths: members.map { $0.image.size.width })
             let height = members.map { $0.image.size.height }.max() ?? 24
-            let composite = compositeImage(
+            guard let composite = compositeImage(
                 members: members,
                 origins: layout.origins,
                 totalWidth: layout.totalWidth,
                 height: height,
                 scale: scale
-            )
+            ) else {
+                // Transient bitmap/context failure (memory or graphics
+                // pressure): keep the previous image and segments on screen and
+                // do NOT record the memo — the next sweep retries for real.
+                LoggingService.shared.logWarning(
+                    "Composite assembly failed for \(provider) — keeping previous image, retrying next sweep")
+                continue
+            }
             // Monochrome tiles are template images; the strip they are drawn
             // into must be one too, or the system stops tinting it.
             composite.isTemplate = isTemplate
@@ -1317,7 +1324,7 @@ final class StatusBarUIManager {
         totalWidth: CGFloat,
         height: CGFloat,
         scale: CGFloat
-    ) -> NSImage {
+    ) -> NSImage? {
         let size = NSSize(width: totalWidth, height: height)
         let image = NSImage(size: size)
         let pixelsWide = Int((totalWidth * scale).rounded())
@@ -1336,12 +1343,14 @@ final class StatusBarUIManager {
                   bitsPerPixel: 0
               )
         else {
-            // Allocation failure: an empty canvas beats a crash, and the next
-            // sweep retries (the memo is only recorded by the caller).
-            return image
+            // Allocation failure: nil tells the caller to keep the previous
+            // image and SKIP the memo, so the next sweep genuinely retries —
+            // returning an empty canvas here used to get memoized as success
+            // and left the whole group blank until an unrelated tile changed.
+            return nil
         }
         rep.size = size
-        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return image }
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
 
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
