@@ -2354,15 +2354,24 @@ extension MenuBarManager: NSPopoverDelegate {
         // typically AFTER that mouse-up action already ran and found no
         // stamp (the close/re-open pairs in the 2026-07-30 click trace).
         //
-        // LEFT button exactly: the status buttons use the default action
-        // mask (left mouse-up only), so no action ever follows a right/other
-        // press to consume the stamp (Codex re-review 2026-07-30). A
-        // left-down that then drags off and releases outside also leaves the
-        // stamp unconsumed — accepted residual: it self-expires in 0.5s and
-        // at worst swallows one click, which the next click recovers.
-        guard let button = currentPopoverButton,
-              NSEvent.pressedMouseButtons == 1,
-              StatusBarUIManager.pointerLocalX(in: button) != nil else { return }
+        // The ONLY gate is "pointer on the anchor": that alone distinguishes
+        // an anchor-click auto-close (arm) from a desktop/elsewhere click or
+        // programmatic close (don't arm — a legitimate open within 0.5s must
+        // not be swallowed). Do NOT gate on NSEvent.pressedMouseButtons: the
+        // scene-routed click is processed by the app AFTER the physical
+        // release, so "mouse currently pressed" is never true here — that
+        // condition disarmed the swallow entirely and every same-tile
+        // re-click closed and re-opened (owner report + live trace,
+        // 2026-07-30 13:06). A press that closes the popover but never
+        // produces an action (right-click, drag-off) arms a stamp nothing
+        // consumes — accepted residual: it self-expires in 0.5s and at worst
+        // swallows one click, which the next click recovers.
+        guard let button = currentPopoverButton else { return }
+        guard StatusBarUIManager.pointerLocalX(in: button) != nil else {
+            LoggingService.shared.log("Popover: willClose — pointer off anchor, swallow not armed")
+            return
+        }
+        LoggingService.shared.log("Popover: willClose — swallow armed (pointer on anchor)")
         lastPopoverCloseButton = button
         lastPopoverCloseTime = Date()
     }
