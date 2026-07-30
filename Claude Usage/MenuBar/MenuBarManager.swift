@@ -41,11 +41,16 @@ class MenuBarManager: NSObject, ObservableObject {
 
     // Track which button is currently showing the popover
     private weak var currentPopoverButton: NSStatusBarButton?
+    /// Which profile's tile the popover is anchored to — with composite
+    /// groups one button hosts many tiles, so button identity alone cannot
+    /// distinguish "same tile" (dismiss) from "different tile" (switch).
+    private var currentPopoverProfileId: UUID?
 
     /// Where/when the popover last closed. The .semitransient popover auto-closes
     /// on the mouse-DOWN of a click on its own anchor button; without this stamp
     /// the mouse-UP action re-opens it, so a same-tile click can never dismiss.
     private weak var lastPopoverCloseButton: NSStatusBarButton?
+    private var lastPopoverCloseProfileId: UUID?
     private var lastPopoverCloseTime: Date = .distantPast
 
     private let apiService = ClaudeAPIService()
@@ -535,9 +540,17 @@ class MenuBarManager: NSObject, ObservableObject {
 
         guard let button = clickedButton else { return }
 
+        // Composite tiles: the click's x-offset within the group button
+        // identifies WHICH tile was clicked. Only meaningful when the sender
+        // is the clicked button itself (shortcut-invoked toggles pass nil).
+        let clickX: CGFloat? = {
+            guard sender is NSStatusBarButton, let event = NSApp.currentEvent else { return nil }
+            return button.convert(event.locationInWindow, from: nil).x
+        }()
+
         // In multi-profile mode, determine which profile was clicked
         if statusBarUIManager?.isInMultiProfileMode == true,
-           let profileId = statusBarUIManager?.profileId(for: button),
+           let profileId = statusBarUIManager?.profileId(for: button, atX: clickX),
            let profile = profileManager.profiles.first(where: { $0.id == profileId }) {
             // Set the clicked profile data
             clickedProfileId = profileId
@@ -549,6 +562,12 @@ class MenuBarManager: NSObject, ObservableObject {
             clickedProfileUsage = nil  // Will use manager.usage
         }
 
+        // Popover anchor: the clicked tile's segment within a composite group
+        // button, or the whole button otherwise.
+        let anchorRect = clickedProfileId
+            .flatMap { statusBarUIManager?.anchorRect(for: $0, in: button) }
+            ?? button.bounds
+
         // If there's a detached window, close it
         if let window = detachedWindow {
             window.close()
@@ -557,37 +576,46 @@ class MenuBarManager: NSObject, ObservableObject {
             return
         }
 
-        // Otherwise toggle the popover
+        // Otherwise toggle the popover. "Same tile" = same button AND same
+        // profile — with composite groups one button hosts many tiles, so
+        // button identity alone can't distinguish tile switches from a
+        // dismiss click.
+        let sameTile = currentPopoverButton === button
+            && currentPopoverProfileId == clickedProfileId
         if let popover, popover.isShown {
-            // Check if clicking the same button or a different one
-            if currentPopoverButton === button {
-                // Same button - close the popover
+            if sameTile {
+                // Same tile - close the popover
                 closePopover()
             } else {
-                // Different button: close now, re-show on the NEXT runloop
-                // turn with a FRESH popover. Closing and re-anchoring the same
-                // popover against a different scene-hosted status button in a
-                // single turn is one of the suspected storm igniters (Codex
-                // consult 2026-07-29); the deferred destroy in popoverDidClose
-                // runs first, so the re-show always builds a clean popover.
+                // Different tile/button: close now, re-show on the NEXT
+                // runloop turn with a FRESH popover. Closing and re-anchoring
+                // the same popover against a different scene-hosted status
+                // anchor in a single turn is one of the suspected storm
+                // igniters (Codex consult 2026-07-29); the deferred destroy in
+                // popoverDidClose runs first, so the re-show always builds a
+                // clean popover.
                 popover.performClose(nil)
                 stopMonitoringForOutsideClicks()
+                let targetProfileId = clickedProfileId
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     let fresh = self.ensurePopover()
                     fresh.contentViewController = self.createContentViewController()
-                    fresh.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                    fresh.show(relativeTo: anchorRect, of: button, preferredEdge: .minY)
                     self.currentPopoverButton = button
+                    self.currentPopoverProfileId = targetProfileId
                     self.startMonitoringForOutsideClicks()
                 }
             }
         } else {
             // Popover not shown. If it JUST closed anchored to this same
-            // button, this click is the semitransient auto-close's own
+            // tile, this click is the semitransient auto-close's own
             // mouse-up — the user meant "dismiss", so swallow the re-open.
             if let lastButton = lastPopoverCloseButton, lastButton === button,
+               lastPopoverCloseProfileId == clickedProfileId,
                Date().timeIntervalSince(lastPopoverCloseTime) < 0.5 {
                 lastPopoverCloseButton = nil
+                lastPopoverCloseProfileId = nil
                 stopMonitoringForOutsideClicks()
                 return
             }
@@ -595,8 +623,9 @@ class MenuBarManager: NSObject, ObservableObject {
             stopMonitoringForOutsideClicks()
             let popover = ensurePopover()
             popover.contentViewController = createContentViewController()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.show(relativeTo: anchorRect, of: button, preferredEdge: .minY)
             currentPopoverButton = button
+            currentPopoverProfileId = clickedProfileId
             startMonitoringForOutsideClicks()
         }
     }
@@ -610,10 +639,12 @@ class MenuBarManager: NSObject, ObservableObject {
         // the popover lifecycle (and its scene fence/entanglement exposure)
         // on every dismiss.
         lastPopoverCloseButton = currentPopoverButton
+        lastPopoverCloseProfileId = currentPopoverProfileId
         lastPopoverCloseTime = Date()
         popover?.performClose(nil)
         stopMonitoringForOutsideClicks()
         currentPopoverButton = nil
+        currentPopoverProfileId = nil
     }
 
     private func startMonitoringForOutsideClicks() {
@@ -2242,9 +2273,11 @@ extension MenuBarManager: NSPopoverDelegate {
         // (animated close delivers didClose after the fade-out).
         if let button = currentPopoverButton {
             lastPopoverCloseButton = button
+            lastPopoverCloseProfileId = currentPopoverProfileId
         }
         lastPopoverCloseTime = Date()
         currentPopoverButton = nil
+        currentPopoverProfileId = nil
 
         // DESTROY the popover once closed: dropping only the hosting
         // controller (the previous fix) still leaves the borderless

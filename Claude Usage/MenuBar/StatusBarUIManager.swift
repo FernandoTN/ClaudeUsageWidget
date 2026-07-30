@@ -53,6 +53,41 @@ final class StatusBarUIManager {
     // Icon renderer for creating menu bar images
     private let renderer = MenuBarIconRenderer()
 
+    // MARK: Composite provider-group tiles (default mode)
+
+    /// Composite mode (default): ONE NSStatusItem per provider group, hosting
+    /// all of that provider's tiles side-by-side in a single fixed-length
+    /// image. Motivation (2026-07-29 storm investigation): every scene-hosted
+    /// status window is re-evaluated per display frame while the OS-side
+    /// per-bundle wedge is active — prevention and in-place remediation are
+    /// both proven impossible on macOS 26/27, so the only structural lever is
+    /// window count: 14 tiles = 42 scene windows ≈ 9-11% CPU wedged; 3 group
+    /// items = 9 scenes ≈ ~2%. Ranking reshuffles become pure paint order,
+    /// and membership changes only resize the composite — status items are
+    /// created/destroyed ONLY when a provider group appears/disappears.
+    /// `CUW_SEPARATE_TILES=1` restores the legacy one-item-per-profile mode.
+    static let useCompositeTiles: Bool =
+        ProcessInfo.processInfo.environment["CUW_SEPARATE_TILES"] != "1"
+
+    /// One status item per provider group (composite mode).
+    private var groupItems: [Profile.ProviderKind: NSStatusItem] = [:]
+
+    /// Latest rendered per-tile image (composite mode) — the per-tile render
+    /// pipeline (render keys, TIFF guard) is unchanged; composites are
+    /// re-assembled from these.
+    private var tileImages: [UUID: NSImage] = [:]
+
+    /// Per-group horizontal segment layout, in the group button's coordinate
+    /// space: which x-range belongs to which profile. Drives click routing
+    /// and popover anchoring.
+    private var groupSegments: [Profile.ProviderKind: [(profileId: UUID, range: Range<CGFloat>)]] = [:]
+
+    /// Horizontal gap between tiles inside a composite, chosen to visually
+    /// match the system's inter-status-item spacing.
+    private static let compositeTileSpacing: CGFloat = 10
+    /// Padding at each composite edge (the system adds its own margins too).
+    private static let compositeEdgePadding: CGFloat = 2
+
     /// Light red for weekly-maxed tile titles — softer than systemRed so it
     /// reads well on the dark bar (and distinct from the red critical bar fill).
     static let weeklyMaxedLabelColor = NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.45, alpha: 1.0)
@@ -241,6 +276,19 @@ final class StatusBarUIManager {
         multiProfileStatusItems.removeAll()
         multiProfileOrder.removeAll()
 
+        // Composite-mode state
+        for (_, statusItem) in groupItems {
+            if let button = statusItem.button {
+                button.image = nil
+                button.action = nil
+                button.target = nil
+            }
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
+        groupItems.removeAll()
+        groupSegments.removeAll()
+        tileImages.removeAll()
+
         // Deallocated buttons can leave ObjectIdentifier keys that a NEW button
         // may reuse (same address) — a stale cache hit would skip drawing its
         // icon after a rebuild, so drop the cache with the items.
@@ -267,7 +315,7 @@ final class StatusBarUIManager {
     /// the cheapest candidate reset short of relaunching. Render caches are
     /// dropped so the re-shown tiles repaint fresh.
     func cycleTileVisibility() {
-        let items = Array(multiProfileStatusItems.values)
+        let items = Array(multiProfileStatusItems.values) + Array(groupItems.values)
         guard !items.isEmpty else { return }
         LoggingService.shared.logWarning("StatusBar: cycling visibility of \(items.count) tiles (storm remediation)")
         for item in items { item.isVisible = false }
@@ -328,6 +376,12 @@ final class StatusBarUIManager {
         multiProfileTarget = target
         multiProfileAction = action
 
+        if Self.useCompositeTiles {
+            setupCompositeGroups(profiles: profiles, target: target, action: action)
+            observeAppearanceChanges()
+            return
+        }
+
         // Filter to only profiles selected for display
         let selectedProfiles = profiles.filter { $0.isSelectedForDisplay }
 
@@ -371,6 +425,46 @@ final class StatusBarUIManager {
         }
 
         observeAppearanceChanges()
+    }
+
+    /// Composite mode: create ONE status item per provider that has selected
+    /// profiles. Creation order Claude → Grok → Codex (each new item lands
+    /// LEFT of existing ones, so Claude ends up rightmost and Codex clips
+    /// first on overflow — same policy as the legacy per-tile layout).
+    private func setupCompositeGroups(profiles: [Profile], target: AnyObject, action: Selector) {
+        let selectedProfiles = profiles.filter { $0.isSelectedForDisplay }
+
+        guard !selectedProfiles.isEmpty else {
+            // No profiles selected: one placeholder item with the default logo
+            // (keyed under .claude; painted by updateAllButtons' logo path).
+            let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            if let button = statusItem.button {
+                button.action = action
+                button.target = target
+                button.title = ""
+            }
+            groupItems[.claude] = statusItem
+            LoggingService.shared.logUIEvent("Multi-profile: No profiles selected, showing default logo (composite)")
+            return
+        }
+
+        let orderedProfiles = Self.multiProfileCreationOrder(for: profiles)
+        multiProfileOrder = orderedProfiles.map(\.id)
+
+        for provider in [Profile.ProviderKind.claude, .grok, .codex]
+        where selectedProfiles.contains(where: { $0.providerKind == provider }) {
+            let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            if let button = statusItem.button {
+                button.action = action
+                button.target = target
+            } else {
+                LoggingService.shared.logWarning("Composite group button is nil for \(provider) - screens: \(NSScreen.screens.count)")
+            }
+            groupItems[provider] = statusItem
+        }
+
+        LoggingService.shared.logUIEvent(
+            "Multi-profile: composite mode — \(groupItems.count) group items for \(selectedProfiles.count) profiles")
     }
 
     /// True when on-screen x-positions no longer strictly DESCEND in creation
@@ -571,6 +665,36 @@ final class StatusBarUIManager {
         // registered context on each remote-context datagram, so rebuild-per-
         // reshuffle turned ranking jitter into an unbounded main-thread tax.
         let desiredOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
+
+        if Self.useCompositeTiles {
+            // Composite mode: items exist per provider GROUP, so ranking and
+            // membership changes are pure repaint/re-composite. Only a change
+            // in WHICH PROVIDERS have selected profiles (or the empty↔non-empty
+            // transition) needs item recreation — a rare user action.
+            let selected = profiles.filter { $0.isSelectedForDisplay }
+            let desiredProviders = Set(selected.map(\.providerKind))
+            let currentProviders = Set(groupItems.keys)
+            let placeholderActive = groupItems.count == 1 && multiProfileOrder.isEmpty
+            let needsRebuild = selected.isEmpty
+                ? !placeholderActive
+                : (desiredProviders != currentProviders || placeholderActive)
+            if needsRebuild, let target = multiProfileTarget, let action = multiProfileAction {
+                LoggingService.shared.logUIEvent("Multi-profile: provider set changed, rebuilding composite groups")
+                setupMultiProfile(profiles: profiles, target: target, action: action)
+                DispatchQueue.main.async { [weak self] in
+                    self?.lastRenderKey.removeAll()
+                    self?.updateMultiProfileButtons(profiles: profiles, config: config)
+                }
+            } else if desiredOrder != multiProfileOrder {
+                multiProfileOrder = desiredOrder
+                LoggingService.shared.logUIEvent(
+                    "Multi-profile: ranking reshuffled — composite paint order updated (no window changes)")
+            }
+            paintTiles(profiles: profiles, config: config)
+            assembleComposites(profiles: profiles)
+            return
+        }
+
         var rebuildReason: String?
         if desiredOrder != multiProfileOrder {
             if Set(desiredOrder) == Set(multiProfileOrder),
@@ -621,6 +745,13 @@ final class StatusBarUIManager {
             }
         }
 
+        paintTiles(profiles: profiles, config: config)
+    }
+
+    /// Renders every selected profile's tile (render-key gated). Legacy mode
+    /// assigns each image to its own status item; composite mode stores the
+    /// image for `assembleComposites` to concatenate per provider group.
+    private func paintTiles(profiles: [Profile], config: MultiProfileDisplayConfig) {
         // ONE appearance for the whole tile group, taken from the first VISIBLE
         // non-parked button. Rationale (two real incidents, 2026-07-28/29):
         // per-button effectiveAppearance is stale/provisional-LIGHT on some
@@ -665,13 +796,20 @@ final class StatusBarUIManager {
         }()
 
         for profile in profiles where profile.isSelectedForDisplay {
-            guard let statusItem = multiProfileStatusItems[profile.id],
-                  let button = statusItem.button else {
-                continue
+            let button: NSStatusBarButton?
+            if Self.useCompositeTiles {
+                // Composite: the group button supplies appearance/backing
+                // scale; per-tile images are stored and composited afterwards.
+                button = groupItems[profile.providerKind]?.button
+            } else {
+                button = multiProfileStatusItems[profile.id]?.button
             }
+            guard let button else { continue }
 
-            // Skip overflow-parked tiles except first paint (must always render).
-            if overflowParkedIds.contains(profile.id), button.image != nil {
+            // Skip overflow-parked tiles except first paint (must always
+            // render). Legacy mode only: composites always paint (3 windows).
+            if !Self.useCompositeTiles,
+               overflowParkedIds.contains(profile.id), button.image != nil {
                 continue
             }
 
@@ -790,7 +928,10 @@ final class StatusBarUIManager {
             )
 
             // Skip-not-replace: unchanged inputs + existing image ⇒ no render.
-            if lastRenderKey[profile.id] == renderKey, button.image != nil {
+            let hasImage = Self.useCompositeTiles
+                ? tileImages[profile.id] != nil
+                : button.image != nil
+            if lastRenderKey[profile.id] == renderKey, hasImage {
                 continue
             }
 
@@ -889,8 +1030,93 @@ final class StatusBarUIManager {
 
             image.isTemplate = useMonochrome && !config.showPaceMarker
             lastRenderKey[profile.id] = renderKey
-            setButtonImage(button, image: image)
+            if Self.useCompositeTiles {
+                tileImages[profile.id] = image
+            } else {
+                setButtonImage(button, image: image)
+            }
         }
+    }
+
+    /// Composite mode: concatenate each provider group's tile images into one
+    /// image, assign it (TIFF-guarded), pin the item's length to the composite
+    /// width (fixed length ⇒ repaints can never trigger a bar relayout), and
+    /// record the per-profile segment layout for click routing / anchoring.
+    private func assembleComposites(profiles: [Profile]) {
+        let byId = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+        for (provider, statusItem) in groupItems {
+            guard let button = statusItem.button else { continue }
+            let members: [(UUID, NSImage)] = multiProfileOrder.compactMap { id in
+                guard let profile = byId[id], profile.providerKind == provider,
+                      profile.isSelectedForDisplay, let image = tileImages[id] else { return nil }
+                return (id, image)
+            }
+            guard !members.isEmpty else { continue }
+
+            let spacing = Self.compositeTileSpacing
+            let pad = Self.compositeEdgePadding
+            let height = members.map { $0.1.size.height }.max() ?? 24
+            let totalWidth = members.reduce(0) { $0 + $1.1.size.width }
+                + spacing * CGFloat(members.count - 1) + pad * 2
+
+            var segments: [(profileId: UUID, range: Range<CGFloat>)] = []
+            let composite = NSImage(size: NSSize(width: totalWidth, height: height))
+            composite.lockFocus()
+            var x = pad
+            for (id, image) in members {
+                let y = (height - image.size.height) / 2
+                image.draw(at: NSPoint(x: x, y: y), from: .zero, operation: .sourceOver, fraction: 1.0)
+                // Segment ranges include half the surrounding gaps so clicks
+                // between tiles resolve to the nearest one.
+                let segStart = segments.isEmpty ? 0 : x - spacing / 2
+                let segEnd = x + image.size.width + spacing / 2
+                segments.append((id, segStart..<segEnd))
+                x += image.size.width + spacing
+            }
+            composite.unlockFocus()
+            if var last = segments.popLast() {
+                last.range = last.range.lowerBound..<totalWidth
+                segments.append(last)
+            }
+            groupSegments[provider] = segments
+
+            // Fixed length: assign BEFORE the image so the item never renders
+            // a partially-clipped composite, and only when it changed.
+            if abs(statusItem.length - totalWidth) > 0.5 {
+                statusItem.length = totalWidth
+            }
+            setButtonImage(button, image: composite)
+        }
+    }
+
+    /// Resolve which profile a click at `locationInButton` (button-local x)
+    /// landed on. Composite mode only; nil when unresolvable.
+    func profileId(for sender: NSStatusBarButton?, atX locationInButton: CGFloat?) -> UUID? {
+        guard let sender else { return nil }
+        guard Self.useCompositeTiles else { return profileId(for: sender) }
+        for (provider, statusItem) in groupItems where statusItem.button === sender {
+            guard let segments = groupSegments[provider], !segments.isEmpty else { return nil }
+            guard let x = locationInButton else { return segments.last?.profileId }
+            if let hit = segments.first(where: { $0.range.contains(x) }) {
+                return hit.profileId
+            }
+            // Off the ends: clamp to nearest.
+            return x < segments[0].range.lowerBound ? segments[0].profileId : segments.last?.profileId
+        }
+        return nil
+    }
+
+    /// The sub-rect of the group button occupied by a profile's tile —
+    /// popover anchoring. Falls back to nil when unknown.
+    func anchorRect(for profileId: UUID, in sender: NSStatusBarButton) -> NSRect? {
+        guard Self.useCompositeTiles else { return nil }
+        for (provider, statusItem) in groupItems where statusItem.button === sender {
+            guard let seg = groupSegments[provider]?.first(where: { $0.profileId == profileId }) else { return nil }
+            return NSRect(x: seg.range.lowerBound, y: 0,
+                          width: seg.range.upperBound - seg.range.lowerBound,
+                          height: sender.bounds.height)
+        }
+        return nil
     }
 
     /// Checks if currently in multi-profile mode
@@ -912,17 +1138,42 @@ final class StatusBarUIManager {
                 return true
             }
         }
+        // Composite provider-group items
+        for (_, statusItem) in groupItems {
+            if statusItem.button != nil {
+                return true
+            }
+        }
         return false
     }
 
-    /// Get button for a specific profile (multi-profile mode)
+    /// Get button for a specific profile (multi-profile mode). Composite mode
+    /// returns the profile's GROUP button — use `anchorRect(for:in:)` for the
+    /// tile's sub-rect within it.
     func button(for profileId: UUID) -> NSStatusBarButton? {
+        if Self.useCompositeTiles {
+            for (provider, segments) in groupSegments
+            where segments.contains(where: { $0.profileId == profileId }) {
+                return groupItems[provider]?.button
+            }
+            // Not painted yet: fall back to the first group button.
+            return groupItems.values.first?.button
+        }
         return multiProfileStatusItems[profileId]?.button
     }
 
-    /// Find which profile ID owns the given button (multi-profile mode)
+    /// Find which profile ID owns the given button (multi-profile mode).
+    /// Composite mode: resolves to the group's RIGHTMOST tile; prefer
+    /// `profileId(for:atX:)` when a click location is available.
     func profileId(for sender: NSStatusBarButton?) -> UUID? {
         guard let sender = sender else { return nil }
+
+        if Self.useCompositeTiles {
+            for (provider, statusItem) in groupItems where statusItem.button === sender {
+                return groupSegments[provider]?.last?.profileId
+            }
+            return nil
+        }
 
         for (profileId, statusItem) in multiProfileStatusItems {
             if statusItem.button === sender {
