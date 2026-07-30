@@ -474,6 +474,26 @@ class ProfileManager: ObservableObject {
         profile.id == activeClaudeProfileId || profile.id == activeCodexProfileId
     }
 
+    /// Every account the UI marks as ACTIVE: the Claude and Codex profiles that
+    /// own their provider's shared CLI login, plus Grok's active account — Grok
+    /// has no shared-login pointer, so the FOCUSED Grok profile counts, and a
+    /// sole Grok profile is trivially the active one.
+    ///
+    /// One definition, two consumers: the menu-bar tile's cyan label
+    /// (`StatusBarUIManager.paintTiles`) and the popover's "Active" badge /
+    /// group navigator. They disagreed before this existed — a Grok tile drew
+    /// cyan while the popover called it inactive.
+    func activeAccountIds(among profiles: [Profile]) -> Set<UUID> {
+        var ids = Set([activeClaudeProfileId, activeCodexProfileId].compactMap { $0 })
+        let groks = profiles.filter { $0.providerKind == .grok }
+        if let focused = activeProfile, focused.providerKind == .grok {
+            ids.insert(focused.id)
+        } else if groks.count == 1, let sole = groks.first {
+            ids.insert(sole.id)
+        }
+        return ids
+    }
+
     // MARK: - Credentials
 
     func loadCredentials(for profileId: UUID) throws -> ProfileCredentials {

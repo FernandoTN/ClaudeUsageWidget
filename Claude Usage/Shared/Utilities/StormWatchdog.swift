@@ -17,13 +17,19 @@ import UserNotifications
 final class StormWatchdog {
     static let shared = StormWatchdog()
 
-    /// Fraction of one core considered pathological while idle. The post-remap
-    /// storm costs this app 8-11% of a core (WindowServer pays a similar share
-    /// invisible to getrusage) — the original 12% threshold was arithmetically
-    /// unreachable and the watchdog stayed silent through a full evening storm
-    /// (2026-07-29). 6% catches every observed storm with margin over the
-    /// ~0-2.5% sweep baseline.
-    private static let burnThreshold = 0.06
+    /// Fraction of one core considered pathological while idle.
+    ///
+    /// History, all 2026-07-29: 12% was arithmetically unreachable (the
+    /// post-remap storm cost 8-11%) and the watchdog stayed silent through a
+    /// full evening storm; 6% caught every storm observed with 14 per-profile
+    /// tiles. COMPOSITE provider-group tiles then cut the wedged-state cost to
+    /// ~2% by construction (42 scene windows → 9) — which puts the storm BACK
+    /// UNDER the threshold and re-silences the tripwire. 1.5% sits above the
+    /// measured idle baseline (0.0% healthy, sweeps invisible over a 2-minute
+    /// window) and below the projected composite storm cost. The alarm is
+    /// cheap when wrong: three consecutive idle-gated hot samples, a log line,
+    /// and at most one notification per launch.
+    private static let burnThreshold = 0.015
     /// Consecutive hot samples before alarming (3 × interval = 6 minutes).
     private static let hotSamplesBeforeAlarm = 3
     private static let interval: TimeInterval = 120

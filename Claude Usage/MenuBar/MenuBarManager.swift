@@ -523,9 +523,53 @@ class MenuBarManager: NSObject, ObservableObject {
         return NSHostingController(rootView: contentView)
     }
 
+    /// Show a DIFFERENT account's usage in the already-open popover, without
+    /// touching the popover itself.
+    ///
+    /// This backs the popover's group navigator (‹ ›, tile chips, arrow keys):
+    /// with composite tiles a whole provider group lives inside ONE status item,
+    /// so selecting a specific account by clicking its ~20pt segment is fiddly —
+    /// the popover has to be able to walk the group on its own. Deliberately
+    /// does NOT re-anchor or re-show the popover: re-anchoring destroys and
+    /// rebuilds it against a scene-hosted status window, which is exactly the
+    /// CA fence/entanglement exposure the storm work exists to minimize. Only
+    /// the published selection changes, so SwiftUI re-renders in place.
+    func viewProfile(_ profileId: UUID) {
+        guard let profile = profileManager.profiles.first(where: { $0.id == profileId }) else { return }
+        clickedProfileId = profileId
+        clickedProfileUsage = profile.claudeUsage ?? .empty
+        // `currentPopoverProfileId` deliberately UNCHANGED: it identifies the
+        // TILE the popover is anchored to, which is what makes a second click
+        // on that tile a dismiss. Repointing it here would turn that click into
+        // a "tile switch" — a close plus a fresh popover, i.e. one more scene
+        // fence/entanglement cycle per dismiss.
+        LoggingService.shared.log("Popover: now viewing '\(profile.name)' (group navigator)")
+    }
+
+    /// Re-read the viewed account's usage so an OPEN popover shows fresh numbers
+    /// after a refresh sweep. `clickedProfileUsage` is a snapshot taken at click
+    /// time; without this the displayed percentages stayed frozen for as long as
+    /// the popover remained open.
+    private func refreshViewedProfileUsage() {
+        // Only while something is actually displaying it — no publishes into a
+        // closed popover (a switch sweep's publishes are what made Settings
+        // feel frozen once before).
+        guard popover?.isShown == true || detachedWindow != nil else { return }
+        guard clickedProfileUsage != nil, let id = clickedProfileId,
+              let usage = profileManager.profiles.first(where: { $0.id == id })?.claudeUsage,
+              usage != clickedProfileUsage else { return }
+        clickedProfileUsage = usage
+    }
+
     @objc private func togglePopover(_ sender: Any?) {
         // Determine which button was clicked
         let clickedButton: NSStatusBarButton?
+        // The account a NON-click invocation (keyboard shortcut) means: the
+        // focused profile. Composite groups host many tiles per button, so
+        // without this the x-less resolution below would fall back to the
+        // group's rightmost tile and the shortcut would open the popover on
+        // whichever account happens to reset soonest (Codex finding 2).
+        var intendedProfileId: UUID?
         if let button = sender as? NSStatusBarButton {
             clickedButton = button
         } else if statusBarUIManager?.isInMultiProfileMode == true,
@@ -533,6 +577,7 @@ class MenuBarManager: NSObject, ObservableObject {
                   let activeButton = statusBarUIManager?.button(for: activeId) {
             // Multi-profile mode: use the active profile's button
             clickedButton = activeButton
+            intendedProfileId = activeId
         } else {
             // Single profile mode: fallback to primary button
             clickedButton = statusBarUIManager?.primaryButton
@@ -548,9 +593,15 @@ class MenuBarManager: NSObject, ObservableObject {
             return button.convert(event.locationInWindow, from: nil).x
         }()
 
-        // In multi-profile mode, determine which profile was clicked
+        // In multi-profile mode, determine which profile was clicked. Written
+        // with an explicit flatMap so there is no nested-optional `??` to
+        // reason about: `manager?.profileId(...)` is a UUID??, and `nil ?? that`
+        // would resolve to .some(nil) rather than falling through.
+        let resolvedProfileId: UUID? = intendedProfileId
+            ?? statusBarUIManager.flatMap { $0.profileId(for: button, atX: clickX) }
+
         if statusBarUIManager?.isInMultiProfileMode == true,
-           let profileId = statusBarUIManager?.profileId(for: button, atX: clickX),
+           let profileId = resolvedProfileId,
            let profile = profileManager.profiles.first(where: { $0.id == profileId }) {
             // Set the clicked profile data
             clickedProfileId = profileId
@@ -601,7 +652,14 @@ class MenuBarManager: NSObject, ObservableObject {
                     guard let self else { return }
                     let fresh = self.ensurePopover()
                     fresh.contentViewController = self.createContentViewController()
-                    fresh.show(relativeTo: anchorRect, of: button, preferredEdge: .minY)
+                    // Re-resolve the anchor NOW: a repaint between the two
+                    // runloop turns can re-lay out the composite, and a stale
+                    // segment rect would anchor the popover under the wrong
+                    // tile.
+                    let freshAnchor = targetProfileId
+                        .flatMap { self.statusBarUIManager?.anchorRect(for: $0, in: button) }
+                        ?? anchorRect
+                    fresh.show(relativeTo: freshAnchor, of: button, preferredEdge: .minY)
                     self.currentPopoverButton = button
                     self.currentPopoverProfileId = targetProfileId
                     self.startMonitoringForOutsideClicks()
@@ -679,6 +737,10 @@ class MenuBarManager: NSObject, ObservableObject {
 
     /// Updates all enabled status bar icons
     private func updateAllStatusBarIcons() {
+        // An open popover shows a snapshot of ONE account's usage — refresh it
+        // from the same fresh data the tiles are about to be painted from.
+        refreshViewedProfileUsage()
+
         // Check if in multi-profile mode
         if profileManager.displayMode == .multi {
             // Update multi-profile icons using profiles from profileManager
@@ -1226,6 +1288,10 @@ private func observeCredentialChanges() {
             // Publish everything staged this sweep in ONE objectWillChange,
             // then repaint the tiles from the fresh array.
             self.profileManager.publishStagedUsage()
+
+            // An open popover is showing one account's snapshot — re-read it
+            // from this sweep's fresh data.
+            self.refreshViewedProfileUsage()
 
             // Update all icons once after all profiles are refreshed
             let config = self.profileManager.multiProfileConfig

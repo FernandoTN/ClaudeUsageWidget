@@ -682,6 +682,19 @@ final class MenuBarIconRenderer {
         NSRect(origin: .zero, size: image.size).fill()
     }
 
+    /// The same full-canvas backdrop, for a COMPOSITE group canvas that is
+    /// assembled from already-rendered tile images. Each tile carries the
+    /// backdrop only across its OWN rect, so a composite's edge padding and
+    /// inter-tile gaps would leave the group window's alpha-derived event shape
+    /// a comb of rectangles — exactly the varying-shape surface the per-tile
+    /// backdrop exists to close. Must be called with the composite's graphics
+    /// context current, BEFORE the tiles are drawn into it.
+    func applyEventShapeBackdrop(width: CGFloat, height: CGFloat) {
+        guard !Self.transparentTilesOverride else { return }
+        NSColor.black.withAlphaComponent(0.02).setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+    }
+
     private static let transparentTilesOverride: Bool =
         ProcessInfo.processInfo.environment["CUW_TRANSPARENT_TILES"] == "1"
 
