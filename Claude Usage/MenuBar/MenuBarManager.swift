@@ -229,11 +229,19 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Idle-burn guardrail: alarms (log + one notification) when the app
         // burns CPU with no popover/settings open — the storm failure class.
-        StormWatchdog.shared.isNominallyIdle = { [weak self] in
-            guard let self else { return true }
-            return self.popover == nil
-                && self.settingsWindow == nil
-                && self.detachedWindow == nil
+        StormWatchdog.shared.isNominallyIdle = {
+            // Consult the ACTUAL window population, not tracked references —
+            // a minimized settings window (no delegate callback ever fires),
+            // a double-open orphan, or the Cmd-, SwiftUI Settings scene all
+            // leave tracked refs lying (2026-07-29 evening: a stranded-open
+            // settings window disarmed the watchdog through an entire storm).
+            // Idle = no non-status-bar window visible on screen; miniaturized
+            // windows count as idle (nobody is interacting with them).
+            !NSApp.windows.contains { window in
+                window.isVisible
+                    && !window.isMiniaturized
+                    && !NSStringFromClass(type(of: window)).contains("StatusBar")
+            }
         }
         StormWatchdog.shared.remediate = { [weak self] stage in
             guard let self else { return }
@@ -578,7 +586,7 @@ class MenuBarManager: NSObject, ObservableObject {
             // button, this click is the semitransient auto-close's own
             // mouse-up — the user meant "dismiss", so swallow the re-open.
             if let lastButton = lastPopoverCloseButton, lastButton === button,
-               Date().timeIntervalSince(lastPopoverCloseTime) < 0.3 {
+               Date().timeIntervalSince(lastPopoverCloseTime) < 0.5 {
                 lastPopoverCloseButton = nil
                 stopMonitoringForOutsideClicks()
                 return
@@ -594,6 +602,15 @@ class MenuBarManager: NSObject, ObservableObject {
     }
 
     private func closePopover() {
+        // Record the anchor BEFORE nilling it: with animates=true,
+        // popoverDidClose fires after the fade-out, by which time
+        // currentPopoverButton is already nil and the same-tile "click again
+        // to dismiss" swallow could never match — the click closed and
+        // immediately REOPENED the popover (owner report 2026-07-29), doubling
+        // the popover lifecycle (and its scene fence/entanglement exposure)
+        // on every dismiss.
+        lastPopoverCloseButton = currentPopoverButton
+        lastPopoverCloseTime = Date()
         popover?.performClose(nil)
         stopMonitoringForOutsideClicks()
         currentPopoverButton = nil
@@ -2089,15 +2106,28 @@ private func observeCredentialChanges() {
         // Close the popover or detached window first
         closePopoverOrWindow()
 
-        // If settings window already exists, bring it to front (and jump it to the
-        // requested section — its SwiftUI state can't be re-seeded from here)
-        if let existingWindow = settingsWindow, existingWindow.isVisible {
+        // If a settings window exists AT ALL, reuse it — visible, minimized,
+        // or parked on another Space. The old `isVisible` condition skipped
+        // MINIATURIZED windows (isVisible is false while in the Dock, and
+        // miniaturize never notifies the delegate), so a second window was
+        // built and the first one orphaned: retained by AppKit forever,
+        // subscribed to ProfileManager, re-rendering on every publish
+        // (2026-07-29 evening investigation, orphan path O1).
+        if let existingWindow = settingsWindow {
+            if existingWindow.isMiniaturized {
+                existingWindow.deminiaturize(nil)
+            }
             Self.bringWindowToForeground(existingWindow)
             if let section {
                 NotificationCenter.default.post(name: .settingsSectionRequested, object: section.rawValue)
             }
             return
         }
+
+        // Double-open guard: two triggers within the 150ms delay below would
+        // build two windows and orphan the first (orphan path O2).
+        guard !settingsOpenPending else { return }
+        settingsOpenPending = true
 
         // Small delay to ensure smooth transition
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -2119,10 +2149,14 @@ private func observeCredentialChanges() {
             window.delegate = self
 
             self.settingsWindow = window
+            self.settingsOpenPending = false
 
             Self.bringWindowToForeground(window)
         }
     }
+
+    /// Guards the 150ms deferred settings-window creation against double-open.
+    private var settingsOpenPending = false
 
     /// Foreground a window from this ACCESSORY app assertively. Since macOS 14,
     /// `NSApp.activate()` is cooperative — called from a menu-bar app after a
@@ -2203,7 +2237,12 @@ extension MenuBarManager: NSPopoverDelegate {
         // button; the button's action then fires on mouse-UP with isShown ==
         // false and would re-open it — making "click the same tile to dismiss"
         // impossible. togglePopover consults this stamp to swallow that re-open.
-        lastPopoverCloseButton = currentPopoverButton
+        // Only overwrite the anchor when we still know it — closePopover() may
+        // have recorded it and nil'd currentPopoverButton before this fires
+        // (animated close delivers didClose after the fade-out).
+        if let button = currentPopoverButton {
+            lastPopoverCloseButton = button
+        }
         lastPopoverCloseTime = Date()
         currentPopoverButton = nil
 
