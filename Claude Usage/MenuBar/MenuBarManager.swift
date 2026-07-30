@@ -235,6 +235,20 @@ class MenuBarManager: NSObject, ObservableObject {
                 && self.settingsWindow == nil
                 && self.detachedWindow == nil
         }
+        StormWatchdog.shared.remediate = { [weak self] stage in
+            guard let self else { return }
+            switch stage {
+            case 0:
+                // Cheap: drop render caches and repaint everything.
+                self.statusBarUIManager?.clearOverflowParkedState()
+                self.updateAllStatusBarIcons()
+            default:
+                self.statusBarUIManager?.cycleTileVisibility()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.updateAllStatusBarIcons()
+                }
+            }
+        }
         StormWatchdog.shared.start()
     }
 
