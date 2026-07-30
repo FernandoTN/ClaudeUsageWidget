@@ -100,3 +100,23 @@ The owner reported recurrence (slow menu, high CPU) at ~16:15. Findings, in orde
 5. All prevention layers in PR #20 remain the right app-side fix: they stop the app from creating the fence-race conditions (commit-safe popover lifecycle) and from feeding the amplifier (remap-not-rebuild, context leak capped). The wedge itself is an OS bug — Apple Feedback material: `sample1.txt`, the fence timeline, the bundle-id A/B, and the WindowServer A-B numbers.
 
 End state 17:10: fixed build running clean (0.0% CPU, 0 occl/min, contexts 43); residual WindowServer burn (~85%) persists WITHOUT our app's involvement — other hosts/OS residue on a 5-day-uptime beta; owner may want a reboot at convenience.
+
+## Addendum 2 — the underlying cause, isolated and fixed (2026-07-29 evening, PR #21)
+
+The StormWatchdog fired on the PR #20 build at 17:36 (ignition trace: popover use 17:19 →
+`NSSceneFenceAction` broadcast to all 42 scenes 17:21 → churn by 17:30), proving commit-safe
+popover discipline reduces but cannot eliminate wedge formation — any NSPopover anchored to a
+scene tile must entangle+fence, and the OS's own re-fence broadcasts interleave regardless.
+
+The live wedge enabled the decisive A/B/A: with the env-gated opaque-backdrop probe, a
+quick-relaunch (inheriting the wedge) ran at 0 occlusion events/min, 0.0% CPU for 5+ minutes;
+the transparent control on the same wedge re-churned within 2 minutes (49-50k/min). Mechanism:
+the per-frame recompute derives each tile window's EVENT SHAPE from the image alpha channel;
+a transparent canvas makes the shape content-dependent (never converges), a 2%-alpha
+full-canvas backdrop makes it a constant full rectangle (nothing to recompute — the churn is
+held at zero even while the OS-side wedge is active). PR #21 makes the backdrop the default in
+every tile creator (template default-logo excluded; CUW_TRANSPARENT_TILES=1 for experiments).
+
+This is the no-relaunch, no-reboot fix. Remaining optional hardening: non-scene-anchored
+NSPanel popover (removes fence exposure that forms the wedge at all); watchdog stays as the
+tripwire.
