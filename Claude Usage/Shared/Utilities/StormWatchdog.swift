@@ -147,7 +147,7 @@ final class StormWatchdog {
         )
         let content = UNMutableNotificationContent()
         content.title = "Claude Usage: high idle CPU"
-        content.body = "The widget has been burning CPU in the background for ~6 minutes. A relaunch clears it; logs were captured for diagnosis."
+        content.body = "The widget has sustained background CPU burn and self-healing did not clear it. Quit it, wait ~2 minutes, then relaunch — an immediate relaunch re-inherits the OS-side wedge. Logs were captured for diagnosis."
         let request = UNNotificationRequest(
             identifier: "storm-watchdog",
             content: content,
