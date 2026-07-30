@@ -113,8 +113,14 @@ final class LabController: NSObject {
         let defHit = defensive
             .flatMap { statusBarUIManager.profileId(for: button, atX: $0) }
             .flatMap { id in profiles.first { $0.id == id }?.name } ?? "nil"
+        // Production's actual source: physical pointer position (the scene
+        // action's NSEvent is synthesized at the button center).
+        let pointerX = StatusBarUIManager.pointerLocalX(in: button)
+        let ptrHit = pointerX
+            .flatMap { statusBarUIManager.profileId(for: button, atX: $0) }
+            .flatMap { id in profiles.first { $0.id == id }?.name } ?? "nil"
         LoggingService.shared.log(
-            "ClickProbe: eventWindow=\(winDesc) locInWin=\(Int(event.locationInWindow.x)) naiveX=\(Int(naive))→\(naiveHit) defensiveX=\(defensive.map { String(Int($0)) } ?? "nil")→\(defHit)")
+            "ClickProbe: eventWindow=\(winDesc) locInWin=\(Int(event.locationInWindow.x)) naiveX=\(Int(naive))→\(naiveHit) defensiveX=\(defensive.map { String(Int($0)) } ?? "nil")→\(defHit) pointerX=\(pointerX.map { String(Int($0)) } ?? "nil")→\(ptrHit)")
     }
 
     /// Static mapping validation: resolve a sweep of x positions against each
