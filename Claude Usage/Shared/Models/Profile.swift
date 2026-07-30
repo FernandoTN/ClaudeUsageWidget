@@ -233,7 +233,7 @@ struct Profile: Codable, Identifiable, Equatable {
     /// (isCodexOnlyProfile) stopped being a partition when the third provider
     /// arrived — a Grok profile is not codex-only, and grouping it with Claude
     /// would let the auto-switch hand a Claude session a Grok login.
-    nonisolated enum ProviderKind: Equatable {
+    nonisolated enum ProviderKind: Equatable, Hashable, CaseIterable {
         case claude, codex, grok
     }
 
