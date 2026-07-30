@@ -82,11 +82,11 @@ final class StatusBarUIManager {
     /// and popover anchoring.
     private var groupSegments: [Profile.ProviderKind: [(profileId: UUID, range: Range<CGFloat>)]] = [:]
 
-    /// Horizontal gap between tiles inside a composite, chosen to visually
-    /// match the system's inter-status-item spacing.
-    private static let compositeTileSpacing: CGFloat = 10
+    /// Horizontal gap between tiles inside a composite — near-touching by
+    /// owner preference (2026-07-29): the tiles read as one tight group.
+    private static let compositeTileSpacing: CGFloat = 3
     /// Padding at each composite edge (the system adds its own margins too).
-    private static let compositeEdgePadding: CGFloat = 2
+    private static let compositeEdgePadding: CGFloat = 1
 
     /// Light red for weekly-maxed tile titles — softer than systemRed so it
     /// reads well on the dark bar (and distinct from the red critical bar fill).
