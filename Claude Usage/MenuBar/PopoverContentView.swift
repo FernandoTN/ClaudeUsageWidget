@@ -93,6 +93,39 @@ struct PopoverContentView: View {
         manager.clickedProfileUsage ?? manager.usage
     }
 
+    /// The account whose usage this popover is showing.
+    private var viewedProfile: Profile? {
+        manager.clickedProfileId.flatMap { id in
+            profileManager.profiles.first(where: { $0.id == id })
+        } ?? profileManager.activeProfile
+    }
+
+    /// The viewed account's provider group, LEFT-TO-RIGHT exactly as the menu
+    /// bar paints the tiles (soonest weekly reset at the RIGHT edge).
+    private var groupMembers: [Profile] {
+        guard profileManager.displayMode == .multi, let viewed = viewedProfile else { return [] }
+        return StatusBarUIManager.onScreenGroupMembers(
+            for: profileManager.profiles,
+            provider: viewed.providerKind
+        )
+    }
+
+    /// Accounts the menu bar marks ACTIVE — same definition the tiles' cyan
+    /// label uses, so the bar and the popover can never disagree.
+    private var activeAccountIds: Set<UUID> {
+        profileManager.activeAccountIds(among: profileManager.profiles)
+    }
+
+    /// Move the viewed account `delta` tiles along its group, wrapping around.
+    /// Backs the ‹ › buttons and the left/right arrow keys.
+    private func cycleGroup(_ delta: Int) {
+        let members = groupMembers
+        guard members.count > 1 else { return }
+        let current = members.firstIndex(where: { $0.id == manager.clickedProfileId }) ?? 0
+        let next = ((current + delta) % members.count + members.count) % members.count
+        manager.viewProfile(members[next].id)
+    }
+
     /// Name of the VIEWED profile if its last fetch hit a credential error, nil
     /// otherwise. Keyed on per-profile membership in BOTH display modes — one
     /// dead login must not banner every popover, and a lingering global flag
@@ -204,15 +237,15 @@ struct PopoverContentView: View {
                             .lineLimit(1)
                     }
 
-                    if profileManager.isProviderActive(viewingProfile) {
+                    if activeAccountIds.contains(viewingProfile.id) {
                         Text("Active")
                             .font(.system(size: 8, weight: .semibold))
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(Color(nsColor: .systemCyan))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
                             .background(
                                 Capsule()
-                                    .fill(Color.accentColor.opacity(0.12))
+                                    .fill(Color(nsColor: .systemCyan).opacity(0.14))
                             )
                     }
                 }
@@ -224,6 +257,22 @@ struct PopoverContentView: View {
                 )
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
+            }
+
+            // Group navigator — composite tiles put a whole provider group in
+            // ONE status item, so the popover must be able to walk the group
+            // itself instead of relying on precise per-tile clicks. Also the
+            // one place the user can SEE which account of the group is active.
+            if profileManager.displayMode == .multi, groupMembers.count > 1 {
+                GroupNavigator(
+                    members: groupMembers,
+                    viewedId: viewedProfile?.id,
+                    activeIds: activeAccountIds,
+                    onSelect: { manager.viewProfile($0) },
+                    onStep: { cycleGroup($0) }
+                )
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
             }
 
             // Grok account note — only the weekly bar is meaningful (SuperGrok
@@ -296,6 +345,108 @@ struct PopoverContentView: View {
         .padding(.bottom, 8)
         .frame(width: 280)
         .background(VisualEffectBackground())
+        // Arrow keys walk the group too, when the popover holds focus. The ‹ ›
+        // buttons are the guaranteed affordance; this is the shortcut on top.
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.leftArrow) {
+            cycleGroup(-1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            cycleGroup(1)
+            return .handled
+        }
+    }
+}
+
+// MARK: - Composite group navigator
+
+/// Walk the accounts of one provider group without hunting for a ~20pt tile
+/// segment in the menu bar.
+///
+/// Chips are ordered exactly as the tiles are painted — left to right, with the
+/// SOONEST weekly reset at the right edge — so the strip is a map of the group
+/// as it appears on the bar. The chip of the account that owns the provider's
+/// shared CLI login carries the same cyan the tile's label uses; the viewed
+/// account is the filled one.
+struct GroupNavigator: View {
+    let members: [Profile]
+    let viewedId: UUID?
+    let activeIds: Set<UUID>
+    let onSelect: (UUID) -> Void
+    let onStep: (Int) -> Void
+
+    private func chipLabel(_ profile: Profile) -> String {
+        String(profile.menuBarDisplayName.prefix(3)).uppercased()
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            stepButton("chevron.left", delta: -1)
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 3) {
+                    ForEach(members) { member in
+                        let isViewed = member.id == viewedId
+                        let isActive = activeIds.contains(member.id)
+                        Button {
+                            onSelect(member.id)
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(chipLabel(member))
+                                    .font(.system(size: 9, weight: isViewed ? .bold : .medium,
+                                                  design: .rounded))
+                                    .foregroundColor(
+                                        isActive ? Color(nsColor: .systemCyan)
+                                                 : (isViewed ? .primary : .secondary)
+                                    )
+                                // Active marker: matches the tile's cyan label.
+                                Circle()
+                                    .fill(isActive ? Color(nsColor: .systemCyan) : Color.clear)
+                                    .frame(width: 3, height: 3)
+                            }
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 3)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(isViewed ? Color.primary.opacity(0.10) : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(isViewed ? Color.primary.opacity(0.25) : Color.clear,
+                                            lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .help(member.name)
+                    }
+                }
+                .padding(.horizontal, 1)
+            }
+            .scrollIndicators(.hidden)
+
+            stepButton("chevron.right", delta: 1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(0.03))
+        )
+    }
+
+    private func stepButton(_ systemName: String, delta: Int) -> some View {
+        Button {
+            onStep(delta)
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(width: 14, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

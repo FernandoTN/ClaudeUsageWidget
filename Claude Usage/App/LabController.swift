@@ -134,7 +134,10 @@ final class LabController: NSObject {
         statusBarUIManager.setupMultiProfile(
             profiles: profiles,
             target: self,
-            action: #selector(tileClicked(_:))
+            action: #selector(tileClicked(_:)),
+            // The probe MEASURES teardown+recreate cost — never let the
+            // composite reuse path short-circuit it.
+            forceRecreate: true
         )
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -148,6 +151,15 @@ final class LabController: NSObject {
     }
 
     // MARK: - Popover isolation
+
+    /// Anchor rect for ONE profile's tile: its segment inside the provider
+    /// group's composite button. Without this every "tile" in composite mode
+    /// resolves to the same whole-group button rect, and the stress harness
+    /// re-shows the popover on one identical anchor instead of reproducing
+    /// production's tile-to-tile re-anchoring (Codex verification 2026-07-29).
+    private func tileAnchor(_ profileId: UUID, in button: NSStatusBarButton) -> NSRect {
+        statusBarUIManager.anchorRect(for: profileId, in: button) ?? button.bounds
+    }
 
     private func openPopoverOnFirstTile() {
         let ordered = StatusBarUIManager.multiProfileCreationOrder(for: profiles)
@@ -165,7 +177,7 @@ final class LabController: NSObject {
         popover.contentViewController = NSHostingController(
             rootView: LabPopoverStubView()
         )
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.show(relativeTo: tileAnchor(firstId, in: button), of: button, preferredEdge: .minY)
         self.popover = popover
         LoggingService.shared.log("LabController: popover opened on first tile")
     }
@@ -187,7 +199,7 @@ final class LabController: NSObject {
         popover.behavior = .semitransient
         popover.animates = true
         popover.contentViewController = NSHostingController(rootView: LabPopoverStubView())
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.show(relativeTo: tileAnchor(firstId, in: button), of: button, preferredEdge: .minY)
         self.popover = popover
         LoggingService.shared.log("LabController: popover-cycle opened")
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
@@ -242,7 +254,8 @@ final class LabController: NSObject {
                 self.popover = fresh
                 let id = ordered[self.stressIndex % ordered.count]
                 if let button = self.statusBarUIManager.button(for: id) {
-                    fresh.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                    fresh.show(relativeTo: self.tileAnchor(id, in: button),
+                               of: button, preferredEdge: .minY)
                 }
                 LoggingService.shared.log("LabController: popover-stress recreate (switch parity)")
                 return
@@ -259,7 +272,8 @@ final class LabController: NSObject {
             guard let button = self.statusBarUIManager.button(for: id) else { return }
             popover.performClose(nil)
             popover.contentViewController = NSHostingController(rootView: LabPopoverStubView())
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.show(relativeTo: self.tileAnchor(id, in: button),
+                         of: button, preferredEdge: .minY)
         }
         RunLoop.main.add(timer, forMode: .common)
         stressTimer = timer
