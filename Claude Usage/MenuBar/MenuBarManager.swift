@@ -2353,8 +2353,15 @@ extension MenuBarManager: NSPopoverDelegate {
         // with animates=true, didClose is delivered only after the fade-out,
         // typically AFTER that mouse-up action already ran and found no
         // stamp (the close/re-open pairs in the 2026-07-30 click trace).
+        //
+        // LEFT button exactly: the status buttons use the default action
+        // mask (left mouse-up only), so no action ever follows a right/other
+        // press to consume the stamp (Codex re-review 2026-07-30). A
+        // left-down that then drags off and releases outside also leaves the
+        // stamp unconsumed — accepted residual: it self-expires in 0.5s and
+        // at worst swallows one click, which the next click recovers.
         guard let button = currentPopoverButton,
-              NSEvent.pressedMouseButtons != 0,
+              NSEvent.pressedMouseButtons == 1,
               StatusBarUIManager.pointerLocalX(in: button) != nil else { return }
         lastPopoverCloseButton = button
         lastPopoverCloseTime = Date()
