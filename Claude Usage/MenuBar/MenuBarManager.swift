@@ -41,16 +41,17 @@ class MenuBarManager: NSObject, ObservableObject {
 
     // Track which button is currently showing the popover
     private weak var currentPopoverButton: NSStatusBarButton?
-    /// Which profile's tile the popover is anchored to — with composite
-    /// groups one button hosts many tiles, so button identity alone cannot
-    /// distinguish "same tile" (dismiss) from "different tile" (switch).
+    /// Which profile's tile the popover is anchored to (anchor-rect
+    /// re-resolution on group switches; the dismiss decision itself keys on
+    /// the BUTTON only — any same-group click while open is a dismiss).
     private var currentPopoverProfileId: UUID?
 
     /// Where/when the popover last closed. The .semitransient popover auto-closes
     /// on the mouse-DOWN of a click on its own anchor button; without this stamp
-    /// the mouse-UP action re-opens it, so a same-tile click can never dismiss.
+    /// the mouse-UP action re-opens it, so a same-group click can never dismiss.
+    /// Stamped in popoverWillClose (close INITIATION — didClose fires only after
+    /// the fade-out, which can be AFTER that mouse-up action already ran).
     private weak var lastPopoverCloseButton: NSStatusBarButton?
-    private var lastPopoverCloseProfileId: UUID?
     private var lastPopoverCloseTime: Date = .distantPast
 
     private let apiService = ClaudeAPIService()
@@ -590,23 +591,21 @@ class MenuBarManager: NSObject, ObservableObject {
         // is the clicked button itself (shortcut-invoked toggles pass nil).
         //
         // COORDINATE TRAP (scene-hosted status items, macOS 26/27): the
-        // action's NSEvent may carry a nil window — and a nil-window event's
-        // `locationInWindow` is in SCREEN coordinates — or a window that is
-        // not the button's. `convert(_:from: nil)` assumes the point is
-        // already in the button's window space, silently producing a huge x
-        // that resolved every click to the group's last segment (owner
-        // report: "always opens Commits"). Route through screen coordinates
-        // whenever the event's window is not literally the button's.
+        // action's NSEvent does NOT carry the click location. Clicks arrive
+        // as FrontBoard NSMenuBarNavigateActions and AppKit re-dispatches
+        // them with a SYNTHESIZED event at the button's CENTER — 14
+        // production clicks all logged rawX == width/2, resolving every
+        // click to the center tile ("always opens Commits", owner report
+        // 2026-07-30). The physical pointer position is the click location;
+        // read it from the window server, never from the event.
         let clickX: CGFloat? = {
-            guard sender is NSStatusBarButton, let event = NSApp.currentEvent else { return nil }
-            if let eventWindow = event.window, eventWindow === button.window {
-                return button.convert(event.locationInWindow, from: nil).x
+            guard sender is NSStatusBarButton else { return nil }
+            let x = StatusBarUIManager.pointerLocalX(in: button)
+            if x == nil {
+                LoggingService.shared.log(
+                    "Composite click: pointer off-button → ambiguous (active-account fallback)")
             }
-            guard let buttonWindow = button.window else { return nil }
-            let screenPoint = event.window?.convertPoint(toScreen: event.locationInWindow)
-                ?? event.locationInWindow
-            let inButtonWindow = buttonWindow.convertPoint(fromScreen: screenPoint)
-            return button.convert(inButtonWindow, from: nil).x
+            return x
         }()
 
         // In multi-profile mode, determine which profile was clicked. Written
@@ -643,15 +642,19 @@ class MenuBarManager: NSObject, ObservableObject {
             return
         }
 
-        // Otherwise toggle the popover. "Same tile" = same button AND same
-        // profile — with composite groups one button hosts many tiles, so
-        // button identity alone can't distinguish tile switches from a
-        // dismiss click.
-        let sameTile = currentPopoverButton === button
-            && currentPopoverProfileId == clickedProfileId
+        // Otherwise toggle the popover. "Same" = same BUTTON: a click
+        // anywhere on a group whose popover is already open is a DISMISS
+        // (owner spec 2026-07-30), never a tile switch — switching accounts
+        // with the popover open is the group navigator's job. Keying on
+        // (button, profile) here made the dismiss depend on the re-click
+        // resolving to the exact anchor tile, which a few points of click
+        // scatter (or an ambiguous→active open) defeats: the "dismiss"
+        // turned into a close + fresh popover.
+        let sameButton = currentPopoverButton === button
         if let popover, popover.isShown {
-            if sameTile {
-                // Same tile - close the popover
+            if sameButton {
+                // Same group - close the popover
+                LoggingService.shared.log("Popover: same-group re-click → dismiss")
                 closePopover()
             } else {
                 // Different tile/button: close now, re-show on the NEXT
@@ -683,14 +686,13 @@ class MenuBarManager: NSObject, ObservableObject {
             }
         } else {
             // Popover not shown. If it JUST closed anchored to this same
-            // tile, this click is the semitransient auto-close's own
+            // group button, this click is the semitransient auto-close's own
             // mouse-up — the user meant "dismiss", so swallow the re-open.
             if let lastButton = lastPopoverCloseButton, lastButton === button,
-               lastPopoverCloseProfileId == clickedProfileId,
                Date().timeIntervalSince(lastPopoverCloseTime) < 0.5 {
                 lastPopoverCloseButton = nil
-                lastPopoverCloseProfileId = nil
                 stopMonitoringForOutsideClicks()
+                LoggingService.shared.log("Popover: re-click after auto-close swallowed → dismissed")
                 return
             }
             // Stop any existing monitor first
@@ -705,16 +707,9 @@ class MenuBarManager: NSObject, ObservableObject {
     }
 
     private func closePopover() {
-        // Record the anchor BEFORE nilling it: with animates=true,
-        // popoverDidClose fires after the fade-out, by which time
-        // currentPopoverButton is already nil and the same-tile "click again
-        // to dismiss" swallow could never match — the click closed and
-        // immediately REOPENED the popover (owner report 2026-07-29), doubling
-        // the popover lifecycle (and its scene fence/entanglement exposure)
-        // on every dismiss.
-        lastPopoverCloseButton = currentPopoverButton
-        lastPopoverCloseProfileId = currentPopoverProfileId
-        lastPopoverCloseTime = Date()
+        // performClose delivers popoverWillClose synchronously, which stamps
+        // the swallow anchor while currentPopoverButton is still set — so the
+        // nilling below must come AFTER it.
         popover?.performClose(nil)
         stopMonitoringForOutsideClicks()
         currentPopoverButton = nil
@@ -2344,22 +2339,41 @@ extension MenuBarManager: NSPopoverDelegate {
         return window
     }
 
-    func popoverDidClose(_ notification: Notification) {
-        // Record WHERE and WHEN the popover closed. The .semitransient popover
-        // auto-closes on the mouse-DOWN of a click on the anchoring status
-        // button; the button's action then fires on mouse-UP with isShown ==
-        // false and would re-open it — making "click the same tile to dismiss"
-        // impossible. togglePopover consults this stamp to swallow that re-open.
-        // Only overwrite the anchor when we still know it — closePopover() may
-        // have recorded it and nil'd currentPopoverButton before this fires
-        // (animated close delivers didClose after the fade-out).
+    func popoverWillClose(_ notification: Notification) {
+        // Record WHERE and WHEN the popover started closing. The
+        // .semitransient popover auto-closes on the mouse-DOWN of a click on
+        // the anchoring status button; the button's action then fires on
+        // mouse-UP with isShown == false and would re-open it — making
+        // "click the group again to dismiss" impossible. togglePopover
+        // consults this stamp to swallow that re-open. It MUST be written
+        // here, at close initiation: with animates=true, didClose is
+        // delivered only after the fade-out, i.e. typically AFTER that same
+        // click's mouse-up action already ran and found no stamp (the
+        // close/re-open pairs in the 2026-07-30 click trace).
         if let button = currentPopoverButton {
             lastPopoverCloseButton = button
-            lastPopoverCloseProfileId = currentPopoverProfileId
         }
         lastPopoverCloseTime = Date()
-        currentPopoverButton = nil
-        currentPopoverProfileId = nil
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        // Only touch anchor state for the popover that is (or was) CURRENT.
+        // A group switch closes the old popover and shows a fresh one before
+        // this (animated) didClose arrives; clearing currentPopoverButton
+        // then would orphan the new popover — its next same-group click
+        // reads as "different button" and re-opens instead of dismissing.
+        if let closed = notification.object as? NSPopover,
+           closed === popover || popover == nil {
+            // Extend the swallow stamp to the moment the close visibly
+            // finished (willClose recorded the anchor at initiation; a slow
+            // fade must not let the 0.5s swallow window expire mid-close).
+            if let button = currentPopoverButton {
+                lastPopoverCloseButton = button
+            }
+            lastPopoverCloseTime = Date()
+            currentPopoverButton = nil
+            currentPopoverProfileId = nil
+        }
 
         // DESTROY the popover once closed: dropping only the hosting
         // controller (the previous fix) still leaves the borderless

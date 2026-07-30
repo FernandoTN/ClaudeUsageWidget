@@ -1428,6 +1428,27 @@ final class StatusBarUIManager {
         groupItems[provider]?.button
     }
 
+    /// The PHYSICAL pointer position in `button`-local x, or nil when the
+    /// pointer is not on the button.
+    ///
+    /// This — not the action's NSEvent — is the trustworthy click location.
+    /// Scene-hosted status items (macOS 26/27) deliver clicks as FrontBoard
+    /// NSMenuBarNavigateActions that AppKit re-dispatches through the button
+    /// cell's trackMouse with a SYNTHESIZED event at the button's CENTER:
+    /// 14 consecutive production clicks on different tiles all logged
+    /// rawX=148 == compositeWidth/2 (2026-07-30), routing every click to the
+    /// center tile. The window server's pointer position at action time is
+    /// where the user actually clicked. A pointer outside the button means
+    /// there was no physical click to resolve (keyboard activation, forwarded
+    /// scene action) — callers treat that as ambiguous.
+    static func pointerLocalX(in button: NSStatusBarButton) -> CGFloat? {
+        guard let window = button.window else { return nil }
+        let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let local = button.convert(inWindow, from: nil)
+        guard button.bounds.insetBy(dx: -4, dy: -4).contains(local) else { return nil }
+        return local.x
+    }
+
     /// Resolve which profile a click at `locationInButton` (button-local x)
     /// landed on. Composite mode only; nil when unresolvable.
     func profileId(for sender: NSStatusBarButton?, atX locationInButton: CGFloat?) -> UUID? {
