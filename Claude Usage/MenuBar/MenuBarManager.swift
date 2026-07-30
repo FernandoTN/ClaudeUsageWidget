@@ -2357,12 +2357,13 @@ extension MenuBarManager: NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        // Only touch anchor state for the popover that is (or was) CURRENT.
-        // A group switch closes the old popover and shows a fresh one before
-        // this (animated) didClose arrives; clearing currentPopoverButton
-        // then would orphan the new popover — its next same-group click
-        // reads as "different button" and re-opens instead of dismissing.
-        if let closed = notification.object as? NSPopover,
+        // Only touch anchor state when the CURRENT popover really finished
+        // closing. A group switch shows a fresh popover (possibly the same
+        // reused object) before the old animated didClose arrives; clearing
+        // currentPopoverButton then would orphan the shown popover — its
+        // next same-group click reads as "different button" and re-opens
+        // instead of dismissing.
+        if let closed = notification.object as? NSPopover, !closed.isShown,
            closed === popover || popover == nil {
             // Extend the swallow stamp to the moment the close visibly
             // finished (willClose recorded the anchor at initiation; a slow
