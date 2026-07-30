@@ -633,3 +633,37 @@ built on:
   real mouse events to the app — that IS the root cause.
 - A left-press on the anchor that drags off and releases outside arms a swallow
   stamp nothing consumes; it self-expires in 0.5s and at worst eats one click.
+
+### Addendum 8.1 — live falsification of the swallow-arming gate; PR #24 (2026-07-30, ~13:15)
+
+The owner's hand-validation confirmed HALF of addendum 8: the misroute is fixed —
+the live trace shows rawX varying per click and resolving correctly (123→Google,
+14→2010, 190→Memori, 39→jskxkxjssh, 94→BBR…). But every same-tile re-click still
+closed AND re-opened (owner report; trace 13:06:41→13:06:45 'Google' pair with no
+dismiss/swallow lines).
+
+Diagnosis from the trace: at action time the popover was already auto-closed and
+the swallow was NOT armed. The `NSEvent.pressedMouseButtons == 1` arming gate
+(added for Codex round-2's finding) can NEVER hold on macOS 27: the scene-routed
+click is processed by the app after the physical mouse release — the same
+event-timing decoupling that caused the original misroute also invalidated the
+"mouse currently pressed" check. A condition designed for classic event timing was
+accepted without re-testing it against the scene-routed world; lesson recorded.
+
+Fix (PR #24, rebase-merged, main `6e311d4`): arm on pointer-on-anchor ALONE —
+which by itself still excludes the desktop-click closes Codex round 1 worried
+about — and log armed/not-armed at default level so every future click trace shows
+the arming decision directly. Codex gpt-5.6-sol xhigh round 4: **VERDICT: SHIP**
+("pointer-on-anchor alone is the correct practical arming gate; the removed
+pressed-button condition could never succeed during the affected path"); unit
+suite green. Residuals (LOW, accepted): a keyboard/programmatic close with the
+cursor resting on the anchor, or a right-click/drag-off, arms a stamp nothing
+consumes — self-expires in 0.5s, at worst one swallowed click.
+
+Redeployed from merged main with the wedge-gap procedure (churn had re-ignited:
+45 watchdog lines since 09:22, ~2.3% avg CPU; killed 13:15:52, ≥165s gap).
+Owner re-validation: click a tile → popover opens on it; click the same group
+again → popover CLOSES and stays closed. The trace now must show
+"Popover: willClose — swallow armed (pointer on anchor)" followed by
+"Popover: re-click after auto-close swallowed → dismissed" (or
+"Popover: same-group re-click → dismiss" when the auto-close loses the race).
