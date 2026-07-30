@@ -142,3 +142,40 @@ notification only if both stages fail. Manual live-storm trigger for validating 
 Open validation: the remediation stages have not yet met a live storm — the next fence-burst
 ignition is the test (watchdog handles it automatically; logs record stage outcomes).
 Escalation path if stage 1 fails: composite tiles (14 items → 1-3 windows).
+
+## Addendum 4 — settings freeze investigation + consolidated fix package (2026-07-29 evening, PR #21)
+
+Owner reported: after an auto account-switch, settings opens got slower, third open froze
+(scrollbar thumb shrank, black flash), CPU exploded. Theory fleet: Codex (gpt-5.6-sol xhigh,
+5 ranked theories), fable settings-lens, opus lifecycle sweep (empirical AppKit probes) —
+full consensus:
+
+1. The storm (8-11%) was ACTIVE throughout — the dominant slowdown. StormWatchdog was silent
+   for two arithmetically certain reasons: 12% threshold > storm cost, and the idle gate saw
+   settingsWindow != nil the whole time because **the settings window was never closed — it
+   was open on screen** (the "three opens" re-foregrounded one window).
+2. The switch's ~8-10 publishes re-render the settings sidebar + active tab per publish —
+   the amplifier that made settings feel frozen under the storm. Scrollbar shrink = delayed
+   completion of the eager 3×14-row layout under starvation, NOT content growth (heap flat).
+3. Latent defects found and fixed: close-teardown was an empirical NO-OP (hosting view
+   installed as subview; contentViewController was never set); minimize orphaned windows
+   (isVisible false + no delegate callback → second window created, first immortal);
+   150ms double-open race; Cmd-, SwiftUI Settings scene = second untracked graph.
+4. Owner-reported same-tile popover close-and-reopen: real bug (anchor nil'd before animated
+   didClose recorded it) — every dismiss ran a full extra popover lifecycle (doubled fence
+   exposure). Fixed.
+5. E3 completed against the live storm: stage-0 repaint and a clean single-shot stage-1
+   visibility cycle both FAILED to clear it (CPU-stack verdict; the occlusion log alone is
+   decoupled and must not be used as the success metric — Codex). In-place remediation is
+   falsified; the ladder now exists for cheap first attempts + calibrated notification.
+
+Shipped (commits 55aa083 + f4d1567; full suite green after a scripted-edit regression was
+caught by the clean test build and repaired): watchdog threshold 6%, window-population idle
+gate, pause-not-reset hot streak, ladder re-arm, debounced manual trigger; settings
+contentViewController install, reuse-any-existing-window, double-open guard, empty Settings
+scene, dead code removed; popover same-tile dismiss.
+
+OPEN DECISION (owner): composite tiles (14 status items → 3 provider-group items) — the only
+structural reduction of the wedged-state cost (~9% → ~0.7%) since prevention and remediation
+are both impossible. UX trade-off: overflow clips a whole provider group at once. Scoped,
+not built.
