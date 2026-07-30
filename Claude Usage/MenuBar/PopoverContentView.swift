@@ -385,46 +385,30 @@ struct GroupNavigator: View {
         HStack(spacing: 6) {
             stepButton("chevron.left", delta: -1)
 
-            ScrollView(.horizontal) {
-                HStack(spacing: 3) {
-                    ForEach(members) { member in
-                        let isViewed = member.id == viewedId
-                        let isActive = activeIds.contains(member.id)
-                        Button {
-                            onSelect(member.id)
-                        } label: {
-                            VStack(spacing: 2) {
-                                Text(chipLabel(member))
-                                    .font(.system(size: 9, weight: isViewed ? .bold : .medium,
-                                                  design: .rounded))
-                                    .foregroundColor(
-                                        isActive ? Color(nsColor: .systemCyan)
-                                                 : (isViewed ? .primary : .secondary)
-                                    )
-                                // Active marker: matches the tile's cyan label.
-                                Circle()
-                                    .fill(isActive ? Color(nsColor: .systemCyan) : Color.clear)
-                                    .frame(width: 3, height: 3)
-                            }
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 3)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(isViewed ? Color.primary.opacity(0.10) : Color.clear)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(isViewed ? Color.primary.opacity(0.25) : Color.clear,
-                                            lineWidth: 1)
-                            )
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 3) {
+                        ForEach(members) { member in
+                            chip(for: member)
+                                .id(member.id)
                         }
-                        .buttonStyle(.plain)
-                        .help(member.name)
+                    }
+                    .padding(.horizontal, 1)
+                }
+                .scrollIndicators(.hidden)
+                // A wide group overflows the strip (7 of 11 chips visible on a
+                // 15-account bar): keep the VIEWED chip on screen, or ‹ ›
+                // cycling walks into accounts the owner cannot see change.
+                .onAppear {
+                    if let viewedId { proxy.scrollTo(viewedId, anchor: .center) }
+                }
+                .onChange(of: viewedId) { _, newId in
+                    guard let newId else { return }
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        proxy.scrollTo(newId, anchor: .center)
                     }
                 }
-                .padding(.horizontal, 1)
             }
-            .scrollIndicators(.hidden)
 
             stepButton("chevron.right", delta: 1)
         }
@@ -434,6 +418,42 @@ struct GroupNavigator: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.primary.opacity(0.03))
         )
+    }
+
+    @ViewBuilder
+    private func chip(for member: Profile) -> some View {
+        let isViewed = member.id == viewedId
+        let isActive = activeIds.contains(member.id)
+        Button {
+            onSelect(member.id)
+        } label: {
+            VStack(spacing: 2) {
+                Text(chipLabel(member))
+                    .font(.system(size: 9, weight: isViewed ? .bold : .medium,
+                                  design: .rounded))
+                    .foregroundColor(
+                        isActive ? Color(nsColor: .systemCyan)
+                                 : (isViewed ? .primary : .secondary)
+                    )
+                // Active marker: matches the tile's cyan label.
+                Circle()
+                    .fill(isActive ? Color(nsColor: .systemCyan) : Color.clear)
+                    .frame(width: 3, height: 3)
+            }
+            .padding(.horizontal, 5)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isViewed ? Color.primary.opacity(0.10) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isViewed ? Color.primary.opacity(0.25) : Color.clear,
+                            lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(member.name)
     }
 
     private func stepButton(_ systemName: String, delta: Int) -> some View {
