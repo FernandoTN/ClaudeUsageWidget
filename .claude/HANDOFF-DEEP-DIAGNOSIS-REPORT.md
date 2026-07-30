@@ -474,3 +474,162 @@ Every finding from the composite council round was traced to code on the branch 
    or raise the threshold if the soak/first week shows false fires.
 4. Remove the `Settings` scene entirely; clear `button.image` when a live group paints
    zero members.
+
+## Addendum 8 — composite-click misroute ROOT-CAUSED and fixed; group re-click dismisses (2026-07-30, Fable sibling 3)
+
+Mission: resolve the owner's two morning reports on the deployed PR #23 build —
+S1 "Google is active but if I click it, it now opens Commits" and S2 "if a group
+is open and I click again on the group, it should close it" — from first
+principles, without inheriting the prior sessions' hypotheses.
+
+### Root cause (with evidence): the click's NSEvent never carried the click location
+
+The unified log destroyed the "clicks carry a location that we convert wrong"
+premise that addenda 5-7 (A1 ambiguous-fallback, A2 defensive conversion) were
+built on:
+
+- **14 consecutive physical clicks between 08:10:12 and 08:18:16 all logged
+  `Composite click: rawX=148 mapped=148 → segment hit`** — fourteen identical
+  integer coordinates across 8 minutes of separate clicks on different tiles.
+  A physical pointer cannot do that; rawX was a CONSTANT.
+- 148 == compositeWidth/2. The Claude group had 11 selected tiles ≈ 26.9pt each
+  (~296pt total). Reconstructing the paint order from the owner's live
+  `profiles_v3` (soonest weekly reset rightmost) gives left→right:
+  2010, jskxkxjssh, Stanford, BBR, Google, **Commits**, 2026, Memori, Outlook,
+  Ai, Last. The button's CENTER (5.5 tile-widths) falls in tile index 5 —
+  **'Commits'**. Every click "opened Commits" because every click was resolved
+  at the button's center, regardless of where the owner clicked.
+- WHY the event lies: each production click is immediately preceded in the log by
+  FrontBoard delivering **`NSMenuBarNavigateAction` to
+  `NSMenuBarNavigationSceneExtension`**, then AppKit `trackMouse send action on
+  mouseUp`. On macOS 26/27 the scene-hosted status-item click arrives as a scene
+  ACTION, which AppKit re-dispatches through the button cell's tracking with a
+  **synthesized NSEvent positioned at the button's center**. `NSApp.currentEvent`
+  at action time simply does not contain the physical click location — so every
+  event-coordinate fix (A1's fallback re-target, A2's screen-route conversion)
+  was aimed below the broken layer. A2's conversion was in fact "working":
+  mapped==rawX means the math faithfully converted the synthetic center point.
+- The static mapping itself was never wrong: the CUW_LAB_CLICKPROBE sweep at 11
+  tiles is exact and contiguous (`Lab Claude 8[0-25] … Lab Claude 1[176-199]`,
+  grok/codex equally clean) — consistent with addendum 7's pixel verification.
+
+### Fix (branch fix/click-misroute, folded into PR #23)
+
+1. **Resolve clicks from the physical pointer, not the event.**
+   `StatusBarUIManager.pointerLocalX(in:)` reads `NSEvent.mouseLocation` (the
+   window server's pointer position at action time — where the user actually
+   clicked), converts it via `window.convertPoint(fromScreen:)` +
+   `button.convert`, and returns nil when the pointer is not on the button
+   (±4pt slop). `togglePopover` uses it as the only coordinate source; nil →
+   ambiguous → the group's ACTIVE account (the A1 fallback, now reachable for
+   keyboard-activated toggles and forwarded scene actions too). The lab click
+   probe logs the pointer pipeline alongside the legacy event pipeline.
+2. **Group re-click DISMISSES (S2, owner spec).** The dismiss decision keys on
+   the BUTTON only: any click on a group whose popover is open closes it —
+   switching accounts with the popover open is the group navigator's job.
+   Previously "same tile" required the re-click to resolve to the exact anchor
+   profile; any resolution scatter turned the dismiss into close + fresh popover.
+3. **Swallow stamp at close INITIATION.** The .semitransient popover auto-closes
+   on the dismissing click's mouse-DOWN, but the stamp that lets the mouse-UP
+   action swallow the re-open was only written in `popoverDidClose` — which,
+   with `animates=true`, arrives after the fade-out, i.e. typically AFTER the
+   mouse-up action already ran, found no stamp, and re-opened the popover (the
+   383ms close/re-open pair in the 08:11:58 trace). The stamp now writes in
+   `popoverWillClose` — and ONLY there (see the validation rounds below for
+   the precise arming condition; `didClose` never stamps).
+4. **Superseded didClose can no longer orphan a live popover.** A group switch
+   re-shows a (possibly reused) popover before the old animated `didClose`
+   lands; unconditionally clearing `currentPopoverButton` there made the next
+   same-group click read as "different button" → close + re-open. The
+   anchor-state clear is now gated on `!closed.isShown && (closed === popover ||
+   popover == nil)` — the same pattern as the deferred destroy.
+
+### GPT-5.6 validation (codex exec, gpt-5.6-sol, xhigh — three rounds to convergence)
+
+- **Round 1** (full diff): FIX FIRST. Finding 1 (MAJOR): the swallow stamp armed on
+  EVERY close — open group → click desktop → click group within 0.5s = swallowed
+  legitimate open. Finding 2 (MAJOR): the didClose "extend the window" stamp re-armed
+  a stamp the dismissing mouse-up had already consumed → next click swallowed.
+  Finding 3 (MINOR): pointer sampled at action time can drift from the physical click
+  in the scene-action dispatch gap — accepted as residual (millisecond window; a
+  captured mouse-down location is unobtainable precisely because scene-hosted items
+  don't deliver those events; the miss degrades to open-wrong-tile, recoverable).
+- **Fixes**: arm the stamp ONLY in `popoverWillClose` and only when the close is
+  provably the anchor-click auto-close — `NSEvent.pressedMouseButtons == 1` (exactly
+  left; the status buttons use the default left-mouse-up action mask, so no action
+  ever follows a right-button press to consume a stamp) AND pointer on the anchor;
+  `popoverDidClose` never stamps.
+- **Round 2**: confirmed findings 1+2 resolved and the intended dismiss intact;
+  flagged the right-button/drag-off arming residual → left-only restriction applied.
+- **Round 3**: **VERDICT: SHIP.** "The normal sequences work: desktop dismiss →
+  reopen does not arm; anchor re-click arms and consumes the stamp on mouse-up; the
+  following click reopens." Drag-off/edge-slop residual judged "[LOW — ACCEPTED] …
+  not a realistic normal-use blocker" (self-expires in 0.5s; next click recovers).
+- First codex run wedged (no output growth 24 min, killed + relaunched once per the
+  anti-stall watchdog rules); relaunch completed normally.
+
+### Verification
+
+- Unit suite green twice (after the main fix and after the codex-finding fixes):
+  `** TEST SUCCEEDED **`, all suites passed.
+- Lab (this branch, `com.claudeusagewidget.lab2`, CUW_LAB_TILES=11 + CLICKPROBE):
+  static mapping still exact and contiguous —
+  `ClickProbe sweep claude: width=199 Lab Claude 8[0-25] … Lab Claude 1[176-199]`,
+  grok `[0-24]`, codex `Cod 2[0-25] Cod 1[26-49]`. The probe now also logs the
+  pointer-based pipeline (`pointerX=…→name`) next to the legacy event-based one, so
+  the next real lab click shows both side by side.
+- The reconstruction was cross-checked against addendum 7's deployed-bar screenshot:
+  `201 jsk Sta BBR Goo Com 202 Mem Out Ai Las` — 'Com' is tile 6 of 11, dead center,
+  exactly where a synthesized-center event resolves.
+
+### Merge + deployment
+
+- PR #23 fast-forwarded to include the four fix commits and **rebase-merged**
+  (linear history): main tip **`849161d`** —
+  `046c967` pointer-based resolution + group-dismiss, `572007f` superseded-didClose
+  guard, `9cca759` precise swallow arming, `849161d` left-button-only arming, on top
+  of the two prior PR #23 commits.
+- Release built from merged main; rollback copy at
+  `/Applications/Claude Usage.app.pre-click-fix` (the PR #23-tip build that was
+  running; the older `.pre-clickfix` backup retained).
+- The running build was in the churn state at deploy time (StormWatchdog firing:
+  idle CPU 4-7% of a core, 9-10 windows, ~2:13 CPU-min over 66 min ≈ 3.3% avg), so
+  the **wedge-gap relaunch** was used: killed 09:19:01, installed during the gap,
+  relaunched after ≥165s off the bar.
+
+### Post-install soak (8 min, 09:21:46-09:30)
+
+- Pre-deploy state was the CHURN state (watchdog firing at 4-7% idle CPU since
+  ~08:15); post-relaunch: **0.0% CPU at every 60s sample**, 0.88 cumulative
+  CPU-seconds over 8 min ≈ **0.18% average** — the documented clean baseline. The
+  165s wedge gap cleared the OS-side state again, exactly as addendum 1 predicts.
+- Heap census: **9 NSStatusBarWindows, 13 CAContexts** — identical to addendum 7's
+  healthy baseline. Main thread parked in the run loop.
+- StormWatchdog: silent post-relaunch.
+- No physical clicks had occurred yet at writing time (owner away) — the deployed
+  build logs every click at default level, now including the new outcomes
+  ("Composite click: rawX=… → segment hit", "…pointer off-button → ambiguous
+  (active-account fallback)", "Popover: same-group re-click → dismiss", "Popover:
+  re-click after auto-close swallowed → dismissed"), so the next owner clicks are
+  directly verifiable in `log show`.
+
+### Hand-validation list for the owner (2 minutes)
+
+1. Click the GOOGLE tile (or any specific tile) — the popover must open on that
+   account, not 'Commits'. Try left/middle/right tiles of the Claude group.
+2. With a group's popover open, click that group again — it must CLOSE (owner spec:
+   same-group click = dismiss; switching accounts with the popover open is the
+   navigator's ‹ › job).
+3. Open a popover, click the desktop, then immediately click a tile — it must OPEN
+   (the old code could swallow this).
+4. `log show --predicate 'process == "Claude Usage"' --info --last 10m | grep -E
+   "Composite click|Popover:"` shows exactly what each click resolved to.
+
+### Residuals (accepted, documented in code)
+
+- Pointer position is sampled when the scene action reaches the app (ms after the
+  physical click); moving the pointer a full tile-width in that window would open
+  the neighbor tile. Unobtainable otherwise: scene-hosted items do not deliver the
+  real mouse events to the app — that IS the root cause.
+- A left-press on the anchor that drags off and releases outside arms a swallow
+  stamp nothing consumes; it self-expires in 0.5s and at worst eats one click.
