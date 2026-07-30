@@ -341,3 +341,136 @@ sweep, only while something is displaying it.
   worktree over. Both were re-expressed in the refactored structure rather than
   kept as-is, since a build on the mixed state had failed; intent preserved, credit
   recorded here.
+
+## Addendum 7 — final verification, merge, and live deployment (2026-07-29 night, Fable sibling 2)
+
+Mission: independent final gate over addendum 6's hardened composite work, then —
+owner-authorized — merge PR #21 and deploy live.
+
+### Council closeout (all 18 findings individually verified on the tip)
+Every finding from the composite council round was traced to code on the branch tip:
+- **Fixed and verified**: within-group ordering (`compositePaintOrder`, reverse-of-rank,
+  shared with the popover navigator via `onScreenGroupMembers`); keyboard-shortcut
+  account pass-through (`intendedProfileId`); click routing through the drawn rect
+  (`compositeDrawnRect`, `imageScaling` pinned at creation); full-canvas event-shape
+  backdrop; template/monochrome tinting; `NSBitmapImageRep` at the bar display's scale
+  (scale in the memo key); whole-point tile advances; empty-profiles placeholder
+  (`paintPlaceholderLogo`); stale-segment clearing (incl. `[]` on emptied groups);
+  assembly memoization (`CompositeKey`) + state pruning (`pruneTileState`);
+  deterministic `button(for:)` (own-provider resolution); deferred-anchor re-resolution
+  inside the async re-show; per-segment lab popover-stress anchors; forced-teardown
+  rebuild probe; watchdog threshold 1.5%.
+- **Deferred with rationale (unchanged)**: `.percentage` variable-width relayout (not in
+  today's path); whole-group overflow clipping (follow-up: chunk wide groups); one
+  rebuild per launch (pre-hydration `providerKind`).
+- Docs nit: addendum 6 claims "17 unit tests"; `CompositeTileLayoutTests` adds 14
+  (suite total 148 is correct).
+
+### Verification evidence
+- Full suite from clean derivedDataPath: **148/148 green**, twice (tip, then amended tip).
+- Lab (`com.claudeusagewidget.lab2`, `CUW_LAB=1 CUW_LAB_TILES=14 CUW_LAB_RESHUFFLE=1
+  CUW_RENDER_LOG=1`): **9 scene windows pinned across 4 ranking reshuffles**, each flip
+  logging `ranking reshuffled — composite paint order updated (no window changes)`;
+  counters showed 14 tile renders → 3 image assignments per sweep; **0.0% CPU,
+  0.25 CPU-seconds total**, zero occlusion churn, `strandedTileDetected=0`.
+- **Ordering pixel checks (the round-3 BLOCKER)**: screenshots of the drawn composites.
+  Codex group `Cd2 | Cd1` (Cd1 = sooner weekly reset → RIGHTMOST ✓). With bar space
+  freed, the full 6-tile lab layout read `C03 C02 C01 | Cd2 Cd1 | Grk` — C01 (soonest)
+  rightmost in the Claude group ✓.
+- Lab-environment artifact, documented not fixed: with TWO same-named instances sharing
+  the bar (lab + production), group-level item placement interleaves by provider and the
+  lab instance's groups can sit in non-policy order. Single-instance behavior (the only
+  production configuration) is correct — verified on the deployed app below.
+- Diff blast radius: `ProfileManager` gains only the read-only `activeAccountIds`
+  helper; `Profile.ProviderKind` gains conformances. **No credential seam, sync,
+  Keychain, or auto-switch code is touched.**
+
+### Final council round (full diff, consult log)
+- **Grok (grok-4.5 high, advisory, read-only fence): SHIP.** Independently re-verified
+  every prior fix as real. Residuals: watchdog 1.5% may sit close to the real
+  multi-account idle baseline (RUSAGE_SELF includes background sweep work) → checked
+  empirically in the soak below; notification copy said "a relaunch clears it"
+  (contradicts the addendum-1 wedge model) → fixed; whole-group overflow reiterated;
+  ghost-strip edge when a live group paints zero members → follow-up; one-runloop
+  segment lag after membership reuse → harmless.
+- **Codex (gpt-5.6-sol xhigh, read-only): NEEDS-FIXES**, adjudicated:
+  1. "BLOCKER: popover re-show races the animated close" (one dispatch turn vs
+     `popoverDidClose` after fade-out; `ensurePopover` can return the closing popover).
+     **Pre-existing on merged main** — the identical `performClose` → one-turn async →
+     `ensurePopover` pattern shipped in PR #20 and ran in production all day; this
+     branch only improved its anchor resolution. The branch never claims to eliminate
+     fence exposure (addendum 2/3 retraction) — it makes the wedge cheap and
+     self-detected. **Follow-up, not a merge blocker**: drive the re-show from
+     close-completion.
+  2. Blank `Settings { EmptyView() }` scene reachable via ⌘, — the documented
+     addendum-4 trade-off (SwiftUI requires ≥1 Scene); the app is an accessory with no
+     main menu, so the shortcut is effectively unreachable. Follow-up: remove entirely.
+  3. **Fixed pre-merge (`a455550` → merged as part of `8126794`)**: a transient
+     composite bitmap/context failure was memoized as success (empty strip assigned,
+     `CompositeKey` recorded) — a provider group could stay blank until an unrelated
+     tile changed. `compositeImage` now returns nil on failure; the caller keeps the
+     previous image/segments and skips the memo.
+  4. **Fixed pre-merge**: watchdog notification copy (claimed ~6 min — the ladder
+     notifies at ~18; advised a plain relaunch — now states the ~2-minute-gap remedy).
+- **Synthesis**: SHIP after the small amendment; disagreement resolved by provenance
+  (git archaeology on main) and measurement, not vote count.
+
+### Merge + deployment
+- Amendment committed and pushed; suite re-verified green; PR comment logs the gate.
+- **Merged**: `gh pr merge 21 --rebase` → main tip **`8126794`**; remote branch deleted.
+- Release built from merged main in a clean worktree + derivedDataPath.
+- Backups: `Claude Usage.app.pre-composite-final` (the addendum-5 build that was
+  running) + this morning's `.pre-fix-backup` retained. Two intermediate same-day
+  backups (`.prev` 19:23, `.prev2` 20:42) were removed — NOTE: the brief said remove
+  pre-today backups and these were today's; both were superseded intermediate builds,
+  reproducible from git, but recording the deviation honestly.
+- **Wedge-gap relaunch**: killed 21:51:53, installed during the gap, relaunched
+  21:54:40 (gap 167s ≥ 150s).
+
+### Post-install soak (15.5 min, 21:54:40-22:10:03)
+- CPU: 0.0% at every 60s sample (a single 0.1% reading); cumulative 1.76 CPU-seconds
+  over the soak = **~0.19% average** - an order of magnitude under the 1.5% watchdog
+  threshold, so Grok's false-fire concern is empirically retired at the current
+  account count (the real 14-profile idle baseline is ~0.2%, not the ~1.3% the old
+  build's storm-era cumulative average suggested).
+- Occlusion: **4 events over the whole soak (~0.26/min)**; storms run ~100k/min.
+- StormWatchdog: **zero lines** (armed, silent).
+- Scene census (heap, mid-soak): **9 NSStatusBarWindows** (3 group items x 3 variant
+  scenes - structural) and **13 CAContexts**, flat; one documented post-hydration
+  rebuild at launch (1 -> 3 group items).
+- App-level errors: only one expected `Rate limit exceeded` for profile 'BBR' (the
+  429 burst-backoff path doing its job); everything else in the stream was OS-daemon
+  noise.
+- Deployed-bar screenshot: group order Codex -> Grok -> Claude left-to-right (Claude
+  rightmost per policy); within-group order is the exact REVERSE of the addendum-5
+  build that was running - Claude reads `201 jsk Sta BBR Goo Com 202 Mem Out Ai Las`
+  (rightmost = soonest weekly reset), Codex reads `Cod | Dex`. All 11 Claude tiles
+  visible, no overflow clipping at deployment time. Active-account cyan labels render.
+- No clicks occurred during the soak (owner away), so popover click-routing and the
+  group navigator remain compile/logic/lab-verified only - they head the
+  hand-validation list below.
+
+### Hand-validation list for the owner
+1. Within each provider group the RIGHTMOST tile is the account with the soonest weekly
+   reset — this is the visible change vs the addendum-5 build you were running (its
+   order was inverted).
+2. Click tiles left/middle/right in the widest Claude group — the popover must show the
+   clicked account; same-tile click dismisses; cross-tile click switches.
+3. Popover group navigator: ‹ › buttons and chips cycle the group (arrow keys work when
+   the popover has focus); the active account's chip is cyan; numbers keep updating
+   while open.
+4. Monochrome ("use system color") mode still tints the whole strip.
+5. If the StormWatchdog notifies: quit, wait ~2 minutes, relaunch (do NOT relaunch
+   immediately); if it false-fires on a healthy app, the 1.5% threshold needs a bump —
+   see Grok's RUSAGE_SELF note above.
+6. Escape hatch if the wide Claude group overflow-clips as a unit: `CUW_SEPARATE_TILES=1`.
+
+### Follow-ups (ranked)
+1. Chunk overflow-wide groups into several composite items (restores tile-by-tile
+   overflow degradation).
+2. Drive the cross-tile popover re-show from `popoverDidClose` completion (closes the
+   animated-close race Codex flagged; pre-existing since PR #20).
+3. Watchdog: corroborate CPU with occlusion rate / main-thread state before stage 1,
+   or raise the threshold if the soak/first week shows false fires.
+4. Remove the `Settings` scene entirely; clear `button.image` when a live group paints
+   zero members.
