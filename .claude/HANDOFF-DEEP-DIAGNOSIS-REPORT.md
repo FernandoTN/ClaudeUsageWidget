@@ -667,3 +667,12 @@ again → popover CLOSES and stays closed. The trace now must show
 "Popover: willClose — swallow armed (pointer on anchor)" followed by
 "Popover: re-click after auto-close swallowed → dismissed" (or
 "Popover: same-group re-click → dismiss" when the auto-close loses the race).
+
+**Owner-confirmed 13:19 (addendum 8.1 closeout):** same-tile click opens, re-click
+closes and stays closed. Trace note for future sessions: the dismiss usually
+produces ONLY "willClose — swallow armed (pointer on anchor)" with NO
+"swallowed → dismissed" line — on this build the anchor re-click's auto-close
+consumes the click and no trailing action is delivered, so there is nothing to
+swallow. The armed swallow is the backstop for when the OS does deliver the
+action (as it demonstrably did in the 08:11 trace). A lone "swallow armed" line
+after an open IS the successful dismiss signature, not a missing log.
