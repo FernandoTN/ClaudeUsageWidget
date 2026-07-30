@@ -660,6 +660,17 @@ final class MenuBarIconRenderer {
     ///   - isDarkMode: Whether the menu bar is in dark mode
     ///   - useSystemColor: If true, use system accent color instead of status colors
     /// - Returns: NSImage with concentric circles showing both metrics
+    /// Lab probe (`CUW_LAB_OPAQUE=1`): fill the whole canvas with a
+    /// minimal-alpha backdrop so the tile window's alpha-derived event shape
+    /// is a full static rectangle instead of tracking the drawn pixels.
+    /// Tests whether macOS 27's per-frame "event shape" recomputation of
+    /// VISIBLE scene-hosted tiles stops when the shape cannot vary.
+    private func labOpaqueBackdropIfEnabled(width: CGFloat, height: CGFloat) {
+        guard LabMode.opaqueTiles else { return }
+        NSColor.black.withAlphaComponent(0.02).setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+    }
+
     func createConcentricIcon(
         sessionPercentage: Double,
         weekPercentage: Double,
@@ -681,6 +692,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        labOpaqueBackdropIfEnabled(width: size, height: size)
 
         let center = NSPoint(x: size / 2, y: size / 2)
 
@@ -828,6 +840,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        labOpaqueBackdropIfEnabled(width: totalWidth, height: totalHeight)
 
         let circleCenter = NSPoint(x: totalWidth / 2, y: totalHeight - circleSize / 2)
 
@@ -978,6 +991,7 @@ final class MenuBarIconRenderer {
 
         image.lockFocus()
         defer { image.unlockFocus() }
+        labOpaqueBackdropIfEnabled(width: totalWidth, height: totalHeight)
 
         // Use isDarkMode to determine correct foreground color for menu bar
         let foregroundColor = menuBarForegroundColor(isDarkMode: isDarkMode)
