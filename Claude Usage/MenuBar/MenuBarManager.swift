@@ -588,9 +588,25 @@ class MenuBarManager: NSObject, ObservableObject {
         // Composite tiles: the click's x-offset within the group button
         // identifies WHICH tile was clicked. Only meaningful when the sender
         // is the clicked button itself (shortcut-invoked toggles pass nil).
+        //
+        // COORDINATE TRAP (scene-hosted status items, macOS 26/27): the
+        // action's NSEvent may carry a nil window — and a nil-window event's
+        // `locationInWindow` is in SCREEN coordinates — or a window that is
+        // not the button's. `convert(_:from: nil)` assumes the point is
+        // already in the button's window space, silently producing a huge x
+        // that resolved every click to the group's last segment (owner
+        // report: "always opens Commits"). Route through screen coordinates
+        // whenever the event's window is not literally the button's.
         let clickX: CGFloat? = {
             guard sender is NSStatusBarButton, let event = NSApp.currentEvent else { return nil }
-            return button.convert(event.locationInWindow, from: nil).x
+            if let eventWindow = event.window, eventWindow === button.window {
+                return button.convert(event.locationInWindow, from: nil).x
+            }
+            guard let buttonWindow = button.window else { return nil }
+            let screenPoint = event.window?.convertPoint(toScreen: event.locationInWindow)
+                ?? event.locationInWindow
+            let inButtonWindow = buttonWindow.convertPoint(fromScreen: screenPoint)
+            return button.convert(inButtonWindow, from: nil).x
         }()
 
         // In multi-profile mode, determine which profile was clicked. Written
