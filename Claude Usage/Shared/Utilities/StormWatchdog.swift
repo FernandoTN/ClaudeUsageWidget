@@ -27,11 +27,21 @@ final class StormWatchdog {
     /// open (i.e. the app SHOULD be idle). Injected by MenuBarManager.
     var isNominallyIdle: () -> Bool = { true }
 
+    /// Staged in-place remediation, injected by MenuBarManager.
+    /// Stage 0: cheap — clear render caches + full repaint.
+    /// Stage 1: cycle every tile's `isVisible` off→on across a runloop turn
+    ///          (forces the scene layer to re-establish; costs one scene
+    ///          re-registration per tile — bounded, vs an endless storm).
+    /// Called on sustained burn; the user notification only fires if the burn
+    /// survives BOTH stages (each verified over the following sample).
+    var remediate: (Int) -> Void = { _ in }
+
     private var timer: Timer?
     private var lastCPUTime: TimeInterval = 0
     private var lastSampleAt: Date?
     private var consecutiveHotSamples = 0
     private var didNotifyThisLaunch = false
+    private var remediationStage = 0
 
     private init() {}
 
@@ -45,6 +55,19 @@ final class StormWatchdog {
         timer.tolerance = Self.interval * 0.1
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+
+        // Manual trigger for live-storm experiments:
+        //   distnoted post com.claudeusagewidget.remediate
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.claudeusagewidget.remediate"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            LoggingService.shared.logWarning("StormWatchdog: manual remediation trigger (stage \(self.remediationStage))")
+            self.remediate(self.remediationStage)
+            self.remediationStage += 1
+        }
     }
 
     private func sample() {
@@ -67,7 +90,20 @@ final class StormWatchdog {
         LoggingService.shared.logWarning(
             "StormWatchdog: idle CPU \(Int(usage * 100))% of a core over \(Int(wall))s (\(consecutiveHotSamples)/\(Self.hotSamplesBeforeAlarm)); windows=\(NSApp.windows.count)"
         )
-        guard consecutiveHotSamples >= Self.hotSamplesBeforeAlarm, !didNotifyThisLaunch else { return }
+        guard consecutiveHotSamples >= Self.hotSamplesBeforeAlarm else { return }
+
+        // Self-heal before alarming: try the next remediation stage and give
+        // it one sample interval to prove itself (a successful stage resets
+        // the hot counter via the guard above on the next sample).
+        if remediationStage < 2 {
+            LoggingService.shared.logWarning("StormWatchdog: attempting remediation stage \(remediationStage)")
+            remediate(remediationStage)
+            remediationStage += 1
+            consecutiveHotSamples = 0
+            return
+        }
+
+        guard !didNotifyThisLaunch else { return }
         didNotifyThisLaunch = true
         LoggingService.shared.logError(
             "StormWatchdog: SUSTAINED idle burn ≥\(Int(Self.burnThreshold * 100))% for \(Self.hotSamplesBeforeAlarm) samples — likely tracking-area/WindowServer storm. Capture `sample` + occlusion log rate, then relaunch."

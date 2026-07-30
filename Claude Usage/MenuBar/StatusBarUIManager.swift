@@ -260,6 +260,26 @@ final class StatusBarUIManager {
         lastRenderKey.removeAll()
     }
 
+    /// Storm-remediation stage 1: cycle every multi-profile item's visibility
+    /// off and back on across one runloop turn. A fullscreen menu-bar-reveal
+    /// fence burst can leave tile scenes in a per-frame event-shape-recompute
+    /// state (2026-07-29 investigation); re-establishing the scene layer is
+    /// the cheapest candidate reset short of relaunching. Render caches are
+    /// dropped so the re-shown tiles repaint fresh.
+    func cycleTileVisibility() {
+        let items = Array(multiProfileStatusItems.values)
+        guard !items.isEmpty else { return }
+        LoggingService.shared.logWarning("StatusBar: cycling visibility of \(items.count) tiles (storm remediation)")
+        for item in items { item.isVisible = false }
+        DispatchQueue.main.async { [weak self] in
+            for item in items { item.isVisible = true }
+            guard let self else { return }
+            self.lastRenderKey.removeAll()
+            self.lastImageData.removeAll()
+            self.overflowParkedIds.removeAll()
+        }
+    }
+
     // MARK: - Multi-Profile Mode
 
     /// Creation order for the multi-profile status items. Each new item is
