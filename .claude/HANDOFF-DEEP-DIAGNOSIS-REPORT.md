@@ -85,3 +85,18 @@ Invariant established: **after initial construction, the live multi-profile grou
 - "Idle 0% verified" was real but measured a *clean state*; the regrowth was a different bug (this one), not a regression of the popover/publish fixes.
 - The "four 1728×33 layer-0 strips" from the earlier census and the 685×30 layer-1000 window are app-side artifacts of scene hosting/activation; window *population* is structural — the earlier plan's R1 "window count" framing is fully retired.
 - `NSStatusItem` app-object hygiene (balanced observers, single popover, clean dictionaries) was never the problem — the leak lives in the OS's remote-context registry, reachable only through teardown/recreate.
+
+## Addendum — afternoon recurrence + the OS-side per-bundle wedge (2026-07-29, 16:00-17:10)
+
+The owner reported recurrence (slow menu, high CPU) at ~16:15. Findings, in order:
+
+1. The running process was still the OLD build (PR #20 never installed): same morning process, 40 CPU-min burned over 5h, and the afternoon's account switches had leaked 3 more generations (CAContext 172 → 298 — the +42/rebuild curve holding exactly on live production). Fixed build installed to /Applications (old app at `Claude Usage.app.pre-fix-backup`).
+2. The fixed build then appeared to "re-ignite" within minutes — with NO popover, NO settings, NO rebuilds, contexts flat at 43, zero fence errors. This forced the decisive experiment set:
+   - **A-B causality:** WindowServer 101.6% CPU with our app running → 28.1% twenty seconds after killing it (ControlCenter 30% → 7%). While wedged, OUR TILES drive the WindowServer burn — the machine-wide slowness was largely our app, not (as it first appeared) the runaway iOS simulator, which was a secondary contributor (load 156 → 100 after simulator shutdown, → 14 once other work finished).
+   - **Bundle-id A/B:** the SAME fixed binary running as `com.claudeusagewidget.lab2` with 14 VISIBLE tiles: 28 occlusion events/min, 0.0% CPU. As `com.claudeusagewidget.app`: ~100,000/min, 10-12%. The churn follows the bundle id, not the code.
+   - **Persistence + clearing:** quick kill→relaunch cycles (3-20s gap) re-inherited the churn; after the production bundle was OFF the bar for ~2 minutes (lab tiles occupying it, global relayout), the relaunched production process came up clean — 0 occl/min, 0.0% CPU, verified over an extended soak.
+3. **Corrected model:** the morning's fence-race wedge poisons OS-SIDE per-bundle status-item host state (ControlCenter/MenuBarAgent/WindowServer bookkeeping — the "persistent host identity" pitfall Codex flagged). It survives app relaunches performed within seconds, which is why the "fixed build re-ignited": it inherited the morning wedge. It clears when the bundle's items leave the bar long enough for the daemons to drop the state.
+4. **Operational remedy when the StormWatchdog fires:** quit the app, wait ~2 minutes, relaunch. No reboot. (A same-second relaunch will NOT clear it.)
+5. All prevention layers in PR #20 remain the right app-side fix: they stop the app from creating the fence-race conditions (commit-safe popover lifecycle) and from feeding the amplifier (remap-not-rebuild, context leak capped). The wedge itself is an OS bug — Apple Feedback material: `sample1.txt`, the fence timeline, the bundle-id A/B, and the WindowServer A-B numbers.
+
+End state 17:10: fixed build running clean (0.0% CPU, 0 occl/min, contexts 43); residual WindowServer burn (~85%) persists WITHOUT our app's involvement — other hosts/OS residue on a 5-day-uptime beta; owner may want a reboot at convenience.

@@ -50,6 +50,11 @@ enum LabMode {
     /// (the pattern the production ignition window contained). Ignition probe.
     static let popoverStress: Bool = ProcessInfo.processInfo.environment["CUW_LAB_POPOVER_STRESS"] == "1"
 
+    /// `CUW_LAB_OPAQUE=1` — render every multi-profile tile with a
+    /// minimal-alpha full-canvas backdrop (static rectangular event shape).
+    /// Probe for the per-frame event-shape recomputation of visible tiles.
+    static let opaqueTiles: Bool = ProcessInfo.processInfo.environment["CUW_LAB_OPAQUE"] == "1"
+
     /// `CUW_LAB_RESHUFFLE=1` — every other 30s repaint, rotate the synthetic
     /// profiles' weekly-reset ranking so `updateMultiProfileButtons` sees a
     /// changed desired order. With the in-place remap fix this must produce
