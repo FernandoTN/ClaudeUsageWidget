@@ -46,11 +46,13 @@ class MenuBarManager: NSObject, ObservableObject {
     /// the BUTTON only — any same-group click while open is a dismiss).
     private var currentPopoverProfileId: UUID?
 
-    /// Where/when the popover last closed. The .semitransient popover auto-closes
-    /// on the mouse-DOWN of a click on its own anchor button; without this stamp
-    /// the mouse-UP action re-opens it, so a same-group click can never dismiss.
-    /// Stamped in popoverWillClose (close INITIATION — didClose fires only after
-    /// the fade-out, which can be AFTER that mouse-up action already ran).
+    /// Re-open swallow stamp. The .semitransient popover auto-closes on the
+    /// mouse-DOWN of a click on its own anchor button; without this stamp the
+    /// same click's mouse-UP action re-opens it, so a same-group click could
+    /// never dismiss. Armed ONLY in popoverWillClose (close INITIATION, before
+    /// the fade delivers didClose) and only when that close is provably the
+    /// anchor-click auto-close (mouse pressed + pointer on the anchor);
+    /// consumed by the next same-button action within 0.5s.
     private weak var lastPopoverCloseButton: NSStatusBarButton?
     private var lastPopoverCloseTime: Date = .distantPast
 
@@ -2340,19 +2342,21 @@ extension MenuBarManager: NSPopoverDelegate {
     }
 
     func popoverWillClose(_ notification: Notification) {
-        // Record WHERE and WHEN the popover started closing. The
-        // .semitransient popover auto-closes on the mouse-DOWN of a click on
-        // the anchoring status button; the button's action then fires on
-        // mouse-UP with isShown == false and would re-open it — making
-        // "click the group again to dismiss" impossible. togglePopover
-        // consults this stamp to swallow that re-open. It MUST be written
-        // here, at close initiation: with animates=true, didClose is
-        // delivered only after the fade-out, i.e. typically AFTER that same
-        // click's mouse-up action already ran and found no stamp (the
-        // close/re-open pairs in the 2026-07-30 click trace).
-        if let button = currentPopoverButton {
-            lastPopoverCloseButton = button
-        }
+        // Arm the re-open swallow ONLY when this close is the semitransient
+        // auto-close triggered by the mouse-DOWN half of a click on the
+        // anchoring button — mouse currently pressed AND pointer on the
+        // anchor. That click's own mouse-UP action will arrive with isShown
+        // == false and must read as "dismiss", not "open". Arming on ANY
+        // close (outside click, keyboard, programmatic, detach) would
+        // swallow a legitimate open that follows within 0.5s (Codex review
+        // 2026-07-30, finding 1). It must happen HERE, at close initiation:
+        // with animates=true, didClose is delivered only after the fade-out,
+        // typically AFTER that mouse-up action already ran and found no
+        // stamp (the close/re-open pairs in the 2026-07-30 click trace).
+        guard let button = currentPopoverButton,
+              NSEvent.pressedMouseButtons != 0,
+              StatusBarUIManager.pointerLocalX(in: button) != nil else { return }
+        lastPopoverCloseButton = button
         lastPopoverCloseTime = Date()
     }
 
@@ -2363,15 +2367,12 @@ extension MenuBarManager: NSPopoverDelegate {
         // currentPopoverButton then would orphan the shown popover — its
         // next same-group click reads as "different button" and re-opens
         // instead of dismissing.
+        // No swallow-stamp writes here: willClose already armed it under the
+        // precise condition, and re-arming after the mouse-up consumed it
+        // would swallow the NEXT legitimate click (Codex review 2026-07-30,
+        // finding 2).
         if let closed = notification.object as? NSPopover, !closed.isShown,
            closed === popover || popover == nil {
-            // Extend the swallow stamp to the moment the close visibly
-            // finished (willClose recorded the anchor at initiation; a slow
-            // fade must not let the 0.5s swallow window expire mid-close).
-            if let button = currentPopoverButton {
-                lastPopoverCloseButton = button
-            }
-            lastPopoverCloseTime = Date()
             currentPopoverButton = nil
             currentPopoverProfileId = nil
         }
