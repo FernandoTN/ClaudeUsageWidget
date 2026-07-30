@@ -1423,6 +1423,11 @@ final class StatusBarUIManager {
         return (drawn.minX, drawn.width / size.width)
     }
 
+    /// A provider group's button (composite mode; lab probes + tests).
+    func groupButton(for provider: Profile.ProviderKind) -> NSStatusBarButton? {
+        groupItems[provider]?.button
+    }
+
     /// Resolve which profile a click at `locationInButton` (button-local x)
     /// landed on. Composite mode only; nil when unresolvable.
     func profileId(for sender: NSStatusBarButton?, atX locationInButton: CGFloat?) -> UUID? {
@@ -1442,12 +1447,12 @@ final class StatusBarUIManager {
             let map = compositeMapping(for: provider, in: sender, totalWidth: totalWidth)
             let x = map.scale > 0 ? (rawX - map.originX) / map.scale : rawX
             if let hit = segments.first(where: { $0.range.contains(x) }) {
-                LoggingService.shared.logUIEvent(
+                LoggingService.shared.log(
                     "Composite click: rawX=\(Int(rawX)) mapped=\(Int(x)) → segment hit")
                 return hit.profileId
             }
             // Off the ends: the ACTIVE account, else clamp to nearest.
-            LoggingService.shared.logUIEvent(
+            LoggingService.shared.log(
                 "Composite click: rawX=\(Int(rawX)) mapped=\(Int(x)) OFF-SEGMENTS (0..\(Int(totalWidth))) → active/clamp fallback")
             if let active = groupActiveIds[provider] { return active }
             return x < segments[0].range.lowerBound ? segments[0].profileId : segments.last?.profileId

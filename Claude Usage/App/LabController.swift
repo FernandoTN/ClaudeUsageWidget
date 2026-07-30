@@ -48,6 +48,12 @@ final class LabController: NSObject {
             if LabMode.openPopover {
                 self.openPopoverOnFirstTile()
             }
+            if LabMode.clickProbe {
+                // Let layout settle, then sweep the mapping.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    self?.runClickProbeSweep()
+                }
+            }
             if LabMode.popoverCycle {
                 self.cycleProductionStylePopover()
             }
@@ -85,8 +91,53 @@ final class LabController: NSObject {
     // MARK: - Actions
 
     @objc private func tileClicked(_ sender: Any?) {
-        // Lab tiles are inert; click handling is intentionally empty so freeze
-        // measurements are not confounded by interaction side effects.
+        // Lab tiles are inert by default so freeze measurements are not
+        // confounded by interaction side effects. With CUW_LAB_CLICKPROBE=1
+        // a click logs the full event→coordinate→resolution pipeline instead.
+        guard LabMode.clickProbe, let button = sender as? NSStatusBarButton,
+              let event = NSApp.currentEvent else { return }
+        let naive = button.convert(event.locationInWindow, from: nil).x
+        let defensive: CGFloat? = {
+            if let ew = event.window, ew === button.window {
+                return naive
+            }
+            guard let bw = button.window else { return nil }
+            let sp = event.window?.convertPoint(toScreen: event.locationInWindow)
+                ?? event.locationInWindow
+            return button.convert(bw.convertPoint(fromScreen: sp), from: nil).x
+        }()
+        let winDesc = event.window == nil ? "NIL-WINDOW"
+            : (event.window === button.window ? "button-window" : "OTHER-window")
+        let naiveHit = statusBarUIManager.profileId(for: button, atX: naive)
+            .flatMap { id in profiles.first { $0.id == id }?.name } ?? "nil"
+        let defHit = defensive
+            .flatMap { statusBarUIManager.profileId(for: button, atX: $0) }
+            .flatMap { id in profiles.first { $0.id == id }?.name } ?? "nil"
+        LoggingService.shared.log(
+            "ClickProbe: eventWindow=\(winDesc) locInWin=\(Int(event.locationInWindow.x)) naiveX=\(Int(naive))→\(naiveHit) defensiveX=\(defensive.map { String(Int($0)) } ?? "nil")→\(defHit)")
+    }
+
+    /// Static mapping validation: resolve a sweep of x positions against each
+    /// composite group button and log the resulting profile per band.
+    private func runClickProbeSweep() {
+        for provider in [Profile.ProviderKind.claude, .grok, .codex] {
+            guard let button = statusBarUIManager.groupButton(for: provider) else { continue }
+            var bands: [(String, Int, Int)] = []
+            var current: String? = nil
+            var bandStart = 0
+            let width = Int(button.bounds.width)
+            for x in stride(from: 0, through: width, by: 2) {
+                let name = statusBarUIManager.profileId(for: button, atX: CGFloat(x))
+                    .flatMap { id in profiles.first { $0.id == id }?.name } ?? "nil"
+                if name != current {
+                    if let c = current { bands.append((c, bandStart, x - 1)) }
+                    current = name; bandStart = x
+                }
+            }
+            if let c = current { bands.append((c, bandStart, width)) }
+            let desc = bands.map { "\($0.0)[\($0.1)-\($0.2)]" }.joined(separator: " ")
+            LoggingService.shared.log("ClickProbe sweep \(provider): width=\(width) \(desc)")
+        }
     }
 
     // MARK: - Repaint
