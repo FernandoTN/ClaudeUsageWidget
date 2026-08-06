@@ -239,6 +239,8 @@
 "notification.claude_relogin.message" = "The saved Claude Code login for '%@' has expired and could not be refreshed. Run `claude` and `/login` with that account, then re-sync it in Settings → CLI Account.";
 "notification.codex_relogin.title" = "Codex account needs re-login";
 "notification.codex_relogin.message" = "The saved Codex token for '%@' was revoked. Run `codex login` for that account, then re-sync it in Settings → Codex Account.";
+"notification.grok_relogin.title" = "Grok account needs re-login";
+"notification.grok_relogin.message" = "The saved Grok token for '%@' was revoked. Run `grok` and log in with that account, then re-sync it in Settings.";
 "codex.about_title" = "About Codex accounts";
 "codex.benefit_1" = "Shows the same 5-hour session and weekly windows as Claude accounts, fetched from your ChatGPT plan";
 "codex.benefit_2" = "Switching to this profile also switches the codex CLI to this account";

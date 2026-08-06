@@ -162,13 +162,24 @@ class ClaudeAPIService {
         }
 
         guard httpResponse.statusCode == 200 else {
+            // A 429 is capacity information, not a credential problem — mapping
+            // it to apiUnauthorized hid account throttling behind a "re-sync
+            // your account" suggestion and never stamped the throttle.
+            if httpResponse.statusCode == 429 {
+                var rateLimited = AppError.apiRateLimited()
+                rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
+                    .flatMap(TimeInterval.init)
+                throw rateLimited
+            }
             let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"
             throw AppError(
-                code: .apiUnauthorized,
+                code: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
+                    ? .apiUnauthorized : .apiGenericError,
                 message: "OAuth Messages API request failed",
                 technicalDetails: "Status: \(httpResponse.statusCode)\nResponse: \(responsePreview)",
                 isRecoverable: true,
-                recoverySuggestion: "Please re-sync your CLI account in Settings"
+                recoverySuggestion: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
+                    ? "Please re-sync your CLI account in Settings" : nil
             )
         }
 

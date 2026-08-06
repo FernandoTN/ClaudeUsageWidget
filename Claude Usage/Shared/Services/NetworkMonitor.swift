@@ -13,7 +13,7 @@ import Network
 final class NetworkMonitor {
     static let shared = NetworkMonitor()
 
-    private let monitor: NWPathMonitor
+    private var monitor: NWPathMonitor?
     private let queue = DispatchQueue(label: "com.claudeusage.networkmonitor")
 
     /// Current network status
@@ -22,12 +22,14 @@ final class NetworkMonitor {
     /// Callback triggered when network becomes available
     var onNetworkAvailable: (() -> Void)?
 
-    private init() {
-        monitor = NWPathMonitor()
-    }
+    private init() {}
 
-    /// Starts monitoring network connectivity
+    /// Starts monitoring network connectivity.
+    /// NWPathMonitor.cancel() is terminal — a cancelled instance never
+    /// delivers another path update — so every start builds a fresh monitor.
     func startMonitoring() {
+        monitor?.cancel()
+        let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self = self else { return }
 
@@ -46,10 +48,16 @@ final class NetworkMonitor {
         }
 
         monitor.start(queue: queue)
+        self.monitor = monitor
     }
 
     /// Stops monitoring network connectivity
     func stopMonitoring() {
-        monitor.cancel()
+        monitor?.cancel()
+        monitor = nil
+        // Reset so a later restart's first .satisfied update fires
+        // onNetworkAvailable again (parity with a fresh launch); a stale
+        // `true` here suppressed the reconnect callback after stop→start.
+        isConnected = false
     }
 }

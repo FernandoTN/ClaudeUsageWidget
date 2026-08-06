@@ -1,6 +1,7 @@
 import Cocoa
 import SwiftUI
 import Combine
+import os.log
 
 @MainActor
 class MenuBarManager: NSObject, ObservableObject {
@@ -39,12 +40,11 @@ class MenuBarManager: NSObject, ObservableObject {
     // Settings window reference
     private var settingsWindow: NSWindow?
 
-    // Track which button is currently showing the popover
+    // Track which button is currently showing the popover. The dismiss
+    // decision keys on the BUTTON only — any same-group click while open is
+    // a dismiss; anchor rects are re-resolved from the clicked profile id at
+    // show time, so no per-profile anchor state is kept here.
     private weak var currentPopoverButton: NSStatusBarButton?
-    /// Which profile's tile the popover is anchored to (anchor-rect
-    /// re-resolution on group switches; the dismiss decision itself keys on
-    /// the BUTTON only — any same-group click while open is a dismiss).
-    private var currentPopoverProfileId: UUID?
 
     /// Re-open swallow stamp. The .semitransient popover auto-closes when a
     /// click lands on its own anchor button; the same click's action then
@@ -95,6 +95,7 @@ class MenuBarManager: NSObject, ObservableObject {
     // Observer for credential changes (add, remove, update)
     private var credentialsObserver: NSObjectProtocol?
     private var manualActivationObserver: NSObjectProtocol?
+    private var profileDeletedObserver: NSObjectProtocol?
 
     // Observer for display mode changes (single/multi profile) — legacy posters
     private var displayModeObserver: NSObjectProtocol?
@@ -186,10 +187,16 @@ class MenuBarManager: NSObject, ObservableObject {
             // Only refresh if we haven't refreshed recently (avoid duplicate on startup)
             guard let self = self else { return }
 
-            // Skip if profile has no usage credentials (CLI alone can't be used)
-            guard let profile = self.profileManager.activeProfile, profile.hasUsageCredentials else {
-                LoggingService.shared.log("Skipping network-available refresh (no usage credentials)")
-                return
+            // The credential gate only applies to single-profile mode: in multi
+            // mode refreshUsage() sweeps every selected profile, so the FOCUSED
+            // profile's credentials are irrelevant (a credential-less focused
+            // profile used to block the whole group's post-reconnect refresh).
+            if self.profileManager.displayMode != .multi {
+                // Skip if profile has no usage credentials (CLI alone can't be used)
+                guard let profile = self.profileManager.activeProfile, profile.hasUsageCredentials else {
+                    LoggingService.shared.log("Skipping network-available refresh (no usage credentials)")
+                    return
+                }
             }
 
             let timeSinceLastRefresh = Date().timeIntervalSince(self.lastRefreshTriggerTime)
@@ -201,9 +208,12 @@ class MenuBarManager: NSObject, ObservableObject {
         }
         networkMonitor.startMonitoring()
 
-        // Initial data fetch (with small delay for launch-at-login scenarios)
-        // Only if profile has usage credentials (not just CLI)
-        if let profile = profileManager.activeProfile, profile.hasUsageCredentials {
+        // Initial data fetch (with small delay for launch-at-login scenarios).
+        // Single mode: only if the active profile has usage credentials (not
+        // just CLI). Multi mode: always — the sweep covers every selected
+        // profile regardless of the focused one's credentials.
+        if profileManager.displayMode == .multi
+            || (profileManager.activeProfile?.hasUsageCredentials ?? false) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.refreshUsage()
             }
@@ -220,6 +230,7 @@ class MenuBarManager: NSObject, ObservableObject {
         // Observe session key updates
         observeCredentialChanges()
         observeManualActivations()
+        observeProfileDeletions()
 
         // Observe display mode changes (single/multi profile) + typed structure/cosmetics
         observeDisplayModeChanges()
@@ -235,8 +246,12 @@ class MenuBarManager: NSObject, ObservableObject {
         // Setup global keyboard shortcuts
         setupShortcuts()
 
-        // Idle-burn guardrail: alarms (log + one notification) when the app
-        // burns CPU with no popover/settings open — the storm failure class.
+        // Idle-burn guardrail: alarms (log + per-episode notification, re-posted
+        // on a 6h backoff while the storm persists) when the app burns CPU with
+        // no popover/settings open — the storm failure class. Stage 1 below is
+        // reachable only from the manual trigger; the automatic path uses the
+        // cheap repaint alone (the visibility cycle is falsified as a cure and
+        // leaks CAContexts).
         StormWatchdog.shared.isNominallyIdle = {
             // Consult the ACTUAL window population, not tracked references —
             // a minimized settings window (no delegate callback ever fires),
@@ -303,6 +318,10 @@ class MenuBarManager: NSObject, ObservableObject {
             NotificationCenter.default.removeObserver(manualActivationObserver)
             self.manualActivationObserver = nil
         }
+        if let profileDeletedObserver = profileDeletedObserver {
+            NotificationCenter.default.removeObserver(profileDeletedObserver)
+            self.profileDeletedObserver = nil
+        }
         if let displayModeObserver = displayModeObserver {
             NotificationCenter.default.removeObserver(displayModeObserver)
             self.displayModeObserver = nil
@@ -337,6 +356,17 @@ class MenuBarManager: NSObject, ObservableObject {
     /// Cleans up tracking data for a specific profile (called when profile is deleted)
     func cleanupProfile(_ profileId: UUID) {
         autoSwitchedProfileIds.remove(profileId)
+        credentialErrorProfileIds.remove(profileId)
+        burstBackoffs.removeValue(forKey: profileId)
+        preflightedMilestones.removeValue(forKey: profileId)
+        preflightSessionBoundary.removeValue(forKey: profileId)
+        preflightRunning.remove(profileId)
+        preflightInFlightCandidates.remove(profileId)
+        // Persisted dead-login flags and refresh cooldowns are keyed by
+        // profile id too — a deleted profile's UserDefaults entries otherwise
+        // outlive it forever.
+        GrokUsageService.shared.forgetProfile(profileId)
+        CodexUsageService.shared.forgetProfile(profileId)
     }
 
     // MARK: - Profile Observation
@@ -541,11 +571,11 @@ class MenuBarManager: NSObject, ObservableObject {
         guard let profile = profileManager.profiles.first(where: { $0.id == profileId }) else { return }
         clickedProfileId = profileId
         clickedProfileUsage = profile.claudeUsage ?? .empty
-        // `currentPopoverProfileId` deliberately UNCHANGED: it identifies the
-        // TILE the popover is anchored to, which is what makes a second click
-        // on that tile a dismiss. Repointing it here would turn that click into
-        // a "tile switch" — a close plus a fresh popover, i.e. one more scene
-        // fence/entanglement cycle per dismiss.
+        // The popover's ANCHOR deliberately stays where it is: the dismiss
+        // decision keys on currentPopoverButton, so a second click on the
+        // anchoring tile stays a dismiss. Re-anchoring here would turn that
+        // click into a "tile switch" — a close plus a fresh popover, i.e. one
+        // more scene fence/entanglement cycle per dismiss.
         LoggingService.shared.log("Popover: now viewing '\(profile.name)' (group navigator)")
     }
 
@@ -682,7 +712,6 @@ class MenuBarManager: NSObject, ObservableObject {
                         ?? anchorRect
                     fresh.show(relativeTo: freshAnchor, of: button, preferredEdge: .minY)
                     self.currentPopoverButton = button
-                    self.currentPopoverProfileId = targetProfileId
                     self.startMonitoringForOutsideClicks()
                 }
             }
@@ -703,7 +732,6 @@ class MenuBarManager: NSObject, ObservableObject {
             popover.contentViewController = createContentViewController()
             popover.show(relativeTo: anchorRect, of: button, preferredEdge: .minY)
             currentPopoverButton = button
-            currentPopoverProfileId = clickedProfileId
             startMonitoringForOutsideClicks()
         }
     }
@@ -715,10 +743,12 @@ class MenuBarManager: NSObject, ObservableObject {
         popover?.performClose(nil)
         stopMonitoringForOutsideClicks()
         currentPopoverButton = nil
-        currentPopoverProfileId = nil
     }
 
     private func startMonitoringForOutsideClicks() {
+        // Idempotent: a second install without an intervening stop would
+        // overwrite eventMonitor and leak the first monitor forever.
+        stopMonitoringForOutsideClicks()
         // Only monitor when popover is shown (not detached)
         // Stop monitoring if popover gets detached
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -848,6 +878,22 @@ private func observeCredentialChanges() {
                 // picked with real headroom behaves exactly as before.
                 self.autoSwitchedProfileIds.insert(profileId)
                 LoggingService.shared.log("MenuBarManager: user manually activated profile \(profileId) — auto-switch-away suppressed until it regains headroom")
+            }
+        }
+    }
+
+    private func observeProfileDeletions() {
+        // Prune long-lived per-profile tracking on deletion; cleanupProfile was
+        // previously never called from anywhere, so deleted profiles' backoff
+        // and milestone entries lived for the rest of the process.
+        profileDeletedObserver = NotificationCenter.default.addObserver(
+            forName: .profileDeleted,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self, let profileId = notification.object as? UUID else { return }
+            Task { @MainActor in
+                self.cleanupProfile(profileId)
             }
         }
     }
@@ -1204,6 +1250,7 @@ private func observeCredentialChanges() {
                     break
                 }
 
+
                 // While an account-level throttle is in force the usage endpoint
                 // keeps 429ing — don't burn the sweep's rate-limit budget on it.
                 // The stamp keeps the account reported as exhausted; fetching
@@ -1215,9 +1262,9 @@ private func observeCredentialChanges() {
                 let burstBackoffUntil = burstBackoffs[profile.id]?.until
                 let usageBackedOff = burstBackoffUntil.map { $0 > Date() } ?? false
                 if usageThrottled {
-                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — endpoint throttled until \(profile.claudeUsage?.rateLimitedUntil ?? Date())")
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — endpoint throttled until \(profile.claudeUsage?.rateLimitedUntil ?? Date())", type: .info)
                 } else if usageBackedOff {
-                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off burst 429s until \(burstBackoffUntil ?? Date())")
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off burst 429s until \(burstBackoffUntil ?? Date())", type: .info)
                 } else {
                     // Space Claude-bound fetches only: oauth/usage is the sole
                     // reason for pacing. Sleep the remainder so Claude starts are
@@ -1239,14 +1286,18 @@ private func observeCredentialChanges() {
                         profile = updated
                     }
 
-                    LoggingService.shared.log("MenuBarManager: Fetching usage for profile '\(profile.name)'")
+                    // Per-sweep steady-state chatter stays at .info (memory
+                    // buffer, visible to `log stream`/recent `log show --info`)
+                    // — persisted .default is reserved for state changes,
+                    // warnings, and errors.
+                    LoggingService.shared.log("MenuBarManager: Fetching usage for profile '\(profile.name)'", type: .info)
 
                     do {
                         let newUsage = try await fetchUsageForProfile(profile)
 
                         // Save to profile
                         self.profileManager.stageClaudeUsage(newUsage, for: profile.id)
-                        LoggingService.shared.log("MenuBarManager: Saved usage for profile '\(profile.name)' - session: \(newUsage.sessionPercentage)%")
+                        LoggingService.shared.log("MenuBarManager: Saved usage for profile '\(profile.name)' - session: \(newUsage.sessionPercentage)%", type: .info)
 
                         // If this is the active profile, also update the manager's usage
                         if profile.id == self.profileManager.activeProfile?.id {
@@ -1457,10 +1508,10 @@ private func observeCredentialChanges() {
             return
         }
 
-        // Detailed logging
-        LoggingService.shared.log("MenuBarManager.refreshUsage called:")
-        LoggingService.shared.log("  - Profile: '\(profile.name)'")
-        LoggingService.shared.log("  - hasUsageCredentials: \(profile.hasUsageCredentials)")
+        // Detailed logging (steady-state chatter — .info, not persisted)
+        LoggingService.shared.log(
+            "MenuBarManager.refreshUsage called: profile '\(profile.name)', hasUsageCredentials: \(profile.hasUsageCredentials)",
+            type: .info)
 
         // Check for usage credentials (Claude.ai or API Console, not just CLI)
         guard profile.hasUsageCredentials else {
@@ -1470,10 +1521,18 @@ private func observeCredentialChanges() {
             return
         }
 
+        // Reentrancy guard (same rationale as refreshAllSelectedProfiles): the
+        // timer, the network-available callback, and manual refresh can all
+        // fire this — overlapping Tasks double API load and race token
+        // redemptions. Claim the flag synchronously, before the Task starts.
+        guard !isRefreshing else {
+            LoggingService.shared.log("MenuBarManager: refresh already in flight — skipping overlap")
+            return
+        }
+        isRefreshing = true
+
         LoggingService.shared.log("MenuBarManager: Proceeding with refresh")
         Task {
-            // Set loading state (keep existing data visible during refresh)
-            self.isRefreshing = true
             // One deferred usage write for this single-profile refresh — covers
             // Claude/API saves, throttle-stamp saves, and cancelled/error exits.
             defer {
@@ -1517,13 +1576,25 @@ private func observeCredentialChanges() {
                 // reported without a resets_at stamp (idle rollover — sentinel).
                 newUsage.healMissingResetStamps(previous: profile.claudeUsage)
 
+                // Stale-completion guard (Codex review): this fetch ran for the
+                // profile captured at trigger time. If the user switched
+                // mid-fetch, applying the result would save profile A's usage
+                // under the NEW active profile — while the new profile's own
+                // refresh was rejected by the reentrancy guard. Discard and
+                // re-run once the deferred cleanup has released the guard.
+                guard self.profileManager.activeProfile?.id == profile.id else {
+                    LoggingService.shared.log(
+                        "MenuBarManager: discarding refresh result for '\(profile.name)' — active profile changed mid-fetch; re-refreshing")
+                    DispatchQueue.main.async { [weak self] in self?.refreshUsage() }
+                    return
+                }
+
                 // Check for resets before updating usage
                 self.usage = newUsage
 
-                // Save to active profile instead of global DataStore
-                if let profileId = self.profileManager.activeProfile?.id {
-                    self.profileManager.saveClaudeUsage(newUsage, for: profileId)
-                }
+                // Save against the CAPTURED profile id (== active, per the
+                // guard above), never "whoever is active at completion".
+                self.profileManager.saveClaudeUsage(newUsage, for: profile.id)
 
                 // Update all menu bar icons
                 self.updateAllStatusBarIcons()
@@ -1553,6 +1624,16 @@ private func observeCredentialChanges() {
                 self.lastSuccessfulRefreshTime = Date()
 
             } catch {
+                // Same stale-completion guard as the success path: error state
+                // (banners, credential flags, throttle stamps) must not be
+                // attributed to a profile the failure didn't belong to.
+                guard self.profileManager.activeProfile?.id == profile.id else {
+                    LoggingService.shared.log(
+                        "MenuBarManager: discarding refresh failure for '\(profile.name)' — active profile changed mid-fetch; re-refreshing")
+                    DispatchQueue.main.async { [weak self] in self?.refreshUsage() }
+                    return
+                }
+
                 // Convert to AppError and log
                 let appError = AppError.wrap(error)
                 ErrorLogger.shared.log(appError, severity: .error)
@@ -1919,8 +2000,13 @@ private func observeCredentialChanges() {
     private static let preflightMilestones: [Double] = [25, 50, 75, 90]
 
     /// Milestones already preflighted per current profile — cleared when its
-    /// session usage drops back below the first milestone (window reset).
+    /// session usage drops back below the first milestone or when the session
+    /// window itself rolls over (a busy account can be above 25% again by the
+    /// first post-reset sweep and would otherwise never re-arm all window).
     private var preflightedMilestones: [UUID: Set<Double>] = [:]
+    /// Anchored session-window boundary per profile; compared with a ±2min
+    /// tolerance (the API reports the same boundary with ±1s jitter).
+    private var preflightSessionBoundary: [UUID: Date] = [:]
     private var preflightRunning: Set<UUID> = []
 
     /// CANDIDATES currently being validated by any watcher. Both provider-active
@@ -1940,6 +2026,19 @@ private func observeCredentialChanges() {
     /// eventual switch lands on a login that is known to work.
     private func preflightNextCandidateIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
         let percentage = usage.effectiveSessionPercentage
+        // Tolerance comparison, not minute-quantization: a boundary reported
+        // near :30s alternates between adjacent rounded minutes under the
+        // API's ±1s jitter (Codex review). Anything within 2 minutes is the
+        // SAME window; the stored anchor only moves on a real rollover.
+        let boundary = usage.sessionResetTime
+        if let anchored = preflightSessionBoundary[currentProfile.id] {
+            if abs(anchored.timeIntervalSince(boundary)) > 120 {
+                preflightedMilestones[currentProfile.id] = nil  // new session window — re-arm
+                preflightSessionBoundary[currentProfile.id] = boundary
+            }
+        } else {
+            preflightSessionBoundary[currentProfile.id] = boundary
+        }
         if percentage < Self.preflightMilestones[0] {
             preflightedMilestones[currentProfile.id] = nil  // window reset — re-arm
             return
@@ -2386,7 +2485,12 @@ extension MenuBarManager: NSPopoverDelegate {
         if let closed = notification.object as? NSPopover, !closed.isShown,
            closed === popover || popover == nil {
             currentPopoverButton = nil
-            currentPopoverProfileId = nil
+            // Every close path funnels through here — including semitransient
+            // auto-closes, Esc, and the Settings/Manage buttons, none of which
+            // go through closePopover(). Without this the global outside-click
+            // monitor stayed installed (one leaked monitor per such close,
+            // each one a callout on every click system-wide).
+            stopMonitoringForOutsideClicks()
         }
 
         // DESTROY the popover once closed: dropping only the hosting

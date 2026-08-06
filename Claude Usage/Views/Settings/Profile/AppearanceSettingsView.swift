@@ -11,7 +11,6 @@ import SwiftUI
 struct AppearanceSettingsView: View {
     @ObservedObject private var profileManager = ProfileManager.shared
     @State private var configuration: MenuBarIconConfiguration = .default
-    @State private var saveDebounceTimer: Timer?
 
     private var isMultiProfileMode: Bool {
         profileManager.displayMode == .multi

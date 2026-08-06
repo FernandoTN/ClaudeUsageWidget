@@ -204,6 +204,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func showSetupWizardManually() {
         LoggingService.shared.log("AppDelegate: showSetupWizardManually called")
 
+        // Re-entry guard: a second invocation would mint a second window,
+        // orphan the first one, and overwrite (leak) its close observer —
+        // cross-wiring which window restores the accessory activation policy.
+        if let existing = setupWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
+
         // Temporarily show dock icon for the setup window
         NSApp.setActivationPolicy(.regular)
         LoggingService.shared.log("AppDelegate: Set activation policy to regular")

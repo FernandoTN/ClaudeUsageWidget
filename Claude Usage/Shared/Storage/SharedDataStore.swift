@@ -208,13 +208,22 @@ class SharedDataStore {
         return preference
     }
 
+    /// Probe formatter for the system 12/24-hour preference. DateFormatter
+    /// construction is expensive and this is called from render paths — build
+    /// it once (cheap staleness: a changed system locale setting applies on
+    /// next launch, same as most menu-bar apps).
+    private static let systemTimeProbeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     /// Returns whether 24-hour time should be used, resolving the system preference
     func uses24HourTime() -> Bool {
         switch loadTimeFormatPreference() {
         case .system:
-            let formatter = DateFormatter()
-            formatter.dateStyle = .none
-            formatter.timeStyle = .short
+            let formatter = Self.systemTimeProbeFormatter
             let timeString = formatter.string(from: Date())
             // If the system-formatted time contains AM/PM, it's 12-hour
             return !timeString.contains(formatter.amSymbol) && !timeString.contains(formatter.pmSymbol)

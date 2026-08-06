@@ -36,10 +36,15 @@ extension Date {
         }
     }
 
+    /// Shared formatter for resetTimeString — DateFormatter construction is
+    /// expensive and this runs in popover render paths. Callers are on the
+    /// main actor; timezone/format are (re)assigned per call, which is cheap.
+    private static let resetTimeFormatter = DateFormatter()
+
     /// Returns a formatted reset time string (e.g., "Today 3:59am" or "Oct 28, 12:59pm")
     func resetTimeString(from now: Date = Date(), timezone: TimeZone = .current) -> String {
         let calendar = Calendar.current
-        let formatter = DateFormatter()
+        let formatter = Self.resetTimeFormatter
         formatter.timeZone = timezone
         let use24h = SharedDataStore.shared.uses24HourTime()
         let timeFmt = use24h ? "HH:mm" : "h:mma"

@@ -133,8 +133,11 @@ class NotificationManager {
 
         // Check for session reset (went from >0% to 0%)
         if previousPercentage > 0.0 && sessionPercentage == 0.0 {
-            // Clear all sent notifications for this profile to allow re-notification in new session
-            sentNotifications = sentNotifications.filter { !$0.hasPrefix(profileName) }
+            // Clear all sent notifications for this profile to allow re-notification
+            // in the new session. Match "<name>_" — identifiers are
+            // "<name>_<type>_<level>", and a bare-name prefix let profile "Cod"
+            // clear profile "Codex (…)"'s records too.
+            sentNotifications = sentNotifications.filter { !$0.hasPrefix("\(profileName)_") }
 
             sendProfileAlert(
                 profileName: profileName,
@@ -316,9 +319,31 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that a profile's saved Grok refresh token was revoked and the account
+    /// needs a fresh `grok` CLI login + re-sync (the app cannot repair it itself).
+    func sendGrokReloginNotification(profileName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.grok_relogin.title".localized
+        content.body = "notification.grok_relogin.message".localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "grok_relogin_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send Grok re-login notification: \(error)")
+            }
+        }
+    }
+
     /// Clears notification tracking state for a specific profile
     func clearNotificationsForProfile(_ profileName: String) {
-        sentNotifications = sentNotifications.filter { !$0.hasPrefix(profileName) }
+        sentNotifications = sentNotifications.filter { !$0.hasPrefix("\(profileName)_") }
         previousSessionPercentages.removeValue(forKey: profileName)
     }
 

@@ -242,6 +242,11 @@ final class StatusBarUIManager {
         for metricType in itemsToRemove {
             if let statusItem = statusItems[metricType] {
                 if let button = statusItem.button {
+                    // Drop the dedup entry keyed by this button's identity: a
+                    // later NSButton allocation can reuse the address, and a
+                    // stale entry would make setButtonImage skip the first
+                    // paint of a re-added metric (blank icon).
+                    lastImageData.removeValue(forKey: ObjectIdentifier(button))
                     button.image = nil
                     button.action = nil
                     button.target = nil

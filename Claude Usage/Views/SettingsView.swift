@@ -273,7 +273,10 @@ struct ProfileSectionContainer: View {
                     .foregroundColor(.secondary)
 
                 Picker("", selection: Binding(
-                    get: { profileManager.activeProfile?.id ?? UUID() },
+                    // Stable sentinel fallback: minting `UUID()` per body
+                    // evaluation gave the Picker a never-matching, always-new
+                    // selection — an invalidation on every render.
+                    get: { profileManager.activeProfile?.id ?? UUID(uuid: UUID_NULL) },
                     set: { newId in
                         Task {
                             await profileManager.activateProfile(newId, userInitiated: true)

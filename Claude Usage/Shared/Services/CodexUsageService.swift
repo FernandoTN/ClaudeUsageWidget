@@ -372,6 +372,13 @@ class CodexUsageService {
         reloginNotifiedProfiles.contains(profileId)
     }
 
+    /// Drops all per-profile tracking (persisted dead-login flag, forced-
+    /// refresh cooldown) for a deleted profile.
+    func forgetProfile(_ profileId: UUID) {
+        reloginNotifiedProfiles.remove(profileId)
+        forcedRefreshCooldownUntil.removeValue(forKey: profileId)
+    }
+
     /// Per-profile cooldown for post-401 FORCED refreshes. If the usage endpoint
     /// keeps rejecting a token for a non-token reason (entitlement, account state)
     /// while the OAuth refresh itself succeeds, retrying the forced refresh every
