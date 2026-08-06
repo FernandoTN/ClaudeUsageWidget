@@ -55,5 +55,9 @@ final class NetworkMonitor {
     func stopMonitoring() {
         monitor?.cancel()
         monitor = nil
+        // Reset so a later restart's first .satisfied update fires
+        // onNetworkAvailable again (parity with a fresh launch); a stale
+        // `true` here suppressed the reconnect callback after stop→start.
+        isConnected = false
     }
 }

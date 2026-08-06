@@ -362,6 +362,11 @@ class MenuBarManager: NSObject, ObservableObject {
         preflightSessionBoundary.removeValue(forKey: profileId)
         preflightRunning.remove(profileId)
         preflightInFlightCandidates.remove(profileId)
+        // Persisted dead-login flags and refresh cooldowns are keyed by
+        // profile id too — a deleted profile's UserDefaults entries otherwise
+        // outlive it forever.
+        GrokUsageService.shared.forgetProfile(profileId)
+        CodexUsageService.shared.forgetProfile(profileId)
     }
 
     // MARK: - Profile Observation
@@ -1245,18 +1250,6 @@ private func observeCredentialChanges() {
                     break
                 }
 
-                // A profile with no usable credentials can never produce usage:
-                // attempting it just throws "Missing credentials" (an error log
-                // per round-robin turn, forever). The shared-login fallback in
-                // fetchUsageForProfile only applies to the active Claude
-                // profile, so everything else is skipped quietly until a
-                // re-sync gives it credentials. (Hydration is settled here —
-                // the sweep is gated on it — so nil means truly absent.)
-                if !profile.hasUsageCredentials,
-                   profile.id != (self.profileManager.activeClaudeProfileId ?? self.profileManager.activeProfile?.id) {
-                    LoggingService.shared.log("MenuBarManager: skipping '\(profile.name)' — no usable credentials", type: .info)
-                    continue
-                }
 
                 // While an account-level throttle is in force the usage endpoint
                 // keeps 429ing — don't burn the sweep's rate-limit budget on it.
@@ -1583,13 +1576,25 @@ private func observeCredentialChanges() {
                 // reported without a resets_at stamp (idle rollover — sentinel).
                 newUsage.healMissingResetStamps(previous: profile.claudeUsage)
 
+                // Stale-completion guard (Codex review): this fetch ran for the
+                // profile captured at trigger time. If the user switched
+                // mid-fetch, applying the result would save profile A's usage
+                // under the NEW active profile — while the new profile's own
+                // refresh was rejected by the reentrancy guard. Discard and
+                // re-run once the deferred cleanup has released the guard.
+                guard self.profileManager.activeProfile?.id == profile.id else {
+                    LoggingService.shared.log(
+                        "MenuBarManager: discarding refresh result for '\(profile.name)' — active profile changed mid-fetch; re-refreshing")
+                    DispatchQueue.main.async { [weak self] in self?.refreshUsage() }
+                    return
+                }
+
                 // Check for resets before updating usage
                 self.usage = newUsage
 
-                // Save to active profile instead of global DataStore
-                if let profileId = self.profileManager.activeProfile?.id {
-                    self.profileManager.saveClaudeUsage(newUsage, for: profileId)
-                }
+                // Save against the CAPTURED profile id (== active, per the
+                // guard above), never "whoever is active at completion".
+                self.profileManager.saveClaudeUsage(newUsage, for: profile.id)
 
                 // Update all menu bar icons
                 self.updateAllStatusBarIcons()
@@ -1619,6 +1624,16 @@ private func observeCredentialChanges() {
                 self.lastSuccessfulRefreshTime = Date()
 
             } catch {
+                // Same stale-completion guard as the success path: error state
+                // (banners, credential flags, throttle stamps) must not be
+                // attributed to a profile the failure didn't belong to.
+                guard self.profileManager.activeProfile?.id == profile.id else {
+                    LoggingService.shared.log(
+                        "MenuBarManager: discarding refresh failure for '\(profile.name)' — active profile changed mid-fetch; re-refreshing")
+                    DispatchQueue.main.async { [weak self] in self?.refreshUsage() }
+                    return
+                }
+
                 // Convert to AppError and log
                 let appError = AppError.wrap(error)
                 ErrorLogger.shared.log(appError, severity: .error)
@@ -1989,8 +2004,8 @@ private func observeCredentialChanges() {
     /// window itself rolls over (a busy account can be above 25% again by the
     /// first post-reset sweep and would otherwise never re-arm all window).
     private var preflightedMilestones: [UUID: Set<Double>] = [:]
-    /// Last seen session-window boundary per profile, minute-quantized (the
-    /// API reports the same boundary with ±1s jitter across fetches).
+    /// Anchored session-window boundary per profile; compared with a ±2min
+    /// tolerance (the API reports the same boundary with ±1s jitter).
     private var preflightSessionBoundary: [UUID: Date] = [:]
     private var preflightRunning: Set<UUID> = []
 
@@ -2011,12 +2026,17 @@ private func observeCredentialChanges() {
     /// eventual switch lands on a login that is known to work.
     private func preflightNextCandidateIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
         let percentage = usage.effectiveSessionPercentage
-        let boundary = Date(
-            timeIntervalSince1970: (usage.sessionResetTime.timeIntervalSince1970 / 60).rounded() * 60)
-        if preflightSessionBoundary[currentProfile.id] != boundary {
-            if preflightSessionBoundary[currentProfile.id] != nil {
+        // Tolerance comparison, not minute-quantization: a boundary reported
+        // near :30s alternates between adjacent rounded minutes under the
+        // API's ±1s jitter (Codex review). Anything within 2 minutes is the
+        // SAME window; the stored anchor only moves on a real rollover.
+        let boundary = usage.sessionResetTime
+        if let anchored = preflightSessionBoundary[currentProfile.id] {
+            if abs(anchored.timeIntervalSince(boundary)) > 120 {
                 preflightedMilestones[currentProfile.id] = nil  // new session window — re-arm
+                preflightSessionBoundary[currentProfile.id] = boundary
             }
+        } else {
             preflightSessionBoundary[currentProfile.id] = boundary
         }
         if percentage < Self.preflightMilestones[0] {

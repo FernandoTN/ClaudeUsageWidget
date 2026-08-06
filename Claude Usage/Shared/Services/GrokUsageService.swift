@@ -200,6 +200,13 @@ class GrokUsageService {
         reloginNotifiedProfiles.contains(profileId)
     }
 
+    /// Drops all per-profile tracking (persisted dead-login flag, forced-
+    /// refresh cooldown) for a deleted profile.
+    func forgetProfile(_ profileId: UUID) {
+        reloginNotifiedProfiles.remove(profileId)
+        forcedRefreshCooldownUntil.removeValue(forKey: profileId)
+    }
+
     /// A 4xx from the token endpoint means the stored refresh token is revoked —
     /// no retry can fix it. Tell the user once instead of failing silently on
     /// every fetch.

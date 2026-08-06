@@ -265,8 +265,10 @@ class ClaudeCodeSyncService {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", serviceName, "-a", NSUserName()]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        // Output is unused — null devices, never undrained Pipes: a child that
+        // fills an unread pipe buffer blocks forever under waitUntilExit.
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             process.waitUntilExit()
@@ -283,7 +285,9 @@ class ClaudeCodeSyncService {
         process.arguments = ["dump-keychain"]
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        // stderr must not be an undrained Pipe: if the child fills it, it
+        // blocks writing and stdout never reaches EOF (Codex review).
+        process.standardError = FileHandle.nullDevice
 
         // Drain stdout to EOF BEFORE waitUntilExit: dump-keychain output easily
         // exceeds the 64KB pipe buffer, and waiting first deadlocks — the child

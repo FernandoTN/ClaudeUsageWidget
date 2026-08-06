@@ -187,10 +187,16 @@ final class StormWatchdog {
     }
 
     private func notifyIfDue(now: Date) {
-        let isFirstForEpisode = !didNotifyThisEpisode
-        guard isFirstForEpisode || now.timeIntervalSince(lastNotifiedAt) >= Self.renotifyInterval else {
+        // GLOBAL 6h floor between notifications, including the first of a new
+        // episode: an episode-scoped bypass let a threshold-hovering storm
+        // (3 clean samples close the episode, the next hot run reopens it)
+        // notify every ~14 minutes (Codex review). A recurrence within 6h is
+        // the same ongoing problem — the cure (quit + gap + relaunch) hasn't
+        // happened — so the floor costs nothing real.
+        guard now.timeIntervalSince(lastNotifiedAt) >= Self.renotifyInterval else {
             return
         }
+        let isFirstForEpisode = !didNotifyThisEpisode
         didNotifyThisEpisode = true
         lastNotifiedAt = now
         let burningHours = episodeStartedAt.map { now.timeIntervalSince($0) / 3600 } ?? 0
