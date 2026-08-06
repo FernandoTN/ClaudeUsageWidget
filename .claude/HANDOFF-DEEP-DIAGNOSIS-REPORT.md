@@ -676,3 +676,52 @@ consumes the click and no trailing action is delivered, so there is nothing to
 swallow. The armed swallow is the backstop for when the OS does deliver the
 action (as it demonstrably did in the 08:11 trace). A lone "swallow armed" line
 after an open IS the successful dismiss signature, not a missing log.
+
+## Addendum 9 (2026-08-06) — workflow audit: storm recurrence root-caused as a monitoring gap; leak/waste remediation (PR #25)
+
+**Trigger.** The deployed 6.5-day process re-entered the storm state (~4-5%
+idle CPU, occlusion datagrams every ~300ms, CA fence timeouts, windows=11) and
+burned overnight in silence. Owner-reported symptom: 20+ seconds from menu-bar
+click to responsiveness. Watchdog history showed WHY it was silent: stage 0
+fired 19:24, stage 1 fired 00:10 (both ineffective — consistent with E3), and
+the once-per-launch notification had been spent days earlier. This is a
+monitoring gap, not a new storm mechanism: the wedge class is known and
+OS-side; the app's job is to detect, notify, and keep its own cost minimal.
+
+**Method.** 45-agent workflow (7 subsystem auditors → adversarial verifier per
+finding): 73 confirmed findings, 1 refuted. High/medium fixes shipped in
+PR #25 (branch audit/resource-leaks), then a codex gpt-5.6-sol xhigh
+adversarial review of the diff found 1 high + 2 medium + 3 low defects in the
+remediation itself — all fixed in 2eabe7a before merge. Notable:
+
+- StormWatchdog: per-EPISODE notification (re-armed after 3 clean samples),
+  GLOBAL 6h re-notify floor (flap-proof), auto ladder reduced to the stage-0
+  repaint (stage 1 = falsified cure + CAContext-leaking op class; manual-only
+  now), 1-sample rung latency (was 3 — a live storm took 4.8h between rungs),
+  30-min cap on the hot-while-UI-open pause (stranded-window disarm).
+- Global outside-click monitor leaked on every popover close that bypassed
+  closePopover (semitransient auto-close, Esc, Settings/Manage buttons) —
+  each leaked monitor is a system-wide per-click callout; plausible direct
+  contributor to the owner's click lag. Removed in popoverDidClose (universal
+  funnel, guarded so a stale close can't kill a new popover's monitor);
+  install made idempotent.
+- Cross-profile refresh contamination (codex-found): single-profile refresh
+  saved to whichever profile was active at COMPLETION. Now saves against the
+  captured id; stale completions discarded, refresh re-queued.
+- security dump-keychain pipe-deadlock (drain before waitUntilExit, stderr to
+  null device); NWPathMonitor recreated per start (cancel() is terminal);
+  Grok dead-login backoff + 401 forced-refresh cooldown (Codex-twin parity);
+  cleanupProfile actually wired (had no call sites) via .profileDeleted and
+  extended to all per-profile state incl. persisted dead-login flags;
+  identity cache bounded; notification-dedup prefix fix; popover backdrop
+  no-op guard; per-sweep chatter demoted to .info.
+
+**Deliberately untouched (credential seams — owner decision pending):**
+per-sweep security-subprocess adoption cadence (~10k fork/execs/day),
+ProfileStore hydration 15s deadline with no retry, clearProfileCredential's
+lone SecItemDelete divergence, launch wizard gate racing async hydration,
+SetupWizardView main-actor security reads, single-profile paid Messages-API
+probe. Each sits inside the nil-never-deletes/adoption seams.
+
+**Deploy.** 148/148 tests both rounds; installed to /Applications; quit
+13:06:37 + wedge-gap ≥150s + relaunch. Live verification recorded at merge.
