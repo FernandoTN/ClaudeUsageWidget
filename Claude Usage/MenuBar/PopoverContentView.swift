@@ -40,14 +40,18 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // Update tint for appearance changes
-        if let tintView = nsView.subviews.last {
+        // Same guard as its SettingsView twins: this runs on EVERY
+        // re-evaluation of the owning SwiftUI tree, and unconditionally
+        // assigning a full-window layer color scheduled a whole-window
+        // recomposite per publish. Keyed on the VIEW's effective appearance.
+        guard let tintView = nsView.subviews.last else { return }
+        let isDark = nsView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let desired = isDark
+            ? NSColor.black.withAlphaComponent(0.25).cgColor
+            : NSColor.white.withAlphaComponent(0.4).cgColor
+        if tintView.layer?.backgroundColor != desired {
             tintView.wantsLayer = true
-            if NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-                tintView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
-            } else {
-                tintView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.4).cgColor
-            }
+            tintView.layer?.backgroundColor = desired
         }
     }
 }
@@ -60,7 +64,6 @@ struct PopoverContentView: View {
     let onManageProfiles: () -> Void
 
     @State private var isRefreshing = false
-    @State private var showInsights = false
     @StateObject private var profileManager = ProfileManager.shared
 
     private func profileInitials(for name: String) -> String {
@@ -333,13 +336,6 @@ struct PopoverContentView: View {
 
             // Usage
             SmartUsageDashboard(usage: displayUsage)
-
-            // Contextual Insights
-            if showInsights {
-                PopoverDivider()
-                ContextualInsights(usage: displayUsage)
-                    .transition(.opacity)
-            }
 
         }
         .padding(.bottom, 8)
@@ -984,80 +980,6 @@ struct UsageRow: View {
             return "menubar.resets_both".localized(with: reset.timeRemainingString(), reset.resetTimeString())
         }
     }
-}
-
-// MARK: - Contextual Insights
-struct ContextualInsights: View {
-    let usage: ClaudeUsage
-
-    private var insights: [Insight] {
-        var result: [Insight] = []
-
-        if usage.effectiveSessionPercentage > 80 {
-            result.append(Insight(
-                icon: "exclamationmark.triangle.fill",
-                color: .orange,
-                title: "usage.high_session".localized,
-                description: "usage.high_session.desc".localized
-            ))
-        }
-
-        if usage.weeklyPercentage > 90 {
-            result.append(Insight(
-                icon: "clock.fill",
-                color: .red,
-                title: "usage.weekly_approaching".localized,
-                description: "usage.weekly_approaching.desc".localized
-            ))
-        }
-
-        if usage.effectiveSessionPercentage < 20 && usage.weeklyPercentage < 30 {
-            result.append(Insight(
-                icon: "checkmark.circle.fill",
-                color: .adaptiveGreen,
-                title: "usage.efficient".localized,
-                description: "usage.efficient.desc".localized
-            ))
-        }
-
-        return result
-    }
-
-    var body: some View {
-        VStack(spacing: 2) {
-            ForEach(insights, id: \.title) { insight in
-                HStack(spacing: 8) {
-                    Image(systemName: insight.icon)
-                        .font(.system(size: 11))
-                        .foregroundColor(insight.color)
-                        .frame(width: 16)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(insight.title)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.primary)
-
-                        Text(insight.description)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-struct Insight {
-    let icon: String
-    let color: Color
-    let title: String
-    let description: String
 }
 
 // MARK: - Status Banner View

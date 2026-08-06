@@ -285,8 +285,13 @@ class ClaudeCodeSyncService {
         process.standardOutput = outputPipe
         process.standardError = Pipe()
 
+        // Drain stdout to EOF BEFORE waitUntilExit: dump-keychain output easily
+        // exceeds the 64KB pipe buffer, and waiting first deadlocks — the child
+        // blocks writing a full pipe while we block waiting for it to exit.
+        let outputData: Data
         do {
             try process.run()
+            outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
         } catch {
             return nil
@@ -294,7 +299,7 @@ class ClaudeCodeSyncService {
 
         guard process.terminationStatus == 0 else { return nil }
 
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let output = String(data: outputData, encoding: .utf8) ?? ""
         let prefix = "Claude Code-credentials-"
 
         // Parse service names from dump-keychain output (format: "svce"<blob>="ServiceName")
@@ -707,8 +712,12 @@ class ClaudeCodeSyncService {
     }
 
     /// In-memory token → identity cache (identities are immutable per token;
-    /// avoids refetching on every sweep). Keyed by a token suffix, never the token.
+    /// avoids refetching on every sweep). Keyed by a token suffix, never the
+    /// token. Bounded: tokens rotate every few hours, so an unbounded cache
+    /// grows by one dead entry per rotation for the life of the process.
     private var identityCache: [String: AccountIdentity] = [:]
+    private var identityCacheOrder: [String] = []
+    private static let identityCacheLimit = 64
 
     /// The account behind an OAuth access token, via api.anthropic.com/api/oauth/
     /// profile. The Claude credentials JSON carries NO account id (unlike Codex's
@@ -738,6 +747,12 @@ class ClaudeCodeSyncService {
             organizationUUID: (json["organization"] as? [String: Any])?["uuid"] as? String ?? "",
             email: account["email"] as? String ?? ""
         )
+        if identityCache[cacheKey] == nil {
+            identityCacheOrder.append(cacheKey)
+            if identityCacheOrder.count > Self.identityCacheLimit {
+                identityCache.removeValue(forKey: identityCacheOrder.removeFirst())
+            }
+        }
         identityCache[cacheKey] = identity
         return identity
     }

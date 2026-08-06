@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import os.log
 
 @MainActor
 class ProfileManager: ObservableObject {
@@ -164,6 +165,7 @@ class ProfileManager: ObservableObject {
         }
 
         profileStore.saveProfiles(profiles)
+        NotificationCenter.default.post(name: .profileDeleted, object: id)
         LoggingService.shared.log("Deleted profile: \(profileName)")
     }
 
@@ -616,7 +618,7 @@ class ProfileManager: ObservableObject {
         var patch = pendingUsageByProfileID[profileId] ?? ProfileStore.UsagePatch()
         patch.claudeUsage = usage
         pendingUsageByProfileID[profileId] = patch
-        LoggingService.shared.log("Saved Claude usage for profile: \(profiles[index].name)")
+        LoggingService.shared.log("Saved Claude usage for profile: \(profiles[index].name)", type: .info)
     }
 
     /// Loads Claude usage data for a specific profile
@@ -650,7 +652,7 @@ class ProfileManager: ObservableObject {
         var patch = pendingUsageByProfileID[profileId] ?? ProfileStore.UsagePatch()
         patch.apiUsage = usage
         pendingUsageByProfileID[profileId] = patch
-        LoggingService.shared.log("Saved API usage for profile: \(profiles[index].name)")
+        LoggingService.shared.log("Saved API usage for profile: \(profiles[index].name)", type: .info)
     }
 
     /// Sweep-time usage staging: updates land in `pendingUsageByProfileID`
@@ -672,7 +674,7 @@ class ProfileManager: ObservableObject {
         patch.claudeUsage = usage
         pendingUsageByProfileID[profileId] = patch
         hasStagedUsage = true
-        LoggingService.shared.log("Staged usage for profile id \(profileId.uuidString.prefix(8))")
+        LoggingService.shared.log("Staged usage for profile id \(profileId.uuidString.prefix(8))", type: .info)
     }
 
     /// One publish for everything staged this sweep. Idempotent; no-op when

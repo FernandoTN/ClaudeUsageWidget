@@ -20,6 +20,11 @@ extension Notification.Name {
     /// Posted when the display mode changes (single/multi profile)
     static let displayModeChanged = Notification.Name("displayModeChanged")
 
+    /// Posted after a profile is deleted (object = the profile's UUID) so
+    /// long-lived per-profile tracking state (backoffs, preflight milestones,
+    /// notification dedup) can be pruned.
+    static let profileDeleted = Notification.Name("profileDeleted")
+
     /// Posted after a structural multi-profile display change: single↔multi mode
     /// or selection add/remove (anything that changes WHICH status items exist).
     /// userInfo may include "addedProfileIds": [String] (UUID strings) when

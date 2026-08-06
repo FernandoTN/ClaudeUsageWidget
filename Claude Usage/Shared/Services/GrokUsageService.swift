@@ -175,6 +175,53 @@ class GrokUsageService {
     /// make the loser 4xx (see the Codex twin).
     private var refreshInFlight: Set<UUID> = []
 
+    /// Profiles already alerted about a revoked refresh token — one notification
+    /// per dead login, re-armed when adoption brings fresh credentials or a
+    /// refresh succeeds. Persisted so the backoff survives a relaunch (the
+    /// Codex twin; without it a revoked Grok token spun a failing token-endpoint
+    /// call every sweep forever, silently).
+    private var reloginNotifiedProfiles: Set<UUID> = GrokUsageService.loadDeadLogins() {
+        didSet { Self.saveDeadLogins(reloginNotifiedProfiles) }
+    }
+
+    private static let deadLoginsKey = "grokDeadLogins_v1"
+
+    private static func loadDeadLogins() -> Set<UUID> {
+        Set((UserDefaults.standard.stringArray(forKey: deadLoginsKey) ?? []).compactMap(UUID.init(uuidString:)))
+    }
+
+    private static func saveDeadLogins(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: deadLoginsKey)
+    }
+
+    /// True when this profile's stored login has been flagged dead (revoked
+    /// refresh token) and the user was told to re-login + re-sync.
+    func isLoginMarkedDead(_ profileId: UUID) -> Bool {
+        reloginNotifiedProfiles.contains(profileId)
+    }
+
+    /// A 4xx from the token endpoint means the stored refresh token is revoked —
+    /// no retry can fix it. Tell the user once instead of failing silently on
+    /// every fetch.
+    private func notifyReloginNeededIfRevoked(_ error: Error, profileId: UUID) {
+        guard case GrokError.tokenRefreshFailed(let status) = error,
+              status == 400 || status == 401 || status == 403 else {
+            return
+        }
+        guard !reloginNotifiedProfiles.contains(profileId) else { return }
+        reloginNotifiedProfiles.insert(profileId)
+        let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Grok"
+        NotificationManager.shared.sendGrokReloginNotification(profileName: name)
+    }
+
+    /// Per-profile cooldown for post-401 FORCED refreshes (the Codex twin): if
+    /// the billing endpoint keeps rejecting tokens for a non-token reason while
+    /// the OAuth refresh itself succeeds, retrying the forced refresh every
+    /// sweep would rotate the refresh-token family under the running grok CLI
+    /// once per sweep. One forced attempt per window; cleared by a 200.
+    private var forcedRefreshCooldownUntil: [UUID: Date] = [:]
+    private static let forcedRefreshCooldown: TimeInterval = 15 * 60
+
     /// Makes sure a profile's Grok access token is usable: adopt a fresher token
     /// from auth.json (same-account only), else redeem the refresh token.
     /// Persists changes to the profile store; a refreshed token is written back
@@ -186,6 +233,9 @@ class GrokUsageService {
         defer { refreshInFlight.remove(profileId) }
 
         var changed = adoptAuthFileIfSameAccount(for: profileId)
+        if changed {
+            reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
+        }
 
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
               let currentJSON = profile.grokCredentialsJSON else {
@@ -193,7 +243,10 @@ class GrokUsageService {
         }
 
         let expiry = extractTokenExpiry(from: currentJSON) ?? .distantPast
-        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: currentJSON) != nil {
+        if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: currentJSON) != nil,
+           // Back off dead logins: a revoked refresh token cannot heal itself —
+           // skip redemption until fresh credentials arrive via re-sync/adoption.
+           !reloginNotifiedProfiles.contains(profileId) {
             do {
                 let refreshed = try await refreshOAuthToken(credentialsJSON: currentJSON)
 
@@ -212,8 +265,10 @@ class GrokUsageService {
                     try? writeAuthFile(refreshed)
                 }
                 changed = true
+                reloginNotifiedProfiles.remove(profileId)
             } catch {
                 LoggingService.shared.logError("Grok: token refresh failed (non-fatal)", error: error)
+                notifyReloginNeededIfRevoked(error, profileId: profileId)
             }
         }
 
@@ -266,11 +321,18 @@ class GrokUsageService {
 
         switch httpResponse.statusCode {
         case 200:
+            forcedRefreshCooldownUntil[profileId] = nil
             return try Self.parseBillingResponse(data)
         case 401, 403:
-            // Stale/revoked access token: one forced refresh + retry.
+            // Stale/revoked access token: one forced refresh + retry, at most
+            // once per cooldown window. freshFor 24h always exceeds the ~6h
+            // token life, so this path unconditionally rotates the refresh
+            // token — uncooled, a persistently-401ing billing endpoint rotated
+            // the family under the running grok CLI on every sweep.
             if !isRetryAfterRefresh, let refreshable = profile.grokCredentialsJSON,
-               extractRefreshToken(from: refreshable) != nil {
+               extractRefreshToken(from: refreshable) != nil,
+               Date() >= (forcedRefreshCooldownUntil[profileId] ?? .distantPast) {
+                forcedRefreshCooldownUntil[profileId] = Date().addingTimeInterval(Self.forcedRefreshCooldown)
                 _ = await ensureFreshCredentials(for: profileId, freshFor: 24 * 3600)
                 return try await fetchUsage(for: profileId, isRetryAfterRefresh: true)
             }

@@ -11,6 +11,9 @@ import UserNotifications
 /// General profile settings: Refresh interval, Auto-start, Notifications
 struct GeneralSettingsView: View {
     @StateObject private var profileManager = ProfileManager.shared
+    /// In-flight slider value during a drag; committed to the profile store
+    /// once on release (see the refresh-interval Slider).
+    @State private var draftRefreshInterval: Double?
 
     var body: some View {
         ScrollView {
@@ -34,23 +37,29 @@ struct GeneralSettingsView: View {
                                     .foregroundColor(DesignTokens.Colors.accent)
                                     .frame(width: DesignTokens.Spacing.iconFrame)
 
-                                Text(String(format: "general.refresh_seconds".localized, Int(profile.refreshInterval)))
+                                Text(String(format: "general.refresh_seconds".localized, Int(draftRefreshInterval ?? profile.refreshInterval)))
                                     .font(DesignTokens.Typography.bodyMedium)
 
                                 Spacer()
                             }
 
+                            // Persist once per drag (on release), not once per
+                            // 10s step — each updateProfile call re-encodes and
+                            // saves the entire profile store.
                             Slider(
                                 value: Binding(
-                                    get: { profile.refreshInterval },
-                                    set: { newValue in
-                                        var updated = profile
-                                        updated.refreshInterval = newValue
-                                        profileManager.updateProfile(updated)
-                                    }
+                                    get: { draftRefreshInterval ?? profile.refreshInterval },
+                                    set: { draftRefreshInterval = $0 }
                                 ),
                                 in: 10...300,
-                                step: 10
+                                step: 10,
+                                onEditingChanged: { editing in
+                                    guard !editing, let value = draftRefreshInterval else { return }
+                                    var updated = profile
+                                    updated.refreshInterval = value
+                                    profileManager.updateProfile(updated)
+                                    draftRefreshInterval = nil
+                                }
                             )
 
                             HStack {

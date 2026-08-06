@@ -3,8 +3,9 @@
 //  Claude Usage
 //
 //  Phase 0 causality harness: env-var-gated lab mode + render instrumentation.
-//  With no env vars set, every path below is a no-op / false — byte-identical
-//  production behavior.
+//  With no env vars set, every gated path below is inert — production behavior
+//  is unchanged apart from RenderInstrumentation's counter increments, which
+//  are unconditional plain-Int bumps (logging stays gated on CUW_RENDER_LOG).
 //
 
 import AppKit
