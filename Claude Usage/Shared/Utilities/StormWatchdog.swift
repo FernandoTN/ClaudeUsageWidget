@@ -161,7 +161,7 @@ final class StormWatchdog {
 
         consecutiveHotSamples += 1
         LoggingService.shared.logWarning(
-            "StormWatchdog: idle CPU \(Int(usage * 100))% of a core over \(Int(wall))s (\(consecutiveHotSamples)/\(Self.hotSamplesBeforeAlarm)); windows=\(NSApp.windows.count)"
+            "StormWatchdog: idle CPU \(Int(usage * 100))% of a core over \(Int(wall))s (\(consecutiveHotSamples)/\(Self.hotSamplesBeforeAlarm)); windows=\(NSApp.windows.count) [\(Self.windowCensus())]"
         )
         guard consecutiveHotSamples >= Self.hotSamplesBeforeAlarm else { return }
 
@@ -221,6 +221,23 @@ final class StormWatchdog {
                 }
             }
         }
+    }
+
+    /// Compact per-class window census for the hot-sample log line, e.g.
+    /// "NSStatusBarWindow×9, _NSPopoverWindow·hidden×1". The old 6.5-day
+    /// process accreted 9→11 windows and the bare count made the extras
+    /// unidentifiable post-mortem — a stranded invisible _NSPopoverWindow is
+    /// exactly the class this exposes in the moment.
+    private static func windowCensus() -> String {
+        var counts: [String: Int] = [:]
+        for window in NSApp.windows {
+            var name = NSStringFromClass(type(of: window))
+            if !window.isVisible { name += "·hidden" }
+            counts[name, default: 0] += 1
+        }
+        return counts.sorted { $0.key < $1.key }
+            .map { "\($0.key)×\($0.value)" }
+            .joined(separator: ", ")
     }
 
     /// Total user+system CPU seconds consumed by this process.
