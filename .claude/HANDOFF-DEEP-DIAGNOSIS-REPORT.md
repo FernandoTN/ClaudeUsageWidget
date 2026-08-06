@@ -725,3 +725,61 @@ probe. Each sits inside the nil-never-deletes/adoption seams.
 
 **Deploy.** 148/148 tests both rounds; installed to /Applications; quit
 13:06:37 + wedge-gap ≥150s + relaunch. Live verification recorded at merge.
+
+## Addendum 10 (2026-08-06) — root-cause verdict workflow: ignition is OS-side and MULTI-HOST; popover-close attributed only wedge-formation exposure; animates=false ships as defect fix, not cure
+
+**Correction of addendum 9's framing (honesty precedent, cf. the retracted
+opaque-backdrop A/B/A).** Addendum 9 and the initial read of the 13:29-13:31
+recurrence attributed ignition to the popover-close fence race. A 9-agent
+workflow (forensic timeline over every recoverable epoch, popover-mechanics,
+adversarial skeptic, window census, live watchdog verification, then a judge
+panel) falsified that as the PROXIMATE trigger:
+
+- **The 2026-08-06 ignition was at 13:32:49 — SIMULTANEOUS (within 120ms) in
+  three unrelated menu-bar hosts: ControlCenter (13:32:49.718, FIRST), Claude
+  Usage (.769), ChatGPTHelper (.835)** — 3m12s after the last popover
+  interaction, milliseconds after a WindowServer SkyLight "transaction timed
+  out". An app-internal popover transaction cannot ignite ControlCenter 51ms
+  before the app. (The earlier "13:30 ignition" was a log-flush mis-binning;
+  trailing minutes undercount until re-mined.)
+- **The fence-race precursor is demonstrably non-igniting on its own**: fired
+  twice at 13:29:18/13:29:37 with no churn for 3+ minutes; July's 500-cycle
+  lab produced precursors and no storm.
+- **The epoch table (9 epochs both pids)**: both observable FRESH-era wedge
+  formations (Aug 5 19:18, Aug 6 13:29-32) had popover close + fence-race
+  2-3.5 min after a Dock space-transition + MenuBarAgent NSSceneFenceAction
+  broadcast to every app's status scenes; three re-ignitions (Jul 31 15:10,
+  Aug 6 00:04, Aug 6 13:02) had ZERO interaction — wake or a lone broadcast
+  re-lit an already-wedged bundle. Churn stopped WITHOUT restart four times
+  (display-sleep quench; once apparently display-on decay), and the wedge
+  itself dissolved over Aug 1-4 (machine mostly asleep) without the bundle
+  leaving the bar — "only quit+2min clears it" is falsified as the sole path.
+- **Refined model (~85/15 confidence)**: space-transition/menu-bar-reveal
+  fence bursts landing on a fence-sick WindowServer form a latent OS-side
+  wedge affecting ALL menu-bar hosts; churn manifests at the next CA
+  transaction (any host's); popover use is partly a MARKER of the user being
+  at the top of the screen. This is a macOS 27 beta OS defect. App-side
+  "prevention" is impossible; exposure/cost/detection/recovery are the app's
+  whole surface — and those are now measured working: composite storm cost
+  3.8% (vs 8-11% pre-composite), and the PR #25 watchdog executed its design
+  flawlessly live (hot 1/3 13:32:12 → episode+repaint 13:36:12 → repaint
+  verified ineffective → SUSTAINED notification 13:38:12).
+
+**Confirmed app defect found by the census agent (independent of storms)**:
+with animates=true, togglePopover's cross-tile branch re-showed the popover
+BEFORE the fade-delayed didClose, contradicting its own "destroy runs first"
+comment; a collided close/re-show can strand an invisible _NSPopoverWindow
+forever — matching the old pid's window accretion 9→10 (morning, unrecoverable)
+→11 (15:30-15:34 Jul 31, a 4-click popover burst with a vanished popover and
+no willClose log), pinned for 5+ days. Fix shipped: **popover.animates=false**
+(judged ship-with-changes on both regression-risk and mechanism-validity
+lenses) — close becomes synchronous, the destroy provably precedes the
+re-show, and the popover no longer leaves a fade transaction straddling later
+OS commits. Explicitly NOT claimed as storm prevention. Plus: watchdog hot
+lines now carry a per-class window census (the bare "windows=11" made the
+extras unidentifiable post-mortem).
+
+**Discriminating experiments (documented for future lab time, not run)**:
+(A) popover-only/burst-free clicking; (B) fullscreen-reveal-only, no clicks;
+(C) burst + forced repaint (latent-wedge probe); (D) passive first-strike
+correlator. The skeptic's 2x2 design is in the workflow archive.
