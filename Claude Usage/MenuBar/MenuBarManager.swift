@@ -56,6 +56,32 @@ class MenuBarManager: NSObject, ObservableObject {
     private weak var lastPopoverCloseButton: NSStatusBarButton?
     private var lastPopoverCloseTime: Date = .distantPast
 
+    /// Storm-mode duplicate-delivery coalescing (forensics 2026-08-06).
+    /// While a scene host is wedged (pointerLocalX == nil epochs) one
+    /// physical click on a status button arrives as 2-5 independent action
+    /// dispatches, 45-229ms apart (9 bursts mined; the 15:36:15 quintuple
+    /// spans 517ms). The fastest DELIBERATE re-click in the mined window is
+    /// 449ms, so a same-button action within 0.3s of the previous one is a
+    /// re-delivery, not a click. The window SLIDES (re-arms on each
+    /// suppression) — a fixed window can't work, since a burst's span (517ms)
+    /// exceeds the genuine-click floor (449ms). `clickBurstStartUptime` caps
+    /// continuous suppression at 1.5s so a pathological endless duplicate
+    /// stream cannot eat deliberate clicks forever. Monotonic uptime, never
+    /// Date() (wall-clock jumps must not open/close the window); weak button
+    /// ref so composite rebuilds naturally invalidate the key. Distinct from
+    /// the auto-close swallow stamp above: that consumes the dismiss-click's
+    /// OWN action 9-43ms after willClose (previous ACTION is seconds
+    /// earlier), this drops repeat deliveries of one action.
+    /// Accepted residuals (wedge-state only, both theoretical — observed
+    /// wedge re-clicks are seconds apart): (1) because the window slides
+    /// from the LAST duplicate, a deliberate re-click up to ~830ms after a
+    /// quintuple burst's physical click is coalesced; (2) after a
+    /// swallow-consumed dismiss, a deliberate same-button reopen within
+    /// 300ms is coalesced (previously it reopened).
+    private weak var lastClickActionButton: NSStatusBarButton?
+    private var lastClickActionUptime: TimeInterval = -.greatestFiniteMagnitude
+    private var clickBurstStartUptime: TimeInterval = -.greatestFiniteMagnitude
+
     private let apiService = ClaudeAPIService()
     private let statusService = ClaudeStatusService()
     private let networkMonitor = NetworkMonitor.shared
@@ -605,6 +631,27 @@ class MenuBarManager: NSObject, ObservableObject {
         clickedProfileUsage = usage
     }
 
+    /// Compact identity of the in-flight NSEvent for click-forensics log
+    /// lines. `eventNumber` is only legal on mouse/tracking events (AppKit
+    /// raises on anything else), and the type of a scene-synthesized action
+    /// event is exactly what this instrumentation is meant to learn — so the
+    /// type gates the eventNumber read. If duplicates turn out to share an
+    /// eventNumber, it becomes a precise dedup key (currently unproven: no
+    /// probe ever captured it).
+    private func currentEventIdentity() -> String {
+        guard let event = NSApp.currentEvent else { return "event=nil" }
+        let mouseTypes: Set<NSEvent.EventType> = [
+            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+            .otherMouseDown, .otherMouseUp, .leftMouseDragged,
+            .rightMouseDragged, .otherMouseDragged, .mouseMoved,
+            .mouseEntered, .mouseExited]
+        let number = mouseTypes.contains(event.type)
+            ? String(event.eventNumber) : "n/a"
+        let ts = String(format: "%.3f", event.timestamp)
+        return "event type=\(event.type.rawValue) no=\(number) ts=\(ts)"
+            + " buttons=\(NSEvent.pressedMouseButtons)"
+    }
+
     @objc private func togglePopover(_ sender: Any?) {
         // Determine which button was clicked
         let clickedButton: NSStatusBarButton?
@@ -629,6 +676,35 @@ class MenuBarManager: NSObject, ObservableObject {
 
         guard let button = clickedButton else { return }
 
+        // Coalesce storm-mode duplicate deliveries (see the state docs at
+        // lastClickActionButton). Status-button sends only — a keyboard
+        // shortcut (sender == nil) is never a re-delivery and is never
+        // coalesced. Runs BEFORE clickX resolution so suppressed duplicates
+        // skip pointer reads and the popover state machine entirely;
+        // first-delivery-wins turns a wedged burst's open/dismiss flap into
+        // one clean open.
+        if sender is NSStatusBarButton {
+            let now = ProcessInfo.processInfo.systemUptime
+            let delta = now - lastClickActionUptime
+            if lastClickActionButton === button, delta < 0.3 {
+                if now - clickBurstStartUptime < 1.5 {
+                    lastClickActionUptime = now  // sliding window: re-arm
+                    LoggingService.shared.log(
+                        "Composite click: duplicate within \(Int(delta * 1000))ms"
+                        + " — coalesced (\(currentEventIdentity()))")
+                    return
+                }
+                // Burst cap expired: accept, but say so — otherwise a
+                // pathological >1.5s duplicate stream is indistinguishable
+                // from a fresh click in a post-mortem trace.
+                LoggingService.shared.log(
+                    "Composite click: burst cap (1.5s) expired — accepting delivery \(Int(delta * 1000))ms after previous (\(currentEventIdentity()))")
+            }
+            lastClickActionButton = button
+            lastClickActionUptime = now
+            clickBurstStartUptime = now
+        }
+
         // Composite tiles: the click's x-offset within the group button
         // identifies WHICH tile was clicked. Only meaningful when the sender
         // is the clicked button itself (shortcut-invoked toggles pass nil).
@@ -646,7 +722,8 @@ class MenuBarManager: NSObject, ObservableObject {
             let x = StatusBarUIManager.pointerLocalX(in: button)
             if x == nil {
                 LoggingService.shared.log(
-                    "Composite click: pointer off-button → ambiguous (active-account fallback)")
+                    "Composite click: pointer off-button → ambiguous (active-account fallback)"
+                    + " (\(currentEventIdentity()))")
             }
             return x
         }()
@@ -1275,10 +1352,26 @@ private func observeCredentialChanges() {
                 let usageThrottled = profile.claudeUsage?.rateLimitedUntil.map { $0 > Date() } ?? false
                 let burstBackoffUntil = burstBackoffs[profile.id]?.until
                 let usageBackedOff = burstBackoffUntil.map { $0 > Date() } ?? false
+                // A dead-flagged CLI login whose access token is ALSO expired
+                // can never fetch: the pre-fetch heal is (correctly) backed
+                // off and fetchUsageForProfile falls through to a throw —
+                // profile 'Ai' burned a background-rotation slot plus an
+                // error log every cycle for six days on this. Both conditions
+                // matter: a still-valid access token keeps fetching even
+                // while flagged (the flag has transient-misfire paths), and
+                // the active-Claude profile keeps its shared-login fallback.
+                // Codex/Grok profiles and the API-console fetch below are
+                // untouched.
+                let cliLoginDead = !profile.isCodexOnlyProfile && !profile.isGrokOnlyProfile
+                    && ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
+                    && !profile.hasValidCLIOAuth
+                    && profile.id != (self.profileManager.activeClaudeProfileId ?? self.profileManager.activeProfile?.id)
                 if usageThrottled {
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — endpoint throttled until \(profile.claudeUsage?.rateLimitedUntil ?? Date())", type: .info)
                 } else if usageBackedOff {
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off burst 429s until \(burstBackoffUntil ?? Date())", type: .info)
+                } else if cliLoginDead {
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — CLI login is dead (revoked refresh token); run /login + re-sync to resume", type: .info)
                 } else {
                     // Space Claude-bound fetches only: oauth/usage is the sole
                     // reason for pacing. Sleep the remainder so Claude starts are
@@ -1461,6 +1554,19 @@ private func observeCredentialChanges() {
             return try await apiService.fetchUsageData(oauthAccessToken: accessToken)
         }
 
+        // Distinguish "credentials exist but are unusable" (expired access
+        // token whose heal failed — dead/revoked refresh token) from "no
+        // credentials at all": the old blanket "Missing credentials" hid
+        // dead logins behind a message suggesting none were ever synced, and
+        // .sessionKeyNotFound is not counted as a credential error by the
+        // sweep's banner accounting (dead logins never surfaced in the UI).
+        if profile.cliCredentialsJSON != nil {
+            throw AppError(
+                code: .sessionKeyExpired,
+                message: "CLI login for '\(profile.name)' is expired and could not be refreshed — run /login with that account, then re-sync in Settings",
+                isRecoverable: false
+            )
+        }
         throw AppError(
             code: .sessionKeyNotFound,
             message: "Missing credentials for profile '\(profile.name)'",

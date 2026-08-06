@@ -783,3 +783,48 @@ extras unidentifiable post-mortem).
 (A) popover-only/burst-free clicking; (B) fullscreen-reveal-only, no clicks;
 (C) burst + forced repaint (latent-wedge probe); (D) passive first-strike
 correlator. The skeptic's 2x2 design is in the workflow archive.
+
+## Addendum 11 (2026-08-06) — "not responsive": wedge-state click MULTI-DELIVERY; coalescing fix + dead-login sweep skip
+
+**Owner symptom** ("lag, doesn't update, not responsive") decomposed by a
+10-agent ultracode run into three verified causes:
+
+1. **Click multi-delivery (the "nothing happened" feeling).** While a scene
+   host is wedged (pointerLocalX == nil epochs), ONE physical click arrives
+   as 2-5 independent action dispatches (distinct os_activity IDs), 45-229ms
+   apart — 9 bursts mined across 3 pids; the 15:36:15 quintuple flapped the
+   popover open→dismiss→open→dismiss→open in 517ms. 100% correlated with the
+   wedged pointer-resolution state, NOT with CPU churn (2 bursts churn-free;
+   12 clicks during Jul 31 churn all single). Fastest deliberate re-click in
+   the mined window: 449ms. FIX (judged ship/ship): sliding 300ms per-button
+   coalescer at the top of togglePopover (monotonic uptime, weak button key,
+   1.5s continuous-suppression cap with accept-logging, keyboard path never
+   coalesced), + NSEvent identity instrumentation (type-gated eventNumber)
+   on the coalesce/ambiguous lines to make identity-keyed dedup provable
+   from future storm data. Main thread sampled HEALTHY throughout — the lag
+   is OS event delivery, not app handling.
+2. **"Doesn't update" was mostly correct behavior + one real defect.**
+   Outlook's 429 cadence is the burst backoff working as designed (usage at
+   most ~3min stale, verified live at 93%/fresh); Cod's 503s are server-side.
+   The defect: profile 'Ai' holds a CLI login whose refresh token is REVOKED
+   (dead-flagged) — it passed the sweep filter (expired-with-refresh counts
+   as usable by design), burned a background-rotation slot + threw a
+   misleading "Missing credentials" error every ~5min for SIX DAYS, painting
+   a frozen 95% tile with zero staleness indication. FIX (judged
+   ship-with-changes, both conditions per the judge): sweep skips profiles
+   that are dead-flagged AND actually-expired (active-Claude fallback and
+   Codex/Grok/API-console paths untouched); the throw now distinguishes
+   "login dead — /login + re-sync" (.sessionKeyExpired, which the banner
+   accounting counts) from genuinely absent credentials.
+3. **Machine-wide lag is the OS storm** (WindowServer 144%, multi-host).
+
+**Scene-merge option REJECTED by the judge panel** (3 items → 1 = 9→3
+scenes): saves only ~2.5pp during storms, but overflow becomes
+all-or-nothing (~380pt strip vanishes whole; today Codex clips first — NB
+actual bar order is Codex far-LEFT, Grok middle, Claude RIGHT) and ambiguous
+clicks (the dominant wedge-mode click) lose their per-group provider anchor.
+Free experiment first if ever revisited: deselect Grok+Codex for one storm
+episode = 1 item/3 scenes with zero code. Follow-up candidates left open:
+tile-level staleness cue (~15min threshold); session-key-only profiles would
+reproduce the 'Ai' loop (fetch path never consults claudeSessionKey — latent,
+no such profile exists today).
