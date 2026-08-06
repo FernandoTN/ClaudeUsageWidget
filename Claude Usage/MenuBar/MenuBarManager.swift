@@ -530,7 +530,18 @@ class MenuBarManager: NSObject, ObservableObject {
         let popover = NSPopover()
         popover.contentSize = Constants.WindowSizes.popoverSize
         popover.behavior = .semitransient  // Allows detaching
-        popover.animates = true
+        // NO show/close fade: the fade is a CA transaction against the anchor
+        // tile's scene that outlives the user's action — both 2026-08-06
+        // fence-race bursts ("Entangling fence requested after pre-commit")
+        // landed in that post-close window, and with animates=true didClose is
+        // delivered only after the fade, which provably let the cross-tile
+        // re-show run against a mid-close popover (stranded-window class —
+        // the old pid's 9→11 window accretion). With animates=false the whole
+        // close (willClose → didClose) is synchronous inside performClose.
+        // NOTE (2026-08-06 workflow verdict): this is exposure/defect removal,
+        // NOT storm prevention — ignition was measured multi-host (ControlCenter
+        // first) and OS-side; do not re-attribute storms to this flag.
+        popover.animates = false
         popover.delegate = self
         self.popover = popover
         return popover
@@ -690,12 +701,15 @@ class MenuBarManager: NSObject, ObservableObject {
                 closePopover()
             } else {
                 // Different tile/button: close now, re-show on the NEXT
-                // runloop turn with a FRESH popover. Closing and re-anchoring
-                // the same popover against a different scene-hosted status
-                // anchor in a single turn is one of the suspected storm
-                // igniters (Codex consult 2026-07-29); the deferred destroy in
-                // popoverDidClose runs first, so the re-show always builds a
-                // clean popover.
+                // runloop turn with a FRESH popover. With animates=false,
+                // performClose delivers didClose SYNCHRONOUSLY here, which
+                // queues the deferred destroy BEFORE the re-show block below —
+                // so the destroy provably runs first and ensurePopover()
+                // builds a genuinely fresh popover. (With animates=true this
+                // ordering was inverted — didClose arrived after the fade,
+                // the re-show reused the mid-close popover, and a collided
+                // close/re-show could strand an invisible _NSPopoverWindow
+                // forever. Do not re-enable animation without re-sequencing.)
                 popover.performClose(nil)
                 stopMonitoringForOutsideClicks()
                 let targetProfileId = clickedProfileId
@@ -2444,10 +2458,13 @@ extension MenuBarManager: NSPopoverDelegate {
         // Arm the re-open swallow when this close is the semitransient
         // auto-close of a click on the anchoring button: that click's own
         // action will arrive with isShown == false and must read as
-        // "dismiss", not "open". It must happen HERE, at close initiation:
-        // with animates=true, didClose is delivered only after the fade-out,
-        // typically AFTER that action already ran and found no stamp (the
-        // close/re-open pairs in the 2026-07-30 click trace).
+        // "dismiss", not "open". It must happen HERE, at close initiation —
+        // an invariant that is timing-independent: with animates=false (the
+        // current config) didClose follows synchronously, but arming at
+        // initiation also survives any future animated config, where didClose
+        // is delivered only after the fade-out, typically AFTER that action
+        // already ran and found no stamp (the close/re-open pairs in the
+        // 2026-07-30 click trace).
         //
         // The ONLY gate is "pointer on the anchor": that alone distinguishes
         // an anchor-click auto-close (arm) from a desktop/elsewhere click or
@@ -2473,11 +2490,13 @@ extension MenuBarManager: NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         // Only touch anchor state when the CURRENT popover really finished
-        // closing. A group switch shows a fresh popover (possibly the same
-        // reused object) before the old animated didClose arrives; clearing
-        // currentPopoverButton then would orphan the shown popover — its
-        // next same-group click reads as "different button" and re-opens
-        // instead of dismissing.
+        // closing. The guards are ordering-independent (they key on object
+        // identity + isShown, not delivery timing): with animates=false this
+        // runs synchronously inside performClose; under an animated config a
+        // group switch could show a fresh popover before the old didClose
+        // arrived, and clearing currentPopoverButton then would orphan the
+        // shown popover — its next same-group click reads as "different
+        // button" and re-opens instead of dismissing.
         // No swallow-stamp writes here: willClose already armed it under the
         // precise condition, and re-arming after the mouse-up consumed it
         // would swallow the NEXT legitimate click (Codex review 2026-07-30,
