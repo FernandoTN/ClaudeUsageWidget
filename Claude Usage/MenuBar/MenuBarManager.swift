@@ -1371,7 +1371,12 @@ private func observeCredentialChanges() {
                 } else if usageBackedOff {
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off burst 429s until \(burstBackoffUntil ?? Date())", type: .info)
                 } else if cliLoginDead {
-                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — CLI login is dead (revoked refresh token); run /login + re-sync to resume", type: .info)
+                    // Default level deliberately (not .info): .info never
+                    // persists to `log show`, and this line is the only
+                    // post-hoc evidence that a profile's staleness is a dead
+                    // login rather than a fetch bug. Fires ≤ once per
+                    // rotation turn (~5 min) per dead profile.
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — CLI login is dead (revoked refresh token); run /login + re-sync to resume")
                 } else {
                     // Space Claude-bound fetches only: oauth/usage is the sole
                     // reason for pacing. Sleep the remainder so Claude starts are

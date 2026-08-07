@@ -828,3 +828,55 @@ episode = 1 item/3 scenes with zero code. Follow-up candidates left open:
 tile-level staleness cue (~15min threshold); session-key-only profiles would
 reproduce the 'Ai' loop (fetch path never consults claudeSessionKey — latent,
 no such profile exists today).
+
+## Addendum 12 (2026-08-07) — the 6h notification floor over-suppressed; hybrid policy (45-min floor + 20-min cumulative override); display-wake gating discovered
+
+**Owner report**: a CPU-burn notification at 14:05 (he believed he then quit
+and relaunched — forensics: NO quit happened; pid 64273 ran throughout and
+he interacted with popovers at 14:06/14:11, then Zed took focus).
+
+**Why the notification came 3h late (the design flaw)**: addendum 10's
+GLOBAL 6h floor — added against a hover-flap concern — met real storm
+weather: NINE hot-burn runs in 22h on one pid. Episode 0 (invisible to
+casual scans: the app's log subsystem didn't persist until a flip at
+19:02:31 Aug 6) notified at 16:47:12, 38 min after the "clean" relaunch;
+its banner sat unread 15.3h and was silently DESTROYED by the 08:05
+replace-same-identifier post. The floor then silenced ep1-ep2 (16:47+6h)
+and ep4-ep6 + 2h52m of ep7 (08:05+6h); ep7's alert fired at exactly
+14:05:54 = floor release. The watchdog behaved exactly as coded — the code
+was wrong.
+
+**New (workflow-discovered) storm physics**: episodes are DISPLAY-ON
+windows of ONE persistent wedge — all six observable ignitions came
+32-131s after pmset "Display is turned on" with zero interaction; every
+episode end followed "Display is turned off" within 1-3 samples. The wedge
+survived 10.3h of display-off (machine awake) AND a genuine 37-min
+clamshell deep sleep — refining addendum 10: display-off quenches churn
+but does not dissolve the wedge; 37min of sleep doesn't either. Burn
+GROWS with wedge age: episode means 6.1→9.2% at a constant 9-window
+census; ep7's live-streamed churn ran ~360 occlusion datagrams/s + ~400/s
+UserDefaults lookups + ~86/s XPC ≈ 864 log-lines/s.
+
+**Fix (judged ship-with-changes ×2, applied)**: notifyIfDue's single 6h
+gate becomes a hybrid: first-of-episode notification after a 45-min global
+floor OR ≥20min of banked suppressed burn (banked per idle-attributed hot
+sample, clamped to 2× the sample interval so a sleep-bridged tick can't
+fill the bank; drained only by a post; carries across episode close);
+intra-episode re-posts keep the 6h backoff. Simulated on the real 22h
+ledger: 7 notifications vs 3, ep7 alerted ~6min in vs 2h52m. True
+pathological ceiling ~2.2/h (26-min min spacing, each post backed by 20min
+of real burn); the classic 14-min hover shape produces ~0 posts (3-sample
+runs never reach the gate — a documented, pre-existing reach limit).
+Dead-login sweep-skip line promoted to .default (the .info blind spot:
+.info never persists to `log show`).
+
+**22h build-health verification (all of yesterday's fixes)**: coalescer
+zero false suppressions (and zero bursts to suppress — multi-delivery
+didn't recur); 'Ai' SELF-HEALED at 00:45 (successful token refresh —
+dead-flag cleared by design) and its error loop is gone; popover cycles
+textbook; zero window accretion (every census exactly NSStatusBarWindow×9);
+zero composite rebuilds. Repaint-cadence lever assessed and REJECTED:
+idle commits are already only ~every 1.5-3min (three-layer dedup works;
+the commits are real 1-px time-marker moves), and ignition is OS-side/
+multi-host — episode-gated marker freeze documented as the only defensible
+variant if ever wanted.
