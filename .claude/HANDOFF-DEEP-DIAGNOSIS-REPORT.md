@@ -880,3 +880,54 @@ idle commits are already only ~every 1.5-3min (three-layer dedup works;
 the commits are real 1-px time-marker moves), and ignition is OS-side/
 multi-host — episode-gated marker freeze documented as the only defensible
 variant if ever wanted.
+
+## Addendum 13 (2026-08-07 night) — substrate forensics: the compositor is the reservoir; relaunch cure currently DEAD; staged reset is the remaining remedy
+
+**Trigger**: another (correct, prompt — 8 min into the burn, gate label in
+the log) notification at 20:49. The question left: why does the wedge keep
+re-forming? 4-agent workflow verdict:
+
+- **The wedge re-formed within ~6 MINUTES of the clean 14:46 relaunch**
+  (hot window opened 14:52:34; a popover burst + a Dock space-transition
+  9-scene NSSceneFenceAction broadcast at 14:51:31 preceded it — on a
+  WindowServer already throwing fence timeouts BEFORE the process
+  launched). The wedge-gap relaunch cure is therefore currently DEAD:
+  while the substrate is this sick, a clean relaunch buys minutes.
+  (The "~2.5h to re-formation / new wedge at 17:11" scout framing was
+  wrong: 17:17 was a post-clamshell-sleep re-ignition of the same open
+  episode — the watchdog timer suspension bridged it.)
+- **WindowServer (pid 634) has never restarted since boot Jul 24 07:33 —
+  14.5 days; no logout either.** The "timed out fence/transaction/
+  synchronize" signature first appears Aug 5 19:18:27 (uptime day 12, the
+  exact minute of the first observed wedge formation) and accelerates
+  3 → 13 → 302/day across Aug 5-7 (pre-Aug-7 counts are retention-biased
+  LOWER bounds — the storm's own ~1.2GB/day log churn destroyed its own
+  history; Persist tier holds only Aug 7). RSS is unremarkable (~320MB) —
+  the sickness is scheduling/fence state, not a memory leak. Observed at
+  48-96% CPU during live episodes.
+- **Ten victim hosts log-verified at tonight's 20:41 ignition** (zero
+  interaction, 12s after display-on): MenuBarAgent, ControlCenter,
+  ChatGPTHelper, Wispr Flow, Tailscale, Granola ×2, Google Drive,
+  GeminiAppLauncher, Docker Desktop + this app. Reusable Apple-triage
+  fingerprint: "synchronize timed out for 675cdf6a" (same CA context id,
+  10:15-20:20).
+- **App-side surface confirmed exhausted** (synthesis, adversarial): the
+  popover traffic remains an occasional formation CO-FACTOR (the broadcast
+  is system-generated; the app cannot opt out of NSSceneFenceAction), but
+  mechanics are clean — animates=false holding, zero fence-races, zero
+  rebuilds, census 9 throughout, both notifications to spec.
+- **Remedy (SUPPORTED-BUT-UNPROVEN — stated per the retraction
+  precedent)**: all observed pathology lives inside one never-restarted
+  compositor. Staged reset: (1) BEFORE any reset, capture evidence that
+  dies with the session — `sudo sysdiagnose` during a live episode +
+  `sample 634 5` — and file the Feedback Assistant report
+  (draft: ~/.claude/jobs/e772a89f/tmp/feedback-assistant-draft.md);
+  (2) logout/login (restarts WindowServer — the one reset never tried;
+  multi-day quiet ⇒ compositor state was the reservoir); (3) full reboot
+  if a wedge re-forms within ~a day. Beta 5 not yet available
+  (26A5388g current, 27seed enrolled, checked 20:56); when it lands,
+  soak multi-day before declaring fixed (first onset took ~12 days).
+- **Status-quo cost if untreated**: ~1-2 episodes per display-on day,
+  re-ignition 32-131s after every display wake, app burn 5-8% while hot
+  (~7.5h cumulative today), WindowServer burning far more — and the curve
+  is accelerating.
