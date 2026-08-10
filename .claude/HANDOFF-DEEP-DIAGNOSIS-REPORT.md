@@ -931,3 +931,27 @@ re-forming? 4-agent workflow verdict:
   re-ignition 32-131s after every display wake, app burn 5-8% while hot
   (~7.5h cumulative today), WindowServer burning far more — and the curve
   is accelerating.
+
+## Addendum 14 (2026-08-10) — reboot experiment NEGATIVE: storm re-formed ~5 min after a cold boot; compositor-uptime hypothesis retracted in its strong form
+
+The staged reset ran (sysdiagnose captured 21:16 Aug 7 during a live
+episode, 488MB, copy on Desktop; machine cold-booted Aug 10 10:09:14).
+Result, per the retraction precedent stated plainly: **the storm class
+re-formed within ~5 minutes of the cold boot** — first hot samples ~10:14
+on a 5-minute-old WindowServer (pid 438) carrying only 4 timeout lines,
+episode opened 10:46 (UI-open pause correctly deferred it — a
+BorderlessSettingsWindow was open 10:14-10:57, named by the new census),
+SUSTAINED notification 10:48:02 ("first-of-episode, 45-min floor clear"),
+burn 6-9%, churn ~90-220 occlusion datagrams/s, and MULTI-HOST again
+(Tailscale ~9k events/5min alongside our ~27k — proportional to
+status-item counts; ControlCenter quiet this time). Addendum 13's
+compositor-state-reservoir inference is therefore FALSIFIED in its strong
+form: long compositor uptime is not required. What survives: the defect is
+OS-side, multi-host, Beta 4 (26A5388g)-resident, and fast-triggering on
+this machine's configuration; the app's mitigations (bounded ~5-9% wedged
+cost, prompt per-episode notification, display-off quench) are the
+standing line of defense until a fixed macOS build ships. The Feedback
+Assistant draft was updated with the recurs-after-clean-reboot data point
+(strengthens the report: not an uptime curiosity). App verified fully
+healthy through the event: gate to spec, census correct (settings window
+identified by class, 9 windows after it closed), zero accretion.
