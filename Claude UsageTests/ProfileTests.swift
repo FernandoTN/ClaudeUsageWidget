@@ -59,4 +59,54 @@ final class ProfileTests: XCTestCase {
         XCTAssertEqual(empty.providerKind, .claude)
         XCTAssertFalse(empty.hasUsageCredentials)
     }
+
+    // MARK: - Pre-hydration metadata fallback (2026-08-10 partial-cache incident)
+
+    func testUnhydratedGrokProfileClassifiesByMetadata() {
+        // A partial Keychain hydration left grokCredentialsJSON nil and the
+        // Grok profile was grouped (and weekly-reset ranked) with the Claude
+        // accounts. Persisted metadata must keep the partition right while
+        // credentials are missing in memory — including a syncedAt-only
+        // profile, because a Grok auth.json need not carry an email.
+        let bySync = Profile(name: "Grok", grokAccountSyncedAt: Date())
+        XCTAssertNil(bySync.grokCredentialsJSON)
+        XCTAssertEqual(bySync.providerKind, .grok)
+
+        let byEmail = Profile(name: "Grok", grokEmail: "g@x.ai")
+        XCTAssertEqual(byEmail.providerKind, .grok)
+    }
+
+    func testUnhydratedCodexProfileClassifiesByMetadata() {
+        XCTAssertEqual(Profile(name: "Cod", codexEmail: "c@x.com").providerKind, .codex)
+        XCTAssertEqual(Profile(name: "Cod", codexAccountSyncedAt: Date()).providerKind, .codex)
+    }
+
+    func testUnhydratedClaudeProfileStaysInClaudePartition() {
+        XCTAssertEqual(Profile(name: "C", hasCliAccount: true).providerKind, .claude)
+        XCTAssertEqual(Profile(name: "C", organizationId: "org").providerKind, .claude)
+    }
+
+    func testConflictingMetadataMirrorsCredentialPrecedence() {
+        // The metadata fallback must classify a mixed profile the SAME way the
+        // credential checks will once hydration fills the fields — a kind that
+        // flips at hydration would regroup the menu bar mid-run. Hydrated
+        // grok+codex resolves .codex (see the mixed-provider test above), so
+        // metadata-only grok+codex must too; anything claude-side stays .claude.
+        let codexGrok = Profile(name: "B", codexEmail: "c@x.com", grokEmail: "g@x.ai")
+        XCTAssertEqual(codexGrok.providerKind, .codex)
+
+        let claudeGrok = Profile(name: "B", hasCliAccount: true, grokEmail: "g@x.ai")
+        XCTAssertEqual(claudeGrok.providerKind, .claude)
+
+        let claudeCodex = Profile(name: "B", hasCliAccount: true, codexEmail: "c@x.com")
+        XCTAssertEqual(claudeCodex.providerKind, .claude)
+    }
+
+    func testHydratedCredentialsBeatStrayMetadata() {
+        // Once real credentials are in memory the credential-based checks run
+        // first: stray metadata from another provider must not flip the kind.
+        var grokWithCodexEmail = grok()
+        grokWithCodexEmail.codexEmail = "stray@x.com"
+        XCTAssertEqual(grokWithCodexEmail.providerKind, .grok)
+    }
 }

@@ -884,7 +884,17 @@ class ProfileManager: ObservableObject {
     /// - Codex: matched by account_id against ~/.codex/auth.json — deterministic,
     ///   because that file IS the codex CLI's current login.
     private func resolveProviderActiveAccounts() {
-        if let id = activeClaudeProfileId,
+        // Nil credentials prove ABSENCE only when hydration completed (.ready).
+        // After a partial (.failed) warm they usually mean "not read yet", and
+        // clearing (or re-inferring) a provider-active pointer on that evidence
+        // hands the next user switch a skipped outgoing-adoption — auth.json /
+        // the shared login overwritten while the outgoing account's rotated
+        // token is lost. Ownership of merely-UNKNOWN credentials is preserved;
+        // the post-heal reload runs this again with real evidence.
+        let absenceIsEvidence = credentialHydrationState == .ready
+
+        if absenceIsEvidence,
+           let id = activeClaudeProfileId,
            profiles.first(where: { $0.id == id })?.cliCredentialsJSON == nil {
             activeClaudeProfileId = nil
         }
@@ -912,11 +922,14 @@ class ProfileManager: ObservableObject {
            }) {
             activeCodexProfileId = owner.id
         } else {
-            if let id = activeCodexProfileId,
+            if absenceIsEvidence,
+               let id = activeCodexProfileId,
                profiles.first(where: { $0.id == id })?.codexCredentialsJSON == nil {
                 activeCodexProfileId = nil
             }
-            if activeCodexProfileId == nil {
+            // The exactly-one inference also leans on absence: with a partial
+            // cache, "one codex profile" may just be "one HYDRATED so far".
+            if absenceIsEvidence, activeCodexProfileId == nil {
                 let codexProfiles = profiles.filter { $0.hasCodexAccount }
                 if codexProfiles.count == 1 {
                     activeCodexProfileId = codexProfiles[0].id
@@ -1061,7 +1074,10 @@ class ProfileManager: ObservableObject {
     private func autoImportCodexAccountIfNeeded() {
         let flagKey = "codexAutoImported_v1"
         guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        guard !profiles.contains(where: { $0.hasCodexAccount }) else {
+        // carries (metadata), not has (credential): after a PARTIAL hydration
+        // an existing codex profile's credential field can be nil, and the
+        // credential-based check would import a DUPLICATE profile.
+        guard !profiles.contains(where: { $0.carriesCodexAccount }) else {
             UserDefaults.standard.set(true, forKey: flagKey)
             return
         }
@@ -1098,7 +1114,8 @@ class ProfileManager: ObservableObject {
     private func autoImportGrokAccountIfNeeded() {
         let flagKey = "grokAutoImported_v1"
         guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        guard !profiles.contains(where: { $0.hasGrokAccount }) else {
+        // carries, not has — see the Codex twin above.
+        guard !profiles.contains(where: { $0.carriesGrokAccount }) else {
             UserDefaults.standard.set(true, forKey: flagKey)
             return
         }
