@@ -955,3 +955,50 @@ Assistant draft was updated with the recurs-after-clean-reboot data point
 (strengthens the report: not an uptime curiosity). App verified fully
 healthy through the event: gate to spec, census correct (settings window
 identified by class, 9 windows after it closed), zero accretion.
+
+## Addendum 15 (2026-08-10 evening) — Beta 5 (26A5406e) NEGATIVE on day one; tonight's notification verified correct; lost FB draft reconstructed in-repo
+
+**Trigger**: owner asked whether tonight's CPU-burn notification is an app
+error or the machine. Verdict: **the notification is the watchdog working to
+spec on a genuine OS-side storm — and the storm is now confirmed on Beta 5.**
+
+- **The OS was upgraded today**: macOS 27 Beta 5 (26A5406e) installed 16:53:31,
+  first boot 16:57 (`softwareupdate --history`). Addendum 14's 10:09 cold-boot
+  experiment ran on the OLD build (26A5388g); every observation after 16:57 —
+  including tonight's episodes — is Beta 5. **The defect survived the build
+  the staged-reset plan was waiting for**, on its first day (soak caveat per
+  addendum 13 stands, but day-one recurrence matches the fast-trigger
+  pattern: relaunch → minutes; cold boot → ~5 min; new build → same evening).
+- **Tonight's timeline** (app relaunched 18:33 on the hydration-fix deploy,
+  PR #33): display-on window 18:56:51-19:32:29 hosted an episode; the 45-min
+  first-notify floor from launch cleared 19:18:33 mid-episode → notification
+  ≈ 19:18 (banked-burn override converging at ~19:17 — both gates agree).
+  Display-off 19:32 quenched; display-on 20:18:06 re-ignited (storm physics
+  per addendum 12 exactly).
+- **Live measurements during the 20:18+ episode (all on 26A5406e)**: widget
+  ~674 log lines/s with ~259/s occlusion datagrams, 4.7% CPU (cputime delta,
+  low end of the 5-9% wedged band — composite mitigation holding), every
+  thread parked healthy in `sample`; WindowServer 31.5% CPU sustained;
+  **multi-host confirmed live**: Tailscale ~119 lines/s + Wispr Flow
+  ~148 lines/s churning simultaneously (~238 occlusion lines/s across the
+  third-party set). Zero hydration-retry or notification-churn lines from
+  the new PR #33 code — the fresh deploy is NOT a factor (hydration
+  completed at launch: "Refreshing 5 of 14").
+- **Young-compositor note**: today's WindowServer (boot 16:58) has ZERO
+  persisted "timed out" lines in a 3h `log show` sweep — consistent with
+  addendum 14's 4-line young compositor. The timeout signature is a
+  LAGGING sickness marker, not a formation precondition; don't use its
+  absence to rule the storm out.
+- **The Feedback Assistant draft was LOST** with its cleaned job dir
+  (`~/.claude/jobs/e772a89f/`). Reconstructed and updated with the Beta-5
+  data point at `.claude/feedback-assistant-draft.md` (in-repo, durable).
+  The Aug 7 mid-episode sysdiagnose survives on the Desktop.
+- **Remaining actions (owner)**: (1) file the Feedback Assistant report —
+  now materially stronger (two builds, cold-boot-proof, 10+ victims);
+  (2) optionally `sudo sysdiagnose` during a live Beta 5 episode (any time
+  the burn banner is up) and attach it; (3) display-off remains the only
+  quench; no app-side action exists or is planned (surface exhausted,
+  addendum 13). Unrelated but observed while measuring: the Claude-fleet
+  processes (bg-spare ×3, daemon, agents ×2) were burning a combined
+  ~100%+ of a core — background-load noise to ignore when eyeballing
+  Activity Monitor during storms.
