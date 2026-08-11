@@ -261,6 +261,12 @@ class GrokUsageService {
                 if let index = profiles.firstIndex(where: { $0.id == profileId }) {
                     profiles[index].grokCredentialsJSON = refreshed
                     profiles[index].grokAccountSyncedAt = Date()
+                    // Backfill display identity for imports whose auth.json had
+                    // no email yet — a persisted Grok marker keeps providerKind
+                    // right even before Keychain hydration.
+                    if profiles[index].grokEmail == nil {
+                        profiles[index].grokEmail = extractEmail(from: refreshed)
+                    }
                     ProfileStore.shared.saveProfiles(profiles)
                     // The redemption may have CONSUMED the old refresh token —
                     // get the rotated one on disk before anything can kill us.
@@ -298,6 +304,9 @@ class GrokUsageService {
         guard fileExpiry > profileExpiry else { return false }
         profiles[index].grokCredentialsJSON = fileJSON
         profiles[index].grokAccountSyncedAt = Date()
+        if profiles[index].grokEmail == nil {
+            profiles[index].grokEmail = extractEmail(from: fileJSON)
+        }
         ProfileStore.shared.saveProfiles(profiles)
         LoggingService.shared.log("Grok: adopted fresher CLI token from auth.json for profile \(profileId.uuidString.prefix(8))")
         return true

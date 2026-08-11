@@ -29,17 +29,26 @@ class ProfileStore {
 
     /// Tri-state readiness for the in-memory credential cache.
     /// - `.loading`: Keychain warm still in flight — nil credentials mean "not loaded yet"
-    /// - `.ready`: warm completed successfully (cache matches Keychain at warm time)
-    /// - `.failed`: warm hit an error or wall-clock deadline; partial cache may exist
-    ///   (`.failed` is terminal for the run but still posts `.profileCredentialsReady`)
+    /// - `.ready`: every profile's read completed (values already in memory win
+    ///   over the Keychain snapshot, field by field)
+    /// - `.failed`: warm hit an error or wall-clock deadline; partial cache may exist.
+    ///   `.profileCredentialsReady` is still posted (first failure only), and a
+    ///   background retry with exponential backoff keeps re-reading the MISSING
+    ///   profiles until the warm completes — `.failed` heals to `.ready` and is
+    ///   no longer terminal for the run. (2026-08-10: a post-reboot login storm
+    ///   tripped the deadline mid-loop; the 6 unread profiles stayed
+    ///   credential-less for the app's whole lifetime, freezing their tiles and
+    ///   misclassifying the Grok profile into the Claude group.)
     enum CredentialHydrationState: Equatable {
         case loading
         case ready
         case failed
     }
 
-    /// Main-actor-visible hydration readiness. Starts `.loading`; transitions once
-    /// per warm to `.ready` or `.failed`, then posts `.profileCredentialsReady`.
+    /// Main-actor-visible hydration readiness. Starts `.loading`; reaches
+    /// `.ready` either directly or through `.failed` plus a healed retry.
+    /// Posts on success and on the FIRST failure of a run (repeat failures
+    /// change nothing for observers).
     private(set) var credentialHydrationState: CredentialHydrationState = .loading
 
     private let defaults: UserDefaults
@@ -51,6 +60,53 @@ class ProfileStore {
     /// Wall-clock budget for a single async Keychain warm. Beyond this we mark
     /// `.failed` with whatever partial cache was filled and still notify observers.
     private static let hydrationWallClockDeadline: TimeInterval = 15.0
+
+    /// Backoff schedule for re-warming after a `.failed` hydration: 30s, 60s,
+    /// 120s, 240s, then 480s forever. The deadline trips under transient load
+    /// (post-reboot login storm: 75 `security` spawns that cost ~0.8s idle blew
+    /// the 15s budget at load-average 11), so early retries usually succeed;
+    /// the cap keeps a genuinely broken Keychain from being hammered.
+    static func hydrationRetryDelay(afterAttempt attempt: Int) -> TimeInterval {
+        min(30.0 * pow(2.0, Double(max(0, attempt))), 480.0)
+    }
+
+    /// Number of failed warm attempts this run (drives the backoff schedule).
+    private var hydrationRetryAttempt = 0
+    /// True while a retry is queued on the main queue — prevents pile-up when
+    /// another warm path (e.g. the test rewarm) fails while one is pending.
+    private var hydrationRetryScheduled = false
+
+    /// Profile ids whose Keychain read has NOT yet completed for the current
+    /// warm generation. Guarded by `cacheLock` (touched from `keychainQueue`
+    /// and the main actor). This set — not cache-entry absence — is the
+    /// retry's work list: `saveProfiles`' merge-on-save mints an (all-nil)
+    /// cache entry for EVERY profile it persists, so "no entry" stops meaning
+    /// "unread" the moment anything saves the full roster.
+    private var pendingHydrationIds: Set<UUID> = []
+
+    /// Bumped at every warm start (launch warm, v2 repair, test rewarm).
+    /// Completions carry the generation they started under; a completion from
+    /// a superseded generation is dropped so an in-flight retry can never flip
+    /// state or re-post readiness over a newer warm's run.
+    private var hydrationGeneration = 0
+
+    /// Credential fields the user EXPLICITLY cleared while their profile's
+    /// hydration read was pending or in flight. The read-merge preserves these
+    /// nils instead of filling them from the Keychain snapshot — without the
+    /// tombstone, an in-flight read resurrects the cleared credential in cache
+    /// (its Keychain delete queues BEHIND the running read on the serial
+    /// queue). Guarded by `cacheLock`; entries drop when their profile's read
+    /// completes and on every new warm.
+    private struct ClearedCredentialTombstone: Hashable {
+        let profileId: UUID
+        let key: CredentialKey
+    }
+    private var clearedWhilePending: Set<ClearedCredentialTombstone> = []
+
+    /// True when running under XCTest (same detection the defaults isolation
+    /// uses). Suites must be deterministic: the backoff timer is never armed
+    /// under test — tests drive `retryHydrationForMissingProfiles()` directly.
+    private let isTestRun: Bool
 
     /// Monotonic per-profile credential revision: bumped on EVERY mutation of
     /// the in-memory credential cache (hydration, merge-on-save, clear,
@@ -135,6 +191,7 @@ class ProfileStore {
         // uses standard UserDefaults.
         let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || NSClassFromString("XCTestCase") != nil
+        self.isTestRun = isTestRun
         if isTestRun, let suite = UserDefaults(suiteName: "com.claudeusagewidget.tests") {
             self.defaults = suite
             LoggingService.shared.log("ProfileStore: Using isolated TEST defaults suite")
@@ -167,6 +224,13 @@ class ProfileStore {
         let startedAt = Date()
         let deadline = startedAt.addingTimeInterval(Self.hydrationWallClockDeadline)
 
+        hydrationGeneration += 1
+        let generation = hydrationGeneration
+        cacheLock.lock()
+        pendingHydrationIds = Set(ids)
+        clearedWhilePending.removeAll()
+        cacheLock.unlock()
+
         keychainQueue.async { [weak self] in
             guard let self else { return }
             var success = true
@@ -174,31 +238,121 @@ class ProfileStore {
                 success = self.readCredentialsIntoCache(profileIds: ids, deadline: deadline)
             }
             DispatchQueue.main.async {
-                self.finishCredentialHydration(success: success)
-            }
-            // One-time: recreate every item through the security CLI so rebuilds
-            // of this (ad-hoc signed) app stop triggering SecurityAgent prompts.
-            // Runs after the readiness notification is scheduled so observers are
-            // not blocked on the (slow) rebuild pass.
-            if !ids.isEmpty {
-                self.rebuildKeychainItemsViaSecurityToolIfNeeded()
+                self.finishCredentialHydration(success: success, generation: generation)
             }
         }
     }
 
-    /// Terminal transition for a warm attempt. Always posts `.profileCredentialsReady`
-    /// — even on `.failed` — so ProfileManager reloads whatever partial cache we have.
-    private func finishCredentialHydration(success: Bool) {
+    /// Transition for a warm attempt (initial, v2 repair, or retry). A
+    /// completion from a superseded generation is dropped. Success posts
+    /// `.profileCredentialsReady` so ProfileManager reloads; a failure posts
+    /// only on the FIRST failure of a run — repeat failures change nothing for
+    /// observers, and re-running reload/repaint every backoff period on a
+    /// genuinely broken Keychain would be pure churn. Every failure schedules
+    /// the next backoff retry, so a deadline trip under transient launch-storm
+    /// load heals within minutes instead of persisting all run.
+    private func finishCredentialHydration(success: Bool, generation: Int) {
+        guard generation == hydrationGeneration else { return }
         if success {
+            let healed = credentialHydrationState == .failed
             credentialHydrationState = .ready
-            LoggingService.shared.log("ProfileStore: credential hydration ready")
+            hydrationRetryAttempt = 0
+            LoggingService.shared.log(
+                "ProfileStore: credential hydration ready\(healed ? " (healed by retry)" : "")"
+            )
+            NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
+            // One-time v3 rebuild: recreates every item through the security
+            // CLI so app rebuilds stop triggering SecurityAgent prompts. It
+            // snapshots the cache and latches a once-ever flag, so it may only
+            // run off a COMPLETE cache — which is exactly what reaching here
+            // proves, for every success path (initial warm, healed retry,
+            // everything-already-filled early success). Dispatched after the
+            // readiness post so observers are not blocked on the (slow) pass;
+            // the generation guard above kept superseded completions out.
+            keychainQueue.async { [weak self] in
+                self?.rebuildKeychainItemsViaSecurityToolIfNeeded()
+            }
         } else {
+            let firstFailure = hydrationRetryAttempt == 0
             credentialHydrationState = .failed
             LoggingService.shared.logError(
                 "ProfileStore: credential hydration failed — proceeding with partial cache"
             )
+            scheduleHydrationRetry()
+            if firstFailure {
+                NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
+            }
         }
-        NotificationCenter.default.post(name: .profileCredentialsReady, object: nil)
+    }
+
+    /// Queues one re-warm attempt after the backoff delay. No-op while a retry
+    /// is already pending, and never armed under XCTest (suites stay
+    /// deterministic; tests drive `retryHydrationForMissingProfiles` directly).
+    private func scheduleHydrationRetry() {
+        guard !isTestRun, !hydrationRetryScheduled else { return }
+        hydrationRetryScheduled = true
+        let delay = Self.hydrationRetryDelay(afterAttempt: hydrationRetryAttempt)
+        hydrationRetryAttempt += 1
+        LoggingService.shared.log(
+            "ProfileStore: retrying credential hydration in \(Int(delay))s (attempt \(hydrationRetryAttempt))"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.hydrationRetryScheduled = false
+            self.retryHydrationForMissingProfiles()
+        }
+    }
+
+    /// Re-reads the Keychain for profiles still in `pendingHydrationIds` after
+    /// a `.failed` warm. Internal (not private) so tests can drive the healing
+    /// path and assert the not-`.failed` guard; production entry is the
+    /// backoff timer only.
+    ///
+    /// The pending SET — not cache-entry absence — is the work list, because
+    /// merge-on-save mints an all-nil entry for every unhydrated profile the
+    /// moment anything saves the full roster (token-refresh persists do,
+    /// every sweep). Judging by entry absence would let a routine save empty
+    /// the work list and convert the retry into a false `.ready`.
+    func retryHydrationForMissingProfiles() {
+        guard credentialHydrationState == .failed else { return }
+        let stored = Set(storedProfileIds())
+        cacheLock.lock()
+        // Prune profiles deleted since the warm; keep the set authoritative.
+        pendingHydrationIds.formIntersection(stored)
+        let missing = Array(pendingHydrationIds)
+        cacheLock.unlock()
+        let generation = hydrationGeneration
+        guard !missing.isEmpty else {
+            // Every profile's read completed (or the profile is gone) — whole.
+            finishCredentialHydration(success: true, generation: generation)
+            return
+        }
+        LoggingService.shared.log(
+            "ProfileStore: credential hydration retry — reading \(missing.count) missing profile(s)"
+        )
+        let deadline = Date().addingTimeInterval(Self.hydrationWallClockDeadline)
+        keychainQueue.async { [weak self] in
+            guard let self else { return }
+            let success = self.readCredentialsIntoCache(profileIds: missing, deadline: deadline)
+            DispatchQueue.main.async {
+                self.finishCredentialHydration(success: success, generation: generation)
+            }
+        }
+    }
+
+    /// Test-only: reconstructs the incident state — profiles whose Keychain
+    /// read never completed (deadline trip mid-loop). Clears the given ids'
+    /// cache entries, marks them pending, and sets `.failed`, exactly as an
+    /// aborted warm leaves them.
+    func simulatePartialHydrationForTesting(unreadIds: [UUID]) {
+        cacheLock.lock()
+        for id in unreadIds {
+            credentialCache.removeValue(forKey: id)
+            bumpCredentialRevision(id)
+        }
+        pendingHydrationIds.formUnion(unreadIds)
+        cacheLock.unlock()
+        credentialHydrationState = .failed
     }
 
     /// Clears the in-memory credential cache and re-runs async Keychain hydration.
@@ -229,8 +383,13 @@ class ProfileStore {
     private func rebuildKeychainItemsViaSecurityToolIfNeeded() {
         guard !defaults.bool(forKey: Keys.keychainRebuiltV3) else { return }
 
+        // Only profiles that still EXIST: an in-flight hydration read can
+        // repopulate the cache entry of a profile deleted mid-warm (its
+        // Keychain deletion is queued separately), and rebuilding from that
+        // ghost entry would re-create the deleted profile's Keychain items.
+        let storedIds = Set(storedProfileIds())
         cacheLock.lock()
-        var snapshot = credentialCache
+        var snapshot = credentialCache.filter { storedIds.contains($0.key) }
         cacheLock.unlock()
 
         // Recover from a crash in a PREVIOUS migration run: a value whose backup
@@ -294,6 +453,17 @@ class ProfileStore {
     /// repairs Keychain items in the background — deleting each item (which drops the
     /// stale, signature-bound ACL) and re-adding it with a permissive ACL.
     private func runCredentialRepairV2() {
+        // This path replaces the Keychain warm on first run: the whole cache is
+        // recovered synchronously from the legacy JSON below, so no profile is
+        // ever hydration-pending and the completion is generation-stamped like
+        // any other warm.
+        hydrationGeneration += 1
+        let generation = hydrationGeneration
+        cacheLock.lock()
+        pendingHydrationIds.removeAll()
+        clearedWhilePending.removeAll()
+        cacheLock.unlock()
+
         // 1. Recover secrets from the legacy plaintext JSON (synchronous, no Keychain).
         var recovered: [UUID: CachedCredentials] = [:]
         if let data = defaults.data(forKey: Keys.profiles),
@@ -351,7 +521,7 @@ class ProfileStore {
             DispatchQueue.main.async {
                 // v2 repair is the first-run hydration path — mark ready and notify
                 // the same way warmCacheFromKeychain does.
-                self.finishCredentialHydration(success: true)
+                self.finishCredentialHydration(success: true, generation: generation)
             }
         }
     }
@@ -368,7 +538,7 @@ class ProfileStore {
                 )
                 return false
             }
-            let cached = CachedCredentials(
+            let read = CachedCredentials(
                 claudeSessionKey: keychainService.loadProfileCredential(profileId: id, key: "claude-key"),
                 apiSessionKey: keychainService.loadProfileCredential(profileId: id, key: "api-key"),
                 cliCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "cli-creds"),
@@ -376,7 +546,30 @@ class ProfileStore {
                 grokCredentialsJSON: keychainService.loadProfileCredential(profileId: id, key: "grok-creds")
             )
             cacheLock.lock()
-            credentialCache[id] = cached
+            // Per-field merge, in-memory value first: a credential that landed
+            // in the cache while these five slow reads ran (user-driven sync,
+            // activation, adoption) can be NEWER than its Keychain item — the
+            // rotated-token Keychain write is queued BEHIND this very read on
+            // keychainQueue — and replacing it with the Keychain snapshot
+            // re-introduces the consumed-refresh-token class. Same semantics
+            // as merge-on-save: memory wins per field, the read only fills
+            // gaps. All-nil minted entries contribute nothing and are filled —
+            // EXCEPT a field the user explicitly cleared mid-read, whose
+            // tombstone keeps the intentional nil from being resurrected.
+            let existing = credentialCache[id]
+            func fill(_ memory: String?, _ disk: String?, _ key: CredentialKey) -> String? {
+                if clearedWhilePending.contains(.init(profileId: id, key: key)) { return memory }
+                return memory ?? disk
+            }
+            credentialCache[id] = CachedCredentials(
+                claudeSessionKey: fill(existing?.claudeSessionKey, read.claudeSessionKey, .claudeSessionKey),
+                apiSessionKey: fill(existing?.apiSessionKey, read.apiSessionKey, .apiSessionKey),
+                cliCredentialsJSON: fill(existing?.cliCredentialsJSON, read.cliCredentialsJSON, .cliCredentials),
+                codexCredentialsJSON: fill(existing?.codexCredentialsJSON, read.codexCredentialsJSON, .codexCredentials),
+                grokCredentialsJSON: fill(existing?.grokCredentialsJSON, read.grokCredentialsJSON, .grokCredentials)
+            )
+            pendingHydrationIds.remove(id)
+            clearedWhilePending = clearedWhilePending.filter { $0.profileId != id }
             bumpCredentialRevision(id)
             cacheLock.unlock()
         }
@@ -719,6 +912,12 @@ class ProfileStore {
         case .grokCredentials: cached.grokCredentialsJSON = nil
         }
         credentialCache[profileId] = cached
+        // A read for a still-pending profile may be in flight and would
+        // otherwise resurrect this field from the Keychain snapshot (the item
+        // delete below queues BEHIND that read). Tombstone the explicit nil.
+        if pendingHydrationIds.contains(profileId) {
+            clearedWhilePending.insert(.init(profileId: profileId, key: key))
+        }
         bumpCredentialRevision(profileId)
         cacheLock.unlock()
 

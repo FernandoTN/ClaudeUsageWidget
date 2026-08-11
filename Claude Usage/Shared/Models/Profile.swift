@@ -240,6 +240,20 @@ struct Profile: Codable, Identifiable, Equatable {
     var providerKind: ProviderKind {
         if isGrokOnlyProfile { return .grok }
         if isCodexOnlyProfile { return .codex }
+        if hasClaudeUsageSource { return .claude }
+        // Every credential field is nil here — either the profile truly has no
+        // credentials, or it was loaded before the background Keychain
+        // hydration filled them in (or that hydration failed part-way, which a
+        // post-reboot login storm made real on 2026-08-10: the Grok profile
+        // classified .claude and was painted inside the Claude group). Fall
+        // back to the persisted, non-secret metadata so a Grok/Codex profile
+        // is never grouped — or auto-switch paired — with Claude while its
+        // credentials are missing in memory. The conditions MIRROR the
+        // credential checks above (grok needs no codex; codex tolerates grok)
+        // so a mixed profile classifies the same before and after hydration —
+        // a kind that flips at hydration would regroup the menu bar mid-run.
+        if carriesGrokAccount && !carriesClaudeAccount && !carriesCodexAccount { return .grok }
+        if carriesCodexAccount && !carriesClaudeAccount { return .codex }
         return .claude
     }
 
@@ -292,12 +306,16 @@ struct Profile: Codable, Identifiable, Equatable {
 
     /// True if this profile carries a Codex account.
     var carriesCodexAccount: Bool {
-        hasCodexAccount || codexEmail != nil
+        hasCodexAccount || codexEmail != nil || codexAccountSyncedAt != nil
     }
 
-    /// True if this profile carries a Grok account.
+    /// True if this profile carries a Grok account. The syncedAt stamp is
+    /// deliberately part of the evidence: a Grok login whose auth.json carries
+    /// no "email" field (real case — the live "Grok" profile) would otherwise
+    /// leave NO persisted marker at all, and the profile would be
+    /// indistinguishable from credential-less before Keychain hydration.
     var carriesGrokAccount: Bool {
-        hasGrokAccount || grokEmail != nil
+        hasGrokAccount || grokEmail != nil || grokAccountSyncedAt != nil
     }
 
     /// The profile's next weekly reset boundary. Cached usage may be days old

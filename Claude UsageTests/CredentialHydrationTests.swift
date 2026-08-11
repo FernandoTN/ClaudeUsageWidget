@@ -230,4 +230,186 @@ final class CredentialHydrationTests: XCTestCase {
             "nil credential on a pre-hydration save must never delete the Keychain value"
         )
     }
+
+    // MARK: - Failed-warm retry (2026-08-10 partial-cache incident)
+
+    /// (4) The backoff schedule doubles from 30s and caps at 480s — early
+    /// retries catch a transient launch-storm slowdown, the cap protects a
+    /// genuinely broken Keychain from being hammered forever.
+    func testHydrationRetryDelayDoublesFrom30sAndCapsAt480s() {
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: 0), 30)
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: 1), 60)
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: 2), 120)
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: 3), 240)
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: 4), 480)
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: 99), 480)
+        // Defensive clamp: a negative attempt never shortens below the floor.
+        XCTAssertEqual(ProfileStore.hydrationRetryDelay(afterAttempt: -1), 30)
+    }
+
+    /// (5) The retry entry point is a strict no-op unless the warm actually
+    /// FAILED: it must never re-read the Keychain (risking a stale overwrite
+    /// of an adopted token) or double-post readiness from a settled state.
+    func testRetryIsANoOpUnlessHydrationFailed() throws {
+        waitForHydrationSettled()
+        guard store.credentialHydrationState == .ready else {
+            throw XCTSkip("host warm ended .failed — the no-op assertion would be vacuous")
+        }
+
+        var posts = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: .profileCredentialsReady,
+            object: nil,
+            queue: .main
+        ) { _ in posts += 1 }
+        notificationTokens.append(token)
+
+        store.retryHydrationForMissingProfiles()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        XCTAssertEqual(posts, 0, "a settled warm must not re-post readiness")
+        XCTAssertEqual(store.credentialHydrationState, .ready)
+    }
+
+    /// Shared setup for the healing tests: seeds a profile whose credential is
+    /// committed to the real Keychain, then reconstructs the incident state —
+    /// the warm never read this profile (no cache entry, pending, `.failed`).
+    private func seedProfileWithUnreadKeychainCredential(
+        secret: String
+    ) async -> UUID {
+        let id = UUID()
+        var seeded = Profile(id: id, name: "Partial Hydration")
+        seeded.cliCredentialsJSON = secret
+        seeded.hasCliAccount = true
+        seedProfiles([seeded])
+        await store.flushKeychainWrites()
+        store.simulatePartialHydrationForTesting(unreadIds: [id])
+        XCTAssertNil(
+            store.loadProfiles().first(where: { $0.id == id })?.cliCredentialsJSON,
+            "precondition: the profile must look credential-less, as in the incident"
+        )
+        XCTAssertEqual(store.credentialHydrationState, .failed)
+        return id
+    }
+
+    /// (6) failed -> retry -> ready: the retry re-reads the unread profile from
+    /// the real Keychain, restores its credential, and posts readiness. This is
+    /// the incident's healing path end to end.
+    func testRetryHealsPartialHydration() async {
+        let secret = #"{"claudeAiOauth":{"accessToken":"heal-access","refreshToken":"heal-refresh","expiresAt":"2099-01-01T00:00:00.000000Z"}}"#
+        let id = await seedProfileWithUnreadKeychainCredential(secret: secret)
+
+        let healed = expectation(description: "retry posts readiness")
+        healed.assertForOverFulfill = false
+        let token = NotificationCenter.default.addObserver(
+            forName: .profileCredentialsReady, object: nil, queue: .main
+        ) { _ in healed.fulfill() }
+        notificationTokens.append(token)
+
+        store.retryHydrationForMissingProfiles()
+        await fulfillment(of: [healed], timeout: 10)
+
+        XCTAssertEqual(store.credentialHydrationState, .ready)
+        XCTAssertEqual(
+            store.loadProfiles().first(where: { $0.id == id })?.cliCredentialsJSON,
+            secret,
+            "the retry must restore the unread profile's Keychain credential"
+        )
+    }
+
+    /// (7) Regression (review finding): merge-on-save mints an all-nil cache
+    /// entry for every profile it persists. A full-roster save between failure
+    /// and retry must NOT fool the retry into a false `.ready` that skips the
+    /// unread profile — the pending set, not entry absence, is the work list.
+    func testRetryNotFooledByMintedCacheEntries() async {
+        let secret = #"{"claudeAiOauth":{"accessToken":"mint-access","refreshToken":"mint-refresh","expiresAt":"2099-01-01T00:00:00.000000Z"}}"#
+        let id = await seedProfileWithUnreadKeychainCredential(secret: secret)
+
+        // The routine full-roster save (token-refresh persists do this every
+        // sweep): mints an all-nil entry for the unread profile.
+        store.saveProfiles(store.loadProfiles())
+
+        let healed = expectation(description: "retry still heals")
+        healed.assertForOverFulfill = false
+        let token = NotificationCenter.default.addObserver(
+            forName: .profileCredentialsReady, object: nil, queue: .main
+        ) { _ in healed.fulfill() }
+        notificationTokens.append(token)
+
+        store.retryHydrationForMissingProfiles()
+        await fulfillment(of: [healed], timeout: 10)
+
+        XCTAssertEqual(store.credentialHydrationState, .ready)
+        XCTAssertEqual(
+            store.loadProfiles().first(where: { $0.id == id })?.cliCredentialsJSON,
+            secret,
+            "a minted (all-nil) cache entry must not count as hydrated"
+        )
+    }
+
+    /// (8) Regression (review finding): a credential that arrives in memory
+    /// while the retry's slow Keychain reads are in flight (user-driven sync)
+    /// can be NEWER than the Keychain item — the retry must merge around it,
+    /// never replace it with the older Keychain snapshot.
+    func testRetryNeverClobbersFresherInMemoryCredential() async {
+        let stale = #"{"claudeAiOauth":{"accessToken":"stale-access","refreshToken":"stale-refresh","expiresAt":"2099-01-01T00:00:00.000000Z"}}"#
+        let rotated = #"{"claudeAiOauth":{"accessToken":"rotated-access","refreshToken":"rotated-refresh","expiresAt":"2099-06-01T00:00:00.000000Z"}}"#
+        let id = await seedProfileWithUnreadKeychainCredential(secret: stale)
+
+        let settled = expectation(description: "retry completes")
+        settled.assertForOverFulfill = false
+        let token = NotificationCenter.default.addObserver(
+            forName: .profileCredentialsReady, object: nil, queue: .main
+        ) { _ in settled.fulfill() }
+        notificationTokens.append(token)
+
+        // Enqueue the retry read FIRST (it spends tens of ms in `security`
+        // subprocesses on keychainQueue), then land the fresher credential in
+        // the cache from the main thread — the shape of a user re-sync racing
+        // the retry.
+        store.retryHydrationForMissingProfiles()
+        var fresher = Profile(id: id, name: "Partial Hydration")
+        fresher.cliCredentialsJSON = rotated
+        fresher.hasCliAccount = true
+        store.saveProfiles([fresher])
+
+        await fulfillment(of: [settled], timeout: 10)
+        await store.flushKeychainWrites()
+
+        XCTAssertEqual(
+            store.loadProfiles().first(where: { $0.id == id })?.cliCredentialsJSON,
+            rotated,
+            "the retry must never replace an in-memory credential with the Keychain snapshot"
+        )
+    }
+
+    /// (9) Regression (review finding): an EXPLICIT credential clear landing
+    /// while the retry's reads are in flight is an intentional nil, not a gap —
+    /// the read-merge must not resurrect the cleared value from the Keychain
+    /// snapshot (whose deletion queues behind the running read).
+    func testRetryPreservesIntentionalClearOverKeychainSnapshot() async {
+        let secret = #"{"claudeAiOauth":{"accessToken":"cleared-access","refreshToken":"cleared-refresh","expiresAt":"2099-01-01T00:00:00.000000Z"}}"#
+        let id = await seedProfileWithUnreadKeychainCredential(secret: secret)
+
+        let settled = expectation(description: "retry completes")
+        settled.assertForOverFulfill = false
+        let token = NotificationCenter.default.addObserver(
+            forName: .profileCredentialsReady, object: nil, queue: .main
+        ) { _ in settled.fulfill() }
+        notificationTokens.append(token)
+
+        // Enqueue the retry read FIRST (slow `security` subprocesses on
+        // keychainQueue read the still-present item), then clear from the main
+        // thread — the tombstone must outlive the in-flight read's merge.
+        store.retryHydrationForMissingProfiles()
+        store.clearProfileCredential(id, key: .cliCredentials)
+
+        await fulfillment(of: [settled], timeout: 10)
+        await store.flushKeychainWrites()
+
+        XCTAssertNil(
+            store.loadProfiles().first(where: { $0.id == id })?.cliCredentialsJSON,
+            "an intentional clear must survive an in-flight hydration read"
+        )
+    }
 }
