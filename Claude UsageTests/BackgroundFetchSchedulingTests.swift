@@ -1,0 +1,211 @@
+//
+//  BackgroundFetchSchedulingTests.swift
+//  Claude UsageTests
+//
+//  Tests for MenuBarManager.selectBackgroundFetchIds / isNearLimit — the sweep
+//  scheduler that decides which background Claude profiles get the per-sweep
+//  oauth/usage budget. It replaced a blind round-robin cursor under which a
+//  dead login burned a rotation slot every cycle and an account cached at 70%
+//  session waited behind idle accounts ('Memori' sat 33 min stale while its
+//  real session usage hit 100% — 2026-08-11 incident). The scheduler must:
+//  spend the budget only on fetchable profiles, sample near-limit accounts
+//  more often, and never starve anyone.
+//
+
+import XCTest
+@testable import Claude_Usage
+
+final class BackgroundFetchSchedulingTests: XCTestCase {
+
+    // Anchored to the real clock: ClaudeUsage.effectiveSessionPercentage compares
+    // sessionResetTime against Date() internally, not against an injected now.
+    private let now = Date()
+
+    private func usage(
+        session: Double = 0,
+        sessionResetIn: TimeInterval = 3600,
+        weekly: Double = 0,
+        fable: Double? = nil,
+        rateLimitedUntil: Date? = nil
+    ) -> ClaudeUsage {
+        ClaudeUsage(
+            sessionTokensUsed: Int(session * 1000),
+            sessionLimit: 100_000,
+            sessionPercentage: session,
+            sessionResetTime: now.addingTimeInterval(sessionResetIn),
+            rateLimitedUntil: rateLimitedUntil,
+            weeklyTokensUsed: Int(weekly * 10_000),
+            weeklyLimit: 1_000_000,
+            weeklyPercentage: weekly,
+            weeklyResetTime: now.addingTimeInterval(86_400),
+            opusWeeklyTokensUsed: 0,
+            opusWeeklyPercentage: 0,
+            sonnetWeeklyTokensUsed: 0,
+            sonnetWeeklyPercentage: 0,
+            sonnetWeeklyResetTime: nil,
+            fableWeeklyPercentage: fable,
+            fableWeeklyResetTime: nil,
+            costUsed: nil,
+            costLimit: nil,
+            costCurrency: nil,
+            overageBalance: nil,
+            overageBalanceCurrency: nil,
+            lastUpdated: now,
+            userTimezone: .current
+        )
+    }
+
+    private func candidate(
+        _ id: UUID = UUID(),
+        attemptedAgo: TimeInterval?,
+        hot: Bool = false,
+        eligible: Bool = true
+    ) -> MenuBarManager.BackgroundFetchCandidate {
+        MenuBarManager.BackgroundFetchCandidate(
+            id: id,
+            lastAttempt: attemptedAgo.map { now.addingTimeInterval(-$0) },
+            isHot: hot,
+            isEligible: eligible
+        )
+    }
+
+    // MARK: - Selection
+
+    func testPicksStalestEligibleCandidate() {
+        let stale = UUID(), fresh = UUID()
+        let picked = MenuBarManager.selectBackgroundFetchIds(
+            candidates: [
+                candidate(fresh, attemptedAgo: 30),
+                candidate(stale, attemptedAgo: 300),
+            ],
+            budget: 1, now: now
+        )
+        XCTAssertEqual(picked, [stale])
+    }
+
+    func testIneligibleCandidateNeverPickedEvenWhenStalest() {
+        // The old cursor's core defect: a dead login was the stalest profile
+        // every cycle and consumed the slot every cycle.
+        let dead = UUID(), live = UUID()
+        let picked = MenuBarManager.selectBackgroundFetchIds(
+            candidates: [
+                candidate(dead, attemptedAgo: 100_000, eligible: false),
+                candidate(live, attemptedAgo: 60),
+            ],
+            budget: 1, now: now
+        )
+        XCTAssertEqual(picked, [live])
+    }
+
+    func testNeverAttemptedCandidateWinsFirst() {
+        let neverFetched = UUID(), old = UUID()
+        let picked = MenuBarManager.selectBackgroundFetchIds(
+            candidates: [
+                candidate(old, attemptedAgo: 100_000, hot: true),
+                candidate(neverFetched, attemptedAgo: nil),
+            ],
+            budget: 1, now: now
+        )
+        XCTAssertEqual(picked, [neverFetched])
+    }
+
+    func testHotCandidateOutranksColderButStalerOne() {
+        // Hot weight 3: a hot account attempted 2 min ago must beat a cold one
+        // attempted 5 min ago (360 effective vs 300), but not one attempted
+        // 7 min ago (360 vs 420) — hotness accelerates sampling, it does not
+        // monopolize the budget.
+        let hot = UUID(), cold5 = UUID(), cold7 = UUID()
+        XCTAssertEqual(
+            MenuBarManager.selectBackgroundFetchIds(
+                candidates: [candidate(cold5, attemptedAgo: 300), candidate(hot, attemptedAgo: 120, hot: true)],
+                budget: 1, now: now
+            ),
+            [hot]
+        )
+        XCTAssertEqual(
+            MenuBarManager.selectBackgroundFetchIds(
+                candidates: [candidate(cold7, attemptedAgo: 420), candidate(hot, attemptedAgo: 120, hot: true)],
+                budget: 1, now: now
+            ),
+            [cold7]
+        )
+    }
+
+    func testBudgetBoundsSelectionCount() {
+        let candidates = (0..<5).map { candidate(attemptedAgo: Double($0 + 1) * 60) }
+        XCTAssertEqual(
+            MenuBarManager.selectBackgroundFetchIds(candidates: candidates, budget: 2, now: now).count, 2
+        )
+        XCTAssertTrue(
+            MenuBarManager.selectBackgroundFetchIds(candidates: candidates, budget: 0, now: now).isEmpty
+        )
+        XCTAssertEqual(
+            MenuBarManager.selectBackgroundFetchIds(candidates: candidates, budget: 10, now: now).count, 5
+        )
+    }
+
+    func testAllIneligibleYieldsEmptySelection() {
+        let candidates = [
+            candidate(attemptedAgo: 600, eligible: false),
+            candidate(attemptedAgo: nil, eligible: false),
+        ]
+        XCTAssertTrue(
+            MenuBarManager.selectBackgroundFetchIds(candidates: candidates, budget: 2, now: now).isEmpty
+        )
+    }
+
+    func testUnpickedCandidateEventuallyBeatsHotOnes_noStarvation() {
+        // Steady state: the hot account is re-attempted each sweep (fresh
+        // stamp), the cold one is not. Its age keeps growing, so within a
+        // bounded number of sweeps it must win a slot: with hot weight 3 and a
+        // hot account re-stamped 30s ago each sweep (effective score 90), the
+        // cold account's age crosses 90 strictly on sweep 4 (30→60→90 tie→120).
+        let hot = UUID(), cold = UUID()
+        var coldAge: TimeInterval = 30
+        var sweepsUntilColdWins = 0
+        for _ in 0..<20 {
+            sweepsUntilColdWins += 1
+            let picked = MenuBarManager.selectBackgroundFetchIds(
+                candidates: [
+                    candidate(hot, attemptedAgo: 30, hot: true),   // just sampled, stays hot
+                    candidate(cold, attemptedAgo: coldAge),
+                ],
+                budget: 1, now: now
+            )
+            if picked == [cold] { break }
+            coldAge += 30
+        }
+        XCTAssertLessThanOrEqual(sweepsUntilColdWins, 4, "cold account starved behind a hot one")
+    }
+
+    // MARK: - Hot classification
+
+    func testNearLimitBySessionThreshold() {
+        XCTAssertTrue(MenuBarManager.isNearLimit(usage(session: MenuBarManager.hotSessionThreshold)))
+        XCTAssertTrue(MenuBarManager.isNearLimit(usage(session: 95)))
+        XCTAssertFalse(MenuBarManager.isNearLimit(usage(session: MenuBarManager.hotSessionThreshold - 0.1)))
+        XCTAssertFalse(MenuBarManager.isNearLimit(nil))
+    }
+
+    func testNearLimitByWeeklyAndFableThresholds() {
+        XCTAssertTrue(MenuBarManager.isNearLimit(usage(weekly: MenuBarManager.hotWeeklyThreshold)))
+        XCTAssertFalse(MenuBarManager.isNearLimit(usage(weekly: MenuBarManager.hotWeeklyThreshold - 0.1)))
+        // Fable weekly is its own scoped limit and must count on its own.
+        XCTAssertTrue(MenuBarManager.isNearLimit(usage(weekly: 10, fable: MenuBarManager.hotWeeklyThreshold)))
+    }
+
+    func testExpiredSessionWindowIsNotHot() {
+        // An account whose 5h window lapsed reads effective 0% regardless of the
+        // stale raw percentage — it is idle, not hot.
+        XCTAssertFalse(MenuBarManager.isNearLimit(usage(session: 90, sessionResetIn: -60)))
+    }
+
+    func testThrottleStampedAccountReadsHot() {
+        // rateLimitedUntil forces effectiveSessionPercentage to 100 — such an
+        // account is ineligible for fetching anyway, but the classifier must
+        // stay consistent with the shared effective-percentage seam.
+        XCTAssertTrue(MenuBarManager.isNearLimit(
+            usage(session: 10, rateLimitedUntil: now.addingTimeInterval(600))
+        ))
+    }
+}

@@ -95,10 +95,11 @@ class MenuBarManager: NSObject, ObservableObject {
     // Track which profiles have already triggered auto-switch (prevents repeated firing)
     private var autoSwitchedProfileIds: Set<UUID> = []
 
-    /// Round-robin cursor over the non-active Claude profiles: the usage endpoint
-    /// sustains ~2 requests per 30s window per IP, so each sweep fetches only a
-    /// budgeted slice of them (plus the provider-active/focused ones).
-    private var claudeFetchCursor: Int = 0
+    /// When each background Claude profile last STARTED a usage fetch (in-memory;
+    /// resets on relaunch). The scheduler ranks candidates by time since last
+    /// attempt — not last success — so a profile whose fetch keeps failing cannot
+    /// pin the top slot and starve the rest of the rotation.
+    private var backgroundFetchAttempts: [UUID: Date] = [:]
 
     /// Last time `status.claude.com` was polled. Initialized to `.distantPast` so
     /// the first sweep after launch always fetches; subsequent polls wait for
@@ -1240,47 +1241,68 @@ private func observeCredentialChanges() {
 
         // api.anthropic.com/api/oauth/usage sustains only ~2 requests per 30s
         // window per IP (3/sweep still drew one 429 per sweep in measurement).
-        // Fetch the provider-active/focused Claude profiles every sweep and
-        // round-robin the remaining ones with whatever budget is left:
-        //   rotationBudget = max(1, 2 - priorityClaudeCount)
-        //   background staleness ≈ ceil(N_background / rotationBudget) sweeps
-        //                         × refresh interval (30s) → minutes
-        // e.g. 10 background Claude @ budget 1 → ~5 min; 3 background @ budget 1
-        // → ~1.5 min. The ~2.5-min figure in older comments assumed 6 profiles and
-        // is wrong at higher N. Codex/Grok hit different hosts and refresh every
-        // sweep (never counted against the Claude budget).
+        // Fetch the provider-active/focused Claude profiles every sweep and give
+        // the remaining budget (max(1, 2 - priorityClaudeCount)) to the
+        // background Claude profiles that need it most: candidates that would
+        // only burn the slot (throttle-stamped, burst-backed-off, dead login)
+        // are excluded up front, and the rest are ranked by time since their
+        // last fetch ATTEMPT, weighted so accounts already near a limit sample
+        // ~3x as often as idle ones — those are the accounts parallel CLI
+        // sessions are actively burning, and the ones the auto-switch needs
+        // fresh numbers for. This replaced a blind round-robin cursor under
+        // which a dead login consumed a full slot every cycle and an account
+        // cached at 70% session waited behind half a dozen idle accounts —
+        // observed 2026-08-11: 'Memori' sat 33 min stale while its real
+        // session usage hit 100%. Codex/Grok hit different hosts and refresh
+        // every sweep (never counted against the Claude budget).
         let priorityIds = Set([profileManager.activeProfile?.id, profileManager.activeClaudeProfileId].compactMap { $0 })
         let priorityClaudeCount = allSelected.filter { $0.providerKind == .claude && priorityIds.contains($0.id) }.count
         let rotationBudget = max(1, 2 - priorityClaudeCount)
         let backgroundClaude = allSelected.filter { $0.providerKind == .claude && !priorityIds.contains($0.id) }
-        var rotating: [Profile] = []
-        if !backgroundClaude.isEmpty {
-            for offset in 0..<min(rotationBudget, backgroundClaude.count) {
-                rotating.append(backgroundClaude[(claudeFetchCursor + offset) % backgroundClaude.count])
-            }
-            claudeFetchCursor = (claudeFetchCursor + rotating.count) % backgroundClaude.count
+        let scheduleNow = Date()
+        let candidates = backgroundClaude.map { profile in
+            BackgroundFetchCandidate(
+                id: profile.id,
+                lastAttempt: backgroundFetchAttempts[profile.id] ?? profile.claudeUsage?.lastUpdated,
+                isHot: Self.isNearLimit(profile.claudeUsage),
+                isEligible: !isBackgroundFetchIneligible(profile)
+            )
         }
-        let rotatingIds = Set(rotating.map(\.id))
+        let rotatingIds = Set(Self.selectBackgroundFetchIds(
+            candidates: candidates, budget: rotationBudget, now: scheduleNow
+        ))
         // Codex and Grok profiles hit their own hosts (never the throttled
         // oauth/usage endpoint), so they refresh every sweep.
-        let selectedProfiles = allSelected.filter {
-            $0.providerKind != .claude || priorityIds.contains($0.id) || rotatingIds.contains($0.id)
+        // Order: priority Claude first (freshest data for the accounts being
+        // burned right now, and a sweep that ends early on a mid-sweep switch
+        // has already covered them), then the scheduled background Claude,
+        // then Codex/Grok.
+        let fetchRank: (Profile) -> Int = { profile in
+            if priorityIds.contains(profile.id) && profile.providerKind == .claude { return 0 }
+            if rotatingIds.contains(profile.id) { return 1 }
+            return 2
         }
+        let selectedProfiles = allSelected
+            .filter { $0.providerKind != .claude || priorityIds.contains($0.id) || rotatingIds.contains($0.id) }
+            .enumerated()
+            .sorted { (fetchRank($0.element), $0.offset) < (fetchRank($1.element), $1.offset) }
+            .map(\.element)
 
-        // Log the achievable background-staleness SLO once per app run (F4).
+        // Log the scheduling shape once per app run (F4): how many background
+        // accounts compete for the budget, how many are hot (3x sampling) and
+        // how many are excluded as unfetchable. Cold-account staleness ≈
+        // (nHot × hotWeight + nCold) / budget sweeps × 30s; hot ≈ 1/hotWeight
+        // of that.
         if !hasLoggedBackgroundStalenessEstimate {
             hasLoggedBackgroundStalenessEstimate = true
-            let nBackground = backgroundClaude.count
-            let sweepsToCover = nBackground == 0
-                ? 0
-                : Int(ceil(Double(nBackground) / Double(rotationBudget)))
-            // Refresh timer is 30s; report minutes (rounded up to nearest 0.5 for readability).
-            let minutes = sweepsToCover == 0 ? 0.0 : Double(sweepsToCover) * 30.0 / 60.0
-            let minutesLabel = minutes == floor(minutes)
-                ? String(format: "%.0f", minutes)
-                : String(format: "%.1f", minutes)
+            let eligible = candidates.filter(\.isEligible)
+            let nHot = eligible.filter(\.isHot).count
+            let nCold = eligible.count - nHot
+            let excluded = candidates.count - eligible.count
+            let coldSweeps = ceil((Double(nHot) * Self.hotFetchWeight + Double(nCold)) / Double(rotationBudget))
+            let coldMinutes = coldSweeps * 30.0 / 60.0
             LoggingService.shared.log(
-                "MenuBarManager: \(nBackground) background Claude profiles on rotation budget \(rotationBudget) -> ~\(minutesLabel)min staleness"
+                "MenuBarManager: \(candidates.count) background Claude profiles (\(nHot) hot, \(excluded) excluded) on budget \(rotationBudget) -> cold-account staleness ~\(String(format: "%.1f", coldMinutes))min, hot ~\(String(format: "%.1f", coldMinutes / Self.hotFetchWeight))min"
             )
         }
 
@@ -1334,8 +1356,8 @@ private func observeCredentialChanges() {
                 // shared logins. Stop the sweep rather than run Keychain healing
                 // beside it — same cross-account-contamination hazard the
                 // sweep-start guard exists for. Priority (provider-active/focused)
-                // profiles re-fetch next sweep; a skipped background profile waits
-                // for its next round-robin turn (the fetch cursor already moved).
+                // profiles re-fetch next sweep; a skipped background profile has
+                // no attempt stamped, so the scheduler re-picks it next sweep.
                 if self.profileManager.isSwitchingProfile {
                     LoggingService.shared.log("MenuBarManager: profile switch started mid-sweep — ending sweep early")
                     break
@@ -1374,8 +1396,11 @@ private func observeCredentialChanges() {
                     // Default level deliberately (not .info): .info never
                     // persists to `log show`, and this line is the only
                     // post-hoc evidence that a profile's staleness is a dead
-                    // login rather than a fetch bug. Fires ≤ once per
-                    // rotation turn (~5 min) per dead profile.
+                    // login rather than a fetch bug. With selection-time
+                    // eligibility filtering, a dead BACKGROUND profile is
+                    // normally never picked, so this fires mainly for a dead
+                    // PRIORITY (provider-active/focused) profile, or in the
+                    // race where the flag landed after selection.
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — CLI login is dead (revoked refresh token); run /login + re-sync to resume")
                 } else {
                     // Space Claude-bound fetches only: oauth/usage is the sole
@@ -1390,6 +1415,11 @@ private func observeCredentialChanges() {
                             }
                         }
                         lastClaudeFetchStart = Date()
+                        // Stamp the ATTEMPT (not the outcome) — the scheduler
+                        // ranks by this, so a profile whose fetch fails without
+                        // registering a backoff still yields the slot next sweep
+                        // instead of pinning the top score and starving the rest.
+                        self.backgroundFetchAttempts[profile.id] = Date()
                     }
 
                     // Self-heal a stale CLI OAuth token before fetching
@@ -1854,6 +1884,92 @@ private func observeCredentialChanges() {
             profileManager.loadProfiles()
             LoggingService.shared.log("MenuBarManager: CLI credentials self-healed for '\(profile.name)'")
         }
+    }
+
+    // MARK: - Background Fetch Scheduling
+
+    /// One background Claude profile as the sweep scheduler sees it.
+    struct BackgroundFetchCandidate {
+        let id: UUID
+        /// Last fetch ATTEMPT if one happened this run, else the cached usage's
+        /// `lastUpdated`, else nil (never fetched — highest urgency).
+        let lastAttempt: Date?
+        /// Cached usage is already near a limit (see `isNearLimit`).
+        let isHot: Bool
+        /// False when a fetch would only burn the slot: throttle-stamped,
+        /// burst-backed-off, or dead CLI login.
+        let isEligible: Bool
+    }
+
+    /// A cached session percentage at/above this marks the account as "hot":
+    /// some CLI session is actively burning it, and it can hit the hard limit
+    /// within a couple of rotation cycles. (Idle accounts read 0% — the 5h
+    /// window expires — so any substantial session usage means recent activity.)
+    nonisolated static let hotSessionThreshold: Double = 50
+    /// Weekly (or Fable-weekly) percentage at/above this marks the account hot:
+    /// weekly limits move slowly but are unrecoverable until the weekly reset,
+    /// so near-cap accounts deserve fresh numbers too.
+    nonisolated static let hotWeeklyThreshold: Double = 80
+    /// Hot accounts sample this many times as often as cold ones (their
+    /// staleness score grows this much faster). Budget-neutral: it reallocates
+    /// the same ~1 request per sweep, it never adds requests.
+    nonisolated static let hotFetchWeight: Double = 3
+
+    /// True when the cached usage says the account is close enough to a limit
+    /// that stale numbers are dangerous (auto-switch decisions, the user
+    /// picking an account for a new session).
+    nonisolated static func isNearLimit(_ usage: ClaudeUsage?) -> Bool {
+        guard let usage else { return false }
+        if usage.effectiveSessionPercentage >= hotSessionThreshold { return true }
+        return max(usage.weeklyPercentage, usage.fableWeeklyPercentage ?? 0) >= hotWeeklyThreshold
+    }
+
+    /// Picks which background Claude profiles this sweep's rotation budget goes
+    /// to: the ELIGIBLE candidates with the highest staleness score, where
+    /// score = seconds since last attempt × (hot ? hotFetchWeight : 1).
+    /// Properties that make this safe:
+    /// - never-attempted candidates (nil lastAttempt) always win first;
+    /// - starvation-free — an unpicked candidate's score only grows, so it
+    ///   eventually beats every hot account (steady state: hot accounts
+    ///   refresh ~hotFetchWeight× as often, cold accounts still cycle);
+    /// - ineligible candidates cost nothing — the budget always goes to
+    ///   profiles that can actually produce fresh usage (under the old
+    ///   round-robin cursor, a dead login burned a slot every cycle);
+    /// - stateless between sweeps apart from the attempt stamps — profile
+    ///   membership can churn (switches add/remove priority accounts) without
+    ///   aliasing, which the positional cursor could not guarantee.
+    nonisolated static func selectBackgroundFetchIds(
+        candidates: [BackgroundFetchCandidate],
+        budget: Int,
+        now: Date
+    ) -> [UUID] {
+        guard budget > 0 else { return [] }
+        return candidates
+            .filter(\.isEligible)
+            .map { candidate -> (id: UUID, score: Double) in
+                let age = now.timeIntervalSince(candidate.lastAttempt ?? .distantPast)
+                return (candidate.id, age * (candidate.isHot ? hotFetchWeight : 1))
+            }
+            .sorted { $0.score > $1.score }
+            .prefix(budget)
+            .map(\.id)
+    }
+
+    /// Selection-time mirror of the in-loop skip checks (throttled /
+    /// burst-backed-off / dead login) so an unfetchable background profile
+    /// never receives a rotation slot in the first place. The in-loop checks
+    /// stay as the race-safety belt — a throttle stamp or dead flag can land
+    /// between selection and the profile's turn — and they alone cover the
+    /// PRIORITY profiles, which bypass this scheduler.
+    private func isBackgroundFetchIneligible(_ profile: Profile) -> Bool {
+        if profile.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false { return true }
+        if burstBackoffs[profile.id].map({ $0.until > Date() }) ?? false { return true }
+        // Background candidates are never the active-Claude profile, so unlike
+        // the in-loop check no active-profile exemption is needed here.
+        let cliLoginDead = !profile.isCodexOnlyProfile && !profile.isGrokOnlyProfile
+            && ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
+            && !profile.hasValidCLIOAuth
+        return cliLoginDead
     }
 
     // MARK: - Burst-429 Fetch Backoff
