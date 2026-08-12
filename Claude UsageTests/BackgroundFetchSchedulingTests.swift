@@ -178,6 +178,52 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         XCTAssertLessThanOrEqual(sweepsUntilColdWins, 4, "cold account starved behind a hot one")
     }
 
+    // MARK: - Inferred account throttle (429 with useless Retry-After)
+
+    func testInferredThrottleNeedsStreakAndFreshOtherAccountSuccess() {
+        let victim = UUID(), other = UUID()
+
+        // Happy path: streak at the floor + a different account succeeded
+        // seconds ago (the IP is provably fine) → account-level refusal.
+        XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
+            streak: MenuBarManager.inferredThrottleMinStreak,
+            profileId: victim,
+            lastClaudeSuccess: (other, now.addingTimeInterval(-10)),
+            now: now
+        ))
+
+        // One 429 alone is burst noise — never infer off a single sample.
+        XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
+            streak: MenuBarManager.inferredThrottleMinStreak - 1,
+            profileId: victim,
+            lastClaudeSuccess: (other, now.addingTimeInterval(-10)),
+            now: now
+        ))
+
+        // No success evidence at all (e.g. total per-IP throttle storm hits
+        // every profile): stay with the plain backoff.
+        XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
+            streak: 5, profileId: victim, lastClaudeSuccess: nil, now: now
+        ))
+
+        // The only recent success is the SAME profile — proves nothing about
+        // the current refusal.
+        XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
+            streak: 5,
+            profileId: victim,
+            lastClaudeSuccess: (victim, now.addingTimeInterval(-10)),
+            now: now
+        ))
+
+        // Stale control evidence — the IP's health at 429 time is unknown.
+        XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
+            streak: 5,
+            profileId: victim,
+            lastClaudeSuccess: (other, now.addingTimeInterval(-MenuBarManager.inferredThrottleControlWindow - 1)),
+            now: now
+        ))
+    }
+
     // MARK: - Manual popover refresh target
 
     func testManualRefreshTargetsViewedProfileElseActive() {
