@@ -192,21 +192,33 @@ provider-active pointer in place, notifies once, and returns false so the
 auto-switch tries the next ranked candidate instead of no-op'ing.
 
 **Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
-exhausted account 429s its OWN `oauth/usage` endpoint with a Retry-After of
-MINUTES (measured 2918s) — the widget cannot read the account's state exactly
-when it matters, and the cached percentages silently freeze at pre-throttle
-values (an account sat at a cached 16% while `/usage` showed 100%). The 429 is
-therefore treated as usage information: `stampAccountThrottleIfNeeded` records
-`ClaudeUsage.rateLimitedUntil` (Retry-After ≥ 60s = account-level, below =
-per-IP burst noise), `effectiveSessionPercentage` reports 100% while the stamp
-is live (propagating to tiles, popover, auto-switch trigger AND candidate
-eligibility through the one shared seam), and sweeps skip fetching the
-throttled profile until the stamp expires. A 429 with NO account-level
-Retry-After never stamps — exhaustion is unknown — but must still stop the
+exhausted account 429s its OWN `oauth/usage` endpoint — the widget cannot read
+the account's state exactly when it matters, and the cached percentages
+silently freeze at pre-throttle values (an account sat at a cached 16% while
+`/usage` showed 100%). The 429 is therefore treated as usage information,
+through two detectors:
+- **Header-based**: `stampAccountThrottleIfNeeded` records
+  `ClaudeUsage.rateLimitedUntil` when Retry-After ≥ 60s (the 2026-07-16 shape,
+  measured 2918s). `effectiveSessionPercentage` reports 100% while the stamp
+  is live (propagating to tiles, popover, auto-switch trigger AND candidate
+  eligibility through the one shared seam), and sweeps skip fetching the
+  throttled profile until the stamp expires.
+- **Inferred (2026-08-11 incident)**: exhausted accounts were also observed
+  refusing usage reads with `retry-after: 0` — indistinguishable from per-IP
+  burst noise by header alone (a tile froze at a stale 74% while the account
+  had zero capacity). `shouldInferAccountThrottle` stamps anyway when the
+  profile's consecutive-429 streak reaches 2 (attempts are backoff-spaced, so
+  that spans minutes) AND a different Claude profile fetched successfully
+  within the last 90s — proof the shared IP is healthy, so the refusal
+  follows the account. The synthetic stamp lives 5 min and self-heals: expiry
+  re-probes at hot scheduler priority and one success clears everything.
+
+A burst-class 429 that doesn't (yet) meet the inference bar still stops the
 sweep from re-fetching every 30s (a real profile drew 90 identical 429s in an
 hour): `registerBurstBackoff` backs that profile's usage fetch off
-exponentially (2min doubling to a 30min cap, in-memory, cleared by the first
-successful fetch).
+exponentially (2min doubling to an 8min cap — 2min for active accounts —
+in-memory, cleared by the first successful fetch; a manual popover refresh
+expires the wait but keeps the streak).
 
 **Menu-bar overflow vs stranded tiles**: when the bar overflows, macOS hides
 the clipped status items and parks them all at one shared off-edge frame —

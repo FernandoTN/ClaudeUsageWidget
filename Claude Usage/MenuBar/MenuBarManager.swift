@@ -1450,6 +1450,7 @@ private func observeCredentialChanges() {
                         sweepSuccesses += 1
                         self.credentialErrorProfileIds.remove(profile.id)
                         self.burstBackoffs.removeValue(forKey: profile.id)
+                        self.recordClaudeUsageSuccess(profile)
 
                         // Check auto-switch NOW for the accounts actually in use
                         // instead of waiting for the end of the sweep: rate-limit
@@ -1483,10 +1484,28 @@ private func observeCredentialChanges() {
                             }
                         } else if appError.code == .apiRateLimited {
                             // Burst-class 429 (no account-level Retry-After):
-                            // exhaustion is unknown, so don't stamp — but stop
-                            // re-fetching every sweep. Pass the server's own
-                            // (sub-floor) Retry-After when present.
+                            // exhaustion is unproven by the header, so back the
+                            // fetch off — and once the streak plus a recent
+                            // other-account success prove the refusal follows
+                            // the ACCOUNT, stamp it as exhausted anyway (the
+                            // retry-after:0 incident — see the inferred-throttle
+                            // section).
                             self.registerBurstBackoff(for: profile, retryAfter: appError.retryAfterSeconds)
+                            if profile.providerKind == .claude,
+                               let streak = self.burstBackoffs[profile.id]?.streak,
+                               Self.shouldInferAccountThrottle(
+                                   streak: streak,
+                                   profileId: profile.id,
+                                   lastClaudeSuccess: self.lastClaudeUsageSuccess,
+                                   now: Date()
+                               ) {
+                                let stamped = self.stampInferredAccountThrottle(profile, streak: streak)
+                                if profile.id == self.profileManager.activeProfile?.id
+                                    || profile.id == self.profileManager.activeClaudeProfileId
+                                    || profile.id == self.profileManager.activeCodexProfileId {
+                                    self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
+                                }
+                            }
                         }
                         LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                     }
@@ -1779,6 +1798,7 @@ private func observeCredentialChanges() {
                     self.credentialErrorProfileIds.remove(profileId)
                 }
                 self.lastSuccessfulRefreshTime = Date()
+                self.recordClaudeUsageSuccess(profile)
 
             } catch {
                 // Same stale-completion guard as the success path: error state
@@ -1925,9 +1945,15 @@ private func observeCredentialChanges() {
             return
         }
         isRefreshing = true
-        // User-initiated: a burst backoff must not eat the click. If the
-        // fetch 429s again the catch below re-registers it.
-        burstBackoffs.removeValue(forKey: target.id)
+        // User-initiated: a burst backoff must not eat the click — expire the
+        // wait but KEEP the streak, so repeated clicks against a persistently
+        // 429ing account still accumulate the evidence the inferred-throttle
+        // stamp needs (removeValue here would reset the streak to 0 and make
+        // manual retries unable to ever prove account-level exhaustion).
+        if var backoff = burstBackoffs[target.id] {
+            backoff.until = Date()
+            burstBackoffs[target.id] = backoff
+        }
         LoggingService.shared.log("MenuBarManager: manual refresh for '\(target.name)' (popover)")
 
         Task {
@@ -1961,6 +1987,8 @@ private func observeCredentialChanges() {
                     self.usage = newUsage
                 }
                 self.credentialErrorProfileIds.remove(profile.id)
+                self.burstBackoffs.removeValue(forKey: profile.id)
+                self.recordClaudeUsageSuccess(profile)
                 self.consecutiveRefreshFailures = 0
                 self.lastRefreshError = nil
                 self.lastSuccessfulRefreshTime = Date()
@@ -1983,6 +2011,19 @@ private func observeCredentialChanges() {
                     }
                 } else if appError.code == .apiRateLimited {
                     self.registerBurstBackoff(for: profile, retryAfter: appError.retryAfterSeconds)
+                    if profile.providerKind == .claude,
+                       let streak = self.burstBackoffs[profile.id]?.streak,
+                       Self.shouldInferAccountThrottle(
+                           streak: streak,
+                           profileId: profile.id,
+                           lastClaudeSuccess: self.lastClaudeUsageSuccess,
+                           now: Date()
+                       ) {
+                        let stamped = self.stampInferredAccountThrottle(profile, streak: streak)
+                        if isActiveAccount {
+                            self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
+                        }
+                    }
                 }
                 LoggingService.shared.logError("Manual refresh failed for '\(profile.name)': \(appError.message)")
             }
@@ -2132,6 +2173,12 @@ private func observeCredentialChanges() {
     }
     private var burstBackoffs: [UUID: BurstBackoff] = [:]
 
+    /// The most recent SUCCESSFUL Claude usage fetch (any profile). This is the
+    /// control evidence behind `shouldInferAccountThrottle`: a success seconds
+    /// ago proves the shared IP is not being burst-limited, so a profile that
+    /// keeps 429ing anyway is being refused at the ACCOUNT level.
+    private var lastClaudeUsageSuccess: (profileId: UUID, at: Date)?
+
     /// Exponential cap is 8 min, not the original 30: the 30-min cap defended
     /// against the pre-refactor sweep re-fetching a 429ing profile every 30s
     /// (90 429s/hour measured). Per-account fetches are now spaced ~5 min by
@@ -2179,6 +2226,65 @@ private func observeCredentialChanges() {
     /// refuses its own usage reads with a Retry-After of MINUTES (a real
     /// incident measured 2918s).
     nonisolated static let accountThrottleRetryAfterFloor: TimeInterval = 60
+
+    // MARK: - Inferred Account Throttle (429 with useless Retry-After)
+
+    /// The Retry-After floor above cannot catch every account-level refusal:
+    /// 2026-08-11 incident — an exhausted account ('Ass-FerminAssistant')
+    /// refused its own usage reads with HTTP 429 `retry-after: 0`, so no
+    /// stamp fired, the burst backoff ate every retry, and the tile froze at
+    /// a stale 74% while the account had zero capacity. Retry-After alone no
+    /// longer separates account exhaustion from per-IP burst noise; the
+    /// sweep's own cross-account evidence does: consecutive 429s for ONE
+    /// profile spanning backoff cycles (minutes), while OTHER Claude accounts
+    /// fetch fine from the same IP seconds around it, mean the refusal
+    /// follows the account — treat it as exhausted for a short, self-healing
+    /// TTL. A false positive (unlucky profile mislabeled 100%) lasts at most
+    /// the TTL: the stamp's expiry re-probes at hot priority and one success
+    /// clears everything.
+    nonisolated static let inferredThrottleMinStreak = 2
+    nonisolated static let inferredThrottleControlWindow: TimeInterval = 90
+    nonisolated static let inferredThrottleTTL: TimeInterval = 300
+
+    /// True when a burst-class 429 (no usable Retry-After) should be treated
+    /// as an account-level throttle anyway: the profile's consecutive-429
+    /// streak reached `inferredThrottleMinStreak` (streak attempts are spaced
+    /// by the exponential backoff, so streak 2 spans ≥ ~2 min of persistent
+    /// refusal) AND a DIFFERENT Claude profile fetched successfully within
+    /// `inferredThrottleControlWindow` — proof the shared IP is healthy.
+    nonisolated static func shouldInferAccountThrottle(
+        streak: Int,
+        profileId: UUID,
+        lastClaudeSuccess: (profileId: UUID, at: Date)?,
+        now: Date
+    ) -> Bool {
+        guard streak >= inferredThrottleMinStreak else { return false }
+        guard let success = lastClaudeSuccess, success.profileId != profileId else { return false }
+        return now.timeIntervalSince(success.at) <= inferredThrottleControlWindow
+    }
+
+    /// Apply a synthetic account-throttle stamp (no server Retry-After to
+    /// honor, so a short fixed TTL): same seam as the header-based stamp —
+    /// `effectiveSessionPercentage` reports 100% until expiry, sweeps skip
+    /// the profile, and the scheduler excludes it instead of burning budget.
+    @discardableResult
+    private func stampInferredAccountThrottle(_ profile: Profile, streak: Int) -> ClaudeUsage {
+        var usage = profile.claudeUsage ?? .empty
+        usage.rateLimitedUntil = Date().addingTimeInterval(Self.inferredThrottleTTL)
+        usage.lastUpdated = Date()
+        profileManager.saveClaudeUsage(usage, for: profile.id)
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' inferred ACCOUNT-level throttle — \(streak) consecutive 429s while other accounts fetch fine; treating as exhausted for \(Int(Self.inferredThrottleTTL))s")
+        return usage
+    }
+
+    /// Success bookkeeping for the inference above. Claude-flow fetches only —
+    /// Codex/Grok hit different hosts and prove nothing about the Claude IP.
+    private func recordClaudeUsageSuccess(_ profile: Profile) {
+        guard profile.providerKind == .claude else { return }
+        lastClaudeUsageSuccess = (profile.id, Date())
+    }
+
+    // MARK: - Account-Level Throttle Stamping (header-based)
 
     /// When a usage fetch is refused with a long account-level Retry-After,
     /// record the throttle on the profile's cached usage. From then on
