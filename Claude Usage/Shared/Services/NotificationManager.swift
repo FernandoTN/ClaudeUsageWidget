@@ -275,6 +275,30 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that an ACTIVE account's usage endpoint keeps refusing reads
+    /// (inferred account-level throttle). The app deliberately does NOT
+    /// auto-switch on inferred evidence — switching invalidates every
+    /// concurrent CLI session's prompt cache — so the user decides.
+    func sendInferredThrottleNotification(profileName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.inferred_throttle.title".localized
+        content.body = "notification.inferred_throttle.message".localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "inferred_throttle_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send inferred-throttle notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Claude Code login is dead (expired access token
     /// and revoked/consumed refresh token) and needs `/login` + a re-sync.
     func sendClaudeReloginNotification(profileName: String) {

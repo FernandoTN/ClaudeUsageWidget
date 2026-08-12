@@ -1499,12 +1499,11 @@ private func observeCredentialChanges() {
                                    lastClaudeSuccess: self.lastClaudeUsageSuccess,
                                    now: Date()
                                ) {
-                                let stamped = self.stampInferredAccountThrottle(profile, streak: streak)
-                                if profile.id == self.profileManager.activeProfile?.id
-                                    || profile.id == self.profileManager.activeClaudeProfileId
-                                    || profile.id == self.profileManager.activeCodexProfileId {
-                                    self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
-                                }
+                                // Never a switch trigger (autoSwitchTriggerUsage
+                                // strips it) — an active account gets a one-shot
+                                // notification so the user makes the call.
+                                self.stampInferredAccountThrottle(profile, streak: streak)
+                                self.notifyInferredThrottleIfNeeded(profile)
                             }
                         }
                         LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
@@ -2019,10 +2018,10 @@ private func observeCredentialChanges() {
                            lastClaudeSuccess: self.lastClaudeUsageSuccess,
                            now: Date()
                        ) {
-                        let stamped = self.stampInferredAccountThrottle(profile, streak: streak)
-                        if isActiveAccount {
-                            self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
-                        }
+                        // Never a switch trigger (autoSwitchTriggerUsage strips
+                        // it) — an active account gets a one-shot notification.
+                        self.stampInferredAccountThrottle(profile, streak: streak)
+                        self.notifyInferredThrottleIfNeeded(profile)
                     }
                 }
                 LoggingService.shared.logError("Manual refresh failed for '\(profile.name)': \(appError.message)")
@@ -2271,15 +2270,53 @@ private func observeCredentialChanges() {
     private func stampInferredAccountThrottle(_ profile: Profile, streak: Int) -> ClaudeUsage {
         var usage = profile.claudeUsage ?? .empty
         usage.rateLimitedUntil = Date().addingTimeInterval(Self.inferredThrottleTTL)
+        usage.rateLimitedInferred = true
         usage.lastUpdated = Date()
         profileManager.saveClaudeUsage(usage, for: profile.id)
         LoggingService.shared.log("MenuBarManager: '\(profile.name)' inferred ACCOUNT-level throttle — \(streak) consecutive 429s while other accounts fetch fine; treating as exhausted for \(Int(Self.inferredThrottleTTL))s")
         return usage
     }
 
+    /// Profiles already notified about an inferred throttle this episode —
+    /// one notification per outage, not one per 5-min re-stamp. Cleared by
+    /// the profile's next successful fetch (recordClaudeUsageSuccess).
+    private var inferredThrottleNotifiedIds: Set<UUID> = []
+
+    /// An inferred stamp on an ACTIVE account does NOT auto-switch (see
+    /// `autoSwitchTriggerUsage`) — the user decides whether displacing every
+    /// running session's prompt cache is worth it. Tell them once per episode.
+    private func notifyInferredThrottleIfNeeded(_ profile: Profile) {
+        let isActiveAccount = profile.id == profileManager.activeProfile?.id
+            || profile.id == profileManager.activeClaudeProfileId
+            || profile.id == profileManager.activeCodexProfileId
+        guard isActiveAccount, !inferredThrottleNotifiedIds.contains(profile.id) else { return }
+        inferredThrottleNotifiedIds.insert(profile.id)
+        NotificationManager.shared.sendInferredThrottleNotification(profileName: profile.name)
+    }
+
+    /// The usage a switch-away decision is allowed to see. An INFERRED
+    /// throttle stamp is display/scheduling truth, but switching the shared
+    /// CLI login invalidates every concurrent session's prompt cache
+    /// (~10-15% of quota burned re-reading context), so displacing the
+    /// ACTIVE account requires server-affirmed evidence: a MEASURED
+    /// percentage over threshold, or an explicit long Retry-After. Stripping
+    /// the inferred stamp here makes the trigger evaluate the real cached
+    /// numbers; candidate-side headroom checks keep seeing the stamp, so a
+    /// suspect account is still never switched INTO (no ping-pong).
+    nonisolated static func autoSwitchTriggerUsage(_ usage: ClaudeUsage) -> ClaudeUsage {
+        guard usage.rateLimitedInferred == true else { return usage }
+        var stripped = usage
+        stripped.rateLimitedUntil = nil
+        stripped.rateLimitedInferred = nil
+        return stripped
+    }
+
     /// Success bookkeeping for the inference above. Claude-flow fetches only —
     /// Codex/Grok hit different hosts and prove nothing about the Claude IP.
+    /// A success also ends the profile's inferred-throttle episode, re-arming
+    /// its one-shot notification for the next outage.
     private func recordClaudeUsageSuccess(_ profile: Profile) {
+        inferredThrottleNotifiedIds.remove(profile.id)
         guard profile.providerKind == .claude else { return }
         lastClaudeUsageSuccess = (profile.id, Date())
     }
@@ -2301,6 +2338,8 @@ private func observeCredentialChanges() {
 
         var usage = profile.claudeUsage ?? .empty
         usage.rateLimitedUntil = Date().addingTimeInterval(retryAfter)
+        // Server-affirmed: clears any inferred provenance a prior stamp left.
+        usage.rateLimitedInferred = nil
         usage.lastUpdated = Date()
         profileManager.saveClaudeUsage(usage, for: profile.id)
         LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage endpoint throttled for \(Int(retryAfter))s — treating account as exhausted until the throttle lifts")
@@ -2317,6 +2356,12 @@ private func observeCredentialChanges() {
     /// catches up. The weekly threshold is tighter because forfeited weekly
     /// quota does not come back until the weekly reset.
     private func checkAutoSwitchIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
+        // Switch-away decisions never see an inferred throttle stamp — only
+        // measured percentages or a server-affirmed (long Retry-After) stamp
+        // may displace the active account (see autoSwitchTriggerUsage; the
+        // 2026-08-11 'BBR' switch at a real ~40% session is the incident).
+        let usage = Self.autoSwitchTriggerUsage(usage)
+
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }
 

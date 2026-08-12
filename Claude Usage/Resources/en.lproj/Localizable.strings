@@ -235,6 +235,8 @@
 "codex.resync" = "Re-sync from Codex CLI";
 "codex.sync_instructions" = "Log in with the `codex` CLI first, then sync. The app copies ~/.codex/auth.json into this profile.";
 "codex.locked_claude_profile" = "This profile already holds a Claude account. Codex accounts live on their own profiles — create a new profile and sync the Codex CLI there.";
+"notification.inferred_throttle.title" = "Active account appears rate-limited";
+"notification.inferred_throttle.message" = "'%@' keeps refusing usage reads while other accounts fetch fine — it is likely at its limit. Not auto-switching (a switch invalidates every running session's prompt cache); switch manually if sessions are blocked.";
 "notification.claude_relogin.title" = "Claude account needs re-login";
 "notification.claude_relogin.message" = "The saved Claude Code login for '%@' has expired and could not be refreshed. Run `claude` and `/login` with that account, then re-sync it in Settings → CLI Account.";
 "notification.codex_relogin.title" = "Codex account needs re-login";
