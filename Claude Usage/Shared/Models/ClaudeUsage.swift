@@ -31,6 +31,18 @@ struct ClaudeUsage: Codable, Equatable {
     /// Optional with nil default so previously cached usage JSON still decodes.
     var rateLimitedUntil: Date? = nil
 
+    /// True when `rateLimitedUntil` was INFERRED from a 429 streak plus
+    /// cross-account control evidence rather than affirmed by the server (a
+    /// long Retry-After). Display, scheduling, and switch-TARGET eligibility
+    /// treat both stamps the same (100%, skip fetching, never switch INTO the
+    /// account) — but an inferred stamp must never DISPLACE the active
+    /// account: a profile switch invalidates every concurrent CLI session's
+    /// prompt cache (~10-15% of quota re-reading context), far too costly to
+    /// spend on circumstantial evidence (2026-08-11: an inferred stamp on
+    /// 'BBR' auto-switched the fleet away at a real ~40% session). Optional
+    /// with nil default so previously cached usage JSON still decodes.
+    var rateLimitedInferred: Bool? = nil
+
     /// False when the PROVIDER has no session-scale window at all — Grok has
     /// always been weekly-only, and Codex became weekly-only when OpenAI
     /// collapsed the old 5h primary / weekly secondary pair into a single

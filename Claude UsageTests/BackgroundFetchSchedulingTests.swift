@@ -26,7 +26,8 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         sessionResetIn: TimeInterval = 3600,
         weekly: Double = 0,
         fable: Double? = nil,
-        rateLimitedUntil: Date? = nil
+        rateLimitedUntil: Date? = nil,
+        rateLimitedInferred: Bool? = nil
     ) -> ClaudeUsage {
         ClaudeUsage(
             sessionTokensUsed: Int(session * 1000),
@@ -34,6 +35,7 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
             sessionPercentage: session,
             sessionResetTime: now.addingTimeInterval(sessionResetIn),
             rateLimitedUntil: rateLimitedUntil,
+            rateLimitedInferred: rateLimitedInferred,
             weeklyTokensUsed: Int(weekly * 10_000),
             weeklyLimit: 1_000_000,
             weeklyPercentage: weekly,
@@ -222,6 +224,65 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
             lastClaudeSuccess: (other, now.addingTimeInterval(-MenuBarManager.inferredThrottleControlWindow - 1)),
             now: now
         ))
+    }
+
+    // MARK: - Inferred stamps never displace the active account
+
+    func testInferredStampIsStrippedFromSwitchTriggerButHeaderStampIsNot() {
+        let stampedUntil = now.addingTimeInterval(300)
+
+        // Inferred stamp over LOW real numbers: the trigger sees the real 40%
+        // and must not fire (a switch costs every session its prompt cache).
+        let inferredLow = MenuBarManager.autoSwitchTriggerUsage(
+            usage(session: 40, rateLimitedUntil: stampedUntil, rateLimitedInferred: true)
+        )
+        XCTAssertNil(inferredLow.rateLimitedUntil)
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(
+            inferredLow, sessionThreshold: 95, weeklyThreshold: 99, now: now
+        ))
+
+        // Inferred stamp over a MEASURED over-threshold number: the real
+        // percentage still fires the trigger on its own.
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            MenuBarManager.autoSwitchTriggerUsage(
+                usage(session: 96, rateLimitedUntil: stampedUntil, rateLimitedInferred: true)
+            ),
+            sessionThreshold: 95, weeklyThreshold: 99, now: now
+        ))
+
+        // Header-based (server-affirmed) stamp passes through untouched and
+        // keeps firing the trigger.
+        let headerStamped = MenuBarManager.autoSwitchTriggerUsage(
+            usage(session: 40, rateLimitedUntil: stampedUntil)
+        )
+        XCTAssertEqual(headerStamped.rateLimitedUntil, stampedUntil)
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            headerStamped, sessionThreshold: 95, weeklyThreshold: 99, now: now
+        ))
+    }
+
+    func testRateLimitedInferredDecodesFromLegacyCacheAndRoundTrips() {
+        // Cached usage JSON written before the field existed must decode (nil).
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        var legacy = try! JSONSerialization.jsonObject(
+            with: try! encoder.encode(usage(session: 50))
+        ) as! [String: Any]
+        legacy.removeValue(forKey: "rateLimitedInferred")
+        let decoded = try! decoder.decode(
+            ClaudeUsage.self,
+            from: try! JSONSerialization.data(withJSONObject: legacy)
+        )
+        XCTAssertNil(decoded.rateLimitedInferred)
+
+        // And the flag survives a persist/load cycle when set.
+        let roundTripped = try! decoder.decode(
+            ClaudeUsage.self,
+            from: try! encoder.encode(usage(
+                session: 50, rateLimitedUntil: now.addingTimeInterval(300), rateLimitedInferred: true
+            ))
+        )
+        XCTAssertEqual(roundTripped.rateLimitedInferred, true)
     }
 
     // MARK: - Manual popover refresh target

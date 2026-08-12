@@ -212,6 +212,16 @@ through two detectors:
   within the last 90s — proof the shared IP is healthy, so the refusal
   follows the account. The synthetic stamp lives 5 min and self-heals: expiry
   re-probes at hot scheduler priority and one success clears everything.
+  **An inferred stamp (`ClaudeUsage.rateLimitedInferred`) never DISPLACES the
+  active account**: switching the shared CLI login invalidates every
+  concurrent session's prompt cache (~10-15% of quota re-reading context),
+  so `autoSwitchTriggerUsage` strips inferred stamps before the switch
+  trigger evaluates — only a MEASURED percentage or a server-affirmed
+  (header-based) stamp may switch away (the same-day 'BBR' switch at a real
+  ~40% session is the incident). Candidate-side headroom checks keep seeing
+  the stamp, so a suspect account is still never switched INTO. An inferred
+  stamp on an active account instead sends a one-shot-per-episode
+  notification so the user decides.
 
 A burst-class 429 that doesn't (yet) meet the inference bar still stops the
 sweep from re-fetching every 30s (a real profile drew 90 identical 429s in an
