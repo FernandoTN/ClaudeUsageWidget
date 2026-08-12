@@ -178,6 +178,40 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         XCTAssertLessThanOrEqual(sweepsUntilColdWins, 4, "cold account starved behind a hot one")
     }
 
+    // MARK: - Manual popover refresh target
+
+    func testManualRefreshTargetsViewedProfileElseActive() {
+        var viewed = Profile(id: UUID(), name: "Viewed")
+        viewed.claudeUsage = usage()
+        var active = Profile(id: UUID(), name: "Active")
+        active.claudeUsage = usage()
+
+        // Viewed profile exists → it is the target, even with an active set.
+        XCTAssertEqual(
+            MenuBarManager.resolveManualRefreshTarget(
+                viewedId: viewed.id, profiles: [viewed, active], activeProfile: active
+            )?.name,
+            "Viewed"
+        )
+        // Viewed id points at a deleted profile → fall back to active, not no-op.
+        XCTAssertEqual(
+            MenuBarManager.resolveManualRefreshTarget(
+                viewedId: UUID(), profiles: [active], activeProfile: active
+            )?.name,
+            "Active"
+        )
+        // Nothing viewed → active.
+        XCTAssertEqual(
+            MenuBarManager.resolveManualRefreshTarget(
+                viewedId: nil, profiles: [viewed, active], activeProfile: active
+            )?.name,
+            "Active"
+        )
+        XCTAssertNil(
+            MenuBarManager.resolveManualRefreshTarget(viewedId: nil, profiles: [], activeProfile: nil)
+        )
+    }
+
     // MARK: - Hot classification
 
     func testNearLimitBySessionThreshold() {
