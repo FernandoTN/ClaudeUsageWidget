@@ -579,7 +579,9 @@ class MenuBarManager: NSObject, ObservableObject {
         let contentView = PopoverContentView(
             manager: self,
             onRefresh: { [weak self] in
-                self?.refreshUsage()
+                // Targeted: the viewed/active account, not a budget-rotated
+                // sweep (see refreshFromPopover).
+                self?.refreshFromPopover()
             },
             onPreferences: { [weak self] in
                 self?.closePopoverOrWindow()
@@ -1852,6 +1854,148 @@ private func observeCredentialChanges() {
     /// Shows a brief success notification for user-triggered refreshes
     private func showSuccessNotification() {
         NotificationManager.shared.sendSuccessNotification()
+    }
+
+    // MARK: - Manual Popover Refresh
+
+    /// The popover's bottom-bar refresh button. Single-profile mode already
+    /// refreshes exactly the active profile via `refreshUsage()`. In
+    /// multi-profile mode the old routing kicked a full sweep, which spends
+    /// its rate-limit budget on the ROTATION's pick — not necessarily the
+    /// account on screen — and skips a burst-backed-off profile outright
+    /// (observed 2026-08-11: the active account at 97% sat inside a 120s
+    /// backoff; a click refreshed everything except the number the user was
+    /// looking at). A deliberate click means "THIS account, now": fetch just
+    /// the viewed (else active) profile.
+    func refreshFromPopover() {
+        if profileManager.displayMode == .multi {
+            refreshViewedOrActiveProfile()
+        } else {
+            refreshUsage()
+        }
+    }
+
+    /// The account a manual popover refresh targets: the profile the popover
+    /// is viewing when it still exists, else the focused profile. A viewed id
+    /// whose profile was deleted mid-popover falls back instead of no-op'ing.
+    nonisolated static func resolveManualRefreshTarget(
+        viewedId: UUID?,
+        profiles: [Profile],
+        activeProfile: Profile?
+    ) -> Profile? {
+        viewedId.flatMap { id in profiles.first(where: { $0.id == id }) } ?? activeProfile
+    }
+
+    /// Multi-profile manual refresh: fetch exactly the profile the popover is
+    /// viewing (`clickedProfileId` — set on every popover open, tile click,
+    /// and group-navigator step), falling back to the focused profile. The
+    /// single extra request is user-initiated and rare, so it clears any
+    /// burst backoff on the target; an account-level throttle stamp is
+    /// honored (the endpoint told us when to come back, and the tiles
+    /// already report 100% while it lives).
+    private func refreshViewedOrActiveProfile() {
+        if deferIfCredentialHydrationLoading(retry: { [weak self] in
+            self?.refreshViewedOrActiveProfile()
+        }) {
+            return
+        }
+        // Same hazards as the sweep: never fetch mid-switch (Keychain
+        // adoption contamination), never overlap an in-flight refresh (the
+        // running sweep now fetches the priority profiles FIRST, so the
+        // number on screen is at most one sweep away).
+        guard !profileManager.isSwitchingProfile else {
+            LoggingService.shared.log("MenuBarManager: manual refresh skipped — profile switch in progress")
+            return
+        }
+        let target = Self.resolveManualRefreshTarget(
+            viewedId: clickedProfileId,
+            profiles: profileManager.profiles,
+            activeProfile: profileManager.activeProfile
+        )
+        guard let target, target.hasUsageCredentials else {
+            LoggingService.shared.log("MenuBarManager: manual refresh skipped — no refreshable target profile")
+            return
+        }
+        if target.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false {
+            LoggingService.shared.log("MenuBarManager: manual refresh for '\(target.name)' skipped — account-level throttle until \(target.claudeUsage?.rateLimitedUntil ?? Date())")
+            return
+        }
+        guard !isRefreshing else {
+            LoggingService.shared.log("MenuBarManager: manual refresh skipped — refresh already in flight")
+            return
+        }
+        isRefreshing = true
+        // User-initiated: a burst backoff must not eat the click. If the
+        // fetch 429s again the catch below re-registers it.
+        burstBackoffs.removeValue(forKey: target.id)
+        LoggingService.shared.log("MenuBarManager: manual refresh for '\(target.name)' (popover)")
+
+        Task {
+            defer {
+                self.profileManager.publishStagedUsage()
+                self.profileManager.flushPendingUsage()
+                self.isRefreshing = false
+            }
+
+            // Self-heal a stale CLI OAuth token, then re-read the profile so
+            // the fetch sees the repaired credentials.
+            await self.ensureFreshCLICredentialsIfNeeded(for: target)
+            var profile = target
+            if let updated = self.profileManager.profiles.first(where: { $0.id == target.id }) {
+                profile = updated
+            }
+            // Stamp the scheduler's attempt clock so the next sweep's budget
+            // is not spent re-fetching what the user just refreshed.
+            if profile.providerKind == .claude {
+                self.backgroundFetchAttempts[profile.id] = Date()
+            }
+
+            let isActiveAccount = profile.id == self.profileManager.activeProfile?.id
+                || profile.id == self.profileManager.activeClaudeProfileId
+                || profile.id == self.profileManager.activeCodexProfileId
+
+            do {
+                let newUsage = try await self.fetchUsageForProfile(profile)
+                self.profileManager.stageClaudeUsage(newUsage, for: profile.id)
+                if profile.id == self.profileManager.activeProfile?.id {
+                    self.usage = newUsage
+                }
+                self.credentialErrorProfileIds.remove(profile.id)
+                self.consecutiveRefreshFailures = 0
+                self.lastRefreshError = nil
+                self.lastSuccessfulRefreshTime = Date()
+                if isActiveAccount {
+                    self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                }
+                LoggingService.shared.log("MenuBarManager: manual refresh saved usage for '\(profile.name)' - session: \(newUsage.sessionPercentage)%", type: .info)
+            } catch {
+                let appError = AppError.wrap(error)
+                self.lastRefreshError = appError.message
+                if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
+                    self.credentialErrorProfileIds.insert(profile.id)
+                }
+                // Mirror the sweep's 429 taxonomy: a long account-level
+                // Retry-After stamps exhaustion; a burst-class 429 re-arms
+                // the backoff this click just cleared.
+                if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: profile) {
+                    if isActiveAccount {
+                        self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
+                    }
+                } else if appError.code == .apiRateLimited {
+                    self.registerBurstBackoff(for: profile, retryAfter: appError.retryAfterSeconds)
+                }
+                LoggingService.shared.logError("Manual refresh failed for '\(profile.name)': \(appError.message)")
+            }
+
+            // Publish the staged result, then repaint from the fresh array —
+            // the open popover's snapshot and this profile's tile.
+            self.profileManager.publishStagedUsage()
+            self.refreshViewedProfileUsage()
+            self.statusBarUIManager?.updateMultiProfileButtons(
+                profiles: self.profileManager.profiles,
+                config: self.profileManager.multiProfileConfig
+            )
+        }
     }
 
     // MARK: - CLI Token Self-Healing
