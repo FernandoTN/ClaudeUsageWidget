@@ -190,6 +190,8 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
             streak: MenuBarManager.inferredThrottleMinStreak,
             profileId: victim,
+            isActiveAccount: false,
+            cachedUsage: nil,
             lastClaudeSuccess: (other, now.addingTimeInterval(-10)),
             now: now
         ))
@@ -198,6 +200,8 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
             streak: MenuBarManager.inferredThrottleMinStreak - 1,
             profileId: victim,
+            isActiveAccount: false,
+            cachedUsage: nil,
             lastClaudeSuccess: (other, now.addingTimeInterval(-10)),
             now: now
         ))
@@ -205,7 +209,8 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         // No success evidence at all (e.g. total per-IP throttle storm hits
         // every profile): stay with the plain backoff.
         XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
-            streak: 5, profileId: victim, lastClaudeSuccess: nil, now: now
+            streak: 5, profileId: victim, isActiveAccount: false, cachedUsage: nil,
+            lastClaudeSuccess: nil, now: now
         ))
 
         // The only recent success is the SAME profile — proves nothing about
@@ -213,6 +218,8 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
             streak: 5,
             profileId: victim,
+            isActiveAccount: false,
+            cachedUsage: nil,
             lastClaudeSuccess: (victim, now.addingTimeInterval(-10)),
             now: now
         ))
@@ -221,9 +228,150 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
         XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
             streak: 5,
             profileId: victim,
+            isActiveAccount: false,
+            cachedUsage: nil,
             lastClaudeSuccess: (other, now.addingTimeInterval(-MenuBarManager.inferredThrottleControlWindow - 1)),
             now: now
         ))
+    }
+
+    // MARK: - Inference precision gates (consult round, 2026-08-12)
+
+    func testActiveAccountNeedsLongerStreak() {
+        let victim = UUID(), other = UUID()
+        let success: (UUID, Date) = (other, now.addingTimeInterval(-10))
+        // Streak 2 suffices for a background profile but NOT the active one —
+        // it fetches every sweep and collides with the per-IP cap first.
+        XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
+            streak: 2, profileId: victim, isActiveAccount: false, cachedUsage: nil,
+            lastClaudeSuccess: success, now: now
+        ))
+        XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
+            streak: 2, profileId: victim, isActiveAccount: true, cachedUsage: nil,
+            lastClaudeSuccess: success, now: now
+        ))
+        XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
+            streak: 3, profileId: victim, isActiveAccount: true, cachedUsage: nil,
+            lastClaudeSuccess: success, now: now
+        ))
+    }
+
+    func testFreshLowCacheBlocksInference() {
+        // A 5h window does not jump 45pp in one backoff interval: a FRESH
+        // cache far below every limit means the 429s are IP noise ('BBR'
+        // false positive — cached 8-55%, stamped exhausted, fleet switched).
+        let victim = UUID(), other = UUID()
+        let success: (UUID, Date) = (other, now.addingTimeInterval(-10))
+        XCTAssertFalse(MenuBarManager.shouldInferAccountThrottle(
+            streak: 5, profileId: victim, isActiveAccount: false,
+            cachedUsage: usage(session: 55),
+            lastClaudeSuccess: success, now: now
+        ))
+        // Fresh cache already near the limit — exhaustion plausible.
+        XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
+            streak: 5, profileId: victim, isActiveAccount: false,
+            cachedUsage: usage(session: MenuBarManager.inferredThrottleFreshCacheFloor),
+            lastClaudeSuccess: success, now: now
+        ))
+        // Weekly near its cap counts too (weekly exhaustion also 429s).
+        XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
+            streak: 5, profileId: victim, isActiveAccount: false,
+            cachedUsage: usage(session: 10, weekly: 95),
+            lastClaudeSuccess: success, now: now
+        ))
+    }
+
+    func testStaleCacheDoesNotBlockInference() {
+        // The frozen-74% case: data minutes-to-hours old proves nothing about
+        // the account's current state and must not veto the suspicion.
+        let victim = UUID(), other = UUID()
+        var stale = usage(session: 40)
+        stale.lastUpdated = now.addingTimeInterval(-MenuBarManager.inferredThrottleStaleCacheAge - 60)
+        XCTAssertTrue(MenuBarManager.shouldInferAccountThrottle(
+            streak: 2, profileId: victim, isActiveAccount: false,
+            cachedUsage: stale,
+            lastClaudeSuccess: (other, now.addingTimeInterval(-10)), now: now
+        ))
+    }
+
+    // MARK: - Suspected display seam
+
+    func testSuspectedStampDisplaysMeasuredValueNotSyntheticHundred() {
+        let stamped = usage(
+            session: 59, rateLimitedUntil: now.addingTimeInterval(300), rateLimitedInferred: true
+        )
+        // Decision seams still read exhaustion (candidate gating, scheduler heat)…
+        XCTAssertEqual(stamped.effectiveSessionPercentage, 100)
+        XCTAssertTrue(stamped.isSuspectedRateLimited)
+        // …but the DISPLAY shows the last measured number ("100% then reverts
+        // to 59%" flapping was the owner-reported bug — the tile must never
+        // paint an unverified 100).
+        XCTAssertEqual(stamped.displaySessionPercentage, 59)
+
+        // Server-affirmed stamps display 100 — the server said the account is out.
+        let affirmed = usage(session: 59, rateLimitedUntil: now.addingTimeInterval(300))
+        XCTAssertFalse(affirmed.isSuspectedRateLimited)
+        XCTAssertEqual(affirmed.displaySessionPercentage, 100)
+
+        // Expired inferred stamp: back to plain measured display.
+        let expired = usage(
+            session: 59, rateLimitedUntil: now.addingTimeInterval(-1), rateLimitedInferred: true
+        )
+        XCTAssertFalse(expired.isSuspectedRateLimited)
+        XCTAssertEqual(expired.displaySessionPercentage, 59)
+    }
+
+    // MARK: - Queue peek/consume semantics
+
+    private func queueProfile(_ name: String, session: Double = 0) -> Profile {
+        var p = Profile(id: UUID(), name: name)
+        p.claudeUsage = usage(session: session)
+        return p
+    }
+
+    func testQueuedTargetSurvivesIneligibleWalks() {
+        // The consume-on-try bug: a queued target that looked headroom-less
+        // (e.g. wearing a FALSE inferred 100%) was eaten without ever being
+        // activated. Ineligible-now entries must stay queued.
+        let queued = queueProfile("Queued")
+        let (target, cleaned) = MenuBarManager.selectQueuedSwitchTarget(
+            queue: [queued.id],
+            profiles: [queued],
+            provider: queued.providerKind,
+            excluding: [],
+            isEligible: { _ in false }
+        )
+        XCTAssertNil(target)
+        XCTAssertEqual(cleaned, [queued.id], "ineligible queued entry must stay queued")
+    }
+
+    func testQueuedTargetSelectedButNotConsumedBySelection() {
+        let queued = queueProfile("Queued")
+        let (target, cleaned) = MenuBarManager.selectQueuedSwitchTarget(
+            queue: [queued.id],
+            profiles: [queued],
+            provider: queued.providerKind,
+            excluding: [],
+            isEligible: { _ in true }
+        )
+        XCTAssertEqual(target?.id, queued.id)
+        XCTAssertEqual(cleaned, [queued.id], "selection must not consume — only successful activation does")
+    }
+
+    func testDeletedProfileDroppedExcludedSkippedButKept() {
+        let deleted = UUID()
+        let excludedProfile = queueProfile("Excluded")
+        let next = queueProfile("Next")
+        let (target, cleaned) = MenuBarManager.selectQueuedSwitchTarget(
+            queue: [deleted, excludedProfile.id, next.id],
+            profiles: [excludedProfile, next],
+            provider: next.providerKind,
+            excluding: [excludedProfile.id],
+            isEligible: { _ in true }
+        )
+        XCTAssertEqual(target?.id, next.id)
+        XCTAssertEqual(cleaned, [excludedProfile.id, next.id],
+                       "deleted id dropped; excluded-this-walk entry kept for later")
     }
 
     // MARK: - Inferred stamps never displace the active account

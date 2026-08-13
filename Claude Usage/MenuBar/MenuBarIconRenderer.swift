@@ -150,7 +150,10 @@ final class MenuBarIconRenderer {
     ) -> MetricData {
         switch metricType {
         case .session:
-            let usedPercentage = usage.effectiveSessionPercentage
+            // Display seam: a SUSPECTED (inferred) rate limit shows the last
+            // measured percentage, never a synthetic 100 (see
+            // ClaudeUsage.displaySessionPercentage).
+            let usedPercentage = usage.displaySessionPercentage
             let displayPercentage = UsageStatusCalculator.getDisplayPercentage(
                 usedPercentage: usedPercentage,
                 showRemaining: showRemaining

@@ -43,6 +43,30 @@ struct ClaudeUsage: Codable, Equatable {
     /// with nil default so previously cached usage JSON still decodes.
     var rateLimitedInferred: Bool? = nil
 
+    /// True while an INFERRED (unverified) throttle stamp is live: the account
+    /// is SUSPECTED to be rate-limited from behavioral evidence, but the server
+    /// never affirmed it. Display surfaces render this as a distinct state
+    /// instead of a hard 100%.
+    var isSuspectedRateLimited: Bool {
+        rateLimitedInferred == true && (rateLimitedUntil.map { $0 > Date() } ?? false)
+    }
+
+    /// What tiles, the popover, and usage notifications DISPLAY. A suspected
+    /// (inferred) limit shows the last MEASURED percentage — never a synthetic
+    /// 100: a fake 100 on the tile caused manual account switches costing
+    /// ~10-15% of every concurrent session's quota (2026-08-12 incident; the
+    /// account was measured at 89% during its own "100%" stamp). The suspected
+    /// state is conveyed by COLOR/badge, not by the number. Server-affirmed
+    /// stamps still display 100 — the server said the account is out.
+    /// Decision seams (auto-switch trigger, candidate gating, scheduler heat)
+    /// keep reading `effectiveSessionPercentage`.
+    var displaySessionPercentage: Double {
+        if isSuspectedRateLimited {
+            return sessionResetTime < Date() ? 0.0 : sessionPercentage
+        }
+        return effectiveSessionPercentage
+    }
+
     /// False when the PROVIDER has no session-scale window at all — Grok has
     /// always been weekly-only, and Codex became weekly-only when OpenAI
     /// collapsed the old 5h primary / weekly secondary pair into a single

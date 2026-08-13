@@ -1366,14 +1366,15 @@ private func observeCredentialChanges() {
                 }
 
 
-                // While an account-level throttle is in force the usage endpoint
-                // keeps 429ing — don't burn the sweep's rate-limit budget on it.
-                // The stamp keeps the account reported as exhausted; fetching
-                // resumes automatically once the Retry-After expires (and a
-                // still-throttled account just gets a fresh stamp). Only the
-                // CLAUDE usage fetch is skipped — the API-console fetch below
-                // hits a different, unthrottled endpoint and must keep flowing.
-                let usageThrottled = profile.claudeUsage?.rateLimitedUntil.map { $0 > Date() } ?? false
+                // While a SERVER-AFFIRMED account throttle is in force the
+                // endpoint told us when to come back — don't burn the budget.
+                // An INFERRED (suspected) stamp is the opposite: keep fetching,
+                // because the next fetch IS the confirmation — a 200 replaces
+                // the usage wholesale and clears the suspicion instantly
+                // (skipping suspects for the stamp's 5 min was what made the
+                // false "100%" sticky — consult verdict, 2026-08-12).
+                let usageThrottled = (profile.claudeUsage?.rateLimitedUntil.map { $0 > Date() } ?? false)
+                    && profile.claudeUsage?.rateLimitedInferred != true
                 let burstBackoffUntil = burstBackoffs[profile.id]?.until
                 let usageBackedOff = burstBackoffUntil.map { $0 > Date() } ?? false
                 // A dead-flagged CLI login whose access token is ALSO expired
@@ -1491,11 +1492,15 @@ private func observeCredentialChanges() {
                             // retry-after:0 incident — see the inferred-throttle
                             // section).
                             self.registerBurstBackoff(for: profile, retryAfter: appError.retryAfterSeconds)
+                            let isActiveAccount = profile.id == self.profileManager.activeProfile?.id
+                                || profile.id == self.profileManager.activeClaudeProfileId
                             if profile.providerKind == .claude,
                                let streak = self.burstBackoffs[profile.id]?.streak,
                                Self.shouldInferAccountThrottle(
                                    streak: streak,
                                    profileId: profile.id,
+                                   isActiveAccount: isActiveAccount,
+                                   cachedUsage: profile.claudeUsage,
                                    lastClaudeSuccess: self.lastClaudeUsageSuccess,
                                    now: Date()
                                ) {
@@ -1935,7 +1940,11 @@ private func observeCredentialChanges() {
             LoggingService.shared.log("MenuBarManager: manual refresh skipped — no refreshable target profile")
             return
         }
-        if target.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false {
+        // Only a SERVER-AFFIRMED throttle blocks a manual refresh; a suspected
+        // (inferred) stamp must let the click through — the user's fetch is
+        // exactly the confirmation/clearing probe.
+        if (target.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false)
+            && target.claudeUsage?.rateLimitedInferred != true {
             LoggingService.shared.log("MenuBarManager: manual refresh for '\(target.name)' skipped — account-level throttle until \(target.claudeUsage?.rateLimitedUntil ?? Date())")
             return
         }
@@ -2015,6 +2024,8 @@ private func observeCredentialChanges() {
                        Self.shouldInferAccountThrottle(
                            streak: streak,
                            profileId: profile.id,
+                           isActiveAccount: isActiveAccount,
+                           cachedUsage: profile.claudeUsage,
                            lastClaudeSuccess: self.lastClaudeUsageSuccess,
                            now: Date()
                        ) {
@@ -2146,7 +2157,11 @@ private func observeCredentialChanges() {
     /// between selection and the profile's turn — and they alone cover the
     /// PRIORITY profiles, which bypass this scheduler.
     private func isBackgroundFetchIneligible(_ profile: Profile) -> Bool {
-        if profile.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false { return true }
+        // Server-affirmed throttles only: a SUSPECTED (inferred) profile stays
+        // eligible — its stamp also reads as hot to the scheduler, so it gets
+        // re-probed at priority and one 200 clears the suspicion.
+        if (profile.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false)
+            && profile.claudeUsage?.rateLimitedInferred != true { return true }
         if burstBackoffs[profile.id].map({ $0.until > Date() }) ?? false { return true }
         // Background candidates are never the active-Claude profile, so unlike
         // the in-loop check no active-profile exemption is needed here.
@@ -2242,24 +2257,54 @@ private func observeCredentialChanges() {
     /// the TTL: the stamp's expiry re-probes at hot priority and one success
     /// clears everything.
     nonisolated static let inferredThrottleMinStreak = 2
+    /// The ACTIVE profile is fetched every sweep, so its 429 streaks accumulate
+    /// fastest and it is the most exposed to per-IP collisions — it needs one
+    /// more consecutive refusal before suspicion (consult verdict, 2026-08-12).
+    nonisolated static let inferredThrottleActiveMinStreak = 3
     nonisolated static let inferredThrottleControlWindow: TimeInterval = 90
     nonisolated static let inferredThrottleTTL: TimeInterval = 300
+    /// Precision gate on the cached usage: exhaustion minutes after a FRESH
+    /// low reading is implausible (a 5h window does not jump 45pp in one
+    /// backoff interval — the 'BBR' false positive was cached at 8-55%). A
+    /// fresh cache must already read near a limit before suspicion; a cache
+    /// older than `inferredThrottleStaleCacheAge` proves nothing either way
+    /// (the frozen-74% case) and does not block.
+    nonisolated static let inferredThrottleFreshCacheFloor: Double = 85
+    nonisolated static let inferredThrottleStaleCacheAge: TimeInterval = 15 * 60
 
-    /// True when a burst-class 429 (no usable Retry-After) should be treated
-    /// as an account-level throttle anyway: the profile's consecutive-429
-    /// streak reached `inferredThrottleMinStreak` (streak attempts are spaced
-    /// by the exponential backoff, so streak 2 spans ≥ ~2 min of persistent
-    /// refusal) AND a DIFFERENT Claude profile fetched successfully within
-    /// `inferredThrottleControlWindow` — proof the shared IP is healthy.
+    /// True when a burst-class 429 (no usable Retry-After) marks this profile
+    /// SUSPECTED rate-limited: the consecutive-429 streak reached the floor
+    /// (attempts are backoff-spaced, so streaks span minutes of persistent
+    /// refusal; the active profile needs one more), a DIFFERENT Claude profile
+    /// fetched successfully within `inferredThrottleControlWindow` (the shared
+    /// IP is not fully saturated), AND the cached usage is consistent with
+    /// exhaustion (near a limit, or too stale to say). This is deliberately
+    /// EVIDENCE OF SUSPICION, not proof: a live probe measured 89% on an
+    /// account DURING its own inferred stamp (2026-08-12) — the endpoint
+    /// flaps per-request under ambient IP load, so a suspect is displayed
+    /// with its real number + a distinct color, kept out of switch-target
+    /// candidacy, and re-fetched (never fetch-skipped) until a 200 clears it.
     nonisolated static func shouldInferAccountThrottle(
         streak: Int,
         profileId: UUID,
+        isActiveAccount: Bool,
+        cachedUsage: ClaudeUsage?,
         lastClaudeSuccess: (profileId: UUID, at: Date)?,
         now: Date
     ) -> Bool {
-        guard streak >= inferredThrottleMinStreak else { return false }
+        let minStreak = isActiveAccount ? inferredThrottleActiveMinStreak : inferredThrottleMinStreak
+        guard streak >= minStreak else { return false }
         guard let success = lastClaudeSuccess, success.profileId != profileId else { return false }
-        return now.timeIntervalSince(success.at) <= inferredThrottleControlWindow
+        guard now.timeIntervalSince(success.at) <= inferredThrottleControlWindow else { return false }
+        // Fresh cache far from every limit → refusal is IP noise, not exhaustion.
+        if let cached = cachedUsage,
+           now.timeIntervalSince(cached.lastUpdated) < inferredThrottleStaleCacheAge {
+            let nearSession = cached.effectiveSessionPercentage >= inferredThrottleFreshCacheFloor
+            let nearWeekly = max(cached.weeklyPercentage, cached.fableWeeklyPercentage ?? 0)
+                >= inferredThrottleFreshCacheFloor
+            guard nearSession || nearWeekly else { return false }
+        }
+        return true
     }
 
     /// Apply a synthetic account-throttle stamp (no server Retry-After to
@@ -2271,9 +2316,11 @@ private func observeCredentialChanges() {
         var usage = profile.claudeUsage ?? .empty
         usage.rateLimitedUntil = Date().addingTimeInterval(Self.inferredThrottleTTL)
         usage.rateLimitedInferred = true
-        usage.lastUpdated = Date()
+        // Deliberately NOT touching lastUpdated: no measurement happened, and
+        // bumping it made a stale reading look fresh (masking the staleness
+        // from the pre-switch verification and the popover's age display).
         profileManager.saveClaudeUsage(usage, for: profile.id)
-        LoggingService.shared.log("MenuBarManager: '\(profile.name)' inferred ACCOUNT-level throttle — \(streak) consecutive 429s while other accounts fetch fine; treating as exhausted for \(Int(Self.inferredThrottleTTL))s")
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' SUSPECTED rate-limited — \(streak) consecutive 429s while other accounts fetch fine; displaying last measured %, excluded as a switch target, re-probing until a fetch succeeds")
         return usage
     }
 
@@ -2425,12 +2472,16 @@ private func observeCredentialChanges() {
         let fromName = currentProfile.name
         Task {
             var excluded: Set<UUID> = []
-            while let nextProfile = self.popQueuedSwitchTarget(
-                provider: currentProfile.providerKind,
-                excluding: excluded,
-                sessionThreshold: sessionThreshold,
-                weeklyThreshold: weeklyThreshold
-            ) ?? self.findNextAvailableProfile(after: currentProfile, excluding: excluded) {
+            while true {
+                let queuedTarget = self.peekQueuedSwitchTarget(
+                    provider: currentProfile.providerKind,
+                    excluding: excluded,
+                    sessionThreshold: sessionThreshold,
+                    weeklyThreshold: weeklyThreshold
+                )
+                guard let nextProfile = queuedTarget
+                    ?? self.findNextAvailableProfile(after: currentProfile, excluding: excluded) else { break }
+                let cameFromQueue = queuedTarget?.id == nextProfile.id
                 // Re-check at every iteration: a switch that started after the
                 // guard above (other provider, user click) must not be stacked —
                 // retry cleanly on the next sweep instead of walking candidates
@@ -2486,6 +2537,17 @@ private func observeCredentialChanges() {
                 LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
 
                 if await self.profileManager.activateProfile(nextProfile.id) {
+                    // Consume the queue entry only now — the switch landed.
+                    if cameFromQueue {
+                        self.consumeQueuedSwitchTarget(nextProfile.id)
+                    }
+                    // activateProfile just recorded the switch; enrich it with
+                    // what only this walk knows (queued attribution + trigger
+                    // measurements).
+                    SharedDataStore.shared.amendLastSwitchEvent(
+                        trigger: cameFromQueue ? .queued : .auto,
+                        reason: "session \(Int(usage.effectiveSessionPercentage))% / weekly \(Int(usage.weeklyPercentage))% crossed threshold"
+                    )
                     // Send notification
                     NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextProfile.name)
                     return
@@ -2723,49 +2785,78 @@ private func observeCredentialChanges() {
         return nil
     }
 
-    /// Pops the next queued auto-switch target for this provider. The queue is
-    /// CONSUMABLE: entry #1 is the immediate next switch target, and every entry
-    /// is spent when tried — a queued account that turns out ineligible
-    /// (deleted, excluded this walk, dead, or already over a threshold) is
-    /// consumed and skipped, never retried forever. Entries for OTHER providers
-    /// stay queued for their own provider's switch. Empty queue → nil → the
-    /// caller falls back to the default soonest-weekly-reset walk.
-    private func popQueuedSwitchTarget(
+    /// Selects the next queued auto-switch target for this provider WITHOUT
+    /// consuming it. The queue is consumed ONLY on successful activation
+    /// (`consumeQueuedSwitchTarget`) — the original consume-on-try semantics
+    /// silently emptied a user's queued handoff plan: an entry was popped
+    /// before the `isSwitchingProfile` abort, and a queued target wearing a
+    /// FALSE inferred "100%" looked headroom-less and was eaten (both paths
+    /// confirmed by the 2026-08-12 consult; the owner's queued account
+    /// vanished without ever being activated). Deleted profiles are the only
+    /// entries dropped here. An entry that is ineligible RIGHT NOW (excluded
+    /// this walk, dead, no headroom) is skipped but stays queued for the next
+    /// walk. Returns the selected profile and the cleaned queue to persist.
+    nonisolated static func selectQueuedSwitchTarget(
+        queue: [UUID],
+        profiles: [Profile],
+        provider: Profile.ProviderKind,
+        excluding: Set<UUID>,
+        isEligible: (Profile) -> Bool
+    ) -> (target: Profile?, cleanedQueue: [UUID]) {
+        var cleaned: [UUID] = []
+        var target: Profile? = nil
+        for id in queue {
+            guard let profile = profiles.first(where: { $0.id == id }) else {
+                continue  // profile was deleted — drop the entry
+            }
+            cleaned.append(id)
+            guard target == nil,
+                  profile.providerKind == provider,
+                  !excluding.contains(profile.id),
+                  isEligible(profile) else { continue }
+            target = profile
+        }
+        return (target, cleaned)
+    }
+
+    private func peekQueuedSwitchTarget(
         provider: Profile.ProviderKind,
         excluding: Set<UUID>,
         sessionThreshold: Double,
         weeklyThreshold: Double
     ) -> Profile? {
-        var queue = SharedDataStore.shared.loadAutoSwitchQueue()
+        let queue = SharedDataStore.shared.loadAutoSwitchQueue()
         guard !queue.isEmpty else { return nil }
-        defer { SharedDataStore.shared.saveAutoSwitchQueue(queue) }
-
-        var index = 0
-        while index < queue.count {
-            let id = queue[index]
-            guard let profile = profileManager.profiles.first(where: { $0.id == id }) else {
-                queue.remove(at: index)  // profile was deleted — drop the entry
-                continue
+        let now = Date()
+        let (target, cleaned) = Self.selectQueuedSwitchTarget(
+            queue: queue,
+            profiles: profileManager.profiles,
+            provider: provider,
+            excluding: excluding,
+            isEligible: { profile in
+                profile.hasUsageCredentials
+                    && hasSessionHeadroom(profile, threshold: sessionThreshold)
+                    && hasWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now)
+                    && hasFableWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now)
             }
-            guard profile.providerKind == provider else {
-                index += 1  // another provider's turn will consume it
-                continue
-            }
-            // This provider's head entry: consume it now, whatever happens next.
-            queue.remove(at: index)
-            let now = Date()
-            guard !excluding.contains(profile.id),
-                  profile.hasUsageCredentials,
-                  hasSessionHeadroom(profile, threshold: sessionThreshold),
-                  hasWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now),
-                  hasFableWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now) else {
-                LoggingService.shared.log("AutoSwitch: queued '\(profile.name)' is not usable right now (dead, excluded, or no headroom) — consumed, trying next")
-                continue
-            }
-            LoggingService.shared.log("AutoSwitch: taking queued target '\(profile.name)' (\(queue.count) left in queue)")
-            return profile
+        )
+        if cleaned != queue {
+            SharedDataStore.shared.saveAutoSwitchQueue(cleaned)
         }
-        return nil
+        if let target {
+            LoggingService.shared.log("AutoSwitch: queued target '\(target.name)' selected (consumed only if the switch lands)")
+        }
+        return target
+    }
+
+    /// Removes a queue entry AFTER its activation succeeded — the only
+    /// consumption path.
+    private func consumeQueuedSwitchTarget(_ id: UUID) {
+        var queue = SharedDataStore.shared.loadAutoSwitchQueue()
+        guard let index = queue.firstIndex(of: id) else { return }
+        queue.remove(at: index)
+        SharedDataStore.shared.saveAutoSwitchQueue(queue)
+        LoggingService.shared.log("AutoSwitch: queued target consumed after successful switch (\(queue.count) left in queue)")
     }
 
     /// True when the account's WEEKLY quota is at/over the auto-switch weekly

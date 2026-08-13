@@ -128,7 +128,9 @@ class NotificationManager {
             return
         }
 
-        let sessionPercentage = usage.effectiveSessionPercentage
+        // Display seam: a SUSPECTED (inferred) rate limit must not fire the
+        // "100% reached" usage alerts on an unverified signal.
+        let sessionPercentage = usage.displaySessionPercentage
         let previousPercentage = previousSessionPercentages[profileName] ?? 0.0
 
         // Check for session reset (went from >0% to 0%)

@@ -737,7 +737,7 @@ struct SmartUsageDashboard: View {
                 UsageRow(
                     title: "menubar.session_usage".localized,
                     subtitle: "menubar.5_hour_window".localized,
-                    usedPercentage: usage.effectiveSessionPercentage,
+                    usedPercentage: usage.displaySessionPercentage,
                     showRemaining: showRemainingPercentage,
                     resetTime: usage.sessionResetTime,
                     periodDuration: Constants.sessionWindow,
@@ -746,6 +746,21 @@ struct SmartUsageDashboard: View {
                     usePaceColoring: usePaceColoring,
                     timeDisplay: timeDisplay
                 )
+                // Data-quality caveat, not a usage level: the number above is
+                // the last MEASURED value — the endpoint is refusing reads,
+                // which MAY be a shared rate limit rather than exhaustion.
+                if usage.isSuspectedRateLimited {
+                    Label {
+                        Text("popover.suspected_rate_limited".localized(
+                            with: usage.lastUpdated.formatted(date: .omitted, time: .shortened)
+                        ))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundColor(.purple)
+                    }
+                }
             }
 
             // All Models (Weekly)

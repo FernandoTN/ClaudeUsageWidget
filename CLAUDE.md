@@ -203,25 +203,43 @@ through two detectors:
   is live (propagating to tiles, popover, auto-switch trigger AND candidate
   eligibility through the one shared seam), and sweeps skip fetching the
   throttled profile until the stamp expires.
-- **Inferred (2026-08-11 incident)**: exhausted accounts were also observed
-  refusing usage reads with `retry-after: 0` — indistinguishable from per-IP
-  burst noise by header alone (a tile froze at a stale 74% while the account
-  had zero capacity). `shouldInferAccountThrottle` stamps anyway when the
-  profile's consecutive-429 streak reaches 2 (attempts are backoff-spaced, so
-  that spans minutes) AND a different Claude profile fetched successfully
-  within the last 90s — proof the shared IP is healthy, so the refusal
-  follows the account. The synthetic stamp lives 5 min and self-heals: expiry
-  re-probes at hot scheduler priority and one success clears everything.
-  **An inferred stamp (`ClaudeUsage.rateLimitedInferred`) never DISPLACES the
-  active account**: switching the shared CLI login invalidates every
-  concurrent session's prompt cache (~10-15% of quota re-reading context),
-  so `autoSwitchTriggerUsage` strips inferred stamps before the switch
-  trigger evaluates — only a MEASURED percentage or a server-affirmed
-  (header-based) stamp may switch away (the same-day 'BBR' switch at a real
-  ~40% session is the incident). Candidate-side headroom checks keep seeing
-  the stamp, so a suspect account is still never switched INTO. An inferred
-  stamp on an active account instead sends a one-shot-per-episode
-  notification so the user decides.
+- **Inferred / SUSPECTED (2026-08-11/12 incidents)**: exhausted accounts were
+  also observed refusing usage reads with `retry-after: 0` — indistinguishable
+  from per-IP burst noise by header alone (a tile froze at a stale 74% while
+  the account had zero capacity). But the reverse also happened: a live probe
+  measured 89% on an account DURING its own inferred stamp — the endpoint
+  flaps per-request under ambient IP load, so the inference is **evidence of
+  suspicion, never proof of exhaustion**. `shouldInferAccountThrottle` marks a
+  profile suspected when its consecutive-429 streak reaches 2 (3 for the
+  ACTIVE profile — it fetches every sweep and collides with the IP cap first),
+  a different Claude profile fetched successfully within the last 90s, AND the
+  cached usage is consistent with exhaustion (fresh cache must already read
+  ≥85% on some window; a stale cache >15 min old proves nothing and does not
+  block). What a suspected stamp (`ClaudeUsage.rateLimitedInferred`) does:
+  - **Display shows the last MEASURED value, never a synthetic 100**
+    (`ClaudeUsage.displaySessionPercentage`) — the tile label turns PURPLE
+    (data-quality tint, precedence: weekly-maxed red > suspected purple >
+    active cyan) and the popover explains; a fake 100% caused a costly manual
+    switch (~10-15% of every concurrent session's quota re-reading context).
+  - **Never fetch-skipped**: sweeps and manual refresh keep fetching a
+    suspect — the next fetch IS the confirmation; a 200 clears everything
+    (only server-affirmed stamps skip fetches, they carry a real Retry-After).
+  - **Never displaces the active account**: `autoSwitchTriggerUsage` strips
+    inferred stamps before the switch trigger; only a measured percentage or
+    a server-affirmed stamp may switch away. Candidate headroom checks DO see
+    the stamp, so a suspect is never switched INTO. Active account gets a
+    one-shot-per-episode notification; `lastUpdated` is never bumped by a
+    stamp (no fake freshness).
+
+**Switch forensics + queue**: every successful `activateProfile` records a
+`SwitchEvent` (from/to/trigger/reason) into a 30-entry ring buffer
+(`SharedDataStore.recordSwitchEvent`, key `switchHistory_v1`) — the unified
+log persists nothing for this process, so this is the only durable answer to
+"which account was active before". The auto-switch queue (`autoSwitchQueue`)
+is consumed ONLY on successful activation (`consumeQueuedSwitchTarget`);
+entries ineligible right now stay queued for later walks, and only deleted
+profiles are dropped (the old consume-on-try semantics silently ate a user's
+queued handoff plan when the target wore a false inferred "100%").
 
 A burst-class 429 that doesn't (yet) meet the inference bar still stops the
 sweep from re-fetching every 30s (a real profile drew 90 identical 429s in an

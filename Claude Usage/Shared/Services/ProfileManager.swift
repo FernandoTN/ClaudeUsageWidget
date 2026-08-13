@@ -244,6 +244,10 @@ class ProfileManager: ObservableObject {
         switchingSemaphore = true
         isSwitchingProfile = true
 
+        // Captured before any state changes — the history record needs the
+        // OUTGOING account, and activeProfile is rewritten mid-switch.
+        let outgoingNameForHistory = activeProfile?.name
+
         LoggingService.shared.log("Switching to profile: \(profile.name)")
 
         // Provider-scoped handoff: activating a profile only replaces the shared
@@ -442,6 +446,17 @@ class ProfileManager: ObservableObject {
         if userInitiated {
             NotificationCenter.default.post(name: .profileManuallyActivated, object: id)
         }
+
+        // Persist the switch for forensics — the unified log keeps nothing for
+        // this process, so this ring buffer is the only durable record of who
+        // was active before a switch (a real reconstruction need, 2026-08-12).
+        SharedDataStore.shared.recordSwitchEvent(SwitchEvent(
+            at: Date(),
+            from: outgoingNameForHistory ?? "none",
+            to: updatedProfile.name,
+            trigger: userInitiated ? .manual : .auto,
+            reason: nil
+        ))
 
         LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
         return true
