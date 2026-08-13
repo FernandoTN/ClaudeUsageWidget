@@ -121,6 +121,23 @@ final class StatusBarUIManager {
     /// reads well on the dark bar (and distinct from the red critical bar fill).
     static let weeklyMaxedLabelColor = NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.45, alpha: 1.0)
 
+    /// Label tint for a SUSPECTED rate-limited account (inferred, unverified).
+    /// Purple is deliberately outside the usage-status palette (green/orange/
+    /// red = capacity, cyan = active, light-red = weekly-maxed): it marks DATA
+    /// QUALITY, not usage level — the percentage shown is the last measured
+    /// value, possibly stale, because the endpoint keeps refusing reads.
+    static let suspectedLabelColor = NSColor.systemPurple
+
+    /// One precedence order for the tile label tint. Weekly-maxed outranks
+    /// suspected (a hard, week-long fact beats a transient suspicion);
+    /// suspected outranks the active-account cyan (data quality is the rarer,
+    /// more actionable signal).
+    private func tileLabelColor(isWeeklyMaxed: Bool, isSuspected: Bool, isActiveAccount: Bool) -> NSColor? {
+        if isWeeklyMaxed { return Self.weeklyMaxedLabelColor }
+        if isSuspected { return Self.suspectedLabelColor }
+        return isActiveAccount ? NSColor.systemCyan : nil
+    }
+
     /// Multi-profile progress-bar width used by the renderer for marker ticks
     /// (`round(barWidth * fraction)`). Shared so the render-key quantizes identically.
     private static let multiProfileBarWidth: CGFloat = 24
@@ -149,6 +166,10 @@ final class StatusBarUIManager {
         var appearanceName: String
         /// Active accounts render a highlighted label — a switch must repaint them
         var isActiveAccount: Bool
+        /// Suspected-rate-limited tint (purple label) — a suspicion transition
+        /// must repaint even when the displayed numbers are unchanged, or the
+        /// skip-not-replace path leaves the previous tint on screen.
+        var isSuspected: Bool
         /// Weekly-maxed accounts render a light-red label
         var isWeeklyMaxed: Bool
         /// Backing scale × 100 when reachable, else 0
@@ -993,6 +1014,7 @@ final class StatusBarUIManager {
             let renderAppearance = groupAppearance
             let isActiveAccount = activeIds.contains(profile.id)
             let isWeeklyMaxed = MenuBarManager.isWeeklyMaxed(profile.claudeUsage, weeklyThreshold: weeklyMaxThreshold)
+            let isSuspected = profile.claudeUsage?.isSuspectedRateLimited ?? false
             let menuBarIsDark = renderAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
             // Get usage data for this profile
@@ -1006,8 +1028,12 @@ final class StatusBarUIManager {
             let weeklyOnly = !usage.providesSessionWindow
             let showWeekSlot = config.showWeek && !weeklyOnly
 
-            // Calculate percentages
-            let sessionUsed = weeklyOnly ? usage.weeklyPercentage : usage.effectiveSessionPercentage
+            // Calculate percentages. Display uses displaySessionPercentage:
+            // a SUSPECTED (inferred, unverified) rate limit shows the last
+            // MEASURED value — a synthetic 100% here caused a costly manual
+            // account switch on a false signal (2026-08-12). The suspicion is
+            // conveyed by the label color below, not by faking the number.
+            let sessionUsed = weeklyOnly ? usage.weeklyPercentage : usage.displaySessionPercentage
             let weekUsed = usage.weeklyPercentage
 
             let sessionDisplay = UsageStatusCalculator.getDisplayPercentage(
@@ -1100,6 +1126,7 @@ final class StatusBarUIManager {
                 config: config,
                 appearanceName: renderAppearance.name.rawValue,
                 isActiveAccount: isActiveAccount,
+                isSuspected: isSuspected,
                 isWeeklyMaxed: isWeeklyMaxed,
                 backingScaleQ: Int((backingScale * 100).rounded())
             )
@@ -1132,7 +1159,7 @@ final class StatusBarUIManager {
                         profileName: profile.menuBarDisplayName,
                         monochromeMode: useMonochrome,
                         isDarkMode: menuBarIsDark,
-                        activeLabelColor: isWeeklyMaxed ? Self.weeklyMaxedLabelColor : (isActiveAccount ? NSColor.systemCyan : nil),
+                        activeLabelColor: tileLabelColor(isWeeklyMaxed: isWeeklyMaxed, isSuspected: isSuspected, isActiveAccount: isActiveAccount),
                         useSystemColor: false,
                         sessionTimeMarker: sessionMarker,
                         weekTimeMarker: showWeekSlot ? weekMarker : nil,
@@ -1149,7 +1176,7 @@ final class StatusBarUIManager {
                         profileInitial: String(profile.name.prefix(1)),
                         monochromeMode: useMonochrome,
                         isDarkMode: menuBarIsDark,
-                        activeLabelColor: isWeeklyMaxed ? Self.weeklyMaxedLabelColor : (isActiveAccount ? NSColor.systemCyan : nil),
+                        activeLabelColor: tileLabelColor(isWeeklyMaxed: isWeeklyMaxed, isSuspected: isSuspected, isActiveAccount: isActiveAccount),
                         useSystemColor: false,
                         sessionTimeMarker: sessionMarker,
                         weekTimeMarker: showWeekSlot ? weekMarker : nil,
@@ -1167,7 +1194,7 @@ final class StatusBarUIManager {
                     profileName: config.showProfileLabel ? profile.menuBarDisplayName : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
-                    activeLabelColor: isWeeklyMaxed ? Self.weeklyMaxedLabelColor : (isActiveAccount ? NSColor.systemCyan : nil),
+                    activeLabelColor: tileLabelColor(isWeeklyMaxed: isWeeklyMaxed, isSuspected: isSuspected, isActiveAccount: isActiveAccount),
                     useSystemColor: false,
                     sessionTimeMarker: sessionMarker,
                     weekTimeMarker: showWeekSlot ? weekMarker : nil,
@@ -1182,7 +1209,7 @@ final class StatusBarUIManager {
                     profileInitial: config.showProfileLabel ? String(profile.name.prefix(1)) : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
-                    activeLabelColor: isWeeklyMaxed ? Self.weeklyMaxedLabelColor : (isActiveAccount ? NSColor.systemCyan : nil),
+                    activeLabelColor: tileLabelColor(isWeeklyMaxed: isWeeklyMaxed, isSuspected: isSuspected, isActiveAccount: isActiveAccount),
                     useSystemColor: false,
                     paceStatus: sessionPaceStatus,
                     showPaceMarker: config.showPaceMarker
@@ -1196,7 +1223,7 @@ final class StatusBarUIManager {
                     profileName: config.showProfileLabel ? profile.menuBarDisplayName : nil,
                     monochromeMode: useMonochrome,
                     isDarkMode: menuBarIsDark,
-                    activeLabelColor: isWeeklyMaxed ? Self.weeklyMaxedLabelColor : (isActiveAccount ? NSColor.systemCyan : nil),
+                    activeLabelColor: tileLabelColor(isWeeklyMaxed: isWeeklyMaxed, isSuspected: isSuspected, isActiveAccount: isActiveAccount),
                     useSystemColor: false,
                     sessionPaceStatus: sessionPaceStatus,
                     weekPaceStatus: showWeekSlot ? weekPaceStatus : nil,

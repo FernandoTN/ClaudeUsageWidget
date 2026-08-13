@@ -234,6 +234,47 @@ class SharedDataStore {
         }
     }
 
+    // MARK: - Switch History
+
+    private enum SwitchHistoryKeys {
+        static let history = "switchHistory_v1"
+        static let capacity = 30
+    }
+
+    /// Appends a switch record, keeping the newest `capacity` entries. The
+    /// unified log persists nothing for this process, so this ring buffer is
+    /// the only durable answer to "which account was active before, and why
+    /// did it change" — never store credentials or tokens in it.
+    func recordSwitchEvent(_ event: SwitchEvent) {
+        var history = loadSwitchHistory()
+        history.append(event)
+        if history.count > SwitchHistoryKeys.capacity {
+            history.removeFirst(history.count - SwitchHistoryKeys.capacity)
+        }
+        if let data = try? JSONEncoder().encode(history) {
+            defaults.set(data, forKey: SwitchHistoryKeys.history)
+        }
+    }
+
+    /// Enriches the newest record with attribution only the caller knows
+    /// (queued-vs-ranked selection, trigger measurements) — the base record is
+    /// written by the single activation seam, which lacks that context.
+    func amendLastSwitchEvent(trigger: SwitchEvent.Trigger, reason: String?) {
+        var history = loadSwitchHistory()
+        guard var last = history.last else { return }
+        last.trigger = trigger
+        last.reason = reason ?? last.reason
+        history[history.count - 1] = last
+        if let data = try? JSONEncoder().encode(history) {
+            defaults.set(data, forKey: SwitchHistoryKeys.history)
+        }
+    }
+
+    func loadSwitchHistory() -> [SwitchEvent] {
+        guard let data = defaults.data(forKey: SwitchHistoryKeys.history) else { return [] }
+        return (try? JSONDecoder().decode([SwitchEvent].self, from: data)) ?? []
+    }
+
     // MARK: - Auto-Switch Queue
 
     private enum QueueKeys {
