@@ -301,6 +301,33 @@ class NotificationManager {
         }
     }
 
+    /// The ACTIVE account's burn-rate PROJECTION crossed the auto-switch
+    /// threshold while its usage endpoint keeps refusing reads. The switch
+    /// trigger itself stays measured-only (a projection must never spend the
+    /// fleet-wide prompt-cache cost of a switch), so the user gets the signal
+    /// and makes the call.
+    func sendProjectedExhaustionNotification(profileName: String, projectedPercentage: Double) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.projected_exhaustion.title".localized
+        content.body = "notification.projected_exhaustion.message".localized(
+            with: profileName, Int(projectedPercentage.rounded())
+        )
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "projected_exhaustion_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send projected-exhaustion notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Claude Code login is dead (expired access token
     /// and revoked/consumed refresh token) and needs `/login` + a re-sync.
     func sendClaudeReloginNotification(profileName: String) {

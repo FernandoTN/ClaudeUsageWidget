@@ -216,11 +216,19 @@ through two detectors:
   cached usage is consistent with exhaustion (fresh cache must already read
   ≥85% on some window; a stale cache >15 min old proves nothing and does not
   block). What a suspected stamp (`ClaudeUsage.rateLimitedInferred`) does:
-  - **Display shows the last MEASURED value, never a synthetic 100**
-    (`ClaudeUsage.displaySessionPercentage`) — the tile label turns PURPLE
-    (data-quality tint, precedence: weekly-maxed red > suspected purple >
-    active cyan) and the popover explains; a fake 100% caused a costly manual
-    switch (~10-15% of every concurrent session's quota re-reading context).
+  - **Display shows the last MEASURED value — or, when the account was
+    visibly burning, a BURN-RATE PROJECTION — never a synthetic 100**
+    (`ClaudeUsage.displaySessionPercentage`, `projectedSessionPercentage`) —
+    the tile label turns PURPLE (data-quality tint, precedence: weekly-maxed
+    red > suspected purple > active cyan) and the popover explains; a fake
+    100% caused a costly manual switch (~10-15% of every concurrent session's
+    quota re-reading context), while a FROZEN measured value under-reported
+    ('Commits' displayed 67% for 22 blind minutes at a real 100%,
+    2026-08-12). `projectSessionPercentage` extrapolates from the last
+    measured samples (needs ≥2 points ≥25s apart, rising ≥0.2pp/min, same
+    session window; clamps at 100); the ACTIVE account's projection crossing
+    the switch threshold fires a one-shot notification — the switch trigger
+    itself stays measured-only.
   - **Never fetch-skipped**: sweeps and manual refresh keep fetching a
     suspect — the next fetch IS the confirmation; a 200 clears everything
     (only server-affirmed stamps skip fetches, they carry a real Retry-After).
@@ -244,9 +252,12 @@ queued handoff plan when the target wore a false inferred "100%").
 A burst-class 429 that doesn't (yet) meet the inference bar still stops the
 sweep from re-fetching every 30s (a real profile drew 90 identical 429s in an
 hour): `registerBurstBackoff` backs that profile's usage fetch off
-exponentially (2min doubling to an 8min cap — 2min for active accounts —
-in-memory, cleared by the first successful fetch; a manual popover refresh
-expires the wait but keeps the streak).
+exponentially (2min doubling to an 8min cap for background profiles;
+the ACTIVE account retries EVERY SWEEP — 30s cap — because its usage moves
+fastest exactly when the shared IP is busiest, and exhausted accounts DO
+answer usage reads ('Memori' returned 200 at a real 100%), so reading
+through the noise is safe; in-memory, cleared by the first successful
+fetch; a manual popover refresh expires the wait but keeps the streak).
 
 **Menu-bar overflow vs stranded tiles**: when the bar overflows, macOS hides
 the clipped status items and parks them all at one shared off-edge frame —

@@ -238,6 +238,9 @@
 "notification.inferred_throttle.title" = "Can't read usage for the active account";
 "notification.inferred_throttle.message" = "'%@' keeps refusing usage reads. This may be a shared rate limit rather than exhaustion — its tile shows the last measured value with a purple label. No automatic switch will happen on this signal; only switch manually if your sessions are actually blocked.";
 "popover.suspected_rate_limited" = "Couldn't refresh — showing the value measured at %@. This may be a shared rate limit, not exhaustion; retrying automatically.";
+"popover.suspected_projected" = "Couldn't refresh — estimating from the recent burn rate (last measured %d%% at %@). Retrying automatically.";
+"notification.projected_exhaustion.title" = "Active account is likely near its limit";
+"notification.projected_exhaustion.message" = "'%@' is estimated at ~%d%% from its recent burn rate, but usage reads keep failing so this is unconfirmed. No automatic switch happens on an estimate — switch manually if your sessions report rate limits.";
 "notification.claude_relogin.title" = "Claude account needs re-login";
 "notification.claude_relogin.message" = "The saved Claude Code login for '%@' has expired and could not be refreshed. Run `claude` and `/login` with that account, then re-sync it in Settings → CLI Account.";
 "notification.codex_relogin.title" = "Codex account needs re-login";
