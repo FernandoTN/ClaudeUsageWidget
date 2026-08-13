@@ -1323,6 +1323,11 @@ private func observeCredentialChanges() {
                 self.isRefreshing = false
             }
 
+            // Local ground truth first (zero network): transcript rate-limit
+            // tripwire + the CLI's own cached bars. These land before any
+            // fetch so the sweep's skip logic and the auto-switch see them.
+            await self.harvestLocalLimitSignals()
+
             // Per-sweep outcome tracking — the error banners must reflect reality:
             // resetting the failure counters unconditionally at sweep end used to
             // mask a sweep where EVERY profile failed (dead network, revoked
@@ -2198,11 +2203,15 @@ private func observeCredentialChanges() {
     /// keeps 429ing anyway is being refused at the ACCOUNT level.
     private var lastClaudeUsageSuccess: (profileId: UUID, at: Date)?
 
-    /// Recent MEASURED session percentages per profile (in-memory, newest
-    /// last, max `measuredHistoryCapacity`). Feeds the burn-rate projection
-    /// that keeps a suspected profile's display honest while reads fail —
-    /// only real fetch results are recorded, never stamps or projections.
-    private var measuredSessionHistory: [UUID: [(at: Date, pct: Double)]] = [:]
+    /// Recent MEASURED session percentages per profile (newest last, max
+    /// `measuredHistoryCapacity`), PERSISTED via SharedDataStore. Feeds the
+    /// burn-rate projection that keeps a suspected profile's display honest
+    /// while reads fail — only real fetch results are recorded, never stamps
+    /// or projections. Persisted because an in-memory basis died at every
+    /// relaunch: the 2026-08-12 deploy wiped it mid-incident and 'Commits'
+    /// fell back to a frozen 67% (real 100%) with nothing to project from.
+    private lazy var measuredSessionHistory: [UUID: [(at: Date, pct: Double)]] =
+        SharedDataStore.shared.loadMeasuredSessionHistory()
     private static let measuredHistoryCapacity = 4
 
     private func recordMeasuredSession(_ usage: ClaudeUsage, for profileId: UUID) {
@@ -2213,6 +2222,7 @@ private func observeCredentialChanges() {
             history.removeFirst(history.count - Self.measuredHistoryCapacity)
         }
         measuredSessionHistory[profileId] = history
+        SharedDataStore.shared.saveMeasuredSessionHistory(measuredSessionHistory)
     }
 
     /// Best-estimate session percentage while reads fail: the last measured
@@ -2228,6 +2238,12 @@ private func observeCredentialChanges() {
         now: Date
     ) -> Double? {
         guard sessionResetTime > now else { return nil }
+        // Persisted samples can predate the CURRENT 5h window (history now
+        // survives relaunches) — a rate measured across a window rollover
+        // projects garbage. Every sample must belong to the window that
+        // ends at sessionResetTime.
+        let windowStart = sessionResetTime.addingTimeInterval(-Constants.sessionWindow)
+        let history = history.filter { $0.at >= windowStart }
         guard let last = history.last, let first = history.first, history.count >= 2 else { return nil }
         let span = last.at.timeIntervalSince(first.at)
         guard span >= 25 else { return nil }
@@ -2271,6 +2287,113 @@ private func observeCredentialChanges() {
     /// threshold this episode — cleared by the next successful fetch.
     private var projectionNotifiedIds: Set<UUID> = []
 
+    // MARK: - Local Ground-Truth Signals (CLI transcripts + cache)
+
+    /// Scan cursor for the transcript tripwire; events at/before
+    /// `lastTripwireEventAt` are already handled.
+    private var lastTripwireScan: Date = Date().addingTimeInterval(-600)
+    private var lastTripwireEventAt: Date = .distantPast
+
+    /// Harvests Claude Code's own on-disk limit signals at the top of every
+    /// sweep — zero network cost, and immune to the 429 blindness that hits
+    /// the usage endpoint exactly when an account burns hardest:
+    /// - a transcript `error: "rate_limit"` event means a session DIED on the
+    ///   API's own 429 — server-affirmed exhaustion of whichever account
+    ///   owned the shared CLI login at that moment ('Commits' displayed 67%
+    ///   for 35 min while this exact event sat on disk, 2026-08-12);
+    /// - `~/.claude.json`'s cachedUsageUtilization is the CLI's own last
+    ///   usage fetch — adopted as a free measurement when fresher than ours.
+    private func harvestLocalLimitSignals() async {
+        let since = min(lastTripwireScan, Date().addingTimeInterval(-90))
+        lastTripwireScan = Date()
+        let signals = await Task.detached(priority: .utility) {
+            (events: LocalLimitSignalService.scanRateLimitEvents(since: since),
+             cliCache: LocalLimitSignalService.readCLICachedUsage())
+        }.value
+
+        if let event = signals.events.last, event.at > lastTripwireEventAt {
+            lastTripwireEventAt = event.at
+            applyTranscriptRateLimitEvent(event)
+        }
+        if let cache = signals.cliCache {
+            adoptCLICachedUsage(cache)
+        }
+    }
+
+    /// The account that owned the shared CLI login when the event fired: the
+    /// switch history's first switch AFTER the event names who it was taken
+    /// from; no later switch means the current owner. (The event may be
+    /// minutes old — attributing it to the CURRENT owner after the user
+    /// already switched away would exhaust-stamp the wrong account.)
+    private func attributeRateLimitEvent(at eventTime: Date) -> Profile? {
+        let history = SharedDataStore.shared.loadSwitchHistory()
+        if let firstAfter = history.first(where: { $0.at >= eventTime }) {
+            if let profile = profileManager.profiles.first(where: { $0.name == firstAfter.from }),
+               !profile.isCodexOnlyProfile, !profile.isGrokOnlyProfile {
+                return profile
+            }
+            LoggingService.shared.log("MenuBarManager: transcript rate-limit event predates switch '\(firstAfter.from)'→'\(firstAfter.to)' but the outgoing profile is not attributable — dropping event")
+            return nil
+        }
+        let activeId = profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id
+        return profileManager.profiles.first(where: { $0.id == activeId })
+    }
+
+    private func applyTranscriptRateLimitEvent(_ event: LocalLimitSignalService.RateLimitEvent) {
+        guard let profile = attributeRateLimitEvent(at: event.at) else { return }
+        var usage = profile.claudeUsage ?? .empty
+        // Server-affirmed (a real session died on the API's 429): display
+        // reads 100 through the affirmed-stamp seam, sweeps skip until the
+        // window resets, the auto-switch may act on it.
+        usage.rateLimitedUntil = event.resetsAt ?? event.at.addingTimeInterval(1800)
+        usage.rateLimitedInferred = nil
+        usage.projectedSessionPercentage = nil
+        if let resetsAt = event.resetsAt {
+            usage.sessionResetTime = resetsAt
+        }
+        usage.lastUpdated = event.at
+        profileManager.saveClaudeUsage(usage, for: profile.id)
+        LoggingService.shared.log("MenuBarManager: transcript rate-limit event — '\(profile.name)' hit its session limit at \(event.at), resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)")")
+        if profile.id == profileManager.activeProfile?.id
+            || profile.id == profileManager.activeClaudeProfileId {
+            checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
+        }
+    }
+
+    /// Adopts the CLI's cached bars for the profile whose persisted account
+    /// uuid matches — a real measurement (the CLI paid for the fetch), so it
+    /// feeds the projection history and clears suspicion like any 200.
+    private func adoptCLICachedUsage(_ cache: LocalLimitSignalService.CLICachedUsage) {
+        guard let profile = profileManager.profiles.first(where: { $0.claudeAccountUUID == cache.accountUuid }),
+              let sessionPercent = cache.sessionPercent else { return }
+        let currentUpdated = profile.claudeUsage?.lastUpdated ?? .distantPast
+        guard cache.fetchedAt > currentUpdated.addingTimeInterval(5) else { return }
+
+        var usage = profile.claudeUsage ?? .empty
+        usage.sessionPercentage = sessionPercent
+        if let resets = cache.sessionResetsAt { usage.sessionResetTime = resets }
+        if let weekly = cache.weeklyPercent { usage.weeklyPercentage = weekly }
+        if let weeklyResets = cache.weeklyResetsAt { usage.weeklyResetTime = weeklyResets }
+        if let fable = cache.fablePercent { usage.fableWeeklyPercentage = fable }
+        if let fableResets = cache.fableResetsAt { usage.fableWeeklyResetTime = fableResets }
+        // A fresh real measurement supersedes suspicion — same semantics as
+        // a successful fetch of our own.
+        usage.rateLimitedUntil = nil
+        usage.rateLimitedInferred = nil
+        usage.projectedSessionPercentage = nil
+        usage.lastUpdated = cache.fetchedAt
+        profileManager.saveClaudeUsage(usage, for: profile.id)
+        recordMeasuredSession(usage, for: profile.id)
+        burstBackoffs.removeValue(forKey: profile.id)
+        inferredThrottleNotifiedIds.remove(profile.id)
+        projectionNotifiedIds.remove(profile.id)
+        LoggingService.shared.log("MenuBarManager: adopted CLI cached usage for '\(profile.name)' — session \(Int(sessionPercent))% fetched \(Int(-cache.fetchedAt.timeIntervalSinceNow))s ago (zero-cost)", type: .info)
+        if profile.id == profileManager.activeProfile?.id
+            || profile.id == profileManager.activeClaudeProfileId {
+            checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
+        }
+    }
+
     /// Exponential cap is 8 min, not the original 30: the 30-min cap defended
     /// against the pre-refactor sweep re-fetching a 429ing profile every 30s
     /// (90 429s/hour measured). Per-account fetches are now spaced ~5 min by
@@ -2287,14 +2410,20 @@ private func observeCredentialChanges() {
     /// its number gates the auto-switch and its usage moves fastest exactly
     /// when the shared IP is busiest — the old 120s cap, re-armed by each
     /// failed retry, left 'Commits' blind for 22 minutes while parallel
-    /// sessions burned it 67%→100% (2026-08-12). One retry per sweep is a
-    /// single request per 30s for at most one account per provider — within
-    /// the measured per-IP budget. Exhausted accounts answer their usage
-    /// endpoint ('Memori' returned 200 at a real 100%), so reading through
-    /// the noise is safe and is the only way to keep the number honest.
-    /// Background rotation profiles keep the 8-min cap.
-    nonisolated static func burstBackoffCap(isActiveAccount: Bool) -> TimeInterval {
-        isActiveAccount ? 30 : 480
+    /// sessions burned it 67%→100% (2026-08-12). A SUSPECTED profile retries
+    /// within ~2 sweeps (60s) even in the background: persistent 429s follow
+    /// an account whose own sessions saturate its per-org request bucket —
+    /// i.e. the accounts whose numbers are moving — and after the user
+    /// switches away from one it must not go 8-min-blind while still
+    /// burning (the post-switch 'Commits' sat 35 min stale). One retry per
+    /// 30-60s per such account stays within the measured budget. Exhausted
+    /// accounts answer their usage endpoint once their sessions idle
+    /// ('Memori' returned 200 at a real 100%), so reading through the noise
+    /// is safe. Idle background profiles keep the 8-min cap.
+    nonisolated static func burstBackoffCap(isActiveAccount: Bool, isSuspected: Bool) -> TimeInterval {
+        if isActiveAccount { return 30 }
+        if isSuspected { return 60 }
+        return 480
     }
 
     private func registerBurstBackoff(for profile: Profile, retryAfter: TimeInterval? = nil) {
@@ -2302,7 +2431,10 @@ private func observeCredentialChanges() {
         let isActiveAccount = profile.id == profileManager.activeProfile?.id
             || profile.id == profileManager.activeClaudeProfileId
             || profile.id == profileManager.activeCodexProfileId
-        let cap = Self.burstBackoffCap(isActiveAccount: isActiveAccount)
+        let cap = Self.burstBackoffCap(
+            isActiveAccount: isActiveAccount,
+            isSuspected: profile.claudeUsage?.isSuspectedRateLimited ?? false
+        )
         let interval: TimeInterval
         if let retryAfter, retryAfter > 0 {
             // The endpoint SAID when to come back (a seconds-scale, sub-account-
