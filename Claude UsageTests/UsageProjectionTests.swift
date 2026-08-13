@@ -84,6 +84,24 @@ final class UsageProjectionTests: XCTestCase {
         ))
     }
 
+    func testSamplesFromPreviousWindowAreExcluded() {
+        // History persists across relaunches now, so samples can predate the
+        // CURRENT window. A rate computed across a rollover is garbage: with
+        // only one in-window sample left after filtering, project nothing.
+        let resetIn: TimeInterval = 600  // window started 5h - 10min ago
+        XCTAssertNil(MenuBarManager.projectSessionPercentage(
+            history: history([(5 * 3600, 80), (60, 20)]),  // first sample: previous window
+            sessionResetTime: now.addingTimeInterval(resetIn),
+            now: now
+        ))
+        // Both samples in-window → projects normally.
+        XCTAssertNotNil(MenuBarManager.projectSessionPercentage(
+            history: history([(300, 10), (60, 20)]),
+            sessionResetTime: now.addingTimeInterval(resetIn),
+            now: now
+        ))
+    }
+
     // MARK: - Display integration
 
     private func usage(
@@ -124,11 +142,16 @@ final class UsageProjectionTests: XCTestCase {
 
     // MARK: - Active-account backoff cap
 
-    func testActiveAccountRetriesEverySweep() {
-        // 30s cap == one retry per sweep: the number that gates the
-        // auto-switch is never more than ~1 sweep stale behind 429 noise
-        // (the 120s re-arming cap produced a 22-minute blind window).
-        XCTAssertEqual(MenuBarManager.burstBackoffCap(isActiveAccount: true), 30)
-        XCTAssertEqual(MenuBarManager.burstBackoffCap(isActiveAccount: false), 480)
+    func testBackoffCapByRole() {
+        // Active: one retry per sweep — the number that gates the auto-switch
+        // is never more than ~1 sweep stale behind 429 noise (the 120s
+        // re-arming cap produced a 22-minute blind window). Suspected
+        // background profiles retry within ~2 sweeps (their sessions are the
+        // ones saturating their org bucket — i.e. their numbers are moving);
+        // idle background keeps the 8-min cap.
+        XCTAssertEqual(MenuBarManager.burstBackoffCap(isActiveAccount: true, isSuspected: false), 30)
+        XCTAssertEqual(MenuBarManager.burstBackoffCap(isActiveAccount: true, isSuspected: true), 30)
+        XCTAssertEqual(MenuBarManager.burstBackoffCap(isActiveAccount: false, isSuspected: true), 60)
+        XCTAssertEqual(MenuBarManager.burstBackoffCap(isActiveAccount: false, isSuspected: false), 480)
     }
 }

@@ -275,6 +275,43 @@ class SharedDataStore {
         return (try? JSONDecoder().decode([SwitchEvent].self, from: data)) ?? []
     }
 
+    // MARK: - Measured Session History (burn-rate projection basis)
+
+    private enum MeasuredHistoryKeys {
+        static let history = "measuredSessionHistory_v1"
+    }
+
+    /// Persists the per-profile measured session samples the burn-rate
+    /// projection draws from. In-memory-only history died at every relaunch:
+    /// a deploy at 20:47 on 2026-08-12 wiped the basis mid-incident, so a
+    /// suspected profile's display fell back to its frozen last measurement
+    /// (67% at a real 100%). Stored as [uuid: [[epochSeconds, pct]]] — tiny
+    /// (≤4 samples per profile), no credentials.
+    func saveMeasuredSessionHistory(_ history: [UUID: [(at: Date, pct: Double)]]) {
+        let encodable = Dictionary(uniqueKeysWithValues: history.map { key, samples in
+            (key.uuidString, samples.map { [$0.at.timeIntervalSince1970, $0.pct] })
+        })
+        if let data = try? JSONEncoder().encode(encodable) {
+            defaults.set(data, forKey: MeasuredHistoryKeys.history)
+        }
+    }
+
+    func loadMeasuredSessionHistory() -> [UUID: [(at: Date, pct: Double)]] {
+        guard let data = defaults.data(forKey: MeasuredHistoryKeys.history),
+              let decoded = try? JSONDecoder().decode([String: [[Double]]].self, from: data) else {
+            return [:]
+        }
+        var history: [UUID: [(at: Date, pct: Double)]] = [:]
+        for (key, samples) in decoded {
+            guard let id = UUID(uuidString: key) else { continue }
+            history[id] = samples.compactMap { pair in
+                guard pair.count == 2 else { return nil }
+                return (Date(timeIntervalSince1970: pair[0]), pair[1])
+            }
+        }
+        return history
+    }
+
     // MARK: - Auto-Switch Queue
 
     private enum QueueKeys {
