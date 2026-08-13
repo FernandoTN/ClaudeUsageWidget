@@ -1451,7 +1451,7 @@ private func observeCredentialChanges() {
                         sweepSuccesses += 1
                         self.credentialErrorProfileIds.remove(profile.id)
                         self.burstBackoffs.removeValue(forKey: profile.id)
-                        self.recordClaudeUsageSuccess(profile)
+                        self.recordClaudeUsageSuccess(profile, usage: newUsage)
 
                         // Check auto-switch NOW for the accounts actually in use
                         // instead of waiting for the end of the sweep: rate-limit
@@ -1510,6 +1510,10 @@ private func observeCredentialChanges() {
                                 self.stampInferredAccountThrottle(profile, streak: streak)
                                 self.notifyInferredThrottleIfNeeded(profile)
                             }
+                            // Whether the stamp is new or carried over, another
+                            // failed read means the display estimate should
+                            // advance along the measured burn rate.
+                            self.updateSuspectedProjection(for: profile.id)
                         }
                         LoggingService.shared.logError("Failed to refresh profile '\(profile.name)': \(error.localizedDescription)")
                     }
@@ -1802,7 +1806,7 @@ private func observeCredentialChanges() {
                     self.credentialErrorProfileIds.remove(profileId)
                 }
                 self.lastSuccessfulRefreshTime = Date()
-                self.recordClaudeUsageSuccess(profile)
+                self.recordClaudeUsageSuccess(profile, usage: newUsage)
 
             } catch {
                 // Same stale-completion guard as the success path: error state
@@ -1996,7 +2000,7 @@ private func observeCredentialChanges() {
                 }
                 self.credentialErrorProfileIds.remove(profile.id)
                 self.burstBackoffs.removeValue(forKey: profile.id)
-                self.recordClaudeUsageSuccess(profile)
+                self.recordClaudeUsageSuccess(profile, usage: newUsage)
                 self.consecutiveRefreshFailures = 0
                 self.lastRefreshError = nil
                 self.lastSuccessfulRefreshTime = Date()
@@ -2034,6 +2038,7 @@ private func observeCredentialChanges() {
                         self.stampInferredAccountThrottle(profile, streak: streak)
                         self.notifyInferredThrottleIfNeeded(profile)
                     }
+                    self.updateSuspectedProjection(for: profile.id)
                 }
                 LoggingService.shared.logError("Manual refresh failed for '\(profile.name)': \(appError.message)")
             }
@@ -2193,6 +2198,79 @@ private func observeCredentialChanges() {
     /// keeps 429ing anyway is being refused at the ACCOUNT level.
     private var lastClaudeUsageSuccess: (profileId: UUID, at: Date)?
 
+    /// Recent MEASURED session percentages per profile (in-memory, newest
+    /// last, max `measuredHistoryCapacity`). Feeds the burn-rate projection
+    /// that keeps a suspected profile's display honest while reads fail —
+    /// only real fetch results are recorded, never stamps or projections.
+    private var measuredSessionHistory: [UUID: [(at: Date, pct: Double)]] = [:]
+    private static let measuredHistoryCapacity = 4
+
+    private func recordMeasuredSession(_ usage: ClaudeUsage, for profileId: UUID) {
+        guard usage.providesSessionWindow else { return }
+        var history = measuredSessionHistory[profileId] ?? []
+        history.append((Date(), usage.sessionPercentage))
+        if history.count > Self.measuredHistoryCapacity {
+            history.removeFirst(history.count - Self.measuredHistoryCapacity)
+        }
+        measuredSessionHistory[profileId] = history
+    }
+
+    /// Best-estimate session percentage while reads fail: the last measured
+    /// value projected forward at the recent measured burn rate. Returns nil
+    /// when there is nothing defensible to project: fewer than two samples,
+    /// a flat/declining trend (idle accounts must not creep upward on noise),
+    /// a burn window shorter than a sweep, or a session boundary crossed
+    /// since the last sample (the window rolled — the projection basis died).
+    /// Clamped to 100. The 0.2pp/min floor rejects measurement jitter.
+    nonisolated static func projectSessionPercentage(
+        history: [(at: Date, pct: Double)],
+        sessionResetTime: Date,
+        now: Date
+    ) -> Double? {
+        guard sessionResetTime > now else { return nil }
+        guard let last = history.last, let first = history.first, history.count >= 2 else { return nil }
+        let span = last.at.timeIntervalSince(first.at)
+        guard span >= 25 else { return nil }
+        let ratePerSecond = (last.pct - first.pct) / span
+        guard ratePerSecond * 60 >= 0.2 else { return nil }
+        let projected = last.pct + ratePerSecond * now.timeIntervalSince(last.at)
+        return min(max(projected, last.pct), 100)
+    }
+
+    /// Refresh a suspected profile's displayed estimate after another failed
+    /// read, and — when the ACTIVE account's estimate crosses the auto-switch
+    /// threshold — tell the user once per episode: the trigger itself stays
+    /// measured-only (a projection must never spend the ~10-15%-per-session
+    /// cost of a switch), but the user must not be left watching a frozen
+    /// 67% while their sessions hit the hard limit (2026-08-12 incident).
+    private func updateSuspectedProjection(for profileId: UUID) {
+        // Re-read: the caller's copy predates any stamp applied this cycle.
+        guard let profile = profileManager.profiles.first(where: { $0.id == profileId }) else { return }
+        guard var usage = profile.claudeUsage, usage.isSuspectedRateLimited else { return }
+        guard let projected = Self.projectSessionPercentage(
+            history: measuredSessionHistory[profile.id] ?? [],
+            sessionResetTime: usage.sessionResetTime,
+            now: Date()
+        ) else { return }
+        usage.projectedSessionPercentage = projected
+        profileManager.saveClaudeUsage(usage, for: profile.id)
+
+        let isActiveClaude = profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+        if isActiveClaude,
+           projected >= SharedDataStore.shared.loadAutoSwitchThreshold(),
+           !projectionNotifiedIds.contains(profile.id) {
+            projectionNotifiedIds.insert(profile.id)
+            NotificationManager.shared.sendProjectedExhaustionNotification(
+                profileName: profile.name,
+                projectedPercentage: projected
+            )
+        }
+    }
+
+    /// Profiles already notified that their projection crossed the switch
+    /// threshold this episode — cleared by the next successful fetch.
+    private var projectionNotifiedIds: Set<UUID> = []
+
     /// Exponential cap is 8 min, not the original 30: the 30-min cap defended
     /// against the pre-refactor sweep re-fetching a 429ing profile every 30s
     /// (90 429s/hour measured). Per-account fetches are now spaced ~5 min by
@@ -2205,19 +2283,26 @@ private func observeCredentialChanges() {
         min(120 * pow(2, Double(max(0, streak - 1))), 480)
     }
 
+    /// Backoff ceiling by role. The ACTIVE account retries EVERY SWEEP (30s):
+    /// its number gates the auto-switch and its usage moves fastest exactly
+    /// when the shared IP is busiest — the old 120s cap, re-armed by each
+    /// failed retry, left 'Commits' blind for 22 minutes while parallel
+    /// sessions burned it 67%→100% (2026-08-12). One retry per sweep is a
+    /// single request per 30s for at most one account per provider — within
+    /// the measured per-IP budget. Exhausted accounts answer their usage
+    /// endpoint ('Memori' returned 200 at a real 100%), so reading through
+    /// the noise is safe and is the only way to keep the number honest.
+    /// Background rotation profiles keep the 8-min cap.
+    nonisolated static func burstBackoffCap(isActiveAccount: Bool) -> TimeInterval {
+        isActiveAccount ? 30 : 480
+    }
+
     private func registerBurstBackoff(for profile: Profile, retryAfter: TimeInterval? = nil) {
         let streak = (burstBackoffs[profile.id]?.streak ?? 0) + 1
-        // The ACTIVE accounts (focused + provider-active) are the ones whose
-        // usage is actually moving — they own the CLI logins being burned right
-        // now, and their percentages gate the auto-switch trigger. Cap their
-        // backoff at 120s (≈ retry every other sweep) so a burst-429ing active
-        // account is never more than ~2.5 min stale; only one account per
-        // provider can be active, so the extra retry volume is one request per
-        // ~2 sweeps at worst. Background rotation profiles keep the 8-min cap.
         let isActiveAccount = profile.id == profileManager.activeProfile?.id
             || profile.id == profileManager.activeClaudeProfileId
             || profile.id == profileManager.activeCodexProfileId
-        let cap: TimeInterval = isActiveAccount ? 120 : 480
+        let cap = Self.burstBackoffCap(isActiveAccount: isActiveAccount)
         let interval: TimeInterval
         if let retryAfter, retryAfter > 0 {
             // The endpoint SAID when to come back (a seconds-scale, sub-account-
@@ -2360,12 +2445,15 @@ private func observeCredentialChanges() {
 
     /// Success bookkeeping for the inference above. Claude-flow fetches only —
     /// Codex/Grok hit different hosts and prove nothing about the Claude IP.
-    /// A success also ends the profile's inferred-throttle episode, re-arming
-    /// its one-shot notification for the next outage.
-    private func recordClaudeUsageSuccess(_ profile: Profile) {
+    /// A success also ends the profile's inferred-throttle episode (re-arming
+    /// its one-shot notifications) and feeds the measured burn-rate history
+    /// the suspected-state projection draws from.
+    private func recordClaudeUsageSuccess(_ profile: Profile, usage: ClaudeUsage) {
         inferredThrottleNotifiedIds.remove(profile.id)
+        projectionNotifiedIds.remove(profile.id)
         guard profile.providerKind == .claude else { return }
         lastClaudeUsageSuccess = (profile.id, Date())
+        recordMeasuredSession(usage, for: profile.id)
     }
 
     // MARK: - Account-Level Throttle Stamping (header-based)

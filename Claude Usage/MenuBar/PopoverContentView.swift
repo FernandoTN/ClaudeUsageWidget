@@ -747,13 +747,19 @@ struct SmartUsageDashboard: View {
                     timeDisplay: timeDisplay
                 )
                 // Data-quality caveat, not a usage level: the number above is
-                // the last MEASURED value — the endpoint is refusing reads,
-                // which MAY be a shared rate limit rather than exhaustion.
+                // the last MEASURED value (or a burn-rate estimate) — the
+                // endpoint is refusing reads, which MAY be a shared rate
+                // limit rather than exhaustion.
                 if usage.isSuspectedRateLimited {
                     Label {
-                        Text("popover.suspected_rate_limited".localized(
-                            with: usage.lastUpdated.formatted(date: .omitted, time: .shortened)
-                        ))
+                        Text(usage.projectedSessionPercentage != nil
+                            ? "popover.suspected_projected".localized(
+                                with: Int(usage.sessionPercentage.rounded()),
+                                usage.lastUpdated.formatted(date: .omitted, time: .shortened)
+                            )
+                            : "popover.suspected_rate_limited".localized(
+                                with: usage.lastUpdated.formatted(date: .omitted, time: .shortened)
+                            ))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     } icon: {

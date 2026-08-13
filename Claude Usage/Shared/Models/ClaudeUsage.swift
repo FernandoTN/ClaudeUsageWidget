@@ -51,17 +51,29 @@ struct ClaudeUsage: Codable, Equatable {
         rateLimitedInferred == true && (rateLimitedUntil.map { $0 > Date() } ?? false)
     }
 
+    /// While reads are failing (suspected state), the best-estimate session
+    /// percentage projected forward from the recent MEASURED burn rate —
+    /// written by the sweep, cleared automatically by the next successful
+    /// fetch (fresh parses carry the nil default). Exists because a frozen
+    /// last-measured value under-reports exactly when it matters: 'Commits'
+    /// displayed 67% for 22 blind minutes while parallel sessions burned it
+    /// to a real 100% (2026-08-12). An estimate from measured burn is honest
+    /// where a synthetic 100 was not; the purple suspected marking stays on.
+    var projectedSessionPercentage: Double? = nil
+
     /// What tiles, the popover, and usage notifications DISPLAY. A suspected
-    /// (inferred) limit shows the last MEASURED percentage — never a synthetic
-    /// 100: a fake 100 on the tile caused manual account switches costing
-    /// ~10-15% of every concurrent session's quota (2026-08-12 incident; the
-    /// account was measured at 89% during its own "100%" stamp). The suspected
-    /// state is conveyed by COLOR/badge, not by the number. Server-affirmed
+    /// (inferred) limit shows the burn-rate PROJECTION when one exists, else
+    /// the last MEASURED percentage — never a synthetic 100: a fake 100 on
+    /// the tile caused manual account switches costing ~10-15% of every
+    /// concurrent session's quota (2026-08-12 incident; the account was
+    /// measured at 89% during its own "100%" stamp). The suspected state is
+    /// conveyed by COLOR/badge, not by faking certainty. Server-affirmed
     /// stamps still display 100 — the server said the account is out.
     /// Decision seams (auto-switch trigger, candidate gating, scheduler heat)
     /// keep reading `effectiveSessionPercentage`.
     var displaySessionPercentage: Double {
         if isSuspectedRateLimited {
+            if let projected = projectedSessionPercentage { return projected }
             return sessionResetTime < Date() ? 0.0 : sessionPercentage
         }
         return effectiveSessionPercentage
