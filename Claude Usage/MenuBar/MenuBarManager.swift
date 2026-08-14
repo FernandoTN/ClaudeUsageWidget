@@ -1471,6 +1471,31 @@ private func observeCredentialChanges() {
                         }
                     } catch {
                         let appError = AppError.wrap(error)
+
+                        // The usage endpoint refused, but the account is the
+                        // one being burned right now — read its live counters
+                        // off the Messages API headers (different rate-limit
+                        // bucket, the one the fleet's own requests ride) rather
+                        // than going blind. This is a real measurement: it
+                        // takes the whole success path.
+                        if appError.code == .apiRateLimited,
+                           let rescued = await self.probeUsageViaMessageHeaders(for: profile) {
+                            self.profileManager.stageClaudeUsage(rescued, for: profile.id)
+                            if profile.id == self.profileManager.activeProfile?.id {
+                                self.usage = rescued
+                            }
+                            sweepSuccesses += 1
+                            self.credentialErrorProfileIds.remove(profile.id)
+                            self.burstBackoffs.removeValue(forKey: profile.id)
+                            // Not endpoint control evidence: this success came
+                            // from a DIFFERENT host bucket, so it says nothing
+                            // about whether oauth/usage is answering for other
+                            // accounts (shouldInferAccountThrottle reads that).
+                            self.recordClaudeUsageSuccess(profile, usage: rescued, countsAsEndpointControl: false)
+                            self.checkAutoSwitchIfNeeded(usage: rescued, currentProfile: profile)
+                            continue
+                        }
+
                         sweepFailures += 1
                         sweepLastErrorMessage = appError.message
                         if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
@@ -2015,6 +2040,35 @@ private func observeCredentialChanges() {
                 LoggingService.shared.log("MenuBarManager: manual refresh saved usage for '\(profile.name)' - session: \(newUsage.sessionPercentage)%", type: .info)
             } catch {
                 let appError = AppError.wrap(error)
+
+                // Same rescue as the sweep: the user clicked refresh on the
+                // account being burned and the usage endpoint refused — read
+                // the live counters off the Messages API headers instead of
+                // showing them a stale number.
+                if appError.code == .apiRateLimited,
+                   let rescued = await self.probeUsageViaMessageHeaders(for: profile) {
+                    self.profileManager.stageClaudeUsage(rescued, for: profile.id)
+                    if profile.id == self.profileManager.activeProfile?.id {
+                        self.usage = rescued
+                    }
+                    self.credentialErrorProfileIds.remove(profile.id)
+                    self.burstBackoffs.removeValue(forKey: profile.id)
+                    self.recordClaudeUsageSuccess(profile, usage: rescued, countsAsEndpointControl: false)
+                    self.consecutiveRefreshFailures = 0
+                    self.lastRefreshError = nil
+                    self.lastSuccessfulRefreshTime = Date()
+                    if isActiveAccount {
+                        self.checkAutoSwitchIfNeeded(usage: rescued, currentProfile: profile)
+                    }
+                    self.profileManager.publishStagedUsage()
+                    self.refreshViewedProfileUsage()
+                    self.statusBarUIManager?.updateMultiProfileButtons(
+                        profiles: self.profileManager.profiles,
+                        config: self.profileManager.multiProfileConfig
+                    )
+                    return
+                }
+
                 self.lastRefreshError = appError.message
                 if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
                     self.credentialErrorProfileIds.insert(profile.id)
@@ -2327,16 +2381,38 @@ private func observeCredentialChanges() {
     /// already switched away would exhaust-stamp the wrong account.)
     private func attributeRateLimitEvent(at eventTime: Date) -> Profile? {
         let history = SharedDataStore.shared.loadSwitchHistory()
-        if let firstAfter = history.first(where: { $0.at >= eventTime }) {
-            if let profile = profileManager.profiles.first(where: { $0.name == firstAfter.from }),
-               !profile.isCodexOnlyProfile, !profile.isGrokOnlyProfile {
-                return profile
-            }
-            LoggingService.shared.log("MenuBarManager: transcript rate-limit event predates switch '\(firstAfter.from)'→'\(firstAfter.to)' but the outgoing profile is not attributable — dropping event")
-            return nil
+        let claudeNames = Set(
+            profileManager.profiles
+                .filter { !$0.isCodexOnlyProfile && !$0.isGrokOnlyProfile }
+                .map(\.name)
+        )
+        if let ownerName = Self.rateLimitEventOwnerName(
+            history: history, eventTime: eventTime, claudeProfileNames: claudeNames
+        ) {
+            return profileManager.profiles.first(where: { $0.name == ownerName })
         }
         let activeId = profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id
         return profileManager.profiles.first(where: { $0.id == activeId })
+    }
+
+    /// Name of the CLAUDE account that owned the shared CLI login when a
+    /// transcript rate-limit event fired: the first switch AFTER the event
+    /// whose outgoing profile is a Claude one. Codex and Grok switches share
+    /// the same history ring, and skipping past them matters — the owner
+    /// switches Codex accounts between Claude ones, and treating a Codex
+    /// switch as "not attributable" dropped the Claude exhaustion event
+    /// entirely. Returns nil when no Claude switch follows the event: the
+    /// caller then attributes it to the current Claude owner.
+    nonisolated static func rateLimitEventOwnerName(
+        history: [SwitchEvent],
+        eventTime: Date,
+        claudeProfileNames: Set<String>
+    ) -> String? {
+        history
+            .filter { $0.at >= eventTime }
+            .sorted { $0.at < $1.at }
+            .first(where: { claudeProfileNames.contains($0.from) })?
+            .from
     }
 
     private func applyTranscriptRateLimitEvent(_ event: LocalLimitSignalService.RateLimitEvent) {
@@ -2391,6 +2467,89 @@ private func observeCredentialChanges() {
         if profile.id == profileManager.activeProfile?.id
             || profile.id == profileManager.activeClaudeProfileId {
             checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
+        }
+    }
+
+    // MARK: - Blind Active Account: Messages-API header rescue
+
+    /// Minimum spacing between header probes for one profile. The probe costs a
+    /// `max_tokens: 1` Haiku request; one per minute for ONE account is noise
+    /// against a 5-hour window, and it only runs while `oauth/usage` refuses.
+    nonisolated static let headerProbeMinInterval: TimeInterval = 60
+
+    /// Last Messages-API header probe per profile (in-memory: after a relaunch
+    /// the first blind sweep may probe immediately, which is what we want).
+    private var lastHeaderProbeAt: [UUID: Date] = [:]
+
+    /// Whether a refused `oauth/usage` read may be rescued by reading the
+    /// account's live counters from the Messages API headers.
+    ///
+    /// Deliberately narrow — this is the only path in the app that SPENDS
+    /// quota to measure it:
+    /// - provider-active Claude account only: it is the one whose number gates
+    ///   the switch-away decision, and the one the fleet is burning;
+    /// - its session window must already be OPEN AND NON-EMPTY. A request
+    ///   against an idle account would START its 5-hour window (windows begin
+    ///   at the first request), stealing headroom from an account we are
+    ///   holding in reserve as a switch target;
+    /// - at most one probe per `headerProbeMinInterval` per profile.
+    nonisolated static func shouldProbeMessageHeaders(
+        isActiveClaudeAccount: Bool,
+        cached: ClaudeUsage?,
+        lastProbe: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        guard isActiveClaudeAccount, let cached else { return false }
+        guard cached.providesSessionWindow else { return false }
+        // Window already open and already burning — the probe cannot be what
+        // opens it. (A fabricated/healed boundary always pairs with 0%.)
+        guard cached.sessionResetTime > now, cached.sessionPercentage > 0 else { return false }
+        guard let lastProbe else { return true }
+        return now.timeIntervalSince(lastProbe) >= headerProbeMinInterval
+    }
+
+    /// Reads the active account's live 5h/7d counters from the Messages API
+    /// headers after `oauth/usage` refused, and folds them onto its cached
+    /// usage. Returns nil when the probe is not allowed, has no token, or
+    /// fails — callers then fall through to the existing 429 handling.
+    ///
+    /// The 2026-08-13 incident this closes: 'BBR' (06:36→06:59) and 'Outlook'
+    /// (12:41→13:40) were burned 0→100% by ~30 parallel sessions while their
+    /// own usage endpoint refused most reads, so the widget's number never
+    /// even reached the 25% preflight milestone and the 95% switch never fired.
+    private func probeUsageViaMessageHeaders(for profile: Profile) async -> ClaudeUsage? {
+        let isActiveClaudeAccount = profile.providerKind == .claude
+            && profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+        guard Self.shouldProbeMessageHeaders(
+            isActiveClaudeAccount: isActiveClaudeAccount,
+            cached: profile.claudeUsage,
+            lastProbe: lastHeaderProbeAt[profile.id]
+        ) else { return nil }
+
+        var accessToken: String?
+        if let cliJSON = profile.cliCredentialsJSON,
+           !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON) {
+            accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: cliJSON)
+        }
+        if accessToken == nil,
+           let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
+           !ClaudeCodeSyncService.shared.isTokenExpired(systemCredentials) {
+            accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: systemCredentials)
+        }
+        guard let accessToken else { return nil }
+
+        lastHeaderProbeAt[profile.id] = Date()
+        do {
+            let headerUsage = try await apiService.fetchUsageFromMessageHeaders(oauthAccessToken: accessToken)
+            var merged = (profile.claudeUsage ?? .empty).mergingHeaderMeasurement(headerUsage)
+            merged.healMissingResetStamps(previous: profile.claudeUsage)
+            LoggingService.shared.log(
+                "MenuBarManager: '\(profile.name)' usage endpoint refused — read live counters from the Messages API headers instead: session \(Int(merged.sessionPercentage))%, weekly \(Int(merged.weeklyPercentage))%\(merged.rateLimitedUntil != nil ? " (5h window REJECTED — sessions are blocked)" : "")"
+            )
+            return merged
+        } catch {
+            LoggingService.shared.log("MenuBarManager: header rescue probe for '\(profile.name)' failed — \(AppError.wrap(error).message)")
+            return nil
         }
     }
 
@@ -2580,11 +2739,22 @@ private func observeCredentialChanges() {
     /// A success also ends the profile's inferred-throttle episode (re-arming
     /// its one-shot notifications) and feeds the measured burn-rate history
     /// the suspected-state projection draws from.
-    private func recordClaudeUsageSuccess(_ profile: Profile, usage: ClaudeUsage) {
+    ///
+    /// `countsAsEndpointControl` is false for a Messages-API header rescue: the
+    /// measurement is real (it feeds history and clears suspicion) but it came
+    /// from a different host bucket, so it must not stand as proof that
+    /// `oauth/usage` is answering for OTHER accounts from this IP.
+    private func recordClaudeUsageSuccess(
+        _ profile: Profile,
+        usage: ClaudeUsage,
+        countsAsEndpointControl: Bool = true
+    ) {
         inferredThrottleNotifiedIds.remove(profile.id)
         projectionNotifiedIds.remove(profile.id)
         guard profile.providerKind == .claude else { return }
-        lastClaudeUsageSuccess = (profile.id, Date())
+        if countsAsEndpointControl {
+            lastClaudeUsageSuccess = (profile.id, Date())
+        }
         recordMeasuredSession(usage, for: profile.id)
     }
 
