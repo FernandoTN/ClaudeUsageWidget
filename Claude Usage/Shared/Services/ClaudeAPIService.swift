@@ -118,6 +118,82 @@ class ClaudeAPIService {
         return try parseUsageResponse(data)
     }
 
+    /// Reads the account's LIVE limit counters out of the Messages API's
+    /// `anthropic-ratelimit-unified-*` response headers, for a specific token.
+    ///
+    /// Why this exists (2026-08-13 'BBR'/'Outlook' incident): under a parallel
+    /// CLI fleet the account's OWN `oauth/usage` endpoint refuses most reads
+    /// (HTTP 429, `retry-after: 0`) — measured live 2026-08-14 at 7 refusals in
+    /// 8 attempts — so the widget goes blind on the ONE account whose number
+    /// gates the auto-switch, exactly while 30 sessions burn it to the hard
+    /// limit. `/v1/messages` is a DIFFERENT rate-limit bucket: it is the bucket
+    /// the fleet's own requests ride, so it answers whenever the fleet is
+    /// alive, and its headers are the enforcement counters themselves
+    /// (`unified-5h-utilization` read 0.86 in the same minute `oauth/usage`
+    /// was refusing everything).
+    ///
+    /// Cost: one `max_tokens: 1` Haiku request (~8 input / 1 output token).
+    /// Callers MUST gate this to an account whose session window is already
+    /// open and burning — a request against an idle account would START its
+    /// 5-hour window (see `MenuBarManager.shouldProbeMessageHeaders`).
+    ///
+    /// A 429 from THIS endpoint is not noise: if the unified 5h status is not
+    /// `allowed`, the account's own sessions are being rejected — server-
+    /// affirmed exhaustion, returned as a stamped usage rather than thrown.
+    func fetchUsageFromMessageHeaders(oauthAccessToken: String) async throws -> ClaudeUsage {
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw AppError(code: .urlMalformed, message: "Invalid Messages API endpoint", isRecoverable: false)
+        }
+
+        var request = buildAuthenticatedRequest(url: url, auth: .cliOAuth(oauthAccessToken))
+        request.httpMethod = "POST"
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.timeoutInterval = 20
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1,
+            "messages": [["role": "user", "content": "hi"]]
+        ])
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AppError(code: .apiInvalidResponse, message: "Invalid response from Messages API", isRecoverable: true)
+        }
+
+        let headers = Self.unifiedHeaders(of: httpResponse)
+
+        if httpResponse.statusCode == 200 {
+            return Self.usageFromUnifiedHeaders(headers)
+        }
+
+        if httpResponse.statusCode == 429 {
+            // Headers ride the 429 too. A counter we can read is worth more
+            // than the refusal itself — and a non-`allowed` 5h status is the
+            // account telling us its sessions are blocked right now.
+            if headers["anthropic-ratelimit-unified-5h-utilization"] != nil {
+                var usage = Self.usageFromUnifiedHeaders(headers)
+                if Self.isSessionWindowRejected(headers) {
+                    usage.rateLimitedUntil = usage.sessionResetTime > Date()
+                        ? usage.sessionResetTime
+                        : Date().addingTimeInterval(1800)
+                    usage.rateLimitedInferred = nil  // server-affirmed
+                }
+                return usage
+            }
+            var rateLimited = AppError.apiRateLimited()
+            rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
+                .flatMap(TimeInterval.init)
+            throw rateLimited
+        }
+
+        throw AppError(
+            code: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
+                ? .apiUnauthorized : .apiGenericError,
+            message: "Messages API header probe failed (status \(httpResponse.statusCode))",
+            isRecoverable: true
+        )
+    }
+
     /// Fetches real usage data from Claude's API using the active profile's CLI OAuth credentials
     func fetchUsageData() async throws -> ClaudeUsage {
         let auth = try await getAuthentication()
@@ -340,15 +416,43 @@ class ClaudeAPIService {
 
     // MARK: - Rate Limit Header Parsing
 
+    /// Lower-cased `anthropic-ratelimit-unified-*` headers of a response.
+    nonisolated static func unifiedHeaders(of response: HTTPURLResponse) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            guard let name = (key as? String)?.lowercased(),
+                  name.hasPrefix("anthropic-ratelimit-unified-"),
+                  let text = value as? String else { continue }
+            result[name] = text
+        }
+        return result
+    }
+
+    /// True when the account's 5-hour window is no longer serving requests —
+    /// the status header stops reading `allowed` (the fleet's own sessions are
+    /// being rejected). Absent header ⇒ not rejected: never invent exhaustion.
+    nonisolated static func isSessionWindowRejected(_ headers: [String: String]) -> Bool {
+        guard let status = headers["anthropic-ratelimit-unified-5h-status"]?.lowercased() else { return false }
+        return status != "allowed"
+    }
+
     /// Parses usage data from Messages API rate limit response headers.
     /// Headers use format: anthropic-ratelimit-unified-{window}-{field}
     /// Utilization values are 0.0-1.0 (converted to 0-100 percentage).
     private func parseUsageFromRateLimitHeaders(_ response: HTTPURLResponse) -> ClaudeUsage {
+        let usage = Self.usageFromUnifiedHeaders(Self.unifiedHeaders(of: response))
+        LoggingService.shared.log("ClaudeAPIService: Parsed usage from headers - session: \(String(format: "%.1f", usage.sessionPercentage))%, weekly: \(String(format: "%.1f", usage.weeklyPercentage))%")
+        return usage
+    }
+
+    /// Pure parse of the unified rate-limit headers (keys lower-cased), split
+    /// out from the response so the header contract is unit-testable.
+    /// Per-model weekly windows are NOT reported here — callers fold the
+    /// result onto the profile's existing usage
+    /// (`ClaudeUsage.mergingHeaderMeasurement`) so Fable/Opus data survives.
+    nonisolated static func usageFromUnifiedHeaders(_ headers: [String: String]) -> ClaudeUsage {
         func headerDouble(_ name: String) -> Double? {
-            if let value = response.value(forHTTPHeaderField: name) {
-                return Double(value)
-            }
-            return nil
+            headers[name.lowercased()].flatMap(Double.init)
         }
 
         // Session (5h) usage — utilization is 0.0-1.0, convert to 0-100
@@ -380,8 +484,6 @@ class ClaudeAPIService {
         // Per-model breakdowns not available in rate limit headers
         let weeklyLimit = Constants.weeklyLimit
         let weeklyTokens = Int(Double(weeklyLimit) * (weeklyPercentage / 100.0))
-
-        LoggingService.shared.log("ClaudeAPIService: Parsed usage from headers - session: \(String(format: "%.1f", sessionPercentage))%, weekly: \(String(format: "%.1f", weeklyPercentage))%")
 
         return ClaudeUsage(
             sessionTokensUsed: 0,

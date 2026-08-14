@@ -259,6 +259,49 @@ answer usage reads ('Memori' returned 200 at a real 100%), so reading
 through the noise is safe; in-memory, cleared by the first successful
 fetch; a manual popover refresh expires the wait but keeps the streak).
 
+**Blind active account → Messages-API header rescue (2026-08-13 incident)**:
+retrying `oauth/usage` through the 429 noise is not enough. 'BBR'
+(06:36→06:59) and 'Outlook' (12:41→13:40) were burned from a fresh window to
+a hard 100% session limit by ~30 parallel CLI sessions while the widget's
+gating number for those accounts never even reached the 25% preflight
+milestone (log-proven: not one `Preflight[…]`/`AutoSwitch:` line in the 6
+hours covering both burns, from code that emits them correctly at 25/50/75%
+the next morning) — so no proactive switch was ever armed, the fleet died on
+the wall, and the account stayed active for another 36 minutes. The account's
+own usage endpoint refuses most reads exactly then: measured live 2026-08-14,
+7 refusals (429, `retry-after: 0`) in 8 attempts.
+
+`/v1/messages` is a DIFFERENT rate-limit bucket — the one the fleet's own
+requests ride, so it answers whenever the fleet is alive — and its
+`anthropic-ratelimit-unified-*` response headers ARE the enforcement counters
+(verified live: `unified-5h-utilization: 0.86` in the same minute
+`oauth/usage` was refusing everything). So when a 429 blinds the
+provider-active CLAUDE account, the sweep (and the manual popover refresh)
+falls back to `ClaudeAPIService.fetchUsageFromMessageHeaders` and treats the
+result as a real measurement: it takes the full success path — staged usage,
+burn history, suspicion cleared, auto-switch checked.
+
+Guards, because this is the only path in the app that SPENDS quota to measure
+it (`MenuBarManager.shouldProbeMessageHeaders`): provider-active Claude
+account only; its session window must already be OPEN and NON-ZERO — a
+request against an idle account would START its 5-hour window and steal
+headroom from a reserved switch target; at most one probe per 60s; only after
+`oauth/usage` refused. Cost per probe is a `max_tokens: 1` Haiku call (~8
+in / 1 out). Header measurements are folded on with
+`ClaudeUsage.mergingHeaderMeasurement` — the headers carry no per-model
+windows, and a wholesale replace would zero the Fable/Opus weekly
+percentages that gate `isQuotaExhausted` — and they do NOT count as
+`lastClaudeUsageSuccess` control evidence (different host bucket, so they
+prove nothing about `oauth/usage` for other accounts). A 429 on the header
+probe whose `unified-5h-status` is no longer `allowed` means the account's
+own sessions are being rejected: server-affirmed exhaustion, stamped and
+actionable by the auto-switch.
+
+Related: the transcript tripwire's attribution walks PAST Codex/Grok entries
+in the shared switch-history ring (`rateLimitEventOwnerName`) — a Codex
+switch landing between the Claude death event and the next Claude switch
+used to drop the event as "not attributable".
+
 **Menu-bar overflow vs stranded tiles**: when the bar overflows, macOS hides
 the clipped status items and parks them all at one shared off-edge frame —
 `strandedTileDetected` treats duplicate minX values as "overflow-hidden" and
