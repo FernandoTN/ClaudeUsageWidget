@@ -175,6 +175,40 @@ struct ClaudeUsage: Codable, Equatable {
         )
     }
 
+    // MARK: - Header-measurement merge
+
+    /// Folds a measurement taken from the Messages API's unified rate-limit
+    /// HEADERS onto this (endpoint-derived) usage. The headers report only the
+    /// 5-hour session window and the all-models weekly one — they carry no
+    /// per-model windows — so a wholesale replace would silently zero the
+    /// Fable/Opus/Sonnet weekly percentages that `isQuotaExhausted` and the
+    /// candidate headroom checks read, turning a Fable-maxed account into an
+    /// apparently healthy switch target. Session/weekly/throttle provenance
+    /// come from the fresher header measurement; everything the headers do not
+    /// speak to is carried forward from `self`.
+    nonisolated func mergingHeaderMeasurement(_ headerUsage: ClaudeUsage) -> ClaudeUsage {
+        var merged = self
+        merged.sessionPercentage = headerUsage.sessionPercentage
+        merged.sessionTokensUsed = headerUsage.sessionTokensUsed
+        merged.sessionLimit = headerUsage.sessionLimit
+        if headerUsage.sessionResetTime != Self.unknownResetSentinel {
+            merged.sessionResetTime = headerUsage.sessionResetTime
+        }
+        merged.weeklyPercentage = headerUsage.weeklyPercentage
+        merged.weeklyTokensUsed = headerUsage.weeklyTokensUsed
+        if headerUsage.weeklyResetTime != Self.unknownResetSentinel {
+            merged.weeklyResetTime = headerUsage.weeklyResetTime
+        }
+        // A real measurement supersedes suspicion and any stale projection —
+        // same semantics as a successful oauth/usage fetch. A server-affirmed
+        // stamp carried by the header response (5h window rejected) survives.
+        merged.rateLimitedUntil = headerUsage.rateLimitedUntil
+        merged.rateLimitedInferred = headerUsage.rateLimitedInferred
+        merged.projectedSessionPercentage = nil
+        merged.lastUpdated = headerUsage.lastUpdated
+        return merged
+    }
+
     // MARK: - Reset-stamp healing
 
     /// Sentinel meaning "the API reported this window with no resets_at stamp".
