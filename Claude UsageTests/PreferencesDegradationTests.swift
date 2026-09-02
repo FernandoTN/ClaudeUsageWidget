@@ -87,16 +87,20 @@ final class PreferencesDegradationTests: XCTestCase {
         defaults.removeObject(forKey: key)
     }
 
-    private func writeTemporaryPreferencesPlist(profiles: [Profile]) throws -> URL {
+    private func writeTemporaryPreferencesPlist(
+        profiles: [Profile],
+        displayMode: ProfileDisplayMode = .multi,
+        config: MultiProfileDisplayConfig = MultiProfileDisplayConfig(iconStyle: .progressBar)
+    ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("prefs-degradation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         tempDirectory = directory
 
-        let encoded = try JSONEncoder().encode(profiles)
         let root: [String: Any] = [
-            profilesKey: encoded,
-            "profileDisplayMode": "multi"
+            profilesKey: try JSONEncoder().encode(profiles),
+            displayModeKey: displayMode.rawValue,
+            multiConfigKey: try JSONEncoder().encode(config)
         ]
         let plist = try PropertyListSerialization.data(fromPropertyList: root, format: .binary, options: 0)
         let url = directory.appendingPathComponent("com.claudeusagewidget.app.plist")
@@ -164,13 +168,24 @@ final class PreferencesDegradationTests: XCTestCase {
 
     // MARK: - Cold-launch plist fallback
 
-    /// Given nothing loaded yet this process and no readable `profiles_v3`,
-    /// When the on-disk preferences plist holds one, Then it is decoded from disk.
+    /// Given nothing loaded yet this process and no readable preferences,
+    /// When the on-disk plist holds them, Then profiles AND both display settings are
+    /// decoded from disk.
+    ///
+    /// The display half matters because the shadow is empty at launch, so a wedge that
+    /// is already present when the app starts would otherwise hand back `.single` and
+    /// `.default` (concentric) with no way to tell that from a fresh install. It also
+    /// stops being self-healing the moment a caller hydrates these settings only once
+    /// per process, which is why the repair lives in the store.
     func testColdLaunchFallsBackToOnDiskPreferencesPlist() throws {
         let onDisk = [Profile(id: UUID(), name: "From Disk A"), Profile(id: UUID(), name: "From Disk B")]
-        let url = try writeTemporaryPreferencesPlist(profiles: onDisk)
+        let url = try writeTemporaryPreferencesPlist(
+            profiles: onDisk,
+            displayMode: .multi,
+            config: MultiProfileDisplayConfig(iconStyle: .progressBar)
+        )
 
-        defaults.removeObject(forKey: profilesKey)
+        for key in touchedKeys { defaults.removeObject(forKey: key) }
         store.resetPreferencesResilienceStateForTesting()
         store.setPreferencesPlistURLForTesting(url)
 
@@ -178,6 +193,16 @@ final class PreferencesDegradationTests: XCTestCase {
 
         XCTAssertEqual(loaded.map(\.name), ["From Disk A", "From Disk B"])
         XCTAssertTrue(store.preferencesDegraded, "reading around UserDefaults is a degraded episode")
+
+        // Same pass, back to back — the plist parse is throttled but must still answer
+        // these two rather than throttling them out into type defaults.
+        XCTAssertEqual(store.loadDisplayMode(), .multi, "cold-launch display mode must come from disk")
+        XCTAssertEqual(
+            store.loadMultiProfileConfig().iconStyle,
+            .progressBar,
+            "cold-launch icon style must come from disk, not .default's concentric"
+        )
+
         XCTAssertEqual(
             ProfileStore.decodeProfilesFromPreferencesPlist(at: url)?.map(\.id),
             onDisk.map(\.id),

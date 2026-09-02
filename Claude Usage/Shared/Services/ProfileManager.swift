@@ -899,8 +899,6 @@ class ProfileManager: ObservableObject {
         }
     }
 
-    /// Registers (once) an observer that re-reads profiles when ProfileStore finishes
-    /// loading credentials from the Keychain on its background queue.
     /// Republishes the store's degraded flag and tells the user ONCE per episode.
     /// The app never restarts cfprefsd itself — that is an operator action.
     private func registerPreferencesDegradedObserverIfNeeded() {
@@ -928,6 +926,8 @@ class ProfileManager: ObservableObject {
         }
     }
 
+    /// Registers (once) an observer that re-reads profiles when ProfileStore finishes
+    /// loading credentials from the Keychain on its background queue.
     private func registerCredentialsReadyObserverIfNeeded() {
         guard credentialsReadyObserver == nil else { return }
         credentialsReadyObserver = NotificationCenter.default.addObserver(

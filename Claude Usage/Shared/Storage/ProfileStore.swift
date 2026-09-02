@@ -236,6 +236,7 @@ class ProfileStore {
     /// Throttle for the fallback: `loadProfiles()` runs many times per sweep, and a
     /// genuinely-first-launch install would otherwise stat + parse on every call.
     private var lastPlistFallbackAttempt: Date?
+    private var cachedPlistRoot: [String: Any]?
     private static let plistFallbackMinInterval: TimeInterval = 5.0
 
     /// `~/Library/Preferences/<bundle id>.plist` for the running app.
@@ -254,6 +255,7 @@ class ProfileStore {
     func setPreferencesPlistURLForTesting(_ url: URL?) {
         preferencesPlistURL = url
         lastPlistFallbackAttempt = nil
+        cachedPlistRoot = nil
     }
 
     /// Clears the in-process last-known-good shadow and the degraded flag. Test-only:
@@ -266,32 +268,74 @@ class ProfileStore {
         lastKnownGoodActiveProfileId = nil
         lastKnownGoodActiveClaudeProfileId = nil
         lastKnownGoodActiveCodexProfileId = nil
+        cachedPlistRoot = nil
         lastPlistFallbackAttempt = nil
         preferencesDegraded = false
+    }
+
+    /// Parses a preferences plist off disk. READ-ONLY — nothing here ever writes it.
+    static func readPreferencesPlist(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return (try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil
+        )) as? [String: Any]
     }
 
     /// Reads `profiles_v3` out of a preferences plist on disk. READ-ONLY. Returns nil
     /// when the file is missing, unparseable, or carries no usable profile array.
     static func decodeProfilesFromPreferencesPlist(at url: URL) -> [Profile]? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let root = (try? PropertyListSerialization.propertyList(
-            from: data, options: [], format: nil
-        )) as? [String: Any] else { return nil }
+        guard let root = readPreferencesPlist(at: url) else { return nil }
+        return decodeProfiles(fromPlistRoot: root)
+    }
+
+    private static func decodeProfiles(fromPlistRoot root: [String: Any]) -> [Profile]? {
         guard let profilesData = root[Keys.profiles] as? Data else { return nil }
         guard let profiles = try? JSONDecoder().decode([Profile].self, from: profilesData),
               !profiles.isEmpty else { return nil }
         return profiles
     }
 
-    /// One throttled read-only attempt at the on-disk plist.
-    private func profilesFromPreferencesPlist() -> [Profile]? {
+    /// One throttled read-only parse of the on-disk plist. Throttled because
+    /// `loadProfiles()` runs many times per 30s sweep and a genuinely-first-launch
+    /// install would otherwise stat and parse the file on every call.
+    private func preferencesPlistRoot() -> [String: Any]? {
         guard let url = preferencesPlistURL else { return nil }
+        // Inside the window, serve the PARSED ROOT rather than nil. One
+        // `ProfileManager.loadProfiles()` pass reads profiles, display mode and the
+        // multi-profile config back to back; returning nil to the later callers would
+        // throttle out exactly the reads this fallback exists to answer.
         if let last = lastPlistFallbackAttempt,
            Date().timeIntervalSince(last) < Self.plistFallbackMinInterval {
-            return nil
+            return cachedPlistRoot
         }
         lastPlistFallbackAttempt = Date()
-        return Self.decodeProfilesFromPreferencesPlist(at: url)
+        cachedPlistRoot = Self.readPreferencesPlist(at: url)
+        return cachedPlistRoot
+    }
+
+    private func profilesFromPreferencesPlist() -> [Profile]? {
+        guard let root = preferencesPlistRoot() else { return nil }
+        return Self.decodeProfiles(fromPlistRoot: root)
+    }
+
+    /// Cold-launch fallback for the two display keys.
+    ///
+    /// Their shadows are empty at launch, so a wedge that is ALREADY present when the
+    /// app starts makes `loadDisplayMode()` return `.single` and
+    /// `loadMultiProfileConfig()` return `.default` — concentric circles — without
+    /// tripping the degraded flag, because an absent read is indistinguishable from a
+    /// fresh install until something proves otherwise. The on-disk plist is that
+    /// proof. Today a later read repairs this once cfprefsd recovers; it stops being
+    /// self-healing the moment a caller hydrates these settings only once per process,
+    /// so the repair belongs here rather than in the caller.
+    private func displaySettingsFromPreferencesPlist() -> (mode: ProfileDisplayMode?, config: MultiProfileDisplayConfig?)? {
+        guard let root = preferencesPlistRoot() else { return nil }
+        let mode = (root[Keys.displayMode] as? String).flatMap(ProfileDisplayMode.init(rawValue:))
+        let config = (root[Keys.multiProfileConfig] as? Data).flatMap {
+            try? JSONDecoder().decode(MultiProfileDisplayConfig.self, from: $0)
+        }
+        if mode == nil && config == nil { return nil }
+        return (mode, config)
     }
 
     /// Enters (or stays in) a degraded episode, logging exactly once per episode.
@@ -1053,6 +1097,14 @@ class ProfileStore {
             )
             return cached
         }
+        // Cold launch: nothing in the shadow yet, so fall through to disk.
+        if let fromDisk = displaySettingsFromPreferencesPlist()?.mode {
+            markPreferencesDegraded(
+                "UserDefaults yielded no display mode but the on-disk preferences plist holds '\(fromDisk.rawValue)' — cfprefsd degraded, reading from disk"
+            )
+            lastKnownGoodDisplayMode = fromDisk
+            return fromDisk
+        }
         return .single
     }
 
@@ -1086,6 +1138,15 @@ class ProfileStore {
                 "preferences read returned no multi-profile display config while one was previously loaded — cfprefsd degraded, serving cached value"
             )
             return cached
+        }
+        // Cold launch: nothing in the shadow yet, so fall through to disk. This is the
+        // read that painted circles over a saved progressBar config all day.
+        if let fromDisk = displaySettingsFromPreferencesPlist()?.config {
+            markPreferencesDegraded(
+                "UserDefaults yielded no multi-profile display config but the on-disk preferences plist holds one (\(fromDisk.iconStyle.rawValue)) — cfprefsd degraded, reading from disk"
+            )
+            lastKnownGoodMultiProfileConfig = fromDisk
+            return fromDisk
         }
         return .default
     }
