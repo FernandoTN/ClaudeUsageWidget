@@ -3,22 +3,40 @@
 //  Claude UsageTests
 //
 //  `ProfileManager.loadProfiles()` is both the startup load and the RELOAD path
-//  (CLI credential self-heal, CLI / Codex account screens). It used to re-read
-//  the four store-backed settings that are not part of the profile array —
-//  display mode, multi-profile display config, and the two per-provider
-//  active-login pointers — on every call, so a `UserDefaults` read that came
-//  back empty silently reverted them to their defaults.
+//  (CLI credential self-heal, CLI / Codex account screens). It re-read the
+//  store-backed display settings on every call, so a preferences read that came
+//  back wrong silently reverted them.
 //
 //  That is the 2026-09-01 shape: a wedged `cfprefsd` made reads unreliable for
 //  ~5.5 hours, ten runtime reloads landed inside that window, and every
-//  menu-bar tile flipped from progress bars to circles (`.default`'s
-//  `iconStyle` is `.concentric`) while the on-disk plist still held
-//  `progressBar`. The reset posts no cosmetics notification and logs nothing,
-//  so nothing in the app or the unified log records that it happened.
+//  menu-bar tile flipped from progress bars to circles
+//  (`MultiProfileDisplayConfig.default` has `iconStyle: .concentric`) while the
+//  on-disk plist still held `progressBar`.
+//
+//  Three layers now stand between that wedge and the user, and these tests are
+//  scoped to the one the manager owns:
+//    - `ProfileStore`'s last-known-good shadow answers an ABSENT read from the
+//      value it last saw;
+//    - the on-disk plist fallback answers a COLD-LAUNCH read, when neither the
+//      defaults domain nor the shadow has anything;
+//    - and the manager does not re-read at all for a setting the user chose
+//      during this run, which is the only layer that can survive a read that
+//      comes back PRESENT BUT STALE — such a read satisfies the shadow,
+//      overwrites it, and propagates. The same wedge produced exactly that
+//      shape elsewhere: two reloads read back a 19-profile roster where 20 were
+//      stored.
+//
+//  The complement matters just as much: a setting the user has NOT chosen keeps
+//  re-reading, so a cold launch into an already-wedged daemon still recovers
+//  once preferences come back. Pinning every setting on the first load would
+//  hold type defaults for the life of the process.
 //
 //  Isolation: same UserDefaults save/restore pattern as
-//  ProfileStoreUsagePatchTests — every key this file writes is restored in
-//  tearDown, and the manager is re-hydrated from the restored store.
+//  ProfileStoreUsagePatchTests. Every key written here is restored in tearDown,
+//  the store's resilience shadow is reset, and the manager is re-hydrated.
+//  `ProfileStore` deliberately leaves `preferencesPlistURL` nil under XCTest, so
+//  the plist fallback never reads the real user domain and the empty-read
+//  fixtures below stay genuinely empty.
 //
 
 import XCTest
@@ -64,6 +82,11 @@ final class DisplaySettingsReloadTests: XCTestCase {
         ]
         seededIDs = seeded.map(\.id)
         store.saveProfiles(seeded)
+
+        // A shadow left warm by an earlier test would answer reads this file
+        // deliberately starves.
+        store.resetPreferencesResilienceStateForTesting()
+        manager.displaySettingsChosenThisRun = []
     }
 
     override func tearDown() {
@@ -97,9 +120,8 @@ final class DisplaySettingsReloadTests: XCTestCase {
             defaults.removeObject(forKey: activeClaudeKey)
         }
 
-        // Re-hydrate the singleton from the restored store so later tests and
-        // the live session see the pre-test settings, not this file's fixtures.
-        manager.hasHydratedDisplaySettings = false
+        store.resetPreferencesResilienceStateForTesting()
+        manager.displaySettingsChosenThisRun = []
         if savedProfilesData != nil {
             manager.loadProfiles()
         } else {
@@ -109,58 +131,84 @@ final class DisplaySettingsReloadTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Simulates the read side of a wedged preferences daemon for one key: the
-    /// value is gone, so `ProfileStore`'s loader takes its `.default` branch.
+    // MARK: - Fixtures
+
     /// Makes the STORE genuinely report its type default for `key`.
     ///
     /// Clearing the UserDefaults key alone stopped being sufficient once
-    /// `ProfileStore` gained its last-known-good shadow: the store now answers an
-    /// absent read from the value it last saw, so the control assertions below
-    /// ("the store itself must now report the default, or this test proves
-    /// nothing") would fail against a store that is doing its job. Resetting the
-    /// shadow is what actually reproduces the empty read these tests are about,
-    /// and it keeps them non-vacuous — with both layers defeated, the surviving
-    /// setting can only come from the manager's once-per-process hydration.
+    /// `ProfileStore` gained its last-known-good shadow: the store answers an
+    /// absent read from the value it last saw, so a control asserting "the store
+    /// reports the default" would fail against a store that is doing its job.
+    /// Resetting the shadow too is what actually reproduces the empty read.
     private func makeStoreReadComeBackEmpty(forKey key: String) {
         defaults.removeObject(forKey: key)
         store.resetPreferencesResilienceStateForTesting()
         XCTAssertNil(defaults.object(forKey: key), "fixture must actually clear \(key)")
     }
 
-    // MARK: - Tests
+    /// Writes a value straight into the defaults domain, bypassing `ProfileStore`
+    /// so its shadow is NOT updated. That is the read shape neither the shadow
+    /// nor the plist fallback can catch: present, decodable, and older than what
+    /// the user just chose.
+    private func plantStaleStoredConfig(_ style: MultiProfileIconStyle) {
+        let data = try? JSONEncoder().encode(MultiProfileDisplayConfig(iconStyle: style))
+        defaults.set(data, forKey: multiProfileConfigKey)
+    }
+
+    // MARK: - Startup
 
     func testFirstLoadHydratesDisplaySettingsFromTheStore() {
-        // Given: a store holding non-default display settings, and a manager
-        // that has not hydrated them yet (the startup shape).
+        // Given: a store holding non-default display settings and a manager that
+        // has chosen nothing yet — the startup shape.
         store.saveDisplayMode(.multi)
         store.saveMultiProfileConfig(MultiProfileDisplayConfig(iconStyle: .progressBar))
-        manager.hasHydratedDisplaySettings = false
         manager.displayMode = .single
         manager.multiProfileConfig = .default
 
         // When
         manager.loadProfiles()
 
-        // Then: the startup hydration still happens — the fix must not turn
-        // `loadProfiles()` into a no-op for these settings, only stop it
-        // repeating on RELOADS.
+        // Then: startup hydration still happens. The fix narrows what a reload
+        // re-reads; it must not stop the first load from reading at all.
         XCTAssertEqual(manager.displayMode, .multi)
         XCTAssertEqual(manager.multiProfileConfig.iconStyle, .progressBar)
-        XCTAssertTrue(manager.hasHydratedDisplaySettings)
     }
 
-    func testReloadKeepsTheChosenIconStyleWhenTheStoreReadComesBackEmpty() {
-        // Given: the user picked progress bars, and the manager is hydrated.
-        manager.hasHydratedDisplaySettings = false
+    // MARK: - A chosen setting survives a bad read
+
+    func testReloadKeepsTheChosenIconStyleWhenBothTheKeyAndTheShadowAreEmpty() {
+        // Given: the user picked bars.
+        manager.loadProfiles()
+        manager.updateMultiProfileConfig(MultiProfileDisplayConfig(iconStyle: .progressBar))
+
+        // And: both layers below the manager are starved.
+        makeStoreReadComeBackEmpty(forKey: multiProfileConfigKey)
+        XCTAssertEqual(
+            store.loadMultiProfileConfig().iconStyle, .concentric,
+            "control: with the key and the shadow both gone the store must report its default"
+        )
+
+        // When
+        manager.loadProfiles()
+
+        // Then: the choice survives on the manager's own guarantee, with no
+        // help from the store.
+        XCTAssertEqual(manager.multiProfileConfig.iconStyle, .progressBar)
+    }
+
+    func testReloadKeepsTheChosenIconStyleAgainstAStalePresentRead() {
+        // Given: the store held circles, and the user has just picked bars.
+        store.saveMultiProfileConfig(MultiProfileDisplayConfig(iconStyle: .concentric))
         manager.loadProfiles()
         manager.updateMultiProfileConfig(MultiProfileDisplayConfig(iconStyle: .progressBar))
         XCTAssertEqual(manager.multiProfileConfig.iconStyle, .progressBar)
 
-        // And: the preferences read stops answering for that key.
-        makeStoreReadComeBackEmpty(forKey: multiProfileConfigKey)
+        // And: the daemon serves a stale snapshot that predates the pick. The
+        // shadow cannot catch this — the read succeeds and overwrites it.
+        plantStaleStoredConfig(.concentric)
         XCTAssertEqual(
             store.loadMultiProfileConfig().iconStyle, .concentric,
-            "control: the store itself must now report the default, or this test proves nothing"
+            "control: the store must actually serve the stale value, or this test proves nothing"
         )
 
         // When: any reload path runs (credential self-heal, CLI account screen).
@@ -171,16 +219,16 @@ final class DisplaySettingsReloadTests: XCTestCase {
         XCTAssertEqual(manager.multiProfileConfig.iconStyle, .progressBar)
     }
 
-    func testReloadKeepsMultiProfileDisplayModeWhenTheStoreReadComesBackEmpty() {
-        // Given: multi-profile mode is on. Set directly rather than through
-        // `updateDisplayMode`, whose structural notification would rebuild the
-        // test host's real status-bar items.
-        manager.hasHydratedDisplaySettings = false
+    func testReloadKeepsTheChosenDisplayModeAgainstAStalePresentRead() {
+        // Given: the user turned multi-profile mode on this run.
+        store.saveDisplayMode(.single)
         manager.loadProfiles()
-        manager.displayMode = .multi
+        manager.updateDisplayMode(.multi)
+        XCTAssertEqual(manager.displayMode, .multi)
 
-        makeStoreReadComeBackEmpty(forKey: displayModeKey)
-        XCTAssertEqual(store.loadDisplayMode(), .single, "control: the store must now report the default")
+        // And: the daemon serves the pre-choice snapshot.
+        defaults.set(ProfileDisplayMode.single.rawValue, forKey: displayModeKey)
+        XCTAssertEqual(store.loadDisplayMode(), .single, "control: the store must serve the stale value")
 
         // When
         manager.loadProfiles()
@@ -189,18 +237,46 @@ final class DisplaySettingsReloadTests: XCTestCase {
         XCTAssertEqual(manager.displayMode, .multi)
     }
 
-    func testReloadKeepsTheProviderActivePointerWhenTheStoreReadComesBackEmpty() {
-        // Given: a profile owns the shared Claude Code CLI login. This pointer
-        // is the one Keychain adoption and syncToSystem key off — losing it is
-        // a credential-contamination hazard, not a cosmetic one.
-        manager.hasHydratedDisplaySettings = false
+    // MARK: - An unchosen setting still heals
+
+    func testAnUnchosenSettingStillHealsWhenPreferencesRecover() {
+        // Given: a cold launch INTO an already-wedged daemon. Nothing stored,
+        // no shadow, no plist under XCTest, and the user has not touched the
+        // setting, so the first load can only see the type default.
+        makeStoreReadComeBackEmpty(forKey: multiProfileConfigKey)
+        manager.loadProfiles()
+        XCTAssertEqual(
+            manager.multiProfileConfig.iconStyle, .concentric,
+            "control: the cold-launch load must really have fallen back to the default"
+        )
+
+        // When: preferences recover and any reload runs.
+        plantStaleStoredConfig(.progressBar)
+        manager.loadProfiles()
+
+        // Then: the stored value is adopted. Pinning every setting on the first
+        // load would hold the type default for the life of the process instead.
+        XCTAssertEqual(manager.multiProfileConfig.iconStyle, .progressBar)
+    }
+
+    // MARK: - Provider-active pointers
+
+    func testProviderActivePointerSurvivesAnEmptyReadOnTheStoreShadow() {
+        // The pointers are deliberately NOT pinned by the manager: they have
+        // their own re-derivation path (`resolveProviderActiveAccounts` and the
+        // launch repair) whose job is to correct them, so a reload must keep
+        // re-reading. What protects them from an empty read is the store's
+        // pointer shadow, which `claimActiveClaudeOwnership` warms on save.
         manager.loadProfiles()
         guard let owner = seededIDs.first else { return XCTFail("fixture profiles missing") }
         manager.claimActiveClaudeOwnership(owner)
         XCTAssertEqual(manager.activeClaudeProfileId, owner)
 
-        makeStoreReadComeBackEmpty(forKey: activeClaudeKey)
-        XCTAssertNil(store.loadActiveClaudeProfileId(), "control: the store must now report no owner")
+        defaults.removeObject(forKey: activeClaudeKey)
+        XCTAssertEqual(
+            store.loadActiveClaudeProfileId(), owner,
+            "control: the shadow, not the manager, is what answers this read"
+        )
 
         // When
         manager.loadProfiles()

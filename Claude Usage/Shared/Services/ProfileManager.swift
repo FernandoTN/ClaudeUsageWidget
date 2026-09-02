@@ -54,10 +54,18 @@ class ProfileManager: ObservableObject {
     /// flushed via `applyUsagePatches` (usage-only — never writes credentials).
     private var pendingUsageByProfileID: [UUID: ProfileStore.UsagePatch] = [:]
 
-    /// Whether `hydrateDisplaySettingsIfNeeded()` has already run. Deliberately
-    /// not `private`: tests reset it to exercise the first-load path on the
-    /// shared singleton.
-    var hasHydratedDisplaySettings = false
+    /// Display settings the user has explicitly chosen during THIS run. A reload
+    /// re-reads everything outside this set, so an unset setting still heals when
+    /// preferences recover; it never re-reads what is inside it. Deliberately not
+    /// `private`: tests clear it to exercise the first-load path on the singleton,
+    /// which outlives every test case.
+    var displaySettingsChosenThisRun: Set<DisplaySetting> = []
+
+    /// The store-backed display settings a reload is allowed to skip.
+    enum DisplaySetting: Hashable {
+        case displayMode
+        case multiProfileConfig
+    }
 
     private init() {}
 
@@ -91,47 +99,48 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        hydrateDisplaySettingsIfNeeded()
+        hydrateDisplaySettings()
 
         LoggingService.shared.log("ProfileManager: Loaded \(profiles.count) profile(s), active: \(activeProfile?.name ?? "none")")
     }
 
-    /// Reads the four store-backed settings that are NOT part of the profile
-    /// array — display mode, multi-profile display config, and the two
-    /// per-provider active-login pointers — into their `@Published` properties.
+    /// Reads the store-backed display settings that are NOT part of the profile
+    /// array into their `@Published` properties.
     ///
-    /// **Once per process, deliberately.** `loadProfiles()` is not only the
-    /// startup load: it is also the RELOAD path, called after a CLI credential
-    /// self-heal (`MenuBarManager.ensureFreshCLICredentialsIfNeeded`, i.e.
-    /// potentially before any usage fetch) and from the CLI / Codex account
-    /// settings screens. Re-reading these four on a reload can only ever lose
-    /// information, because `ProfileManager` is the SOLE writer of all four
-    /// store keys (`updateDisplayMode`, `updateMultiProfileConfig`,
-    /// `claimActive*Ownership`) — the in-memory value is therefore always at
-    /// least as fresh as the stored one, while a `UserDefaults` read that fails
-    /// or returns a stale snapshot silently reverts the user's settings to
-    /// `.default`.
+    /// **A setting the user has already chosen this run is not re-read.**
+    /// `loadProfiles()` is not only the startup load: it is also the RELOAD
+    /// path, called after a CLI credential self-heal (so potentially before any
+    /// usage fetch) and from the CLI / Codex account settings screens. On
+    /// 2026-09-01 a wedged `cfprefsd` made reads unreliable for ~5.5 hours; ten
+    /// runtime reloads landed inside that window and reset `multiProfileConfig`
+    /// to `.default`, whose `iconStyle` is `.concentric`, so every menu-bar tile
+    /// flipped from progress bars to circles while the on-disk plist still held
+    /// `progressBar` all day. Nothing is posted and nothing is logged when that
+    /// happens, so the revert is invisible in the app and in the unified log.
     ///
-    /// That is not hypothetical. On 2026-09-01 a wedged `cfprefsd` made reads
-    /// unreliable for ~5.5 hours; ten runtime reloads landed inside that window
-    /// and reset `multiProfileConfig` to `.default`, whose `iconStyle` is
-    /// `.concentric` — every menu-bar tile flipped from progress bars to
-    /// circles while the on-disk plist still held `progressBar` the whole day.
-    /// The reset posts no `.profileDisplayCosmeticsChanged` and logs nothing,
-    /// so it is invisible in the transcript AND in the unified log; the tiles
-    /// simply change on the next sweep. `reloadAfterCredentialSync()` already
-    /// gets this right — it reloads the profile array alone.
+    /// `ProfileStore`'s last-known-good shadow already stops an EMPTY read from
+    /// serving a default. This is the other half: a read that comes back
+    /// PRESENT BUT STALE satisfies the shadow and overwrites it, so only the
+    /// caller can protect a choice the user made after that snapshot was taken.
+    /// The same wedge produced exactly that shape elsewhere — two reloads read
+    /// back a 19-profile roster where 20 were stored.
     ///
-    /// The reset that matters most is not cosmetic: a nil read would also clear
-    /// `activeClaudeProfileId` / `activeCodexProfileId`, and Keychain adoption
-    /// and `syncToSystem` decisions key off those pointers rather than off the
-    /// focused profile.
-    private func hydrateDisplaySettingsIfNeeded() {
-        guard !hasHydratedDisplaySettings else { return }
-        hasHydratedDisplaySettings = true
-
-        displayMode = profileStore.loadDisplayMode()
-        multiProfileConfig = profileStore.loadMultiProfileConfig()
+    /// Settings the user has NOT chosen keep re-reading on every reload, which
+    /// is what lets a cold launch into an already-wedged daemon recover: the
+    /// shadow starts empty, so the first load can only see type defaults, and a
+    /// blanket pin would hold those for the life of the process.
+    ///
+    /// The two per-provider active-login pointers are deliberately NOT pinned
+    /// here. They have their own re-derivation path (`resolveProviderActiveAccounts`
+    /// and the launch repair) whose job is to correct them, and `ProfileStore`'s
+    /// pointer shadow already covers the empty-read case.
+    private func hydrateDisplaySettings() {
+        if !displaySettingsChosenThisRun.contains(.displayMode) {
+            displayMode = profileStore.loadDisplayMode()
+        }
+        if !displaySettingsChosenThisRun.contains(.multiProfileConfig) {
+            multiProfileConfig = profileStore.loadMultiProfileConfig()
+        }
 
         activeClaudeProfileId = profileStore.loadActiveClaudeProfileId()
         activeCodexProfileId = profileStore.loadActiveCodexProfileId()
@@ -248,6 +257,7 @@ class ProfileManager: ObservableObject {
     func updateDisplayMode(_ mode: ProfileDisplayMode) {
         // Mutate synchronously then notify — structural (which status items exist).
         displayMode = mode
+        displaySettingsChosenThisRun.insert(.displayMode)
         profileStore.saveDisplayMode(mode)
         LoggingService.shared.log("Updated display mode to: \(mode.rawValue)")
         NotificationCenter.default.post(name: .profileDisplayStructureChanged, object: nil)
@@ -256,6 +266,7 @@ class ProfileManager: ObservableObject {
     func updateMultiProfileConfig(_ config: MultiProfileDisplayConfig) {
         // Mutate synchronously then notify — cosmetic (how existing tiles look).
         multiProfileConfig = config
+        displaySettingsChosenThisRun.insert(.multiProfileConfig)
         profileStore.saveMultiProfileConfig(config)
         LoggingService.shared.log("Updated multi-profile config: style=\(config.iconStyle.rawValue), showWeek=\(config.showWeek)")
         NotificationCenter.default.post(name: .profileDisplayCosmeticsChanged, object: nil)
