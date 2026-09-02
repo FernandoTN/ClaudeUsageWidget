@@ -111,6 +111,64 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
 **Rule: never read Keychain item *data* on the main thread.** It can raise a modal prompt;
 the prompt needs the main thread; the main thread is blocked waiting for it → deadlock.
 
+## Preferences (cfprefsd) degradation — important
+
+macOS's preferences daemon can lose access to plist files **while the app is running**,
+system-wide. Verified live 2026-09-01 (root cause that time: ~117k leaked test-suite
+plists bloating `~/Library/Preferences`, since removed).
+
+**Symptoms — they read as "the app crashed", but the process is healthy:**
+
+- `defaults read com.claudeusagewidget.app` returns an empty dict (`<dict/>`) while
+  `~/Library/Preferences/com.claudeusagewidget.app.plist` is intact on disk (39 KB, all
+  keys present).
+- IN-PROCESS `UserDefaults.standard` reads return nil for every key too — so the tiles
+  and popover go blank and the saved `.progressBar` config repaints as `.concentric`.
+- Every `UserDefaults` write is rejected. A settings change appears to take, then
+  reverts. The daemon's own log says `rejecting write of key(s) … because Path not
+  accessible`.
+- It can begin MID-RUN (measured: 26 minutes after a launch that loaded 20 profiles
+  fine). `ProfileStore.loadProfiles()` runs many times per 30-second sweep, so one nil
+  read empties the UI.
+- No crash report is produced and the main thread is parked normally in
+  `NSApplication run` — `sample` shows a healthy process.
+
+**What the app does about it** (`ProfileStore`, "Preferences degradation resilience"):
+
+1. **Last-known-good shadow.** Every successful read and every write records what the
+   process believes. A read that comes back absent while the shadow holds a value is
+   served from the shadow — profiles, display mode, multi-profile config, and the three
+   active-profile pointers. Serving cached values logs once per episode and never
+   demotes to a type default.
+2. **Cold-launch plist fallback.** With nothing yet in the shadow, `profiles_v3` is read
+   straight out of `~/Library/Preferences/<bundle id>.plist` with
+   `PropertyListSerialization`. **Read-only, always** — the app never writes that file.
+   Disabled under XCTest unless a test injects a path.
+3. **Empty-overwrite guard.** `saveProfiles([])` is refused while a non-empty roster is
+   known, which is the actual data-loss path: hold an empty list because of a wedge,
+   persist it after the daemon recovers, lose the real roster. A deliberate delete-all
+   passes `allowEmpty: true` (no in-app caller does today —
+   `ProfileManager.deleteProfile` refuses to delete the last profile).
+4. **Degradation signal.** `ProfileStore.preferencesDegraded` posts
+   `.preferencesDegradedStateChanged`; `ProfileManager` republishes it and fires one
+   user notification per episode, and the popover shows a banner that outranks the
+   other status banners. The flag clears on the first read that agrees with the shadow.
+   The app never restarts cfprefsd itself.
+
+**Manual recovery (operator):**
+
+```bash
+cp -p ~/Library/Preferences/com.claudeusagewidget.app.plist ~/Desktop/cuw-prefs-backup.plist
+pkill -x "Claude Usage"          # kill the app FIRST — never let it persist an empty roster
+killall -9 cfprefsd
+open -a "Claude Usage"
+defaults read com.claudeusagewidget.app | grep -c profiles_v3   # expect 1
+log show --predicate 'process == "Claude Usage"' --info --last 2m | grep "Loaded .* profiles"
+```
+
+The `defaults read` count and the "Loaded N profiles" log line are the two checks that
+confirm recovery — N must match the real roster, not 1.
+
 ## Networking
 
 The app contacts only `claude.ai`, `api.anthropic.com`, `console.anthropic.com`,

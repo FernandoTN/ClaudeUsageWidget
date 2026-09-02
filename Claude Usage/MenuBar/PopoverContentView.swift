@@ -165,8 +165,16 @@ struct PopoverContentView: View {
 
             PopoverDivider()
 
-            // Error / stale data banners
-            if let errorProfileName = credentialErrorProfileName {
+            // Error / stale data banners. The preferences-daemon banner wins: while
+            // cfprefsd is wedged every other symptom below is downstream of it, and
+            // the user needs to know the values on screen are cached and unsaveable.
+            if profileManager.preferencesDegraded {
+                StatusBannerView(
+                    icon: "externaldrive.badge.exclamationmark",
+                    message: "popover.banner.preferences_degraded".localized,
+                    color: .orange
+                )
+            } else if let errorProfileName = credentialErrorProfileName {
                 StatusBannerView(
                     icon: "exclamationmark.triangle.fill",
                     message: String(format: "popover.banner.credentials_expired_profile".localized, errorProfileName),

@@ -394,6 +394,30 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that macOS's preferences daemon has stopped serving this app's plist, so
+    /// the UI is running on cached values and settings changes will not persist. Sent
+    /// once per degraded episode (`ProfileManager.syncPreferencesDegradedState`); the
+    /// fixed identifier means a repeat within one episode replaces rather than stacks.
+    func sendPreferencesDegradedNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.preferences_degraded.title".localized
+        content.body = "notification.preferences_degraded.message".localized
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "preferences_degraded",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send preferences-degraded notification: \(error)")
+            }
+        }
+    }
+
     /// Clears notification tracking state for a specific profile
     func clearNotificationsForProfile(_ profileName: String) {
         sentNotifications = sentNotifications.filter { !$0.hasPrefix("\(profileName)_") }

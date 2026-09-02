@@ -45,6 +45,11 @@ extension Notification.Name {
     /// The object is the target SettingsSection's rawValue.
     static let settingsSectionRequested = Notification.Name("settingsSectionRequested")
 
+    /// Posted when `ProfileStore.preferencesDegraded` flips in either direction —
+    /// macOS's preferences daemon started refusing reads (cached values are being
+    /// served), or a later read succeeded and live values are back.
+    static let preferencesDegradedStateChanged = Notification.Name("preferencesDegradedStateChanged")
+
     /// Posted (object = profile UUID) after a USER-initiated profile activation
     /// succeeds — the auto-switch must respect the explicit choice instead of
     /// yanking an over-threshold account away on the next sweep.

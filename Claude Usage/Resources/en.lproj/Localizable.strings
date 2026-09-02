@@ -247,6 +247,8 @@
 "notification.codex_relogin.message" = "The saved Codex token for '%@' was revoked. Run `codex login` for that account, then re-sync it in Settings → Codex Account.";
 "notification.grok_relogin.title" = "Grok account needs re-login";
 "notification.grok_relogin.message" = "The saved Grok token for '%@' was revoked. Run `grok` and log in with that account, then re-sync it in Settings.";
+"notification.preferences_degraded.title" = "Preferences service unavailable";
+"notification.preferences_degraded.message" = "Showing cached data; settings changes may not save until macOS's cfprefsd is restarted.";
 "codex.about_title" = "About Codex accounts";
 "codex.benefit_1" = "Shows the same 5-hour session and weekly windows as Claude accounts, fetched from your ChatGPT plan";
 "codex.benefit_2" = "Switching to this profile also switches the codex CLI to this account";
@@ -716,6 +718,7 @@
 "profiles.token_expired" = "login expired";
 "popover.banner.refresh_failed" = "Refresh failed %d times";
 "popover.banner.updated_ago" = "Updated %dm ago";
+"popover.banner.preferences_degraded" = "macOS preferences unavailable — cached data; changes may not save";
 
 // MARK: - Overage Balance
 "popover.overage_balance" = "Balance";

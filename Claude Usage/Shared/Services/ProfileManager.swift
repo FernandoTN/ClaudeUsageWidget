@@ -27,6 +27,14 @@ class ProfileManager: ObservableObject {
     @Published private(set) var activeClaudeProfileId: UUID?
     @Published private(set) var activeCodexProfileId: UUID?
 
+    /// Mirrors `ProfileStore.preferencesDegraded` for SwiftUI. True while macOS's
+    /// preferences daemon is refusing reads and the store is serving cached values;
+    /// settings changes will not persist until cfprefsd is restarted.
+    @Published private(set) var preferencesDegraded: Bool = false
+
+    /// Observer for `.preferencesDegradedStateChanged`.
+    private var preferencesDegradedObserver: NSObjectProtocol?
+
     private let profileStore = ProfileStore.shared
     private let cliSyncService = ClaudeCodeSyncService.shared
 
@@ -52,6 +60,7 @@ class ProfileManager: ObservableObject {
 
     func loadProfiles() {
         registerCredentialsReadyObserverIfNeeded()
+        registerPreferencesDegradedObserverIfNeeded()
 
         profiles = profileStore.loadProfiles()
         applyPendingOverlay(to: &profiles)
@@ -850,6 +859,33 @@ class ProfileManager: ObservableObject {
 
     /// Registers (once) an observer that re-reads profiles when ProfileStore finishes
     /// loading credentials from the Keychain on its background queue.
+    /// Republishes the store's degraded flag and tells the user ONCE per episode.
+    /// The app never restarts cfprefsd itself — that is an operator action.
+    private func registerPreferencesDegradedObserverIfNeeded() {
+        guard preferencesDegradedObserver == nil else { return }
+        preferencesDegradedObserver = NotificationCenter.default.addObserver(
+            forName: .preferencesDegradedStateChanged,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                ProfileManager.shared.syncPreferencesDegradedState()
+            }
+        }
+        syncPreferencesDegradedState()
+    }
+
+    private func syncPreferencesDegradedState() {
+        let degraded = profileStore.preferencesDegraded
+        guard degraded != preferencesDegraded else { return }
+        preferencesDegraded = degraded
+        if degraded {
+            NotificationManager.shared.sendPreferencesDegradedNotification()
+        } else {
+            LoggingService.shared.log("ProfileManager: preferences service recovered")
+        }
+    }
+
     private func registerCredentialsReadyObserverIfNeeded() {
         guard credentialsReadyObserver == nil else { return }
         credentialsReadyObserver = NotificationCenter.default.addObserver(
