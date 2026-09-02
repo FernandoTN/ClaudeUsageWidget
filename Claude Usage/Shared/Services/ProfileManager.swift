@@ -54,6 +54,11 @@ class ProfileManager: ObservableObject {
     /// flushed via `applyUsagePatches` (usage-only — never writes credentials).
     private var pendingUsageByProfileID: [UUID: ProfileStore.UsagePatch] = [:]
 
+    /// Whether `hydrateDisplaySettingsIfNeeded()` has already run. Deliberately
+    /// not `private`: tests reset it to exercise the first-load path on the
+    /// shared singleton.
+    var hasHydratedDisplaySettings = false
+
     private init() {}
 
     // MARK: - Initialization
@@ -86,13 +91,50 @@ class ProfileManager: ObservableObject {
             }
         }
 
+        hydrateDisplaySettingsIfNeeded()
+
+        LoggingService.shared.log("ProfileManager: Loaded \(profiles.count) profile(s), active: \(activeProfile?.name ?? "none")")
+    }
+
+    /// Reads the four store-backed settings that are NOT part of the profile
+    /// array — display mode, multi-profile display config, and the two
+    /// per-provider active-login pointers — into their `@Published` properties.
+    ///
+    /// **Once per process, deliberately.** `loadProfiles()` is not only the
+    /// startup load: it is also the RELOAD path, called after a CLI credential
+    /// self-heal (`MenuBarManager.ensureFreshCLICredentialsIfNeeded`, i.e.
+    /// potentially before any usage fetch) and from the CLI / Codex account
+    /// settings screens. Re-reading these four on a reload can only ever lose
+    /// information, because `ProfileManager` is the SOLE writer of all four
+    /// store keys (`updateDisplayMode`, `updateMultiProfileConfig`,
+    /// `claimActive*Ownership`) — the in-memory value is therefore always at
+    /// least as fresh as the stored one, while a `UserDefaults` read that fails
+    /// or returns a stale snapshot silently reverts the user's settings to
+    /// `.default`.
+    ///
+    /// That is not hypothetical. On 2026-09-01 a wedged `cfprefsd` made reads
+    /// unreliable for ~5.5 hours; ten runtime reloads landed inside that window
+    /// and reset `multiProfileConfig` to `.default`, whose `iconStyle` is
+    /// `.concentric` — every menu-bar tile flipped from progress bars to
+    /// circles while the on-disk plist still held `progressBar` the whole day.
+    /// The reset posts no `.profileDisplayCosmeticsChanged` and logs nothing,
+    /// so it is invisible in the transcript AND in the unified log; the tiles
+    /// simply change on the next sweep. `reloadAfterCredentialSync()` already
+    /// gets this right — it reloads the profile array alone.
+    ///
+    /// The reset that matters most is not cosmetic: a nil read would also clear
+    /// `activeClaudeProfileId` / `activeCodexProfileId`, and Keychain adoption
+    /// and `syncToSystem` decisions key off those pointers rather than off the
+    /// focused profile.
+    private func hydrateDisplaySettingsIfNeeded() {
+        guard !hasHydratedDisplaySettings else { return }
+        hasHydratedDisplaySettings = true
+
         displayMode = profileStore.loadDisplayMode()
         multiProfileConfig = profileStore.loadMultiProfileConfig()
 
         activeClaudeProfileId = profileStore.loadActiveClaudeProfileId()
         activeCodexProfileId = profileStore.loadActiveCodexProfileId()
-
-        LoggingService.shared.log("ProfileManager: Loaded \(profiles.count) profile(s), active: \(activeProfile?.name ?? "none")")
     }
 
     // MARK: - Profile Operations
