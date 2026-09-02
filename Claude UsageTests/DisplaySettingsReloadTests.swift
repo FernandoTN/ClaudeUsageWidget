@@ -111,8 +111,19 @@ final class DisplaySettingsReloadTests: XCTestCase {
 
     /// Simulates the read side of a wedged preferences daemon for one key: the
     /// value is gone, so `ProfileStore`'s loader takes its `.default` branch.
+    /// Makes the STORE genuinely report its type default for `key`.
+    ///
+    /// Clearing the UserDefaults key alone stopped being sufficient once
+    /// `ProfileStore` gained its last-known-good shadow: the store now answers an
+    /// absent read from the value it last saw, so the control assertions below
+    /// ("the store itself must now report the default, or this test proves
+    /// nothing") would fail against a store that is doing its job. Resetting the
+    /// shadow is what actually reproduces the empty read these tests are about,
+    /// and it keeps them non-vacuous — with both layers defeated, the surviving
+    /// setting can only come from the manager's once-per-process hydration.
     private func makeStoreReadComeBackEmpty(forKey key: String) {
         defaults.removeObject(forKey: key)
+        store.resetPreferencesResilienceStateForTesting()
         XCTAssertNil(defaults.object(forKey: key), "fixture must actually clear \(key)")
     }
 
