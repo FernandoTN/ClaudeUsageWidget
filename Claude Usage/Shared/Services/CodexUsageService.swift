@@ -470,17 +470,79 @@ class CodexUsageService {
                     return try await fetchUsage(for: profileId, isRetryAfterRefresh: true)
                 }
             }
-            throw AppError(
-                code: httpResponse.statusCode == 401 || httpResponse.statusCode == 403
-                    ? .apiUnauthorized : .apiGenericError,
-                message: "Codex usage fetch failed (status \(httpResponse.statusCode))",
-                isRecoverable: true,
-                recoverySuggestion: "Please re-sync your Codex account in Settings"
-            )
+            throw Self.usageFetchError(for: httpResponse)
         }
 
         forcedRefreshCooldownUntil.removeValue(forKey: profileId)
         return try parseUsageResponse(data)
+    }
+
+    // MARK: - Non-200 Classification
+
+    /// Classifies a non-200 usage response into the app's error taxonomy.
+    ///
+    /// The 429 branch is the point of this function. Until 2026-09-01 every
+    /// non-401/403 status — 429 included — became a bare `.apiGenericError`
+    /// with no `retryAfterSeconds`, so a throttled Codex account got NO burst
+    /// backoff and NO account-throttle stamp (`MenuBarManager` keys both off
+    /// `.apiRateLimited` + Retry-After), kept being re-fetched every 30s sweep,
+    /// and told the user to "re-sync your Codex account" — sending them to fix
+    /// a login that is not broken. Mirrors `GrokUsageService`'s 429 case.
+    ///
+    /// Pure and injectable so the branch is testable from a constructed
+    /// `HTTPURLResponse` rather than a live endpoint.
+    nonisolated static func usageFetchError(
+        for response: HTTPURLResponse,
+        now: Date = Date(),
+        clockFormatter: DateFormatter? = nil
+    ) -> AppError {
+        if response.statusCode == 429 {
+            let rawHeader = response.value(forHTTPHeaderField: "Retry-After")
+            // Shared parser: delta-seconds AND HTTP-date, non-finite and
+            // negative values rejected, clamped to `retryAfterMaximum` — the
+            // clamp is also what keeps the downstream Int conversions off an
+            // out-of-range Double.
+            let retryAfter = parseRetryAfter(rawHeader, now: now)
+            var rateLimited = AppError(
+                code: .apiRateLimited,
+                message: rateLimitedMessage(retryAfter: retryAfter, now: now, formatter: clockFormatter),
+                technicalDetails: "Codex usage endpoint returned 429 (Retry-After: \(rawHeader ?? "absent"))",
+                isRecoverable: true,
+                recoverySuggestion: "error.api_rate_limited.suggestion".localized
+            )
+            rateLimited.retryAfterSeconds = retryAfter
+            return rateLimited
+        }
+
+        let isAuthFailure = response.statusCode == 401 || response.statusCode == 403
+        return AppError(
+            code: isAuthFailure ? .apiUnauthorized : .apiGenericError,
+            message: "Codex usage fetch failed (status \(response.statusCode))",
+            isRecoverable: true,
+            recoverySuggestion: "Please re-sync your Codex account in Settings"
+        )
+    }
+
+    /// Locale-aware clock formatter for the retry time shown to the user.
+    nonisolated static func retryClockFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }
+
+    /// What the user is told when a Codex account is throttled: when the app
+    /// will try again, not a re-sync instruction for a login that is fine.
+    nonisolated static func rateLimitedMessage(
+        retryAfter: TimeInterval?,
+        now: Date = Date(),
+        formatter: DateFormatter? = nil
+    ) -> String {
+        guard let retryAfter, retryAfter > 0 else {
+            return "Codex usage is rate limited, retrying shortly"
+        }
+        let clock = formatter ?? retryClockFormatter()
+        return "Codex usage is rate limited, retrying at \(clock.string(from: now.addingTimeInterval(retryAfter)))"
     }
 
     /// Maps the wham/usage payload onto ClaudeUsage. Only the unified session/weekly

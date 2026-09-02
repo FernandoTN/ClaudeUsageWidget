@@ -138,6 +138,72 @@ final class CompositeTileLayoutTests: XCTestCase {
         )
     }
 
+    // MARK: - Popover navigator follows the PAINTED order (audit M10)
+
+    /// The ranking key is a weekly reset boundary, so the static computation
+    /// flips the instant a boundary passes — while the tiles keep the order
+    /// they were painted in until the next rebuild. The popover recomputed
+    /// independently, so a rank flip reordered the navigator chips but not the
+    /// tiles: chip N stopped meaning tile N and the ‹ › walk followed an order
+    /// the bar was not showing. The painted ids win.
+    func testNavigatorFollowsPaintedOrderNotAFreshRanking() {
+        let soon = claudeProfile("Soon", weeklyReset: now.addingTimeInterval(3600))
+        let late = claudeProfile("Late", weeklyReset: now.addingTimeInterval(6 * 86400))
+        let profiles = [soon, late]
+
+        // A fresh ranking puts the soonest reset rightmost.
+        XCTAssertEqual(
+            StatusBarUIManager.onScreenGroupMembers(for: profiles, provider: .claude, now: now).map(\.name),
+            ["Late", "Soon"]
+        )
+
+        // The bar, painted before the flip, still shows the other order.
+        let painted = [soon.id, late.id]
+        XCTAssertEqual(
+            StatusBarUIManager.onScreenGroupMembers(
+                for: profiles, provider: .claude, paintedOrder: painted, now: now
+            ).map(\.name),
+            ["Soon", "Late"],
+            "the navigator must follow the tiles, not a recomputed ranking"
+        )
+    }
+
+    /// Unpainted (cold popover before the first paint) falls back to the static
+    /// ranking, and painted ids with no surviving profile are dropped so a
+    /// deleted account cannot linger in the chips.
+    func testPaintedOrderFallsBackAndDropsDeadIds() {
+        let soon = claudeProfile("Soon", weeklyReset: now.addingTimeInterval(3600))
+        let late = claudeProfile("Late", weeklyReset: now.addingTimeInterval(6 * 86400))
+        let codex = codexProfile("CX", weeklyReset: now.addingTimeInterval(3600))
+        let profiles = [soon, late, codex]
+
+        XCTAssertEqual(
+            StatusBarUIManager.onScreenGroupMembers(
+                for: profiles, provider: .claude, paintedOrder: [], now: now
+            ).map(\.name),
+            ["Late", "Soon"],
+            "nothing painted yet → static ranking"
+        )
+
+        XCTAssertEqual(
+            StatusBarUIManager.onScreenGroupMembers(
+                for: profiles, provider: .claude,
+                paintedOrder: [UUID(), late.id, soon.id], now: now
+            ).map(\.name),
+            ["Late", "Soon"],
+            "a painted id with no profile behind it is dropped"
+        )
+
+        // Cross-provider ids in the painted list never leak into another group.
+        XCTAssertEqual(
+            StatusBarUIManager.onScreenGroupMembers(
+                for: profiles, provider: .codex,
+                paintedOrder: [soon.id, codex.id, late.id], now: now
+            ).map(\.name),
+            ["CX"]
+        )
+    }
+
     // MARK: - Segment geometry
 
     private func layout(_ widths: [CGFloat]) -> (totalWidth: CGFloat, origins: [CGFloat], ranges: [Range<CGFloat>]) {

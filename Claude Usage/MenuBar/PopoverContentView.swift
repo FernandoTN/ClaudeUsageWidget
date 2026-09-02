@@ -105,11 +105,19 @@ struct PopoverContentView: View {
 
     /// The viewed account's provider group, LEFT-TO-RIGHT exactly as the menu
     /// bar paints the tiles (soonest weekly reset at the RIGHT edge).
+    ///
+    /// Read from the bar's PAINTED order, not recomputed: the ranking key is a
+    /// weekly reset boundary, so it flips the instant that boundary passes
+    /// while the tiles keep their painted order until the next rebuild.
+    /// Recomputing here made chip N stop meaning tile N and sent the ‹ › walk
+    /// down a different order than the bar shows. The static ranking remains
+    /// the fallback for "nothing painted yet".
     private var groupMembers: [Profile] {
         guard profileManager.displayMode == .multi, let viewed = viewedProfile else { return [] }
         return StatusBarUIManager.onScreenGroupMembers(
             for: profileManager.profiles,
-            provider: viewed.providerKind
+            provider: viewed.providerKind,
+            paintedOrder: manager.paintedGroupMembers(for: viewed.providerKind)
         )
     }
 

@@ -221,4 +221,43 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         recovered.rateLimitedUntil = now.addingTimeInterval(-1)
         XCTAssertFalse(MenuBarManager.isQuotaExhausted(recovered, sessionThreshold: 95, weeklyThreshold: 99, now: now))
     }
+
+    // MARK: - Candidate walk reaction to a failed activation (audit H6)
+
+    /// The walk's in-flight guard is re-checked only AFTER an `await`
+    /// (`fetchUsageForProfile` on a stale candidate), so a switch that starts
+    /// during that suspension reaches `activateProfile` and is refused by the
+    /// switching semaphore. That refusal says nothing about the candidate —
+    /// its credentials were never even examined — but it used to arrive as a
+    /// bare `false`, indistinguishable from the dead-login gate, and the walk
+    /// excluded a healthy account and logged it as "dead credentials?".
+    func testInFlightSwitchRefusalDefersAndDoesNotMarkTheCandidateDead() {
+        let reaction = MenuBarManager.walkReaction(to: .switchInFlight)
+
+        XCTAssertEqual(reaction, .deferToNextSweep)
+        XCTAssertNotEqual(reaction, .excludeCandidate,
+                          "a semaphore refusal must never exclude a candidate as a dead login")
+        XCTAssertFalse(ProfileManager.ActivationOutcome.switchInFlight.didActivate)
+    }
+
+    /// The other half of the split: a genuinely unusable candidate still gets
+    /// excluded so the walk moves on, and a landed switch still stops the walk
+    /// (which is what consumes the queued handoff entry).
+    func testDeadLoginExcludesTheCandidateAndASwitchStopsTheWalk() {
+        XCTAssertEqual(MenuBarManager.walkReaction(to: .credentialsRefused), .excludeCandidate)
+        XCTAssertEqual(MenuBarManager.walkReaction(to: .profileNotFound), .excludeCandidate)
+        XCTAssertEqual(MenuBarManager.walkReaction(to: .activated), .switched)
+        // Already-active kept its historical `true` meaning, so the queue entry
+        // is still consumed for it exactly as before.
+        XCTAssertEqual(MenuBarManager.walkReaction(to: .alreadyActive), .switched)
+    }
+
+    /// The Bool-returning `activateProfile` is unchanged for every caller that
+    /// does not need the distinction.
+    func testActivationOutcomeMapsOntoTheHistoricalBool() {
+        XCTAssertTrue(ProfileManager.ActivationOutcome.activated.didActivate)
+        XCTAssertTrue(ProfileManager.ActivationOutcome.alreadyActive.didActivate)
+        XCTAssertFalse(ProfileManager.ActivationOutcome.credentialsRefused.didActivate)
+        XCTAssertFalse(ProfileManager.ActivationOutcome.profileNotFound.didActivate)
+    }
 }
