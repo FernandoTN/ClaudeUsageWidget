@@ -181,6 +181,144 @@ class ProfileStore {
         static let credentialsMigratedToKeychain = "credentialsMigratedToKeychain"  // legacy v1 flag
         static let credentialsRepairedV2 = "credentialsRepairedToKeychain_v2"
         static let keychainRebuiltV3 = "keychainItemsRebuiltViaSecurityTool_v3"
+        static let activeClaudeProfileId = "activeClaudeProfileId"
+        static let activeCodexProfileId = "activeCodexProfileId"
+    }
+
+    // MARK: - Preferences (cfprefsd) degradation resilience
+    //
+    // macOS's preferences daemon can lose access to plist files while the app is
+    // running (its log: "rejecting write of key(s) … because Path not accessible").
+    // Measured live 2026-09-01: `defaults read com.claudeusagewidget.app` returned an
+    // EMPTY dict and every in-process `UserDefaults` read returned nil, while the
+    // on-disk plist was intact (39 KB, all keys). The wedge began 26 minutes into a
+    // healthy run. Because `loadProfiles()` is re-read many times per 30s sweep, a
+    // single nil read emptied the whole UI — and persisting that empty state after the
+    // daemon recovered would have destroyed the user's real roster.
+    //
+    // Defence, in three layers:
+    //  1. LAST-KNOWN-GOOD shadow — every successful read and every write records what
+    //     the store believes is true. A read that comes back absent/empty while the
+    //     shadow holds a value is served from the shadow, not from the type default.
+    //  2. COLD-LAUNCH PLIST FALLBACK — with nothing yet in the shadow, `profiles_v3`
+    //     is read straight out of `~/Library/Preferences/<bundle id>.plist`.
+    //     READ-ONLY, always: this code never writes that file.
+    //  3. EMPTY-OVERWRITE GUARD — `saveProfiles([])` is refused whenever a non-empty
+    //     roster is known, unless the caller passes `allowEmpty: true`.
+    //
+    // The shadow is per-process and is written by the SAVE path too, so a legitimate
+    // user change (clearing the active Claude account, switching display mode) updates
+    // it and is never "restored" by a later read.
+
+    /// Last profile array this process decoded (or persisted) successfully and
+    /// non-empty. `nil` until the first good read — that state is what the plist
+    /// fallback exists for.
+    private var lastKnownGoodProfiles: [Profile]?
+    private var lastKnownGoodDisplayMode: ProfileDisplayMode?
+    private var lastKnownGoodMultiProfileConfig: MultiProfileDisplayConfig?
+    /// Active-profile pointers. The outer optional is "never observed"; the inner one
+    /// is the value, so a deliberate `save…(nil)` is remembered as a real nil and is
+    /// NOT re-filled from the shadow on the next read.
+    private var lastKnownGoodActiveProfileId: UUID??
+    private var lastKnownGoodActiveClaudeProfileId: UUID??
+    private var lastKnownGoodActiveCodexProfileId: UUID??
+
+    /// True while reads are coming back empty against a known-good shadow. Cleared by
+    /// the first read that agrees with the shadow again. Observers get
+    /// `.preferencesDegradedStateChanged` on each transition.
+    private(set) var preferencesDegraded = false
+
+    /// The app's own preferences plist, used ONLY as a read-only cold-launch fallback.
+    /// `nil` under XCTest unless a test injects a path — suites must never read or
+    /// write the real user domain (2026-07-28 tearDown incident).
+    private var preferencesPlistURL: URL?
+
+    /// Throttle for the fallback: `loadProfiles()` runs many times per sweep, and a
+    /// genuinely-first-launch install would otherwise stat + parse on every call.
+    private var lastPlistFallbackAttempt: Date?
+    private static let plistFallbackMinInterval: TimeInterval = 5.0
+
+    /// `~/Library/Preferences/<bundle id>.plist` for the running app.
+    static func defaultPreferencesPlistURL(bundleIdentifier: String?) -> URL? {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
+        guard let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return library
+            .appendingPathComponent("Preferences", isDirectory: true)
+            .appendingPathComponent("\(bundleIdentifier).plist", isDirectory: false)
+    }
+
+    /// Points the cold-launch fallback at a specific plist. Test-only seam — the
+    /// production path is set once in `init()`.
+    func setPreferencesPlistURLForTesting(_ url: URL?) {
+        preferencesPlistURL = url
+        lastPlistFallbackAttempt = nil
+    }
+
+    /// Clears the in-process last-known-good shadow and the degraded flag. Test-only:
+    /// the singleton outlives every test case, so a shadow left by one test would
+    /// otherwise mask the next one's empty-read setup.
+    func resetPreferencesResilienceStateForTesting() {
+        lastKnownGoodProfiles = nil
+        lastKnownGoodDisplayMode = nil
+        lastKnownGoodMultiProfileConfig = nil
+        lastKnownGoodActiveProfileId = nil
+        lastKnownGoodActiveClaudeProfileId = nil
+        lastKnownGoodActiveCodexProfileId = nil
+        lastPlistFallbackAttempt = nil
+        preferencesDegraded = false
+    }
+
+    /// Reads `profiles_v3` out of a preferences plist on disk. READ-ONLY. Returns nil
+    /// when the file is missing, unparseable, or carries no usable profile array.
+    static func decodeProfilesFromPreferencesPlist(at url: URL) -> [Profile]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let root = (try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil
+        )) as? [String: Any] else { return nil }
+        guard let profilesData = root[Keys.profiles] as? Data else { return nil }
+        guard let profiles = try? JSONDecoder().decode([Profile].self, from: profilesData),
+              !profiles.isEmpty else { return nil }
+        return profiles
+    }
+
+    /// One throttled read-only attempt at the on-disk plist.
+    private func profilesFromPreferencesPlist() -> [Profile]? {
+        guard let url = preferencesPlistURL else { return nil }
+        if let last = lastPlistFallbackAttempt,
+           Date().timeIntervalSince(last) < Self.plistFallbackMinInterval {
+            return nil
+        }
+        lastPlistFallbackAttempt = Date()
+        return Self.decodeProfilesFromPreferencesPlist(at: url)
+    }
+
+    /// Enters (or stays in) a degraded episode, logging exactly once per episode.
+    private func markPreferencesDegraded(_ reason: String) {
+        guard !preferencesDegraded else { return }
+        preferencesDegraded = true
+        LoggingService.shared.logError("ProfileStore: \(reason)")
+        NotificationCenter.default.post(name: .preferencesDegradedStateChanged, object: nil)
+    }
+
+    /// Leaves a degraded episode after a read that agrees with the shadow again.
+    private func clearPreferencesDegraded() {
+        guard preferencesDegraded else { return }
+        preferencesDegraded = false
+        LoggingService.shared.log("ProfileStore: preferences reads recovered — serving live values again")
+        NotificationCenter.default.post(name: .preferencesDegradedStateChanged, object: nil)
+    }
+
+    /// How many profiles this process believes exist, from the cheapest source that
+    /// can answer: the shadow, then UserDefaults, then the on-disk plist.
+    private func knownProfileCount() -> Int {
+        if let known = lastKnownGoodProfiles { return known.count }
+        if let data = defaults.data(forKey: Keys.profiles),
+           let decoded = try? JSONDecoder().decode([Profile].self, from: data) {
+            return decoded.count
+        }
+        return profilesFromPreferencesPlist()?.count ?? 0
     }
 
     init() {
@@ -198,6 +336,11 @@ class ProfileStore {
         } else {
             self.defaults = UserDefaults.standard
             LoggingService.shared.log("ProfileStore: Using standard app container storage")
+            // Cold-launch fallback source. Deliberately NOT set under XCTest: the
+            // suite must never read (or be able to write) the real user domain.
+            self.preferencesPlistURL = Self.defaultPreferencesPlistURL(
+                bundleIdentifier: Bundle.main.bundleIdentifier
+            )
         }
 
         // Populate the credential cache and repair Keychain ACLs if needed.
@@ -601,12 +744,20 @@ class ProfileStore {
         return string
     }
 
+    /// Profile ids to hydrate credentials for. Falls through to the last-known-good
+    /// shadow and then the on-disk plist: a cfprefsd wedge at launch would otherwise
+    /// return an empty id list, and hydration would settle `.ready` over an empty
+    /// cache — every tile credential-less for the rest of the run.
     private func storedProfileIds() -> [UUID] {
-        guard let data = defaults.data(forKey: Keys.profiles),
-              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
+        if let data = defaults.data(forKey: Keys.profiles),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            let ids = array.compactMap { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) }
+            if !ids.isEmpty { return ids }
         }
-        return array.compactMap { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) }
+        if let known = lastKnownGoodProfiles, !known.isEmpty {
+            return known.map(\.id)
+        }
+        return profilesFromPreferencesPlist()?.map(\.id) ?? []
     }
 
     // MARK: - Profile Management
@@ -667,7 +818,25 @@ class ProfileStore {
         }
     }
 
-    func saveProfiles(_ profiles: [Profile]) {
+    /// Persists the roster. `allowEmpty` must be `true` for a deliberate delete-all —
+    /// see the empty-overwrite guard below.
+    func saveProfiles(_ profiles: [Profile], allowEmpty: Bool = false) {
+        // 0. EMPTY-OVERWRITE GUARD. An empty array reaching here is nearly always a
+        //    read that failed (a wedged cfprefsd hands every caller nil), not a user
+        //    who deleted everything — `ProfileManager.deleteProfile` refuses to delete
+        //    the last profile, so no in-app path legitimately produces an empty
+        //    roster today. Persisting it once the daemon recovers would destroy the
+        //    real one.
+        if profiles.isEmpty && !allowEmpty {
+            let known = knownProfileCount()
+            if known > 0 {
+                LoggingService.shared.logError(
+                    "ProfileStore: refusing to persist an empty profile list while \(known) profiles are known — pass allowEmpty: true for a deliberate delete-all"
+                )
+                return
+            }
+        }
+
         // 1. Sync credentials into the in-memory cache; persist changes to the
         //    Keychain on a background queue (never blocks the caller).
         //
@@ -719,6 +888,12 @@ class ProfileStore {
             let encoder = JSONEncoder()
             let data = try encoder.encode(profiles)
             defaults.set(data, forKey: Keys.profiles)
+            // The shadow tracks what this process believes, so a subsequent empty read
+            // is recognised as degraded rather than adopted as truth. An empty array
+            // only reaches here with `allowEmpty`, and recording it (rather than
+            // leaving the shadow nil) is what stops the fallbacks from resurrecting
+            // profiles the user deliberately deleted.
+            lastKnownGoodProfiles = profiles
             LoggingService.shared.log("ProfileStore: Saved \(profiles.count) profiles (\(data.count) bytes, credentials in Keychain)")
         } catch {
             LoggingService.shared.logStorageError("saveProfiles", error: error)
@@ -736,38 +911,96 @@ class ProfileStore {
     }
 
     func loadProfiles() -> [Profile] {
-        guard let data = defaults.data(forKey: Keys.profiles) else {
-            LoggingService.shared.log("ProfileStore: No profiles found in storage")
-            return []
-        }
+        var decoded: [Profile]?
 
-        do {
-            // Decode profiles — credential fields are nil (excluded from CodingKeys).
-            var profiles = try JSONDecoder().decode([Profile].self, from: data)
-
-            // Re-hydrate credentials from the in-memory cache (no Keychain on this thread).
-            for i in profiles.indices {
-                hydrateCredentialsFromCache(for: &profiles[i])
+        if let data = defaults.data(forKey: Keys.profiles) {
+            do {
+                // Credential fields are nil here (excluded from Profile.CodingKeys).
+                decoded = try JSONDecoder().decode([Profile].self, from: data)
+            } catch {
+                LoggingService.shared.logStorageError("loadProfiles", error: error)
+                decoded = nil
             }
-
-            LoggingService.shared.log("ProfileStore: Loaded \(profiles.count) profiles from storage (credentials from cache)")
-            return profiles
-        } catch {
-            LoggingService.shared.logStorageError("loadProfiles", error: error)
-            LoggingService.shared.logError("ProfileStore: Failed to decode profiles, returning empty array")
-            return []
         }
+
+        if let decoded, !decoded.isEmpty {
+            clearPreferencesDegraded()
+            lastKnownGoodProfiles = decoded
+            return hydrated(decoded, source: "storage")
+        }
+
+        // Empty or undecodable. Serve the shadow rather than emptying the UI — unless
+        // the shadow itself is empty, which only an explicit `allowEmpty` delete-all
+        // produces. That is a real roster, so it is returned as-is and no fallback
+        // (cache or plist) may resurrect the deleted profiles.
+        if let cached = lastKnownGoodProfiles {
+            if cached.isEmpty {
+                clearPreferencesDegraded()
+                return []
+            }
+            markPreferencesDegraded(
+                "preferences read returned empty while \(cached.count) profiles are known — cfprefsd degraded, serving cached profiles"
+            )
+            return hydrated(cached, source: "last-known-good cache")
+        }
+
+        // Nothing known yet this process: cold launch. Try the on-disk plist, which
+        // survives a cfprefsd wedge intact.
+        if let fromDisk = profilesFromPreferencesPlist() {
+            markPreferencesDegraded(
+                "UserDefaults yielded no profiles but the on-disk preferences plist holds \(fromDisk.count) — cfprefsd degraded, decoding from disk"
+            )
+            lastKnownGoodProfiles = fromDisk
+            return hydrated(fromDisk, source: "on-disk preferences plist")
+        }
+
+        LoggingService.shared.log("ProfileStore: No profiles found in storage")
+        return []
+    }
+
+    /// Fills credentials from the in-memory cache (never the Keychain on this thread).
+    private func hydrated(_ profiles: [Profile], source: String) -> [Profile] {
+        var copy = profiles
+        for i in copy.indices {
+            hydrateCredentialsFromCache(for: &copy[i])
+        }
+        LoggingService.shared.log("ProfileStore: Loaded \(copy.count) profiles from \(source) (credentials from cache)")
+        return copy
     }
 
     func saveActiveProfileId(_ id: UUID) {
         defaults.set(id.uuidString, forKey: Keys.activeProfileId)
+        lastKnownGoodActiveProfileId = .some(id)
     }
 
     func loadActiveProfileId() -> UUID? {
-        guard let uuidString = defaults.string(forKey: Keys.activeProfileId) else {
-            return nil
+        loadPointer(
+            key: Keys.activeProfileId,
+            shadow: &lastKnownGoodActiveProfileId,
+            label: "activeProfileId"
+        )
+    }
+
+    /// Shared read path for the three active-profile pointers.
+    ///
+    /// A nil read is ambiguous — it means either "genuinely unset" or "cfprefsd is
+    /// refusing to answer". The shadow disambiguates: it is written by every save
+    /// (including a deliberate `save…(nil)`), so a nil read is only overridden when
+    /// this process last observed a real id.
+    private func loadPointer(key: String, shadow: inout UUID??, label: String) -> UUID? {
+        let live = defaults.string(forKey: key).flatMap(UUID.init(uuidString:))
+        if let live {
+            shadow = .some(live)
+            return live
         }
-        return UUID(uuidString: uuidString)
+        if case .some(.some(let cached)) = shadow {
+            markPreferencesDegraded(
+                "preferences read returned no \(label) while \(cached) was previously loaded — cfprefsd degraded, serving cached value"
+            )
+            return cached
+        }
+        shadow = .some(nil)
+        return nil
     }
 
     // MARK: - Per-Provider Active Accounts
@@ -776,31 +1009,51 @@ class ProfileStore {
     // of one provider must never disturb the other provider's active account.
 
     func saveActiveClaudeProfileId(_ id: UUID?) {
-        defaults.set(id?.uuidString, forKey: "activeClaudeProfileId")
+        defaults.set(id?.uuidString, forKey: Keys.activeClaudeProfileId)
+        lastKnownGoodActiveClaudeProfileId = .some(id)
     }
 
     func loadActiveClaudeProfileId() -> UUID? {
-        defaults.string(forKey: "activeClaudeProfileId").flatMap(UUID.init(uuidString:))
+        loadPointer(
+            key: Keys.activeClaudeProfileId,
+            shadow: &lastKnownGoodActiveClaudeProfileId,
+            label: "activeClaudeProfileId"
+        )
     }
 
     func saveActiveCodexProfileId(_ id: UUID?) {
-        defaults.set(id?.uuidString, forKey: "activeCodexProfileId")
+        defaults.set(id?.uuidString, forKey: Keys.activeCodexProfileId)
+        lastKnownGoodActiveCodexProfileId = .some(id)
     }
 
     func loadActiveCodexProfileId() -> UUID? {
-        defaults.string(forKey: "activeCodexProfileId").flatMap(UUID.init(uuidString:))
+        loadPointer(
+            key: Keys.activeCodexProfileId,
+            shadow: &lastKnownGoodActiveCodexProfileId,
+            label: "activeCodexProfileId"
+        )
     }
 
     func saveDisplayMode(_ mode: ProfileDisplayMode) {
         defaults.set(mode.rawValue, forKey: Keys.displayMode)
+        lastKnownGoodDisplayMode = mode
     }
 
+    /// A wedged read must not silently demote a multi-profile menu bar back to
+    /// `.single` — that empties the tile group exactly as an empty roster does.
     func loadDisplayMode() -> ProfileDisplayMode {
-        guard let rawValue = defaults.string(forKey: Keys.displayMode),
-              let mode = ProfileDisplayMode(rawValue: rawValue) else {
-            return .single
+        if let rawValue = defaults.string(forKey: Keys.displayMode),
+           let mode = ProfileDisplayMode(rawValue: rawValue) {
+            lastKnownGoodDisplayMode = mode
+            return mode
         }
-        return mode
+        if let cached = lastKnownGoodDisplayMode {
+            markPreferencesDegraded(
+                "preferences read returned no display mode while '\(cached.rawValue)' was previously loaded — cfprefsd degraded, serving cached value"
+            )
+            return cached
+        }
+        return .single
     }
 
     // MARK: - Multi-Profile Display Config
@@ -809,21 +1062,32 @@ class ProfileStore {
         do {
             let data = try JSONEncoder().encode(config)
             defaults.set(data, forKey: Keys.multiProfileConfig)
+            lastKnownGoodMultiProfileConfig = config
         } catch {
             LoggingService.shared.logStorageError("saveMultiProfileConfig", error: error)
         }
     }
 
+    /// Falling back to `.default` here is what repainted the saved `.progressBar`
+    /// tiles as `.concentric` circles during the 2026-09-01 wedge — the visible
+    /// half of "the app crashed". Serve the last value this process loaded instead.
     func loadMultiProfileConfig() -> MultiProfileDisplayConfig {
-        guard let data = defaults.data(forKey: Keys.multiProfileConfig) else {
-            return .default
+        if let data = defaults.data(forKey: Keys.multiProfileConfig) {
+            do {
+                let config = try JSONDecoder().decode(MultiProfileDisplayConfig.self, from: data)
+                lastKnownGoodMultiProfileConfig = config
+                return config
+            } catch {
+                LoggingService.shared.logStorageError("loadMultiProfileConfig", error: error)
+            }
         }
-        do {
-            return try JSONDecoder().decode(MultiProfileDisplayConfig.self, from: data)
-        } catch {
-            LoggingService.shared.logStorageError("loadMultiProfileConfig", error: error)
-            return .default
+        if let cached = lastKnownGoodMultiProfileConfig {
+            markPreferencesDegraded(
+                "preferences read returned no multi-profile display config while one was previously loaded — cfprefsd degraded, serving cached value"
+            )
+            return cached
         }
+        return .default
     }
 
     // MARK: - Credential Helpers
