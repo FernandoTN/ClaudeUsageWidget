@@ -593,9 +593,11 @@ class ClaudeCodeSyncService {
         if let rotated = payload["refresh_token"] as? String {
             oauth["refreshToken"] = rotated
         }
-        if let expiresIn = payload["expires_in"] as? Double {
-            // CLI stores expiresAt as integer milliseconds since epoch
-            oauth["expiresAt"] = Int((Date().timeIntervalSince1970 + expiresIn) * 1000.0)
+        if let expiresIn = payload["expires_in"] as? Double, expiresIn.isFinite {
+            // CLI stores expiresAt as integer milliseconds since epoch.
+            // `clampedInt` because the value is server-supplied and `Int(_:)`
+            // traps outside Int64's range (audit H3).
+            oauth["expiresAt"] = clampedInt((Date().timeIntervalSince1970 + expiresIn) * 1000.0)
         }
         if let scope = payload["scope"] as? String, !scope.isEmpty {
             oauth["scopes"] = scope.components(separatedBy: " ")

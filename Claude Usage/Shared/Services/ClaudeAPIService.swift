@@ -103,8 +103,9 @@ class ClaudeAPIService {
             // it IS the "this account is out of capacity" signal.
             if httpResponse.statusCode == 429 {
                 var rateLimited = AppError.apiRateLimited()
-                rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
-                    .flatMap(TimeInterval.init)
+                rateLimited.retryAfterSeconds = parseRetryAfter(
+                    httpResponse.value(forHTTPHeaderField: "Retry-After")
+                )
                 throw rateLimited
             }
             throw AppError(
@@ -167,8 +168,9 @@ class ClaudeAPIService {
             // your account" suggestion and never stamped the throttle.
             if httpResponse.statusCode == 429 {
                 var rateLimited = AppError.apiRateLimited()
-                rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
-                    .flatMap(TimeInterval.init)
+                rateLimited.retryAfterSeconds = parseRetryAfter(
+                    httpResponse.value(forHTTPHeaderField: "Retry-After")
+                )
                 throw rateLimited
             }
             let responsePreview = String(data: data, encoding: .utf8)?.prefix(200) ?? "Unable to read response"

@@ -2441,12 +2441,18 @@ private func observeCredentialChanges() {
             // floor Retry-After). Honor it instead of an exponential guess —
             // discarding it was how a busy account went blind for minutes at a
             // time. Small floor so a "1s" header can't turn into hammering.
-            interval = max(retryAfter, 30)
+            // Clamped: an unbounded header (a legitimate 86400, or a buggy
+            // upstream number) would park this profile's usage fetch for its
+            // full span and the tile would go blind silently (audit H2). The
+            // account-level path above already handled anything at or over
+            // `accountThrottleRetryAfterFloor`, so the burst cap is the right
+            // ceiling here.
+            interval = min(max(retryAfter, 30), cap)
         } else {
             interval = min(Self.burstBackoffInterval(streak: streak), cap)
         }
         burstBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
-        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (retry-after: \(retryAfter.map { "\(Int($0))s" } ?? "none"), active: \(isActiveAccount)) — backing usage fetch off for \(Int(interval))s (streak \(streak))")
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (retry-after: \(retryAfter.map { "\(clampedInt($0))s" } ?? "none"), active: \(isActiveAccount)) — backing usage fetch off for \(clampedInt(interval))s (streak \(streak))")
     }
 
     // MARK: - Account-Level Throttle Stamping
@@ -2601,15 +2607,16 @@ private func observeCredentialChanges() {
     private func stampAccountThrottleIfNeeded(_ error: AppError, profile: Profile) -> ClaudeUsage? {
         guard error.code == .apiRateLimited,
               let retryAfter = error.retryAfterSeconds,
+              retryAfter.isFinite,
               retryAfter >= Self.accountThrottleRetryAfterFloor else { return nil }
 
         var usage = profile.claudeUsage ?? .empty
-        usage.rateLimitedUntil = Date().addingTimeInterval(retryAfter)
+        usage.rateLimitedUntil = Date().addingTimeInterval(min(retryAfter, retryAfterMaximum))
         // Server-affirmed: clears any inferred provenance a prior stamp left.
         usage.rateLimitedInferred = nil
         usage.lastUpdated = Date()
         profileManager.saveClaudeUsage(usage, for: profile.id)
-        LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage endpoint throttled for \(Int(retryAfter))s — treating account as exhausted until the throttle lifts")
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage endpoint throttled for \(clampedInt(retryAfter))s — treating account as exhausted until the throttle lifts")
         return usage
     }
 

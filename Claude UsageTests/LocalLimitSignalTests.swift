@@ -89,6 +89,81 @@ final class LocalLimitSignalTests: XCTestCase {
         XCTAssertNotNil(events[0].resetsAt)
     }
 
+    func testScanRunsOffTheMainActor() async throws {
+        // Given: a transcript the scan will actually read (an empty walk would
+        // prove nothing about where the reading happens).
+        let root = try Self.makeTranscriptTree(
+            files: ["proj/session.jsonl": Self.rateLimitLine(resets: "10:50pm")]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // When: driven from a detached task through a NONISOLATED helper.
+        // The helper is the probe: it can only call `scanRateLimitEvents`
+        // synchronously — with no actor hop — while the service is
+        // nonisolated, so the thread it observes IS the thread that walked the
+        // tree. Restore the implicit `@MainActor` on the enum and this file
+        // stops compiling cleanly, and `MenuBarManager.swift:2310` regains its
+        // "expression is 'async' but is not marked with 'await'" warning.
+        let result = await Task.detached(priority: .utility) {
+            scanRecordingThread(root: root.path)
+        }.value
+
+        // Then: the 12 GB walk did not happen on the UI thread.
+        XCTAssertFalse(result.beforeOnMain)
+        XCTAssertFalse(result.afterOnMain)
+        XCTAssertEqual(result.count, 1, "the scan must really have read the transcript")
+    }
+
+    func testScanPrunesToolResultsSubtrees() throws {
+        // Given: a real transcript beside a rate-limit-shaped payload dump in
+        // a `tool-results` subtree — the directory family that holds most of
+        // the file count under ~/.claude/projects.
+        let root = try Self.makeTranscriptTree(files: [
+            "proj/session.jsonl": Self.rateLimitLine(resets: "10:50pm"),
+            "proj/tool-results/payload.jsonl": Self.rateLimitLine(resets: "3:15am"),
+            "proj/tool-results/nested/deeper.jsonl": Self.rateLimitLine(resets: "4:15am"),
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // When
+        let events = LocalLimitSignalService.scanRateLimitEvents(
+            since: Date().addingTimeInterval(-300), root: root.path
+        )
+
+        // Then: only the sibling transcript is reported. Identifying it by its
+        // parsed reset hour proves WHICH file was read, not merely how many.
+        XCTAssertEqual(events.count, 1)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = losAngeles
+        XCTAssertEqual(cal.component(.hour, from: try XCTUnwrap(events[0].resetsAt)), 22)
+    }
+
+    // MARK: - Fixtures
+
+    /// One `error: "rate_limit"` transcript line, stamped a minute ago so the
+    /// scan's `since` filter keeps it.
+    private static func rateLimitLine(resets: String) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let at = iso.string(from: Date().addingTimeInterval(-60))
+        return #"{"type":"assistant","error":"rate_limit","apiErrorStatus":429,"timestamp":"\#(at)","message":{"content":"You've hit your session limit · resets \#(resets) (America/Los_Angeles)"}}"#
+    }
+
+    /// Builds a throwaway tree from relative path → file contents and returns
+    /// its root (the caller removes it).
+    private static func makeTranscriptTree(files: [String: String]) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cuw-scan-\(UUID().uuidString)")
+        for (relative, contents) in files {
+            let file = root.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(
+                at: file.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try contents.write(to: file, atomically: true, encoding: .utf8)
+        }
+        return root
+    }
+
     // MARK: - CLI cached usage
 
     func testReadsCLICachedUsageShape() throws {
@@ -121,4 +196,17 @@ final class LocalLimitSignalTests: XCTestCase {
     func testMissingCacheReturnsNil() {
         XCTAssertNil(LocalLimitSignalService.readCLICachedUsage(path: "/nonexistent/claude.json"))
     }
+}
+
+/// Probe for `testScanRunsOffTheMainActor`. Declared `nonisolated` at file
+/// scope because `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` would otherwise
+/// pin it to the main actor and it could no longer observe anything useful.
+private nonisolated func scanRecordingThread(
+    root: String
+) -> (beforeOnMain: Bool, afterOnMain: Bool, count: Int) {
+    let before = Thread.isMainThread
+    let events = LocalLimitSignalService.scanRateLimitEvents(
+        since: Date().addingTimeInterval(-300), root: root
+    )
+    return (before, Thread.isMainThread, events.count)
 }

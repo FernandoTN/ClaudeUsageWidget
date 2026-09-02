@@ -53,6 +53,44 @@ class SharedDataStore {
         }
     }
 
+    // MARK: - Preferences Degradation Resilience
+    //
+    // cfprefsd can lose access to the plist WHILE the app runs, system-wide:
+    // every in-process read then returns nil (see CLAUDE.md "Preferences
+    // (cfprefsd) degradation"). A loader that maps nil onto its type default
+    // turns that into silent state loss — auto-switch reads as OFF, the switch
+    // history as "no switches ever", the projection basis and the user's queued
+    // handoff plan as empty. Each of those has a distinct, wrong consequence,
+    // and none of them is observable.
+    //
+    // Same shape as ProfileStore's shadow (PR #42): every save and every
+    // successful read records what this process believes; a nil read after a
+    // good one is served from the shadow and logged once per episode. With no
+    // prior good read the type default still stands — a genuinely unset key is
+    // indistinguishable from a wedged one on the first read, and defaulting is
+    // what a first launch needs.
+
+    private var lastKnownGoodAutoSwitchEnabled: Bool?
+    private var lastKnownGoodSwitchHistory: [SwitchEvent]?
+    private var lastKnownGoodMeasuredSessionHistory: [UUID: [(at: Date, pct: Double)]]?
+    private var lastKnownGoodAutoSwitchQueue: [UUID]?
+
+    /// Keys already logged this degradation episode; cleared by the next live
+    /// read of that key so a later episode speaks up again.
+    private var nilReadLoggedKeys: Set<String> = []
+
+    private func logNilReadOnce(_ key: String) {
+        guard !nilReadLoggedKeys.contains(key) else { return }
+        nilReadLoggedKeys.insert(key)
+        LoggingService.shared.logError(
+            "SharedDataStore: preferences read returned nil for \(key) — serving cached value"
+        )
+    }
+
+    private func noteLiveRead(_ key: String) {
+        nilReadLoggedKeys.remove(key)
+    }
+
     // MARK: - Setup State
 
     func saveHasCompletedSetup(_ completed: Bool) {
@@ -128,10 +166,25 @@ class SharedDataStore {
 
     func saveAutoSwitchProfileEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: Keys.autoSwitchProfileEnabled)
+        lastKnownGoodAutoSwitchEnabled = enabled
     }
 
+    /// `bool(forKey:)` cannot tell "the user turned it off" from "the key is
+    /// unreadable" — both are false. A wedged read used to switch the whole
+    /// rotation off silently, exactly when a burning account needs it (audit
+    /// H8), so absence is checked explicitly and answered from the shadow.
     func loadAutoSwitchProfileEnabled() -> Bool {
-        return defaults.bool(forKey: Keys.autoSwitchProfileEnabled)
+        if defaults.object(forKey: Keys.autoSwitchProfileEnabled) != nil {
+            let live = defaults.bool(forKey: Keys.autoSwitchProfileEnabled)
+            lastKnownGoodAutoSwitchEnabled = live
+            noteLiveRead(Keys.autoSwitchProfileEnabled)
+            return live
+        }
+        if let cached = lastKnownGoodAutoSwitchEnabled {
+            logNilReadOnce(Keys.autoSwitchProfileEnabled)
+            return cached
+        }
+        return false
     }
 
     /// SESSION-window usage percentage at which the auto-switch fires (and
@@ -254,6 +307,7 @@ class SharedDataStore {
         if let data = try? JSONEncoder().encode(history) {
             defaults.set(data, forKey: SwitchHistoryKeys.history)
         }
+        lastKnownGoodSwitchHistory = history
     }
 
     /// Enriches the newest record with attribution only the caller knows
@@ -268,11 +322,26 @@ class SharedDataStore {
         if let data = try? JSONEncoder().encode(history) {
             defaults.set(data, forKey: SwitchHistoryKeys.history)
         }
+        lastKnownGoodSwitchHistory = history
     }
 
+    /// An unreadable key is NOT "no switches ever happened": read that way,
+    /// `attributeRateLimitEvent` finds no switch after a transcript rate-limit
+    /// event and stamps the CURRENT owner instead of the account that actually
+    /// hit the limit (audit M1). The shadow keeps the real history in view for
+    /// the rest of the process.
     func loadSwitchHistory() -> [SwitchEvent] {
-        guard let data = defaults.data(forKey: SwitchHistoryKeys.history) else { return [] }
-        return (try? JSONDecoder().decode([SwitchEvent].self, from: data)) ?? []
+        guard let data = defaults.data(forKey: SwitchHistoryKeys.history) else {
+            if let cached = lastKnownGoodSwitchHistory {
+                logNilReadOnce(SwitchHistoryKeys.history)
+                return cached
+            }
+            return []
+        }
+        let decoded = (try? JSONDecoder().decode([SwitchEvent].self, from: data)) ?? []
+        lastKnownGoodSwitchHistory = decoded
+        noteLiveRead(SwitchHistoryKeys.history)
+        return decoded
     }
 
     // MARK: - Measured Session History (burn-rate projection basis)
@@ -294,11 +363,20 @@ class SharedDataStore {
         if let data = try? JSONEncoder().encode(encodable) {
             defaults.set(data, forKey: MeasuredHistoryKeys.history)
         }
+        lastKnownGoodMeasuredSessionHistory = history
     }
 
+    /// An unreadable key read as "no samples" deletes the burn-rate projection
+    /// basis, so a suspected profile falls back to its frozen last measurement
+    /// — the literal 2026-08-12 incident this persistence was added to fix
+    /// (audit M2).
     func loadMeasuredSessionHistory() -> [UUID: [(at: Date, pct: Double)]] {
         guard let data = defaults.data(forKey: MeasuredHistoryKeys.history),
               let decoded = try? JSONDecoder().decode([String: [[Double]]].self, from: data) else {
+            if let cached = lastKnownGoodMeasuredSessionHistory {
+                logNilReadOnce(MeasuredHistoryKeys.history)
+                return cached
+            }
             return [:]
         }
         var history: [UUID: [(at: Date, pct: Double)]] = [:]
@@ -309,6 +387,8 @@ class SharedDataStore {
                 return (Date(timeIntervalSince1970: pair[0]), pair[1])
             }
         }
+        lastKnownGoodMeasuredSessionHistory = history
+        noteLiveRead(MeasuredHistoryKeys.history)
         return history
     }
 
@@ -324,11 +404,24 @@ class SharedDataStore {
     /// so a queued handoff plan survives relaunches.
     func saveAutoSwitchQueue(_ queue: [UUID]) {
         defaults.set(queue.map(\.uuidString), forKey: QueueKeys.queue)
+        lastKnownGoodAutoSwitchQueue = queue
     }
 
+    /// An unreadable key read as "empty queue" silently discards the user's
+    /// queued handoff plan and drops the switch back to ranked selection
+    /// (audit M3).
     func loadAutoSwitchQueue() -> [UUID] {
-        (defaults.array(forKey: QueueKeys.queue) as? [String] ?? [])
-            .compactMap(UUID.init(uuidString:))
+        guard let raw = defaults.array(forKey: QueueKeys.queue) as? [String] else {
+            if let cached = lastKnownGoodAutoSwitchQueue {
+                logNilReadOnce(QueueKeys.queue)
+                return cached
+            }
+            return []
+        }
+        let queue = raw.compactMap(UUID.init(uuidString:))
+        lastKnownGoodAutoSwitchQueue = queue
+        noteLiveRead(QueueKeys.queue)
+        return queue
     }
 
 }

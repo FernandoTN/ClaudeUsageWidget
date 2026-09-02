@@ -357,8 +357,9 @@ class GrokUsageService {
             // Same shape as the Claude account-level throttle: carry Retry-After
             // so the sweep's stampAccountThrottleIfNeeded can mark the account.
             var rateLimited = AppError.apiRateLimited()
-            rateLimited.retryAfterSeconds = httpResponse.value(forHTTPHeaderField: "Retry-After")
-                .flatMap(TimeInterval.init)
+            rateLimited.retryAfterSeconds = parseRetryAfter(
+                httpResponse.value(forHTTPHeaderField: "Retry-After")
+            )
             throw rateLimited
         default:
             throw GrokError.usageFetchFailed(status: httpResponse.statusCode)
@@ -401,8 +402,10 @@ class GrokUsageService {
             // effectiveSessionPercentage at the raw 0%.
             sessionResetTime: periodEnd,
             hasSessionWindow: false,
-            weeklyTokensUsed: Int(number(config["totalUsed"]) ?? 0),
-            weeklyLimit: Int(number(config["monthlyLimit"]) ?? 0),
+            // Server-supplied numbers: `Int(_:)` traps on a non-finite or
+            // out-of-range Double, so saturate instead (audit H3).
+            weeklyTokensUsed: clampedInt(number(config["totalUsed"]) ?? 0),
+            weeklyLimit: clampedInt(number(config["monthlyLimit"]) ?? 0),
             weeklyPercentage: percent,
             weeklyResetTime: periodEnd,
             opusWeeklyTokensUsed: 0,

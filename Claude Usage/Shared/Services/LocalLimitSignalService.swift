@@ -18,9 +18,19 @@ import Foundation
 ///    accountUuid}) — a free measurement the widget can adopt without
 ///    spending its per-IP budget.
 ///
-/// All functions are nonisolated and do file I/O — call them OFF the main
-/// actor (the sweep wraps them in a detached task).
-enum LocalLimitSignalService {
+/// All functions do file I/O — call them OFF the main actor (the sweep wraps
+/// them in a detached task).
+///
+/// The `nonisolated` keyword on the enum is LOAD-BEARING, not decoration.
+/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` makes every unannotated type
+/// implicitly `@MainActor`, so without it these statics are main-actor
+/// isolated and the sweep's `Task.detached` wrapper is defeated: the compiler
+/// inserts a hop back to main and the whole transcript walk (measured
+/// 2026-09-01: 28,976 files / 3,529 directories / 12 GB) runs on the UI
+/// thread once every 30-second sweep. The tell that it regressed is an
+/// "expression is 'async' but is not marked with 'await'" warning at the call
+/// site in `MenuBarManager.harvestLocalLimitSignals`.
+nonisolated enum LocalLimitSignalService {
 
     // MARK: - Transcript rate-limit tripwire
 
@@ -31,6 +41,12 @@ enum LocalLimitSignalService {
     }
 
     private static let projectsRoot = NSString(string: "~/.claude/projects").expandingTildeInPath
+
+    /// Subtrees pruned from the walk. `tool-results` holds the CLI's
+    /// per-tool-call payload dumps — the overwhelming majority of the file
+    /// count under `~/.claude/projects`, and never a transcript line, so
+    /// descending it buys nothing and costs the whole sweep.
+    private static let prunedDirectoryNames: Set<String> = ["tool-results"]
 
     /// Scans transcripts modified since `since` for rate-limit death events.
     /// Cheap by construction: mtime-filtered file list, tail-read only
@@ -45,14 +61,21 @@ enum LocalLimitSignalService {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: root),
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
         var events: [RateLimitEvent] = []
         for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+            if values?.isDirectory == true {
+                if Self.prunedDirectoryNames.contains(url.lastPathComponent) {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
             guard url.pathExtension == "jsonl" else { continue }
-            guard let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+            guard let mtime = values?.contentModificationDate,
                   mtime >= since else { continue }
             guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
             defer { try? handle.close() }
@@ -175,11 +198,15 @@ enum LocalLimitSignalService {
     }
 }
 
+// Read from the nonisolated scan, i.e. off the main actor. Foundation date
+// formatters are documented thread-safe for parsing, and these two are
+// configured once and never mutated, so the unchecked annotation states a fact
+// rather than waiving one.
 private extension ISO8601DateFormatter {
-    static let withFractional: ISO8601DateFormatter = {
+    nonisolated(unsafe) static let withFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
-    static let plain = ISO8601DateFormatter()
+    nonisolated(unsafe) static let plain = ISO8601DateFormatter()
 }
