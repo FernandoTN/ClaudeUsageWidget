@@ -378,8 +378,17 @@ final class StatusBarUIManager {
         LoggingService.shared.logWarning("StatusBar: cycling visibility of \(items.count) tiles (storm remediation)")
         for item in items { item.isVisible = false }
         DispatchQueue.main.async { [weak self] in
-            for item in items { item.isVisible = true }
             guard let self else { return }
+            // Re-read the LIVE collections instead of re-showing the array
+            // captured a runloop turn ago. A rebuild can land in between
+            // (setupMultiProfile(forceRecreate:) → cleanup() → removeStatusItem),
+            // and re-showing an item that has already been removed from the
+            // status bar strands an orphaned ghost tile beside the new set —
+            // reachable from StormWatchdog's manual remediate trigger. Items no
+            // longer owned here are simply skipped; freshly created ones are
+            // already visible, so re-asserting it is a no-op.
+            let liveItems = Array(self.multiProfileStatusItems.values) + Array(self.groupItems.values)
+            for item in liveItems { item.isVisible = true }
             self.lastRenderKey.removeAll()
             self.lastImageData.removeAll()
             self.overflowParkedIds.removeAll()
@@ -457,6 +466,33 @@ final class StatusBarUIManager {
             multiProfileCreationOrder(for: profiles, now: now)
                 .filter { $0.providerKind == provider }
         )
+    }
+
+    /// One provider group's tiles in LEFT-TO-RIGHT on-screen order, preferring
+    /// what the bar ACTUALLY painted over a freshly recomputed ranking.
+    ///
+    /// The ranking key is the weekly reset time, so it flips the moment a
+    /// boundary passes — but the tiles keep the order they were painted in
+    /// until the next rebuild. A surface that recomputes independently (the
+    /// popover's navigator did) therefore starts numbering chips differently
+    /// from the tiles beside them: chip N stops meaning tile N and the ‹ ›
+    /// walk follows an order the bar does not show (audit M10). Passing the
+    /// painted ids in makes the bar the single source of truth; the static
+    /// ranking stays as the fallback for "nothing painted yet".
+    ///
+    /// Ids no longer backed by a profile are dropped, so a deleted account
+    /// cannot survive in the navigator.
+    static func onScreenGroupMembers(
+        for profiles: [Profile],
+        provider: Profile.ProviderKind,
+        paintedOrder: [UUID],
+        now: Date = Date()
+    ) -> [Profile] {
+        let painted = paintedOrder
+            .compactMap { id in profiles.first(where: { $0.id == id }) }
+            .filter { $0.providerKind == provider }
+        if !painted.isEmpty { return painted }
+        return onScreenGroupMembers(for: profiles, provider: provider, now: now)
     }
 
     /// Pure composite geometry from the member tile widths in LEFT-TO-RIGHT
@@ -1541,9 +1577,20 @@ final class StatusBarUIManager {
     }
 
     /// Profile ids of one provider group's tiles, LEFT-TO-RIGHT as painted.
-    /// Empty when the group is not painted (or not in composite mode).
-    func paintedGroupMembers(for provider: Profile.ProviderKind) -> [UUID] {
-        groupSegments[provider]?.map(\.profileId) ?? []
+    ///
+    /// Composite mode reads the group's own click segments. Legacy per-item
+    /// mode has no segments, so the same order is derived from the live
+    /// creation order (`multiProfileOrder` is right-to-left on screen, which is
+    /// what `compositePaintOrder` reverses) — that needs `profiles` to tell the
+    /// ids' providers apart. Empty when nothing has been painted yet, which is
+    /// the caller's signal to fall back to a fresh ranking.
+    func paintedGroupMembers(for provider: Profile.ProviderKind, among profiles: [Profile] = []) -> [UUID] {
+        if let segments = groupSegments[provider], !segments.isEmpty {
+            return segments.map(\.profileId)
+        }
+        guard !multiProfileOrder.isEmpty, !profiles.isEmpty else { return [] }
+        let idsInGroup = Set(profiles.filter { $0.providerKind == provider }.map(\.id))
+        return Self.compositePaintOrder(multiProfileOrder).filter { idsInGroup.contains($0) }
     }
 
     /// Checks if currently in multi-profile mode

@@ -274,15 +274,53 @@ class ProfileManager: ObservableObject {
 
     // MARK: - Profile Activation (Centralized)
 
+    /// Why an activation did or did not take effect.
+    ///
+    /// The distinction that matters is `switchInFlight` vs `credentialsRefused`:
+    /// both used to collapse into `false`, and the auto-switch candidate walk
+    /// read every `false` as "this account's login is dead", excluding a
+    /// perfectly healthy candidate — and burning a usage fetch per candidate —
+    /// whenever another switch happened to hold the semaphore (audit H6).
+    /// A semaphore refusal says nothing about the candidate; it says "try again
+    /// in a moment".
+    enum ActivationOutcome {
+        /// The switch ran and the profile is now active.
+        case activated
+        /// The profile was already the active one; nothing to do.
+        case alreadyActive
+        /// Another switch holds the semaphore. Nothing was attempted, and the
+        /// target's credentials were never examined.
+        case switchInFlight
+        /// No profile with that id exists (deleted mid-walk).
+        case profileNotFound
+        /// The switch ran but a provider login the profile carries is dead
+        /// (expired and unrefreshable), so it was deliberately NOT applied.
+        case credentialsRefused
+
+        /// Back-compat with the `Bool`-returning API: true only when the
+        /// profile is active as a result of the call.
+        var didActivate: Bool {
+            self == .activated || self == .alreadyActive
+        }
+    }
+
     /// Returns false when the switch could not take over a provider login the
     /// profile carries (dead credentials were NOT applied — see the gates below),
     /// so callers like the auto-switch can try a different candidate.
+    /// Callers that must tell a dead login apart from a busy semaphore use
+    /// `activateProfileDetailed` instead.
     @discardableResult
     /// `userInitiated` marks a switch the user asked for by clicking a menu/button.
     /// The dead-login gate then re-delivers the re-login notification even if one
     /// was already sent — a silent no-op on a manual click reads as a broken
     /// button, not as a safety gate.
     func activateProfile(_ id: UUID, userInitiated: Bool = false) async -> Bool {
+        await activateProfileDetailed(id, userInitiated: userInitiated).didActivate
+    }
+
+    /// Same switch as `activateProfile`, reporting WHY it did not happen.
+    @discardableResult
+    func activateProfileDetailed(_ id: UUID, userInitiated: Bool = false) async -> ActivationOutcome {
         // Flush deferred usage BEFORE any switch work so a mid-switch store reload
         // cannot drop unflushed percentages, and so the switch never races a later
         // usage-only patch against credential handoff.
@@ -290,17 +328,17 @@ class ProfileManager: ObservableObject {
 
         guard !switchingSemaphore else {
             LoggingService.shared.log("Profile switch already in progress, ignoring")
-            return false
+            return .switchInFlight
         }
 
         guard let profile = profiles.first(where: { $0.id == id }) else {
             LoggingService.shared.log("Profile not found: \(id)")
-            return false
+            return .profileNotFound
         }
 
         if activeProfile?.id == id {
             LoggingService.shared.log("Profile already active: \(profile.name)")
-            return true
+            return .alreadyActive
         }
 
         switchingSemaphore = true
@@ -361,7 +399,7 @@ class ProfileManager: ObservableObject {
             LoggingService.shared.log("Profile not found after reload: \(id)")
             switchingSemaphore = false
             isSwitchingProfile = false
-            return false
+            return .profileNotFound
         }
 
         // Set when a provider login the profile carries could NOT be handed to the
@@ -479,7 +517,7 @@ class ProfileManager: ObservableObject {
             switchingSemaphore = false
             isSwitchingProfile = false
             LoggingService.shared.log("⛔️ Activation of '\(updatedProfile.name)' aborted (dead provider login NOT applied) — focus stays on the current profile")
-            return false
+            return .credentialsRefused
         }
 
         // Update last used timestamp
@@ -521,7 +559,7 @@ class ProfileManager: ObservableObject {
         ))
 
         LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
-        return true
+        return .activated
     }
 
     // MARK: - Provider Ownership

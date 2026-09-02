@@ -95,6 +95,16 @@ class MenuBarManager: NSObject, ObservableObject {
     // Track which profiles have already triggered auto-switch (prevents repeated firing)
     private var autoSwitchedProfileIds: Set<UUID> = []
 
+    /// True while a candidate walk is running. Taken SYNCHRONOUSLY at the walk's
+    /// entry — before the Task's first suspension — because the walk's own
+    /// `isSwitchingProfile` re-check is only observed after an `await`, and the
+    /// checks that start walks (mid-sweep for each provider-active account, again
+    /// at sweep end, plus manual refresh) can fire while an earlier walk is parked
+    /// in `fetchUsageForProfile`. Two live walks race into `activateProfile`, one
+    /// of them is refused by the semaphore, and that refusal used to be recorded
+    /// as dead credentials against a healthy candidate (audit H6).
+    private var autoSwitchWalkInFlight = false
+
     /// When each background Claude profile last STARTED a usage fetch (in-memory;
     /// resets on relaunch). The scheduler ranks candidates by time since last
     /// attempt — not last success — so a profile whose fetch keeps failing cannot
@@ -617,6 +627,14 @@ class MenuBarManager: NSObject, ObservableObject {
         // click into a "tile switch" — a close plus a fresh popover, i.e. one
         // more scene fence/entanglement cycle per dismiss.
         LoggingService.shared.log("Popover: now viewing '\(profile.name)' (group navigator)")
+    }
+
+    /// The menu bar's PAINTED left-to-right order for one provider group, or
+    /// empty when nothing has been painted yet. The popover's navigator reads
+    /// this instead of recomputing the ranking, so the chips, the ‹ › walk and
+    /// the tiles can never disagree about which account is "next" (audit M10).
+    func paintedGroupMembers(for provider: Profile.ProviderKind) -> [UUID] {
+        statusBarUIManager?.paintedGroupMembers(for: provider, among: profileManager.profiles) ?? []
     }
 
     /// Re-read the viewed account's usage so an OPEN popover shows fresh numbers
@@ -2689,8 +2707,18 @@ private func observeCredentialChanges() {
         // Guard: don't re-trigger for this profile
         guard !autoSwitchedProfileIds.contains(profileId) else { return }
 
+        // Guard: a candidate walk is already running. This flag is read and set
+        // here, in synchronous main-actor code with no suspension in between, so
+        // a second entrant cannot slip past it the way the post-`await`
+        // isSwitchingProfile re-check below can be slipped past.
+        guard !autoSwitchWalkInFlight else {
+            LoggingService.shared.log("AutoSwitch: a candidate walk is already in flight — skipping this trigger")
+            return
+        }
+
         // Mark as triggered
         autoSwitchedProfileIds.insert(profileId)
+        autoSwitchWalkInFlight = true
 
         // Try candidates in ranking order. A candidate whose stored login turns out
         // to be dead is NOT applied by activateProfile (it returns false and the
@@ -2698,6 +2726,9 @@ private func observeCredentialChanges() {
         // instead of silently staying on an exhausted account.
         let fromName = currentProfile.name
         Task {
+            // Every exit from the walk — switched, deferred, exhausted, or a
+            // thrown cancellation — releases the entry mark.
+            defer { self.autoSwitchWalkInFlight = false }
             var excluded: Set<UUID> = []
             while true {
                 let queuedTarget = self.peekQueuedSwitchTarget(
@@ -2763,7 +2794,9 @@ private func observeCredentialChanges() {
                 }
                 LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
 
-                if await self.profileManager.activateProfile(nextProfile.id) {
+                let outcome = await self.profileManager.activateProfileDetailed(nextProfile.id)
+                switch Self.walkReaction(to: outcome) {
+                case .switched:
                     // Consume the queue entry only now — the switch landed.
                     if cameFromQueue {
                         self.consumeQueuedSwitchTarget(nextProfile.id)
@@ -2778,16 +2811,57 @@ private func observeCredentialChanges() {
                     // Send notification
                     NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextProfile.name)
                     return
-                }
 
-                excluded.insert(nextProfile.id)
-                LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
+                case .deferToNextSweep:
+                    // The semaphore, not the candidate. Its credentials were
+                    // never even examined, so it must NOT be excluded or
+                    // recorded as a dead login — un-mark and let the next sweep
+                    // re-run the whole trigger.
+                    self.autoSwitchedProfileIds.remove(profileId)
+                    LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' activation was refused by an in-flight switch (candidate NOT excluded) — deferring to next sweep")
+                    return
+
+                case .excludeCandidate:
+                    excluded.insert(nextProfile.id)
+                    LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
+                }
             }
             // No candidate had headroom (or their logins were dead). Un-mark so the
             // next sweep retries — a candidate's session window resetting must not
             // strand us on an exhausted account for the rest of its weekly window.
             self.autoSwitchedProfileIds.remove(profileId)
             LoggingService.shared.log("AutoSwitch: no usable candidate right now, staying on '\(fromName)' (will retry)")
+        }
+    }
+
+    /// What the candidate walk does with an activation result.
+    enum CandidateWalkReaction {
+        /// The switch landed — consume the queue entry and stop walking.
+        case switched
+        /// Nothing was attempted because another switch holds the semaphore.
+        /// Stop walking and let the next sweep retry, WITHOUT excluding the
+        /// candidate: its credentials were never examined.
+        case deferToNextSweep
+        /// The candidate itself is unusable — exclude it and try the next one.
+        case excludeCandidate
+    }
+
+    /// Maps an activation outcome onto the walk's reaction. Split out so the
+    /// one rule that matters is directly testable: a semaphore refusal
+    /// (`switchInFlight`) must never be recorded as a dead login. Collapsing
+    /// both into `false` is what let a healthy candidate be excluded — and a
+    /// usage fetch burned per candidate — whenever a second walk or a manual
+    /// switch was in flight (audit H6).
+    nonisolated static func walkReaction(
+        to outcome: ProfileManager.ActivationOutcome
+    ) -> CandidateWalkReaction {
+        switch outcome {
+        case .activated, .alreadyActive:
+            return .switched
+        case .switchInFlight:
+            return .deferToNextSweep
+        case .profileNotFound, .credentialsRefused:
+            return .excludeCandidate
         }
     }
 

@@ -31,9 +31,9 @@ OAuth tokens rotate. The app adopts silent token refreshes performed by the CLIs
 
 ## Privacy Guarantees
 
-The app contacts **only**: `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, `status.claude.com`, and — for Codex accounts — `chatgpt.com` (usage) and `auth.openai.com` (token refresh). There is no telemetry, no auto-update phone-home, no analytics.
+The app contacts **only**: `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, `status.claude.com`; for Codex accounts — `chatgpt.com` (usage) and `auth.openai.com` (token refresh); and for Grok accounts — `cli-chat-proxy.grok.com` (usage/billing) and `auth.x.ai` (token refresh). There is no telemetry, no auto-update phone-home, no analytics.
 
-Credentials (session keys, OAuth tokens) live **only in the macOS Keychain** on your machine. They are never written to UserDefaults, and never sent anywhere except the provider endpoints listed above. (The one deliberate exception: activating a profile writes that profile's credentials to `~/.claude/.credentials.json` / the shared Claude Code Keychain item / `~/.codex/auth.json` — that is how the CLIs are switched between accounts, and it mirrors what the CLIs themselves store.)
+Credentials (session keys, OAuth tokens) live **only in the macOS Keychain** on your machine. They are never written to UserDefaults, and never sent anywhere except the provider endpoints listed above. (The one deliberate exception: activating a profile writes that profile's credentials to `~/.claude/.credentials.json` / the shared Claude Code Keychain item / `~/.codex/auth.json`, and a rotated Grok refresh token is written back to `~/.grok/auth.json` — that is how the CLIs are switched between accounts, and it mirrors what the CLIs themselves store.)
 
 ## Requirements
 
@@ -41,7 +41,8 @@ Credentials (session keys, OAuth tokens) live **only in the macOS Keychain** on 
 - Xcode 16+ (full Xcode, not just Command Line Tools) to build
 - At least one of:
   - a Claude subscription (claude.ai session or Claude Code CLI login), and/or
-  - an OpenAI Codex CLI login (`codex login`)
+  - an OpenAI Codex CLI login (`codex login`), and/or
+  - a Grok CLI login (`grok` / SuperGrok)
 
 ## Build & Install
 
