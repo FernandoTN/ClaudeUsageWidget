@@ -46,6 +46,10 @@ enum DesignFrameHarness {
             emit(AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate).padding(16),
                  width: 560, name: "accounts-overview-\(state)", to: dir, index: &index)
         }
+        if let profile = Fixture.profiles.first {
+            emit(AccountAlertsTab(profile: profile).padding(16), width: 560, name: "accounts-alerts", to: dir, index: &index)
+            emit(AccountMonitoringTab(profile: profile).padding(16), width: 560, name: "accounts-monitoring", to: dir, index: &index)
+        }
         // Shared directory convention with the menu-bar redesign's harness:
         // append a section rather than overwrite its index.
         let indexURL = dir.appendingPathComponent("index.md")
@@ -146,8 +150,9 @@ struct SelectorMenuFacsimile: View {
                 default:
                     HStack(spacing: 8) {
                         Text(row.glyph ?? " ").font(.system(size: 12, weight: .semibold)).foregroundColor(color(row.glyphTint) ?? .secondary).frame(width: 12)
-                        Text(row.title).font(.system(size: 13, weight: row.detail != nil && row.glyph != nil && row.glyph != "→" ? .semibold : .regular))
-                            .foregroundColor(color(row.titleTint) ?? (row.enabled || row.kind != .action ? .primary : .secondary))
+                        if row.checked { Text("✓").font(.system(size: 12, weight: .semibold)) }
+                        Text(row.title).font(.system(size: 13, weight: (row.detail != nil && row.glyph != nil && row.glyph != "→") || row.isPrimary ? .semibold : .regular))
+                            .foregroundColor(color(row.titleTint) ?? (row.enabled && row.action != nil ? .primary : .secondary))
                         if let detail = row.detail { Text(detail).font(.system(size: 12, design: .monospaced)).foregroundColor(row.titleTint == .purple ? .purple : .secondary).lineLimit(1) }
                         Spacer(minLength: 0)
                         if !row.submenu.isEmpty { Text("▸").foregroundColor(.secondary) }

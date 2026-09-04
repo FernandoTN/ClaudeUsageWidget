@@ -3865,6 +3865,12 @@ private func observeCredentialChanges() {
         ))
     }
 
+    /// Opens the click surface (dashboard or classic popover) on the viewed
+    /// account — the inspector's "Open in dashboard" button.
+    func openDashboard() {
+        togglePopover(nil)
+    }
+
     /// Creates the ⇄ item exactly once; `setup()` re-entry reuses it.
     private func installActiveSelectorIfNeeded() {
         guard activeSelector == nil else { return }
@@ -3890,7 +3896,8 @@ private func observeCredentialChanges() {
                 self.preferencesClicked(section: section)
             },
             openDashboard: { [weak self] in self?.togglePopover(nil) },
-            openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) }
+            openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) },
+            setAutoSwitchEnabled: { enabled in SharedDataStore.shared.saveAutoSwitchProfileEnabled(enabled) }
         ))
         LoggingService.shared.log("MenuBarManager: ⇄ active-account selector installed (visible: \(activeSelector?.isVisible == true))")
     }
