@@ -321,6 +321,46 @@ enum MultiProfileIconStyle: String, Codable, CaseIterable, Hashable {
     }
 }
 
+/// What the multi-profile menu bar shows per provider group.
+///
+/// `everyAccount` is the layout the app has always had: one tile per selected
+/// account, concatenated per provider. It stops being a summary somewhere
+/// around ten accounts (22 selected accounts ≈ 600 pt of bar on the owner's
+/// Mac, 2026-09-03) and macOS then hides a whole provider group on overflow.
+/// The fleet layouts keep ONE tile per provider — the provider-active account
+/// rendered exactly as before — and abstract the other accounts into a
+/// readiness fleet (dots, or counts when the group is too large for dots).
+/// Absent in saved JSON from before this option existed → `everyAccount`,
+/// so an upgrade never changes what is on the bar.
+enum MenuBarLayout: String, Codable, CaseIterable, Hashable {
+    /// One tile per selected account (the original composite layout).
+    case everyAccount
+    /// Active account's tile + one readiness dot per other account.
+    case fleetDots
+    /// Active account's tile + readiness counts (ready / exhausted / dead / suspected).
+    case fleetCounts
+
+    /// True for the layouts that collapse a provider group into one summary tile.
+    var isFleetSummary: Bool { self != .everyAccount }
+
+    var displayName: String {
+        switch self {
+        case .everyAccount: return "Every account"
+        case .fleetDots: return "Active + fleet dots"
+        case .fleetCounts: return "Active + fleet counts"
+        }
+    }
+
+    /// Localization key for the short segmented picker label.
+    var shortNameKey: String {
+        switch self {
+        case .everyAccount: return "multiprofile.layout_every"
+        case .fleetDots: return "multiprofile.layout_dots"
+        case .fleetCounts: return "multiprofile.layout_counts"
+        }
+    }
+}
+
 /// Configuration for multi-profile display mode
 struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
     var iconStyle: MultiProfileIconStyle
@@ -330,6 +370,7 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
     var showTimeMarker: Bool  // If true, show time-elapsed tick mark on progress indicators
     var showPaceMarker: Bool  // If true, color time marker by projected usage pace (6-tier)
     var usePaceColoring: Bool // If true, color indicators based on projected usage pace
+    var barLayout: MenuBarLayout // Per-provider tile layout (every account vs fleet summary)
 
     init(
         iconStyle: MultiProfileIconStyle = .concentric,
@@ -338,7 +379,8 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         useSystemColor: Bool = false,
         showTimeMarker: Bool = true,
         showPaceMarker: Bool = true,
-        usePaceColoring: Bool = true
+        usePaceColoring: Bool = true,
+        barLayout: MenuBarLayout = .everyAccount
     ) {
         self.iconStyle = iconStyle
         self.showWeek = showWeek
@@ -347,6 +389,7 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         self.showTimeMarker = showTimeMarker
         self.showPaceMarker = showPaceMarker
         self.usePaceColoring = usePaceColoring
+        self.barLayout = barLayout
     }
 
     // MARK: - Codable (Custom decoder for backwards compatibility)
@@ -359,6 +402,7 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         case showTimeMarker
         case showPaceMarker
         case usePaceColoring
+        case barLayout
     }
 
     init(from decoder: Decoder) throws {
@@ -372,6 +416,9 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         showTimeMarker = try container.decodeIfPresent(Bool.self, forKey: .showTimeMarker) ?? true
         showPaceMarker = try container.decodeIfPresent(Bool.self, forKey: .showPaceMarker) ?? false
         usePaceColoring = try container.decodeIfPresent(Bool.self, forKey: .usePaceColoring) ?? false
+        // Absent (pre-redesign JSON) or unrecognised (a newer build's value)
+        // → the original per-account layout; never fail the whole decode.
+        barLayout = (try? container.decodeIfPresent(MenuBarLayout.self, forKey: .barLayout)) ?? .everyAccount
     }
 
     static var `default`: MultiProfileDisplayConfig {
