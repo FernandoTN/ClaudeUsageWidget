@@ -408,4 +408,16 @@ final class CodexResetCreditsTests: XCTestCase {
         let message = CodexResetCreditsError.unsupportedForAPIKeyAuth.errorDescription ?? ""
         XCTAssertTrue(message.contains("ChatGPT login"), message)
     }
+
+    func testCachedResetCreditsReadsTheCacheWithoutFetching() {
+        let service = CodexUsageService.shared
+        let profileId = UUID()
+        XCTAssertNil(service.cachedResetCredits(for: profileId), "an empty cache reads nil, never zero")
+        let stamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let details = CodexResetCredits(availableCount: 2, credits: [], totalEarnedCount: nil,
+                                        immediateResetPurchaseEligible: nil, fetchedAt: stamp)
+        CodexResetCreditsState.shared.cache[profileId] = details
+        XCTAssertEqual(service.cachedResetCredits(for: profileId), details)
+        XCTAssertNil(CodexResetCreditsState.shared.lastDetailFetchAt, "reading the cache is not a fetch")
+    }
 }
