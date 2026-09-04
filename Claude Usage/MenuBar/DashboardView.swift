@@ -140,10 +140,18 @@ enum DashboardFormatting {
     /// The counts of a provider in words, precedence order, for the section
     /// header (round 1, D3): "3 ready · 1 near limit · 4 exhausted · 1 dead · 2 duplicate".
     static func counts(_ counts: FleetCounts.Provider) -> String {
+        // One entry per HUE for the header line (the dot carries the shade);
+        // the six-way split lives on hover (`DesignLegend.line`) and in the
+        // tooltip sentence.
+        let groups: [(String, [AccountReadiness])] = [
+            ("ready", [.ready, .readyLight]), ("session hit", [.sessionHit, .sessionHitLight]),
+            ("weekly hit", [.weeklyHitSoon, .weeklyHit]), ("suspected", [.suspected]),
+            ("unmeasured", [.unknown]), ("excluded", [.excluded]), ("dead", [.dead]),
+        ]
         var parts: [String] = []
-        for readiness in AccountReadiness.legendOrder {
-            let n = counts.count(readiness)
-            if n > 0 { parts.append("\(n) \(readiness.legendWord)") }
+        for (word, states) in groups {
+            let n = states.reduce(0) { $0 + counts.count($1) }
+            if n > 0 { parts.append("\(n) \(word)") }
         }
         if counts.duplicateProfiles > 0 { parts.append("\(counts.duplicateProfiles) duplicate") }
         return parts.joined(separator: " · ")
