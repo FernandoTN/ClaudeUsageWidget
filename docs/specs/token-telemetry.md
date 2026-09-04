@@ -399,7 +399,8 @@ one footer line, the window keeps working from memory. Nothing for a scope →
 | **2 — report model** | `TelemetryQuery`/`TelemetryReport`, bucketing (hour/day/week/month, local zone at query), attribution resolver (three bands, gap rule), shares, `TokenPriceTable`, coverage, outlier rule, provenance | pure tests on synthetic ledgers; a golden test on a 3-day fixture; DST and time-zone change |
 | **3a — window shell** | `TelemetryWindowController`, observer at launch, sidebar, header, KPI row, tables, states, footer controls, DEBUG frame harness | view-model tests; the harness's PNGs reviewed by the fixes session's pixel pass |
 | **3b — chart** | `StackedColumnChart` (Canvas), split rows, hover layer, bucket click breakdown, legend isolate, collapsed markers, light/dark, accessibility summary | geometry tests (gaps, rounding, hatching, outlier break); render smoke in both appearances |
-| **4 — attribution polish** | isolated-home mapping, *Switches* table, marker details, rate-limit overlay (opt-in), by-kind / by-originator / main-vs-subagent stacks, export CSV | attribution against a synthetic ownership log; originator fixtures |
+| **4a — attribution polish, part 1** | T26 dense-axis labels, rate-limit overlay (opt-in, per-series in Split), switch detail on the ownership spans, export CSV with provenance columns | export provenance and scoping, marker counts by scope and by series, span edges, axis label rule |
+| **4b — attribution polish, part 2** | by-originator / main-vs-subagent stacks, minute compaction of raw events older than 90 days (lossless for the report) | originator fixtures; compaction equivalence on a synthetic ledger |
 
 Each stage: Release build + full suite green on the merged tree
 (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, dedicated
@@ -560,6 +561,46 @@ By-kind share toggle):
     to the provenance line; zero sub-lines are hidden; an account's count
     tile speaks its provider's unit ("Messages · 25 % from subagents")
     instead of "Units".
+
+Stage 4a (the orchestrator's T26 from the 3c review, the rate-limit
+overlay, switch detail, CSV export):
+
+44. T26 was a rule, not a marker: the month-boundary yield from pass 43
+    suppressed the neighbours of "Sep 1" on a 7-day axis too, where every
+    bucket is labelled, so "31" and "2" vanished and the ⇄ beneath read as
+    a replacement. The yield now applies only to sparse axes
+    (`TelemetryChartMath.isRegularLabel`, tested); the dense axis reads
+    "Aug 29 · 30 · 31 · Sep 1 · 2 · 3 · 4" with the ⇄ under 31 and 2.
+45. Rate-limit overlay, opt-in (owner ruling: markers default to switches
+    only): a checkbox in the legend row — "Rate-limit stops · 3" shows the
+    count even while off — draws a small status triangle above the column
+    for every bucket in which the scope hit a stop, with the count beside it
+    when there were several. Status colour, never a series colour; the
+    tooltip and the bucket breakdown always name the stops in words. The
+    choice is remembered in the ledger's meta table.
+46. A stop is placed by attribution, exactly like a unit: in the account
+    scope only the stops that hit that account while it held the login; in
+    the unattributed scope only the stops nobody can be named for. In Split
+    mode each row carries its own stops (provider or account stacks); a
+    model stack cannot place a stop on a model, so the first row carries the
+    plot-level count rather than every row repeating it (the first render
+    did exactly that — three copies of the Claude stops).
+47. The ownership span card now says what the switches were: "first claim
+    (activate) · handed to dJormun (activate)", "took over from dRir
+    (auto-switch: session 95 %)" — the cause in brackets, the counterpart
+    by roster name, resolved in the report (pure, tested). Four spans
+    visible before "more…", two lines each.
+48. Export CSV…: one row per bucket × (provider, model, account, source,
+    sidechain), built from the same input as the report so file and window
+    agree to the row. Four comment lines first — "token consumption read
+    from local CLI logs. Not quota, not billed.", the scope / window /
+    bucket / export time, the cost basis, the attribution vocabulary — then
+    provenance columns on every row: provider, source, attribution
+    (timeline / by_path / sole_account / unattributed:<reason>), cost_basis
+    (list_price / reported / empty). RFC 4180 quoting; ISO-8601 stamps in
+    the query's zone; a suggested name like
+    `token-usage-fleet-7-days-2026-09-04.csv`. Written atomically on the
+    service queue; the save panel is the only UI.
 
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 

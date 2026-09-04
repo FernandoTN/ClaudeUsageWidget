@@ -20,6 +20,7 @@ struct TelemetryActions {
     var refresh: () -> Void = {}
     var togglePause: () -> Void = {}
     var copyNumbers: () -> Void = {}
+    var exportCSV: () -> Void = {}
 }
 
 struct TelemetryView: View {
@@ -35,8 +36,10 @@ struct TelemetryView: View {
             metric: Binding(get: { model.metric }, set: { model.metric = $0 }),
             chartMode: Binding(get: { model.effectiveChartMode }, set: { model.chartMode = $0 }),
             caveatsExpanded: Binding(get: { model.caveatsExpanded }, set: { model.caveatsExpanded = $0 }),
+            showRateLimits: Binding(get: { model.showRateLimits }, set: { model.showRateLimits = $0 }),
             owners: Set(model.sidebar.flatMap(\.rows).filter(\.isOwner).compactMap { UUID(uuidString: $0.id) }),
-            actions: TelemetryActions(refresh: model.refreshNow, togglePause: model.togglePaused, copyNumbers: model.copyNumbers))
+            actions: TelemetryActions(refresh: model.refreshNow, togglePause: model.togglePaused, copyNumbers: model.copyNumbers,
+                                      exportCSV: model.exportCSV))
     }
 }
 
@@ -52,6 +55,7 @@ struct TelemetryFrameView: View {
     @Binding var metric: TelemetryMetric
     @Binding var chartMode: TelemetryChartMode
     @Binding var caveatsExpanded: Bool
+    @Binding var showRateLimits: Bool
     var owners: Set<UUID>
     var actions: TelemetryActions
     /// Harness-only: a fixed pointer position, an isolated series, share mode.
@@ -68,6 +72,7 @@ struct TelemetryFrameView: View {
             Divider()
             TelemetryReportPane(report: report, status: status, isLoading: isLoading, isPaused: isPaused, scopeTitle: scopeTitle,
                                 window: $window, metric: $metric, chartMode: $chartMode, caveatsExpanded: $caveatsExpanded,
+                                showRateLimits: $showRateLimits,
                                 owners: owners, actions: actions, initialHover: initialHover, initialIsolated: initialIsolated,
                                 initialShare: initialShare, interactive: interactive)
         }
@@ -245,6 +250,7 @@ struct TelemetryReportPane: View {
     @Binding var metric: TelemetryMetric
     @Binding var chartMode: TelemetryChartMode
     @Binding var caveatsExpanded: Bool
+    @Binding var showRateLimits: Bool
     var owners: Set<UUID>
     var actions: TelemetryActions
     var interactive = true
@@ -256,10 +262,11 @@ struct TelemetryReportPane: View {
 
     init(report: TelemetryReport?, status: IndexingStatus, isLoading: Bool, isPaused: Bool, scopeTitle: String,
          window: Binding<TelemetryWindow>, metric: Binding<TelemetryMetric>, chartMode: Binding<TelemetryChartMode>,
-         caveatsExpanded: Binding<Bool>, owners: Set<UUID>, actions: TelemetryActions, initialHover: Int? = nil,
-         initialIsolated: SeriesKey? = nil, initialShare: Bool = false, interactive: Bool = true) {
+         caveatsExpanded: Binding<Bool>, showRateLimits: Binding<Bool>, owners: Set<UUID>, actions: TelemetryActions,
+         initialHover: Int? = nil, initialIsolated: SeriesKey? = nil, initialShare: Bool = false, interactive: Bool = true) {
         self.report = report; self.status = status; self.isLoading = isLoading; self.isPaused = isPaused
         self.scopeTitle = scopeTitle; _window = window; _metric = metric; _chartMode = chartMode; _caveatsExpanded = caveatsExpanded
+        _showRateLimits = showRateLimits
         self.owners = owners; self.actions = actions; self.interactive = interactive
         _hoverIndex = State(initialValue: initialHover)
         _isolated = State(initialValue: initialIsolated)
@@ -443,7 +450,7 @@ struct TelemetryReportPane: View {
                 legend(report)
                 TelemetryChartView(report: report, metric: metric, mode: chartMode, isolated: $isolated, hoverIndex: $hoverIndex,
                                    onSelectBucket: { breakdownIndex = $0 }, interactive: interactive,
-                                   normalized: shareMode && metric == .inputByKind)
+                                   normalized: shareMode && metric == .inputByKind, showRateLimits: showRateLimits)
                     .popover(isPresented: Binding(get: { breakdownIndex != nil }, set: { if !$0 { breakdownIndex = nil } }),
                              arrowEdge: .bottom) {
                         if let index = breakdownIndex, report.buckets.indices.contains(index) {
@@ -491,6 +498,23 @@ struct TelemetryReportPane: View {
                     Text("telemetry.chart.partial".localized).font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
+            // Opt-in overlay (owner ruling: markers default to switches only).
+            // Pure SwiftUI checkbox — the harness cannot draw a Toggle.
+            let stops = report.buckets.reduce(0) { $0 + $1.rateLimitCount }
+            Button {
+                showRateLimits.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: showRateLimits ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 10))
+                        .foregroundStyle(showRateLimits ? Color.orange : Color.secondary)
+                    Text("telemetry.chart.rate_limits".localized + (stops > 0 ? " · \(stops)" : ""))
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\("telemetry.chart.rate_limits".localized)\(showRateLimits ? ", shown" : ", hidden")")
             Spacer()
             if let outliers = report.outliers, chartMode == .stacked {
                 let described = outliers.indices.sorted().prefix(2).map { index in
@@ -559,6 +583,8 @@ struct TelemetryReportPane: View {
             Button("telemetry.refresh_now".localized, action: actions.refresh)
             Button((isPaused ? "telemetry.resume" : "telemetry.pause").localized, action: actions.togglePause)
             Button("telemetry.copy_numbers".localized, action: actions.copyNumbers)
+            Button("telemetry.export_csv".localized, action: actions.exportCSV)
+                .disabled(!status.ledgerAvailable)
             if isPaused {
                 Text("indexing paused").font(.system(size: 9)).foregroundStyle(.orange)
             }
@@ -628,22 +654,28 @@ struct TelemetrySpansCard: View {
                 Spacer()
                 Text("\(spans.count) span\(spans.count == 1 ? "" : "s")").font(.system(size: 9)).foregroundStyle(.secondary)
             }
-            ForEach(Array(spans.prefix(6).enumerated()), id: \.offset) { _, span in
-                HStack(spacing: 6) {
-                    Text(span.startsBeforeRange ? "telemetry.spans.since_before".localized : stamp(span.start))
-                        .font(.system(size: 9.5)).monospacedDigit()
-                    Text("→").font(.system(size: 9.5)).foregroundStyle(.secondary)
-                    Text(span.end.map(stamp) ?? "telemetry.spans.to_now".localized)
-                        .font(.system(size: 9.5)).monospacedDigit()
-                    Spacer(minLength: 4)
-                    Text(TelemetryFormatting.span((span.end ?? now).timeIntervalSince(span.start)))
-                        .font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit()
-                    Text(basisLabel(span.basis)).font(.system(size: 8.5)).foregroundStyle(.secondary).frame(width: 64, alignment: .trailing)
+            ForEach(Array(spans.prefix(4).enumerated()), id: \.offset) { _, span in
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(span.startsBeforeRange ? "telemetry.spans.since_before".localized : stamp(span.start))
+                            .font(.system(size: 9.5)).monospacedDigit()
+                        Text("→").font(.system(size: 9.5)).foregroundStyle(.secondary)
+                        Text(span.end.map(stamp) ?? "telemetry.spans.to_now".localized)
+                            .font(.system(size: 9.5)).monospacedDigit()
+                        Spacer(minLength: 4)
+                        Text(TelemetryFormatting.span((span.end ?? now).timeIntervalSince(span.start)))
+                            .font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit()
+                        Text(basisLabel(span.basis)).font(.system(size: 8.5)).foregroundStyle(.secondary).frame(width: 64, alignment: .trailing)
+                    }
+                    .frame(height: 16)
+                    // The switches themselves: who handed the login over and why.
+                    if let detail = [span.openedBy, span.closedBy].compactMap({ $0 }).joined(separator: "  ·  ").nilIfEmpty {
+                        Text(detail).font(.system(size: 8.5)).foregroundStyle(.tertiary).lineLimit(1)
+                    }
                 }
-                .frame(height: 16)
             }
-            if spans.count > 6 {
-                Text("\(spans.count - 6) more…").font(.system(size: 9)).foregroundStyle(.secondary)
+            if spans.count > 4 {
+                Text("\(spans.count - 4) more…").font(.system(size: 9)).foregroundStyle(.secondary)
             }
         }
         .padding(10)
@@ -661,12 +693,20 @@ struct TelemetrySpansCard: View {
     }
 
     private func basisLabel(_ basis: OwnershipRecord.Basis) -> String {
+        Self.basisLabel(basis)
+    }
+
+    static func basisLabel(_ basis: OwnershipRecord.Basis) -> String {
         switch basis {
         case .exactClaim: return "exact"
         case .seededFromRing: return "from history"
         case .externalObservation, .observedAtTick, .heartbeat: return "observed"
         }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 // MARK: - Tables

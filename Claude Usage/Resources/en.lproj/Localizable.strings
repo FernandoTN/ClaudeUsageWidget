@@ -1221,6 +1221,11 @@
 "telemetry.spans.to_now" = "now";
 "telemetry.chart.share" = "100 %";
 "telemetry.footer.unavailable" = "ledger unavailable";
+"telemetry.chart.rate_limits" = "Rate-limit stops";
+"telemetry.rate_limit_one" = "1 rate-limit stop";
+"telemetry.rate_limits" = "%d rate-limit stops";
+"telemetry.export_csv" = "Export CSV…";
+"telemetry.export.failed" = "The CSV could not be written: %@";
 "telemetry.chart.tokens" = "Tokens";
 "telemetry.paused_short" = "paused";
 "telemetry.last_known" = "last known";
