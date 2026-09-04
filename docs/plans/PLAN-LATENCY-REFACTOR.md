@@ -1,6 +1,6 @@
 # ClaudeUsageWidget — Latency Refactor & De-bloat Plan (v2, post-Codex-review)
 
-**Repo:** `/Users/fernandotn/Projects/ClaudeUsageWidget` (macOS menu-bar app, SwiftUI + AppKit, macOS 14+)
+**Repo:** `ClaudeUsageWidget` (macOS menu-bar app, SwiftUI + AppKit, macOS 14+)
 **Problem:** worked fine at 3–4 accounts; at 14 accounts latency makes it almost unusable.
 **Core value to preserve:** (1) menu-bar visualizations per account, (2) auto account switching, (3) CLI token tracking for Claude Code / Codex / Grok subscriptions.
 **Branch:** `refactor/latency-14-accounts` in worktree `.claude/worktrees/latency-refactor` (baseline build + full test suite verified GREEN).
@@ -114,7 +114,7 @@ Grok settings UI parity; condensed tile mode (if Phase 0 shows window count is t
 - **Single-instance guard:** test/instrumented builds take over the lock (launch-date wins) — relaunch production copy after each measurement run; instrumented copy shares UserDefaults — restore state.
 - **Identity-repair weakening:** `organizationId` preserved through the session-key cut; characterization tests first.
 
-## 6. Open decisions for Fernando (defaults chosen; flag if wrong)
+## 6. Open decisions for the owner (defaults chosen; flag if wrong)
 1. Cut claude.ai session-key support (5.3, keeping `organizationId`)? Default YES.
 2. Cut API Console billing (5.2, two-step)? Default YES (0 profiles configured).
 3. Keep keyboard shortcuts? Default KEEP.
@@ -137,4 +137,4 @@ All phases landed on `refactor/latency-14-accounts` (14 commits, pushed). Measur
 - De-bloat: ~7,000 lines removed (dead code, API-Console billing, claude.ai session-key cluster, DataStore, URLBuilder, design-system duplicate, ErrorLogger buffer) with decode-compat pinned by tests; `organizationId`/identity-adoption preserved per consult.
 - User-reported popover same-tile toggle bug fixed (semitransient auto-close race).
 - **Incident during execution:** parallel test hosts + shared real UserDefaults clobbered `profiles_v3` with a test fixture (tearDown aborted mid-restore). Roster fully reconstructed from Keychain UUIDs + legacy-bundle plist + tile-layout diagnostic; credentials never lost. Hardened: ProfileStore uses an isolated defaults suite under XCTest; scheme test parallelization disabled.
-- Follow-ups (§Phase 6 still open): Grok settings UI; condensed tile mode (optional; window count proved non-causal for CPU); '2026' missing-credential surfacing; residual loadProfiles dedup in services (§2.6, ~16 loads/min, cosmetic at 0% CPU); 6 orphan `cli-creds` Keychain items from deleted/test profiles (left untouched); Hotmail login needs `/login` re-sync.
+- Follow-ups (§Phase 6 still open): Grok settings UI; condensed tile mode (optional; window count proved non-causal for CPU); '2026' missing-credential surfacing; residual loadProfiles dedup in services (§2.6, ~16 loads/min, cosmetic at 0% CPU); 6 orphan `cli-creds` Keychain items from deleted/test profiles (left untouched); one account's login needs `/login` re-sync.

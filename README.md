@@ -1,220 +1,204 @@
 # Claude Usage Widget
 
-A privacy-first macOS menu-bar app that tracks usage limits for **multiple Claude accounts and OpenAI Codex accounts** at a glance — with automatic account switching when a session limit is hit.
+A privacy-first macOS menu-bar app for people who run **many AI subscription accounts** — Claude (Claude Code / claude.ai), OpenAI Codex, and xAI Grok — and need to know, at a glance, which account each CLI is using, how much headroom it has, and which one to switch to next. It switches the CLIs between accounts for you before a limit stalls a running session, and keeps a local ledger of what every account actually consumed.
 
-Built as a stripped-down, heavily extended fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) (MIT license), with all external telemetry removed.
+Built as a stripped-down, heavily extended fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) (MIT), with all external telemetry removed.
 
-## What It Does
+![The fleet dashboard](docs/images/dashboard-top.png)
 
-The app lives in your menu bar (no dock icon, no main window) and shows live usage for every account you add:
+## What you see
 
-- **5-hour session** utilization and reset time
-- **7-day weekly** utilization (all models) and reset time
-- Per-model weekly breakdowns (Opus / Sonnet / Fable) where the plan reports them
-- **Codex accounts**: 5-hour and weekly windows from the ChatGPT backend
+### The menu bar
 
-Color coding: green (< 50%), yellow (50–80%), orange (80–95%), red (> 95%). Click any icon for a detailed popover; the popover can be dragged off to float as a small window.
+Three layouts, chosen in **Settings › Display**:
 
-### Multi-account model
-
-- Add as many profiles as you like; each holds ONE provider's account — a Claude login (claude.ai session, Claude Code CLI OAuth, or API Console) **or** a Codex CLI login.
-- **Two accounts are "active" at any time** — one Claude and one Codex. The active Claude account owns the Claude Code CLI's shared Keychain login; the active Codex account owns `~/.codex/auth.json`. Switching profiles in the app also switches what the `claude` / `codex` CLIs are logged into.
-- In multi-profile display mode every selected account gets its own menu bar icon: Codex accounts grouped at the far left, Claude accounts to their right, and within each group the account whose weekly limit resets soonest sits rightmost ("use it or lose it" ordering).
-
-### Auto-switch
-
-When any of the active account's quota windows crosses its switch threshold — 95% by default for the 5-hour session window, 99% for the weekly all-models and weekly Fable windows, both configurable in Settings → Profiles — the app switches to the best same-provider candidate: soonest weekly reset first, but only if all of its windows are still below the same per-window thresholds. Switching *before* 100% deliberately forfeits the remaining headroom so running CLI sessions never stall on "You've hit your session limit"; the weekly threshold is tighter because forfeited weekly quota is gone until the weekly reset, while a session window regenerates within 5 hours. Sharing each threshold between the trigger and candidate eligibility prevents ping-pong between two nearly-full accounts. Per-profile opt-out is available in Settings. As usage climbs (25/50/75/90% milestones), the predicted next candidate's stored login is validated in the background so the eventual switch never lands on a dead login — if a candidate's refresh token has been revoked, you get a notification while there is still time to `/login` and re-sync.
-
-### Credential self-healing
-
-OAuth tokens rotate. The app adopts silent token refreshes performed by the CLIs, redeems refresh tokens itself when a stored access token goes stale, persists rotations everywhere the old token lived, backs off dead (revoked) logins instead of hammering the token endpoint, and **never applies an expired, unrefreshable login to the shared CLI state** (a gated switch keeps the outgoing login in place and notifies you instead).
-
-## Privacy Guarantees
-
-The app contacts **only**: `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, `status.claude.com`; for Codex accounts — `chatgpt.com` (usage) and `auth.openai.com` (token refresh); and for Grok accounts — `cli-chat-proxy.grok.com` (usage/billing) and `auth.x.ai` (token refresh). There is no telemetry, no auto-update phone-home, no analytics.
-
-Credentials (session keys, OAuth tokens) live **only in the macOS Keychain** on your machine. They are never written to UserDefaults, and never sent anywhere except the provider endpoints listed above. (The one deliberate exception: activating a profile writes that profile's credentials to `~/.claude/.credentials.json` / the shared Claude Code Keychain item / `~/.codex/auth.json`, and a rotated Grok refresh token is written back to `~/.grok/auth.json` — that is how the CLIs are switched between accounts, and it mirrors what the CLIs themselves store.)
-
-## Requirements
-
-- macOS 14 (Sonoma) or later
-- Xcode 16+ (full Xcode, not just Command Line Tools) to build
-- At least one of:
-  - a Claude subscription (claude.ai session or Claude Code CLI login), and/or
-  - an OpenAI Codex CLI login (`codex login`), and/or
-  - a Grok CLI login (`grok` / SuperGrok)
-
-## Build & Install
-
-### Option A: Xcode
-
-```bash
-git clone https://github.com/FernandoTN/ClaudeUsageWidget.git
-cd ClaudeUsageWidget
-open "Claude Usage.xcodeproj"
-```
-
-Build and run (`Cmd+R`). The app appears in your menu bar (no dock icon).
-
-### Option B: command line
-
-`xcodebuild` needs full Xcode. If `xcode-select` on your machine points at the Command Line Tools, prefix with `DEVELOPER_DIR` (avoids a global `sudo xcode-select`):
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project "Claude Usage.xcodeproj" -scheme "Claude Usage" \
-  -configuration Release -derivedDataPath /tmp/cuw_build \
-  -destination 'platform=macOS' build
-```
-
-Then copy the product to Applications:
-
-```bash
-cp -R "/tmp/cuw_build/Build/Products/Release/Claude Usage.app" /Applications/
-open "/Applications/Claude Usage.app"
-```
-
-The project is **ad-hoc signed** (`CODE_SIGN_IDENTITY = "-"`) with no development team, so it builds from a clean clone with no signing setup. See [Troubleshooting](#troubleshooting) for what ad-hoc signing means for the Keychain.
-
-## First-Run Setup
-
-### Claude accounts
-
-1. Launch the app — the setup wizard opens on first run.
-2. If you are logged into the Claude Code CLI, the wizard detects it and can import that login directly.
-3. Alternatively, sign in to claude.ai through the in-app browser sheet and capture the session, then pick your organization.
-4. For more accounts: create a profile in Settings → Profiles, then either capture another claude.ai session, or log the CLI into the other account (`/login`) and use Settings → CLI Account → Sync.
-
-### Codex accounts
-
-There is no wizard step for Codex (yet):
-
-1. If `~/.codex/auth.json` exists (you ran `codex login`), the app auto-imports it once as a "Codex (email)" profile.
-2. For additional Codex accounts, follow the next section — do **not** run `codex login` again in the default home.
-
-**Usage limit resets.** The widget shows how many usage-limit resets an account has, read out of the usage payload it already fetches, and can list their expiry on demand — that detail lookup is a separate endpoint that rate-limits per IP, so it runs only when you ask for it, never on the refresh timer. A blank count means unknown rather than zero: an account with no resets and an account the endpoint declined to talk about look identical from the usage payload. Activation spends a scarce, non-refundable reset, so it is offered only while the account is measured at its limit, and a retry inside the same window re-sends the same request id rather than spending a second one.
-
-### Codex accounts: adding more than one
-
-**Never run `codex login` or `codex logout` in the default `~/.codex` once an account is stored there.** `codex login` revokes, server-side, whatever credentials already sit in the home it runs in *before* it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt` → `clear_existing_auth_before_login` → `logout_with_revoke`). The account the widget applied there dies with it — the widget's stored copy starts answering 401 and cannot be repaired app-side. Three accounts were lost this way on 2026-09-03.
-
-The CLI honours `$CODEX_HOME` for its config directory, so every extra account gets its own home, where there is nothing to revoke. Two ways to do that:
-
-**From the widget (easiest).** Go to the profile that should hold the account, then **Settings → Codex Account → Log in a new Codex account…**. The widget runs the CLI's login with `CODEX_HOME` pointed at a folder of its own under `~/.codex-accounts`, and imports the finished login. This never runs against the default home, and Cancel leaves every account untouched.
-
-The default flow is **device code** (`codex login --device-auth`), which opens no browser at all. The sheet shows two things as the CLI prints them, each with a Copy button: a **link** and a **one-time code**. Open the link in whatever browser — or private window, or profile — is signed in to the account you are adding, enter the code, and the sheet finishes on its own. That is the point: the browser flow always opens your *default* browser (`open_browser` is hard-coded `true` in the CLI), which signs in whichever account that browser already holds — exactly wrong when you are adding a second one. The code expires in fifteen minutes, which is also how long the CLI polls.
-
-**Open in default browser instead** switches back to the localhost-callback flow (`codex login`). Your default browser opens by itself, and the sheet still shows that flow's URL with a Copy button, so you can finish it somewhere else if the browser landed in the wrong session. That path times out after five minutes.
-
-Where the login lands follows the profile you are looking at:
-
-| The viewed profile | Result |
+| Layout | What it shows |
 | --- | --- |
-| Has no Codex account | The login goes into that profile. The folder is named after it, e.g. `~/.codex-accounts/xfenrir-dev`. |
-| Has a Codex account whose login is dead | The login replaces those dead tokens in place, reusing the same folder. Activate the profile afterwards to hand the new login to the CLI. |
-| Has a working Codex account | You type a label, and the login goes into a new profile of that name. A profile holds exactly one Codex account. |
+| **Every account** | One tile per account, grouped by provider (Codex, Grok, Claude), each tile with its session and weekly bars. The original layout. |
+| **Active + dots** | Per provider: the active account's tile plus one small dot per other account. The block is as wide as its account count needs. |
+| **Active + counts** | Per provider: the active account's tile plus readiness counts (ready / exhausted / dead / suspected). |
 
-In every case, a login whose account another profile already holds is refused by name rather than duplicated. To add an account for a profile that does not exist yet, create it in Manage Profiles first, then use the button on its Codex page.
+![Active + dots](docs/images/fleet-dots-armed.png) ![Active + counts](docs/images/fleet-counts-armed.png)
 
-**From a terminal.** Log in under the isolated home yourself, then import:
+In the dot layouts the dots are **ordered by time to the weekly reset**: the rightmost dot resets soonest, the leftmost is farthest away, and accounts with no known reset (dead, never measured) sit together at the far left. Every provider block keeps its designed order on the bar (Codex, Grok, Claude), followed by the **⇄ item**.
+
+### Colours — one meaning everywhere
+
+The same colour means the same thing on a dot, a roster row, a dashboard chip. Bright always means *more relief available*; faded means less.
+
+| Dot | Meaning |
+| --- | --- |
+| Bright green | Session available; weekly **and** Fable windows both have more than 50 % left |
+| Light green | Session available; weekly or Fable under 50 % left |
+| Bright orange | 5-hour session limit hit; weekly and Fable both over 50 % left |
+| Faded orange | 5-hour session limit hit; weekly or Fable under 50 % left |
+| Bright red | Weekly or Fable limit hit, and the reset is **within 24 hours** |
+| Faded red | Weekly or Fable limit hit, reset more than a day away |
+| Purple ◆ | Suspected rate-limited (inferred from repeated refusals, not confirmed) |
+| Hollow ○ | Never measured |
+| × | The account itself is broken — dead or revoked login |
+| − | Excluded from the fleet (free plan, or opted out) |
+
+![All ten dot states](docs/images/fleet-dots-palette.png)
+
+"Hit" means a server-affirmed reading at or over the auto-switch threshold; an inferred throttle is never painted red. The full legend — every glyph, badge, tile element, menu row — is in [`docs/specs/menubar-legend.html`](docs/specs/menubar-legend.html) (open it locally; it embeds real-size frames).
+
+### The ⇄ item: who is active for what
+
+Click ⇄ for one section per provider: the account each CLI is logged into, its live numbers, the ranked next candidate with its preflight verdict, and the actions — switch, queue, repair a dead login, use a Codex usage-limit reset.
+
+![The ⇄ menu](docs/images/selector-menu.png)
+
+Two notions are kept apart everywhere in the app:
+
+- **Viewing** — the account whose numbers and logins Settings shows you. Changing it never touches a CLI.
+- **Active for Claude / Codex / Grok** — the account each CLI is actually using. Only an explicit switch (or auto-switch) changes it.
+
+### The dashboard
+
+Clicking a provider block (in **Active + dots** / **Active + counts**) opens the fleet dashboard: every account grouped by provider with session / weekly / Fable bars, reset countdowns, provenance and age of each number, the auto-switch queue with the next candidate's preflight verdict, and dead-login calls to action. The **Insights** block at the end shows the reset timeline for the next seven days, blind spots, changes made outside the app, the switch log, burn rates, rate-limit incidents of the last 24 hours, and remaining capacity per provider.
+
+![Insights](docs/images/dashboard-insights.png)
+
+### Settings
+
+Six pages: **Accounts** (the roster and an inspector per account: Overview, Login, Alerts, Monitoring), **Active & Auto-switch** (per-provider cards, policy, hand-off queue, eligibility), **Alerts** (fleet defaults with per-account overrides), **Display**, **Advanced** (launch at login, shortcuts, diagnostics, dead-login flags), **About**.
+
+![Account overview](docs/images/accounts-overview.png)
+![Active card](docs/images/active-card.png)
+
+### The Token usage window
+
+**⇄ › Token usage…** opens a window built from the CLIs' own local logs: tokens per day by provider, model, account, project, main-vs-subagent, and originator; cache-hit share; an API list-price equivalent (an estimate, never a bill); the rate-limit stops overlaid on the chart; ownership spans (which account held the login when); and a CSV export with provenance on every row.
+
+![Token usage](docs/images/telemetry-window.png)
+
+This is **consumption, not quota**: the numbers come from `~/.claude/projects/**/*.jsonl`, `~/.codex/sessions/**` (and any isolated Codex homes) and `~/.grok/`, indexed incrementally into a local SQLite ledger at `~/Library/Application Support/Claude Usage/telemetry/ledger.sqlite`. They will not reproduce the providers' quota bars; the window says so. Indexing runs off the main thread in bounded slices and can be paused from the window's footer. Raw events older than 90 days are folded into per-minute rows, losslessly for everything the window shows.
+
+## Auto-switch
+
+When any window of the active account crosses its threshold — **95 %** for the 5-hour session window, **99 %** for the weekly and the Fable weekly windows, configurable in **Settings › Active & Auto-switch** — the app switches the CLI to the best same-provider candidate: soonest weekly reset first, re-measured live right before the switch so a stale cache can never land you on an exhausted account. Switching before 100 % deliberately forfeits the last few percent so a running CLI session never stalls on "you've hit your limit". As usage climbs (25 / 50 / 75 / 90 % milestones) the predicted next candidate's stored login is validated in the background; a dead login gets you a notification while there is still time to repair it.
+
+When the active account's usage endpoint refuses (per-IP 429 bursts are common with many accounts), the app reads the live counters from the rate-limit headers of a Messages API request instead, so the switch decision never goes blind. Duplicates of one account (two profiles holding the same login) are detected and never switched between.
+
+![Switch confirmation](docs/images/switch-confirm.png)
+
+## Codex accounts
+
+Codex accounts read their 5-hour and weekly windows from the ChatGPT backend, and the app shows how many **usage-limit resets** an account has, their expiry on demand, and a **Use one usage limit reset…** action that is only ever offered while the account is measured at its limit (a reset is a scarce grant; spending one is confirmed with the evidence on screen and never automatic).
+
+![Codex resets](docs/images/codex-resets.png)
+
+### Adding more than one Codex account
+
+**Never run `codex login` or `codex logout` in the default `~/.codex` once an account is stored there.** `codex login` revokes, server-side, whatever credentials already sit in the home it runs in *before* it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt` → `clear_existing_auth_before_login` → `logout_with_revoke`). The account the widget applied there dies with it.
+
+The CLI honours `$CODEX_HOME`, so every extra account gets its own home, where there is nothing to revoke:
+
+**From the widget.** Open the account in **Settings › Accounts › Login** and click **Log in a new Codex account…**. The widget runs the CLI's login with `CODEX_HOME` pointed at a folder of its own under `~/.codex-accounts`, and imports the finished login. The default flow is **device code** (`codex login --device-auth`), which opens no browser: the sheet shows a link and a one-time code, each with a Copy button, so you finish the login in whichever browser or private window is signed in to the account you are adding. Cancel leaves every account untouched.
+
+**From a terminal.**
 
 ```bash
 mkdir -p ~/.codex-accounts/work
 CODEX_HOME=~/.codex-accounts/work codex login
 ```
 
-Then **Settings → Codex Account**, select the profile for that account, and click **Import from another Codex home…**. Pick `~/.codex-accounts/work`. The sheet shows the account's email and the last characters of its account id before you commit, and refuses the import if another profile already holds the same account.
+Then **Settings › Accounts › Login › Import from another Codex home…** and pick that folder. The sheet shows the account's email and the tail of its account id before you commit, and refuses an account another profile already holds.
 
-A shell function makes the terminal path a one-liner:
+How the pieces fit: the widget is the **single writer** of `~/.codex/auth.json`; activating a profile writes that profile's stored login there, which is how the CLI follows your switches. Import never touches `~/.codex`. Run `codex` itself against the default home — the isolated home exists for `codex login` only. The client-side mechanism is documented in [`docs/research/2026-09-03-codex-accounts-tokens.md`](docs/research/2026-09-03-codex-accounts-tokens.md).
+
+## Privacy guarantees
+
+The app contacts **only**: `claude.ai`, `api.anthropic.com`, `console.anthropic.com`, `status.claude.com`; for Codex — `chatgpt.com` (usage and reset credits) and `auth.openai.com` (token refresh); for Grok — `cli-chat-proxy.grok.com` and `auth.x.ai`. No telemetry, no update phone-home, no analytics, no crash reporting.
+
+Credentials (session keys, OAuth tokens) live **only in the macOS Keychain**. They are never written to UserDefaults and never sent anywhere except the provider endpoints above. The one deliberate exception: activating a profile writes that profile's credentials to `~/.claude/.credentials.json` / the shared Claude Code Keychain item / `~/.codex/auth.json` (and a rotated Grok refresh token back to `~/.grok/auth.json`) — that is how the CLIs are switched, and it mirrors what the CLIs themselves store.
+
+The token-usage ledger is a local SQLite file (`0700` directory, `0600` files) built from logs already on your disk; nothing from it leaves the machine.
+
+## Requirements
+
+- macOS 14 (Sonoma) or later
+- Xcode 16+ (full Xcode) to build
+- At least one of: a Claude subscription (claude.ai session or Claude Code login), an OpenAI Codex CLI login, a Grok CLI login
+
+## Build & install
 
 ```bash
-# ~/.zshrc — then: codex-add work
-codex-add() {
-  [ -n "$1" ] || { echo "usage: codex-add <name>" >&2; return 2; }
-  mkdir -p "$HOME/.codex-accounts/$1" && CODEX_HOME="$HOME/.codex-accounts/$1" codex login
-}
+git clone https://github.com/FernandoTN/ClaudeUsageWidget.git
+cd ClaudeUsageWidget
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project "Claude Usage.xcodeproj" -scheme "Claude Usage" \
+  -configuration Release -derivedDataPath /tmp/cuw_build \
+  -destination 'platform=macOS' build
+cp -R "/tmp/cuw_build/Build/Products/Release/Claude Usage.app" /Applications/
+open "/Applications/Claude Usage.app"
 ```
 
-It has to be a function, not an alias — an alias cannot take an argument.
+Or open `Claude Usage.xcodeproj` in Xcode and run. The project is **ad-hoc signed** (`CODE_SIGN_IDENTITY = "-"`) with no development team, so it builds from a clean clone with no signing setup; see [Troubleshooting](#troubleshooting) for what that means for the Keychain.
 
-How the pieces fit:
+## First run
 
-- The widget is the **single writer** of `~/.codex/auth.json`. The in-app login writes only to the isolated home it creates. Activating a profile writes that profile's stored login there, which is how the CLI follows your account switches.
-- **Import never writes `~/.codex`** and never claims the Codex owner pointer. It only copies the login into the profile; activate the profile to switch the CLI.
-- Run `codex` itself against the **default** home, not an isolated one. The isolated home exists for `codex login` only — a session run under it rotates tokens the widget will not see.
-- The imported home path is shown in the profile's account details, so you know where to re-login for that account later.
-- Re-syncing an account whose token was rotated by the widget is not needed: it adopts the CLI's silent refreshes out of `~/.codex/auth.json` automatically, matched by account id.
-
-What is established here is the client-side mechanism: the CLI revokes the refresh token it finds in the home it is running in, so a home with no `auth.json` has nothing to revoke. Whether OpenAI's authorization server ever revokes more widely than that single grant is not observable from the client — see `docs/research/2026-09-03-codex-accounts-tokens.md`.
-
-### Configuration
-
-- **Refresh interval** — default 30s, per profile (Settings → General).
-- **Notifications** — thresholds default to 75/90/95%, per profile.
-- **Menu bar display** — single-profile (one set of metric icons) or multi-profile (one icon per account), styles in Settings → Appearance.
-- **Auto-switch** — global toggle plus per-profile eligibility.
-- **Keyboard shortcuts** — Settings → Shortcuts.
-- **Launch at login** — Settings → General.
+1. The setup wizard opens. If you are logged into the Claude Code CLI it detects that login and imports it; otherwise sign in to claude.ai through the in-app sheet and pick your organization.
+2. Add more Claude accounts from **Settings › Accounts › + Add account…**: log the CLI into the other account (`/login`) and use that account's **Login › Sync**, or capture another claude.ai session.
+3. If `~/.codex/auth.json` exists, the app imports it once as a Codex profile; add further Codex accounts as described above.
+4. Pick a layout in **Settings › Display**. The default is **Active + dots** with the dashboard on click.
 
 ## Troubleshooting
 
-**Keychain password prompts after rebuilding.** The app is ad-hoc signed, and its code signature changes on *every build*. macOS Keychain ACLs identify apps by signature, so "Always Allow" grants die on the next rebuild. The app works around this by attaching permissive ACLs to the Keychain items it creates and by using the `security` CLI (which runs inside the `apple-tool:` partition) for the shared Claude Code item. If you ever see a repeating prompt after replacing the app, click "Always Allow" once — the app repairs its own items' ACLs on launch.
+**Keychain prompts after rebuilding.** Ad-hoc signatures change on every build and Keychain ACLs identify apps by signature. The app attaches permissive ACLs to its own items and repairs them on launch; if a prompt repeats after replacing the app, click "Always Allow" once.
 
-**"login expired. Please run /login" in Claude Code.** The account that owns the CLI login has a dead token. Run `/login` in Claude Code, then Settings → CLI Account → Sync on that profile.
+**"login expired. Please run /login" in Claude Code.** The account that owns the CLI login has a dead token. Run `/login` in Claude Code, then **Accounts › that account › Login › Sync**.
 
-**"refresh token was revoked" from the codex CLI, or a Codex profile stuck at 401.** Its login was revoked — usually by a `codex login` in the default `~/.codex`, which revokes whatever was there first. Do not repeat that login in the default home; it would revoke the next account too. Log the account in under its own home (`CODEX_HOME=~/.codex-accounts/<name> codex login`) and use Settings → Codex Account → Import from another Codex home. See [Codex accounts: adding more than one](#codex-accounts-adding-more-than-one).
+**A Codex account stuck at 401 / "refresh token was revoked".** A `codex login` ran in the default `~/.codex` and revoked it. Do not repeat that; log the account in under its own home and import it (above). The dead-login flag clears itself on the next successful login, or from **Advanced › Dead-login flags**.
 
-**Usage looks frozen.** Check the logs:
-
-```bash
-/usr/bin/log show --predicate 'process == "Claude Usage"' --info --last 10m
-```
-
-**Is the app healthy?** There is no window to inspect. A healthy main thread parks in the event loop:
+**Usage looks frozen.** Read the app's log (it logs under its bundle id):
 
 ```bash
-sample "$(pgrep -x 'Claude Usage')" 3   # main thread should sit in NSApplication run → mach_msg
+/usr/bin/log show --predicate 'subsystem == "com.claudeusagewidget.app"' --info --last 10m
 ```
 
-**Claude usage rate limits (429).** The usage endpoint sustains only ~2 requests per 30s window per IP. With many Claude profiles the app round-robins background fetches (each background profile refreshes every couple of minutes); this is by design.
+**Preferences show blank / everything looks default.** macOS `cfprefsd` can wedge (it logs `rejecting write … Path not accessible`); the app keeps a last-known-good copy and shows a banner. `killall cfprefsd` and relaunching the app clears it. `CLAUDE.md` has the full account.
+
+**Claude usage endpoint 429s.** The usage endpoint sustains only a couple of requests per 30 s per IP; with many accounts the app round-robins background fetches and falls back to header readings for the active account. This is by design.
 
 ## Testing
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test \
-  -project "Claude Usage.xcodeproj" -scheme "Claude Usage" \
-  -destination 'platform=macOS'
+  -project "Claude Usage.xcodeproj" -scheme "Claude Usage" -destination 'platform=macOS'
 ```
 
-Note: tests are hosted in the app, so the suite briefly launches a menu-bar instance.
-
-Suites: credential/token parsing (Claude expiresAt ms-vs-s, Codex JWT expiry, `last_refresh` fractional seconds), weekly-reset projection, menu bar ranking/quantization, session-key validation, URL building, usage status calculation, date utilities, preference persistence, integration tests.
+Tests are hosted in the app, so the suite briefly launches a menu-bar instance. Every surface also has a **frame harness**: set `TEST_RUNNER_CUW_RENDER_FRAMES=<dir>` and run the `FrameRenderTests`, `DesignFrameHarnessTests` and `TelemetryWindowTests` classes to render every state of the bar, dashboard, Settings pages and Token usage window as `@2x` PNGs from synthetic fixtures — the images in this README were produced that way.
 
 ## Architecture
 
 ```
 Claude Usage/
-├── App/                    App lifecycle, setup wizard trigger
+├── App/                    App lifecycle, setup wizard trigger, telemetry start hook
 ├── MenuBar/
-│   ├── MenuBarManager      Orchestration: refresh sweeps, auto-switch, preflight
-│   ├── StatusBarUIManager  NSStatusItem management + weekly-reset ordering
-│   ├── MenuBarIconRenderer CoreGraphics icon rendering
-│   └── PopoverContentView  Detailed usage popover
-├── Views/                  Setup wizard, Settings window and tabs
+│   ├── MenuBarManager      Sweeps, auto-switch, preflight, header rescue, incidents
+│   ├── StatusBarUIManager  Provider status items, in-place repaint, saved positions
+│   ├── MenuBarSummaryRenderer / FleetSummary   Active + dots / counts layouts
+│   ├── DashboardModel / DashboardView          The fleet dashboard and Insights
+│   └── PopoverContentView  The classic per-account popover
+├── Views/Settings/         Accounts inspector, Active & Auto-switch, Alerts, Display, Advanced
+├── Telemetry/              Log readers, incremental indexer, SQLite ledger, report model,
+│                           the Token usage window and its chart
 └── Shared/
-    ├── Services/           ClaudeAPIService, ClaudeCodeSyncService (CLI credential
-    │                       sync + OAuth refresh), CodexUsageService, KeychainService,
-    │                       ProfileManager, NotificationManager
-    ├── Storage/            ProfileStore (profiles + Keychain-backed credential cache)
-    ├── Models/             Profile, ClaudeUsage, APIUsage, icon config
-    └── Utilities/          Constants, validators, formatters
+    ├── Services/           ClaudeAPIService, ClaudeCodeSyncService, CodexUsageService,
+    │                       CodexLoginService, CodexResetCredits, GrokUsageService,
+    │                       KeychainService, ProfileManager, NotificationManager
+    ├── Storage/            ProfileStore (profiles + last-known-good preference cache)
+    ├── Models/             Profile, ClaudeUsage, FleetInsights, ProviderActiveSelection …
+    └── Utilities/          Constants, validators, formatters, Retry-After parsing
 ```
 
-`CLAUDE.md` documents the load-bearing invariants (Keychain threading rules, token-rotation hazards, the two-active-accounts model) in detail — read it before changing credential or menu bar code. `SHIPPING.md` covers what a downstream user/maintainer must know.
+`CLAUDE.md` documents the load-bearing invariants (Keychain threading, token rotation, the focus-versus-active model, cfprefsd degradation) — read it before changing credential or menu-bar code. Design and status documents live under `docs/specs/`.
 
 ## Acknowledgments
 
-This project is a fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) by Hamed Elfayome, licensed under the MIT License. The original provided the multi-profile architecture, usage-fetching logic, and menu bar rendering this app builds on. This fork removed the original's telemetry/update/feedback networking (~8,700 lines) and added Codex support, per-provider active-account tracking, OAuth self-healing, auto-switch, and rate-limit-aware refresh scheduling.
+A fork of [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) by Hamed Elfayome (MIT). The original provided the multi-profile architecture, usage fetching and menu-bar rendering this app builds on; this fork removed its telemetry/update/feedback networking and added multi-provider active-account tracking, OAuth self-healing, auto-switch, the fleet bar and dashboard, and the token-usage ledger.
 
 ## License
 
