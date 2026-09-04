@@ -489,8 +489,8 @@ class MenuBarManager: NSObject, ObservableObject {
             updateMenuBarDisplay(with: profile.iconConfig)
         }
 
-        // 4. Recreate popover with new profile data
-        recreatePopover()
+        // 4. Point an OPEN click surface at the new focus, in place.
+        refocusOpenSurface(on: profile)
 
         // 5. Trigger immediate refresh ONLY if profile has usage credentials
         if profile.hasUsageCredentials {
@@ -501,26 +501,25 @@ class MenuBarManager: NSObject, ObservableObject {
         }
     }
 
-    private func recreatePopover() {
-        // Close (and thereby destroy) any open popover; the next click builds
-        // a fresh one with fresh content via ensurePopover().
-        //
-        // Deferred one runloop turn: this runs inside handleProfileSwitch,
-        // which the user can trigger from a button INSIDE the popover — i.e.
-        // while the popover's own action is on the stack, mid CA commit.
-        // Tearing the popover down synchronously there raced the fence
-        // protocol ("cannot add handler to 2 from 2 - dropping", followed once
-        // by a fence-tx timeout that wedged all 42 status-item scenes into the
-        // permanent WindowServer echo storm — leak-hunter forensics,
-        // 2026-07-29). Outside any in-flight commit the same teardown is safe.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if self.popover?.isShown == true {
-                self.closePopover()
-            }
-            self.popover = nil
-            LoggingService.shared.log("MenuBarManager: Popover dropped for profile switch")
+    /// A focus change never drops the popover. Both surfaces re-render in
+    /// place — `PopoverContentView` observes this manager and the dashboard
+    /// observes its store — and the content is rebuilt from scratch on every
+    /// show anyway (`togglePopover`), so a fresh popover bought nothing.
+    /// What the old `recreatePopover()` cost: the dashboard's own
+    /// "Make active…" confirmation ends in `activateProfileDetailed`, which
+    /// moves the focus, which closed the popover one runloop later — the
+    /// outcome note vanished with it — and every switch paid one more
+    /// scene fence/entanglement cycle against a scene-hosted status window
+    /// (the teardown once raced a CA commit into the permanent WindowServer
+    /// echo storm; leak-hunter forensics, 2026-07-29).
+    private func refocusOpenSurface(on profile: Profile) {
+        guard popover?.isShown == true || detachedWindow != nil else { return }
+        if usesDashboardSurface {
+            rebuildDashboardSnapshot()
+        } else {
+            viewProfile(profile.id)
         }
+        LoggingService.shared.log("MenuBarManager: open surface refocused on '\(profile.name)'")
     }
 
     private func updateMenuBarDisplay(with config: MenuBarIconConfiguration) {
