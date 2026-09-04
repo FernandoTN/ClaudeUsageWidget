@@ -307,9 +307,13 @@ session owns it). #88 stays as harmless. It is **owned by `MenuBarManager`**, ne
 `StatusBarUIManager`'s dictionaries (whose `cleanup()` removes every item it owns on
 each group rebuild). `MenuBarManager.setup()` re-entry (AppDelegate's delayed
 retry, post-wizard) calls `MenuBarManager.cleanup()` — that path must **keep** the
-selector (guarded creation) so re-entry neither duplicates nor recreates it. No
-`autosaveName` (2026-07-17 pinning experiment; a named ⇄ ⌘-dragged against
-anonymous groups would split the cluster). Never torn down (every recreate leaks a
+selector (guarded creation) so re-entry neither duplicates nor recreates it. **Named, since 2026-09-04:** `autosaveName = "cuw.selector"` with `NSStatusItem
+Preferred Position cuw.selector = 50` seeded before creation ONLY when absent (a
+slot the owner dragged it to is respected), alongside the redesign's per-ROLE
+group names `cuw.group.<provider>` at 100/200/300 — the deployed host ignored
+creation order entirely, and a remembered slot is the one documented handle. The
+2026-07-17 failure came from rotating per-TILE names, not from naming as such;
+`behavior = []` keeps the item un-draggable-out. (Superseded: "no autosaveName".) Never torn down (every recreate leaks a
 CAContext). The on/off setting toggles `isVisible` on the one item — a rare user
 action, never programmatic cycling (the StormWatchdog cycle is the falsified cure).
 Agreed with the redesign session: fixed 24 pt + system spacing goes into the C0/C1
