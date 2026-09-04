@@ -3643,14 +3643,14 @@ private func observeCredentialChanges() {
             // refresh token without syncing the shared login would leave the CLI
             // holding a consumed token (the exact failure this preflight prevents).
             if profileManager.isProviderOwner(candidate.id) {
-                LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' already owns its provider login — OK")
+                LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: next candidate '\(candidate.name)' already owns its provider login — OK")
                 preflightVerdicts[candidate.id] = PreflightVerdict(isLive: true, at: Date(), kind: .ownsLogin)
                 return
             }
 
             // Another watcher is validating this exact candidate — let it finish.
             guard !preflightInFlightCandidates.contains(candidate.id) else {
-                LoggingService.shared.log("Preflight[\(Int(milestone))%]: '\(candidate.name)' is already being validated by another watcher — skipping")
+                LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: '\(candidate.name)' is already being validated by another watcher — skipping")
                 return
             }
             preflightInFlightCandidates.insert(candidate.id)
@@ -3715,17 +3715,17 @@ private func observeCredentialChanges() {
 
             preflightVerdicts[candidate.id] = PreflightVerdict(isLive: alive, at: Date(), kind: verdictKind)
             if alive {
-                LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' login is live and fresh")
+                LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: next candidate '\(candidate.name)' login is live and fresh")
                 return
             }
 
             // Dead login — ensureFreshCredentials already sent the re-login
             // notification. Validate the next candidate so a working fallback is
             // confirmed before the switch fires.
-            LoggingService.shared.log("Preflight[\(Int(milestone))%]: '\(candidate.name)' login is DEAD — user notified, checking next candidate")
+            LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: '\(candidate.name)' login is DEAD — user notified, checking next candidate")
             excluded.insert(candidate.id)
         }
-        LoggingService.shared.log("Preflight[\(Int(milestone))%]: no live candidate available after '\(currentProfile.name)'")
+        LoggingService.shared.log("Preflight[\(Int(milestone))% \(currentProfile.providerKind)]: no live candidate available after '\(currentProfile.name)'")
     }
 
     /// Picks the profile to switch to when the switch threshold is crossed.
