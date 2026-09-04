@@ -179,4 +179,71 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
             stampCandidate(dead, syncedAgo: 900_000, eligible: false)
         ]))
     }
+
+    // MARK: - Identity-verified credential writes
+
+    func testWriteGuardRefusesAnAccountThatIsNotTheTargetsOwn() {
+        // The write path that made the contamination: the CLI's login is about
+        // to be copied into a profile named by a (stale) pointer.
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: "76582cd6", profileAccountUUID: "76582cd6"
+            ),
+            .write
+        )
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: "76582cd6", profileAccountUUID: "aa11bb22"
+            ),
+            .refuse
+        )
+        // Neither side identifiable is NOT a mismatch — refusing there would
+        // break every legitimate adoption on a network failure. The caller's
+        // own bookkeeping stands, exactly as before.
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: nil, profileAccountUUID: "aa11bb22"
+            ),
+            .noEvidence
+        )
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: "76582cd6", profileAccountUUID: nil
+            ),
+            .noEvidence
+        )
+    }
+
+    func testUnstampedTargetIsResolvedFromItsOwnTokenBeforeDeciding() {
+        // 'Google' carried NO stamp, so the old guard waved the write through on
+        // "no evidence either way". Resolving the target from its OWN token
+        // first is what turns that into a verdict: the identity the target's own
+        // login reports decides, and it refuses when it disagrees.
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: "76582cd6",
+                profileAccountUUID: nil,
+                stampedFromOwnToken: "aa11bb22"
+            ),
+            .refuse
+        )
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: "76582cd6",
+                profileAccountUUID: nil,
+                stampedFromOwnToken: "76582cd6"
+            ),
+            .write
+        )
+        // The target's own token could not be identified either (dead login,
+        // endpoint refused): still no evidence, still not a refusal.
+        XCTAssertEqual(
+            ClaudeCodeSyncService.credentialWriteDecision(
+                cliAccountUUID: "76582cd6",
+                profileAccountUUID: nil,
+                stampedFromOwnToken: nil
+            ),
+            .noEvidence
+        )
+    }
 }
