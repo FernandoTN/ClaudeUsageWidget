@@ -1261,3 +1261,11 @@ is a function of the layout, so it always reserves its own space.
 exists yet. `FleetCounts.Provider.identifiedAccounts` is the new number.
 
 Frames: `accounts-roster-19`, `dashboard-insights-19`, `dashboard-insights-overflow`.
+
+**Taxonomy addendum (redesign #138, the owner's six measured states):** my
+surfaces follow `AccountReadiness.role / legendGlyph / legendWord` and needed
+two literal fixes: a maxed mark ("▲ W 100", "◐ S 99") takes its row's role
+colour (weekly hit is red now, session hit orange), and the one-line roster
+census merges each light/bright pair by hue ("5 ready · 2 session hit · 2
+weekly hit") because the dot already carries the nuance; the hover sentence
+keeps all six words.

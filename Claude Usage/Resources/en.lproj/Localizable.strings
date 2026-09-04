@@ -1241,3 +1241,5 @@
 "accounts.roster.profiles_identified" = "%d profiles · %d identified";
 "insights.timeline_row" = "in %@ · %@";
 "insights.timeline_more" = "+%d more";
+"counts.session_hit_short" = "%d session hit";
+"counts.weekly_hit_short" = "%d weekly hit";
