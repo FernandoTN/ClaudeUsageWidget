@@ -615,7 +615,6 @@
 /* ==================== */
 /* MARK: - Setup Wizard */
 /* ==================== */
-"setup.step.enter_session_key" = "Enter Key";
 "wizard.test_connection" = "Test Connection";
 "wizard.select_org_title" = "Which organization do you want to track?";
 "wizard.select_org_subtitle" = "Select the Claude organization for usage monitoring";
@@ -671,7 +670,6 @@
 "wizard.select_org" = "Select Org";
 "wizard.confirm" = "Confirm";
 "wizard.testing" = "Testing...";
-"wizard.test_connection" = "Test Connection";
 "wizard.fetching" = "Fetching...";
 "wizard.fetch_organizations" = "Fetch Organizations";
 "wizard.saving" = "Saving...";
@@ -732,8 +730,6 @@
 "wizard.claude_code_info_description" = "A session key is needed for usage tracking";
 "wizard.claude_code_skip_setup" = "Skip Setup";
 "wizard.migrate_description_short" = "Import your old profiles data from previous app version";
-"wizard.skip_migration" = "Skip";
-"wizard.migration_skipped" = "Skipped";
 
 /* ==================== */
 /* MARK: - Keyboard Shortcuts */
