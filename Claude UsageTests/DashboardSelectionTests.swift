@@ -85,22 +85,22 @@ final class DashboardSelectionTests: XCTestCase {
     }
 
     func testSectionCaptionSpeaksTheViewingVocabulary() {
-        let owner = claude("dRir", usage(session: 40))
-        let viewed = claude("dJormun", usage(session: 10))
+        let owner = claude("Atlas", usage(session: 40))
+        let viewed = claude("Cedar", usage(session: 10))
         // Viewing another account of the provider.
         var snap = DashboardSnapshot.build(inputs([owner, viewed], active: [owner.id], focused: viewed.id))
         XCTAssertEqual(DashboardFormatting.sectionCaption(snap.sections[0]),
-                       "Viewing dJormun · Active for Claude: dRir")
+                       "Viewing Cedar · Active for Claude: Atlas")
         // Viewing the owner itself, pinned by the user.
         snap = DashboardSnapshot.build(inputs([owner, viewed], active: [owner.id], focused: owner.id, pinned: [owner.id]))
         XCTAssertEqual(DashboardFormatting.sectionCaption(snap.sections[0]),
-                       "Viewing dRir · Active for Claude: dRir · pinned")
+                       "Viewing Atlas · Active for Claude: Atlas · pinned")
         // No owner at all.
         snap = DashboardSnapshot.build(inputs([owner, viewed], active: [], focused: nil))
         XCTAssertEqual(DashboardFormatting.sectionCaption(snap.sections[0]), "No active Claude login")
         // Owner, focus on another provider.
         snap = DashboardSnapshot.build(inputs([owner, viewed], active: [owner.id], focused: nil))
-        XCTAssertEqual(DashboardFormatting.sectionCaption(snap.sections[0]), "Active for Claude: dRir")
+        XCTAssertEqual(DashboardFormatting.sectionCaption(snap.sections[0]), "Active for Claude: Atlas")
     }
 
     func testRosterFilterNarrowsByStateProvenanceStalenessQueueAndProvider() {

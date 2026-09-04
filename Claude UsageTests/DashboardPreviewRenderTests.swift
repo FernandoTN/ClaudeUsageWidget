@@ -50,44 +50,44 @@ final class DashboardPreviewRenderTests: XCTestCase {
         suspected.rateLimitedUntil = now.addingTimeInterval(300)
         suspected.rateLimitedInferred = true
         suspected.projectedSessionPercentage = 81
-        let rir = claude("dRir(Fenrir)", usage(session: 78, weekly: 16, fable: 16, sessionElapsed: 2 * 3600))
-        let google = claude("Google", usage(session: 78, weekly: 16, fable: 16, age: 120), autoSwitch: false)
+        let rir = claude("Atlas (dev)", usage(session: 78, weekly: 16, fable: 16, sessionElapsed: 2 * 3600))
+        let google = claude("Beacon", usage(session: 78, weekly: 16, fable: 16, age: 120), autoSwitch: false)
         let profiles = [
-            claude("Memori", usage(weekly: 70, fable: 99)),
-            claude("Stanford", usage(session: 100, weekly: 59, fable: 82, sessionElapsed: 1.8 * 3600)),
-            claude("2010", usage(weekly: 39, fable: 53)),
-            claude("Commits", suspected),
-            claude("BBR", usage(weekly: 73, fable: 99, age: 400, provenance: .headerRescue)),
-            claude("Ai", usage(weekly: 100, fable: 91)),
-            claude("jskxkxjssh", usage(weekly: 23, fable: 28, age: 3 * 3600, provenance: .cliCache)),
-            claude("dJormun", usage(weekly: 16, fable: 22)),
-            claude("xFenrir(dev)", nil),
+            claude("Fjord", usage(weekly: 70, fable: 99)),
+            claude("Granite", usage(session: 100, weekly: 59, fable: 82, sessionElapsed: 1.8 * 3600)),
+            claude("Quarry", usage(weekly: 39, fable: 53)),
+            claude("Harbor", suspected),
+            claude("Iris", usage(weekly: 73, fable: 99, age: 400, provenance: .headerRescue)),
+            claude("Echo", usage(weekly: 100, fable: 91)),
+            claude("Delta", usage(weekly: 23, fable: 28, age: 3 * 3600, provenance: .cliCache)),
+            claude("Cedar", usage(weekly: 16, fable: 22)),
+            claude("Juniper (dev)", nil),
             rir, google,
-            codex("Cod", usage(weekly: 60, sessionWindow: false)),
-            codex("Dex", usage(weekly: 95, sessionWindow: false)),
-            codex("xFernando(dev)", usage(weekly: 1, sessionWindow: false)),
+            codex("Kestrel", usage(weekly: 60, sessionWindow: false)),
+            codex("Osprey", usage(weekly: 95, sessionWindow: false)),
+            codex("Marlin (dev)", usage(weekly: 1, sessionWindow: false)),
             Profile(name: "Grok", grokCredentialsJSON: "{}", grokEmail: "g@example.com",
                     claudeUsage: usage(weekly: 19, sessionWindow: false)),
         ]
         let byName = Dictionary(uniqueKeysWithValues: profiles.map { ($0.name, $0) })
-        let dead: Set<UUID> = [byName["Ai"]!.id, byName["Cod"]!.id, byName["Dex"]!.id]
-        let jormun = byName["dJormun"]!
+        let dead: Set<UUID> = [byName["Echo"]!.id, byName["Kestrel"]!.id, byName["Osprey"]!.id]
+        let jormun = byName["Cedar"]!
         let inputs = DashboardSnapshot.Inputs(
             profiles: profiles,
-            activeIds: [rir.id, byName["xFernando(dev)"]!.id, byName["Grok"]!.id],
+            activeIds: [rir.id, byName["Marlin (dev)"]!.id, byName["Grok"]!.id],
             focusedId: rir.id,
             context: FleetSummaryContext(
                 thresholds: thresholds,
                 isLoginDead: { dead.contains($0.id) },
                 isExcluded: { !$0.isAutoSwitchEnabled },
-                nextCandidates: [.claude: PredictedCandidate(id: jormun.id, label: "dJo", queued: false, queueHeadBlocked: false)],
+                nextCandidates: [.claude: PredictedCandidate(id: jormun.id, label: "Ced", queued: false, queueHeadBlocked: false)],
                 preflightVerdicts: [jormun.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-720), kind: .probed)],
                 preferencesDegraded: false, isSwitching: false, now: now
             ),
-            queue: [byName["jskxkxjssh"]!.id],
+            queue: [byName["Delta"]!.id],
             history: [
-                SwitchEvent(at: now.addingTimeInterval(-6 * 3600), from: "Outlook", to: "BBR", trigger: .queued, reason: nil),
-                SwitchEvent(at: now.addingTimeInterval(-40 * 60), from: "BBR", to: "dRir(Fenrir)", trigger: .auto, reason: "session 96 % / weekly 73 % crossed threshold"),
+                SwitchEvent(at: now.addingTimeInterval(-6 * 3600), from: "Kite", to: "Iris", trigger: .queued, reason: nil),
+                SwitchEvent(at: now.addingTimeInterval(-40 * 60), from: "Iris", to: "Atlas (dev)", trigger: .auto, reason: "session 96 % / weekly 73 % crossed threshold"),
             ],
             duplicateGroups: [[google.id, rir.id]]
         )
