@@ -72,8 +72,9 @@ struct FleetCounts: Hashable {
     /// Glyph per readiness state, in strip order. Same alphabet as the bar's
     /// dots and the dashboard chips (docs/specs/menubar-redesign.md §2.1).
     static let stripGlyphs: [(AccountReadiness, String)] = [
-        (.ready, "●"), (.low, "◐"), (.unknown, "○"), (.suspected, "◒"),
-        (.exhausted, "▲"), (.excluded, "–"), (.dead, "×"),
+        (.ready, DesignGlyph.ready), (.low, DesignGlyph.low), (.unknown, DesignGlyph.unmeasured),
+        (.suspected, DesignGlyph.suspected), (.exhausted, DesignGlyph.exhausted),
+        (.excluded, DesignGlyph.excluded), (.dead, DesignGlyph.dead),
     ]
 
     var providers: [Provider]

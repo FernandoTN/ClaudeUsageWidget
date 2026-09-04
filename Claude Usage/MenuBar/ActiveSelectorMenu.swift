@@ -34,10 +34,12 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         var viewAndOpenSettings: (UUID?, SettingsSection?) -> Void
         var openDashboard: () -> Void
         var openTelemetry: () -> Void
+        var setAutoSwitchEnabled: (Bool) -> Void
     }
 
     static let length: CGFloat = 24
-    static let symbolName = "arrow.triangle.2.circlepath"
+    /// Not the circular-arrows glyph: that is the popover's REFRESH icon (I1).
+    static let symbolName = "arrow.left.arrow.right"
 
     let statusItem: NSStatusItem
     private let menu = NSMenu()
@@ -137,7 +139,7 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
             button.image = Self.image(badge: badge, appearance: button.effectiveAppearance)
             lastBadge = badge
         }
-        let tooltip = ActiveSelectorMenuModel.tooltip(selections: selections)
+        let tooltip = ActiveSelectorMenuModel.tooltip(selections: selections, badge: badge)
         if tooltip != lastTooltip {
             button.toolTip = tooltip
             button.setAccessibilityLabel(tooltip)
@@ -177,9 +179,9 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
     static func badgeColor(_ badge: ActiveSelectorMenuModel.Badge) -> NSColor {
         switch badge {
-        case .red: return .systemRed
-        case .purple: return .systemPurple
-        case .amber: return .systemOrange
+        case .red: return DesignRole.blocking.nsColor
+        case .purple: return DesignRole.suspected.nsColor
+        case .amber: return DesignRole.caution.nsColor
         }
     }
 
@@ -249,6 +251,7 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         item.target = row.action == nil ? nil : self
         item.isEnabled = row.enabled && row.action != nil
         item.representedObject = row.action
+        item.state = row.checked ? .on : .off
         item.attributedTitle = Self.attributedTitle(for: row)
         return item
     }
@@ -266,7 +269,7 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         }
         let isAccount = row.kind == .info && row.detail != nil && row.glyph != nil && row.glyph != "→"
         out.append(NSAttributedString(string: row.title, attributes: [
-            .font: isAccount ? NSFont.systemFont(ofSize: 13, weight: .semibold) : NSFont.menuFont(ofSize: 13),
+            .font: isAccount || row.isPrimary ? NSFont.systemFont(ofSize: 13, weight: .semibold) : NSFont.menuFont(ofSize: 13),
             .foregroundColor: titleColor,
         ]))
         if let detail = row.detail, !detail.isEmpty {
@@ -280,12 +283,12 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
     static func color(_ tint: ActiveSelectorMenuModel.Tint) -> NSColor {
         switch tint {
-        case .cyan: return .systemCyan
-        case .green: return .systemGreen
-        case .orange: return .systemOrange
-        case .red: return .systemRed
-        case .purple: return .systemPurple
-        case .secondary: return .secondaryLabelColor
+        case .cyan: return DesignRole.active.nsColor
+        case .green: return DesignRole.ready.nsColor
+        case .orange: return DesignRole.caution.nsColor
+        case .red: return DesignRole.blocking.nsColor
+        case .purple: return DesignRole.suspected.nsColor
+        case .secondary: return DesignRole.informational.nsColor
         }
     }
 
@@ -311,6 +314,9 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
             actions.openDashboard()
         case .openTelemetry:
             actions.openTelemetry()
+        case .toggleAutoSwitch(let enabled):
+            actions.setAutoSwitchEnabled(enabled)
+            scheduleRepaint()
         }
     }
 
@@ -320,24 +326,15 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         let selections = actions.selections()
         guard let selection = selections.first(where: { $0.provider == provider }),
               let candidate = selection.candidates.first(where: { $0.id == id }) else { return }
-        let confirmation = ActiveSelectorMenuModel.confirmation(
-            provider: provider, candidate: candidate, owner: selection.owner, now: Date())
-
-        Self.activateApp()
-        let alert = NSAlert()
-        alert.messageText = confirmation.title
-        alert.informativeText = confirmation.body
-        alert.alertStyle = confirmation.risky ? .warning : .informational
-        // Cancel first: the default button must be the cheap action.
-        alert.addButton(withTitle: confirmation.cancelButton)
-        alert.addButton(withTitle: confirmation.confirmButton)
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
-
         let name = candidate.name
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await self.actions.makeActive(id)
-            self.report(outcome, name: name, profileId: id, provider: provider)
+            // The shared confirmation (also the inspector's): both sides named,
+            // Cancel the default, "Log in first" for a dead login.
+            let outcome = await SwitchConfirmation.confirmAndSwitch(
+                provider: provider, candidate: candidate, owner: selection.owner,
+                makeActive: { id in await self.actions.makeActive(id) })
+            if let outcome { self.report(outcome, name: name, profileId: id, provider: provider) }
             self.repaint()
         }
     }

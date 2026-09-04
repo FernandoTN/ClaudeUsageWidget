@@ -22,6 +22,33 @@ extension Notification.Name {
     /// "provider" (the `Profile.ProviderKind` case name) and "ownerName".
     static let providerOwnerChangedExternally = Notification.Name("providerOwnerChangedExternally")
 
+    /// Posted whenever a provider's owner pointer actually CHANGES — the single
+    /// signal for "which account is provider X's CLI signed into now", covering
+    /// every path that moves one: an activation, a Sync, a delete, the launch
+    /// resolve, and the two CLI-side adoptions. `.providerOwnerChangedExternally`
+    /// is the narrower, older signal and still fires from the two adoption
+    /// passes only; it is not a substitute for this one.
+    ///
+    /// Posted from `ProfileManager.setProviderOwner`, the one place any of the
+    /// three pointers is assigned, and ONLY when the value differs from the
+    /// previous one — a re-claim by the standing owner posts nothing.
+    ///
+    /// - `object`: the new owner's profile `UUID`, or nil when the pointer was
+    ///   cleared (owner deleted, or the recorded owner no longer holds that
+    ///   provider's credentials).
+    /// - `userInfo["provider"]`: `String` — the `Profile.ProviderKind` case
+    ///   name, one of `claude`, `codex`, `grok`.
+    /// - `userInfo["previousOwnerId"]`: `String` — the outgoing owner's UUID
+    ///   string. Absent when there was no owner.
+    /// - `userInfo["cause"]`: `String` — a `ProfileManager.OwnerClaimCause` raw
+    ///   value: `activate`, `sync`, `import`, `launchRepair`,
+    ///   `identityAdoption`, `delete`, `clear`, `unknown`.
+    /// - `userInfo["accountStamp"]`: `String` — the new owner's non-secret
+    ///   account identity (`claudeAccountUUID`, `codexAccountId`, or the Grok
+    ///   login's `user_id`). Absent when the pointer was cleared or the stamp is
+    ///   not known yet; never a token.
+    static let providerOwnerClaimed = Notification.Name("providerOwnerClaimed")
+
     /// Posted when the setup wizard should be shown manually (for testing)
     static let showSetupWizard = Notification.Name("showSetupWizard")
 
