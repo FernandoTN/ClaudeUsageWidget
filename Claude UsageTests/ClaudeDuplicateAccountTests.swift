@@ -246,4 +246,74 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
             .noEvidence
         )
     }
+
+    // MARK: - Manual sync duplicate guard
+
+    func testSyncRefusesAnAccountAnotherProfileAlreadyHoldsButNeverTheTargetsOwn() {
+        let fenrir = profile("dRir(Fenrir)", account: "76582cd6")
+        let google = profile("Google", account: "aa11bb22")
+        let roster = [fenrir, google]
+
+        // Syncing the Fenrir login into 'Google' is what makes a duplicate:
+        // the holder is named so the error can say where the account already is.
+        XCTAssertEqual(
+            ClaudeCodeSyncService.duplicateAccountHolder(
+                accountUUID: "76582cd6", target: google.id, profiles: roster,
+                accountUUIDOf: { $0.claudeAccountUUID }
+            )?.name,
+            "dRir(Fenrir)"
+        )
+
+        // Re-syncing the SAME account into the profile that already holds it is
+        // the documented "/login then re-sync" repair, not a duplicate.
+        XCTAssertNil(
+            ClaudeCodeSyncService.duplicateAccountHolder(
+                accountUUID: "76582cd6", target: fenrir.id, profiles: roster,
+                accountUUIDOf: { $0.claudeAccountUUID }
+            )
+        )
+
+        // An unstamped profile is not a holder of anything — matching on nil
+        // would refuse every sync into a freshly created profile.
+        let blank = profile("Blank", account: nil)
+        XCTAssertNil(
+            ClaudeCodeSyncService.duplicateAccountHolder(
+                accountUUID: "76582cd6", target: google.id, profiles: [blank],
+                accountUUIDOf: { $0.claudeAccountUUID }
+            )
+        )
+    }
+
+    // MARK: - Which side of a shared account to re-login
+
+    func testEveryDuplicateExceptTheLoginOwnerIsAskedToReLogin() {
+        let owner = UUID(), copy = UUID(), third = UUID()
+        let needing = ProfileManager.profilesNeedingAccountRelogin(
+            groups: [[owner, copy, third]], activeClaudeProfileId: owner, contaminated: []
+        )
+        XCTAssertEqual(needing, [copy, third])
+    }
+
+    func testAmbiguousGroupFlagsNobodyButAContaminationFlagStandsOnItsOwn() {
+        let a = UUID(), b = UUID(), elsewhere = UUID()
+
+        // Neither member owns the shared login: which one is the impostor is
+        // genuinely unknown, and guessing would tell the user to re-login the
+        // profile they meant to keep. The duplicate caption still shows.
+        XCTAssertTrue(
+            ProfileManager.profilesNeedingAccountRelogin(
+                groups: [[a, b]], activeClaudeProfileId: elsewhere, contaminated: []
+            ).isEmpty
+        )
+
+        // A profile whose own token reported a different account than its stamp
+        // needs a re-login whether or not a duplicate group survives — the other
+        // side may have been deleted since.
+        XCTAssertEqual(
+            ProfileManager.profilesNeedingAccountRelogin(
+                groups: [], activeClaudeProfileId: nil, contaminated: [a]
+            ),
+            [a]
+        )
+    }
 }

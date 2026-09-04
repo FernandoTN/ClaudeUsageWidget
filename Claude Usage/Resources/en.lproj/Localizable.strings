@@ -502,6 +502,7 @@
 "profiles.about_refresh" = "Refresh interval";
 "profiles.active_badge" = "Active";
 "profiles.same_account_as" = "Same Anthropic account as %@";
+"profiles.needs_account_relogin" = "Re-login needed: this profile holds another account's login. Run `claude` and `/login` with its own account, then Sync.";
 "profiles.created" = "Created";
 "profiles.cli_synced" = "CLI Synced";
 "profiles.rename" = "Rename profile";
