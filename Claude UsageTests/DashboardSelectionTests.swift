@@ -103,6 +103,31 @@ final class DashboardSelectionTests: XCTestCase {
         XCTAssertEqual(DashboardFormatting.sectionCaption(snap.sections[0]), "Active for Claude: dRir")
     }
 
+    func testRosterFilterNarrowsByStateProvenanceStalenessQueueAndProvider() {
+        let owner = claude("Owner", usage(session: 40))
+        let fresh = claude("Fresh", usage(session: 5))
+        var cachedUsage = usage(session: 5)
+        cachedUsage.provenance = .cliCache
+        cachedUsage.lastUpdated = now.addingTimeInterval(-3 * 3600)
+        let cached = claude("Cached", cachedUsage)
+        let dead = claude("Dead", usage(session: 5))
+        let unmeasured = claude("Never", nil)
+        let snap = DashboardSnapshot.build(inputs([owner, fresh, cached, dead, unmeasured], active: [owner.id],
+                                                  dead: [dead.id], queue: [fresh.id]))
+        let rows = snap.sections[0].roster
+        func names(_ filter: DashboardFilter) -> Set<String> {
+            Set(rows.filter { $0.matches(filter, provider: .claude, now: now) }.map(\.name))
+        }
+        XCTAssertTrue(DashboardFilter().isEmpty)
+        XCTAssertEqual(names(DashboardFilter()), ["Fresh", "Cached", "Dead", "Never"])
+        XCTAssertEqual(names(DashboardFilter(readiness: [.dead])), ["Dead"])
+        XCTAssertEqual(names(DashboardFilter(provenance: [.cliCache])), ["Cached"])
+        XCTAssertEqual(names(DashboardFilter(staleMinutes: 60)), ["Cached"], "an unmeasured row is not stale, it is unmeasured")
+        XCTAssertEqual(names(DashboardFilter(queuedOnly: true)), ["Fresh"])
+        XCTAssertEqual(names(DashboardFilter(provider: .codex)), [])
+        XCTAssertEqual(names(DashboardFilter(readiness: [.ready], queuedOnly: true)), ["Fresh"])
+    }
+
     func testRosterHeaderCountsComeFromTheSharedFleetCounts() {
         let owner = claude("Owner", usage(session: 40))
         let ready = claude("Ready", usage(session: 5))

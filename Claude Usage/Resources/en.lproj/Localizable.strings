@@ -1131,5 +1131,8 @@
 "telemetry.chart.mean" = "7-bucket mean";
 "telemetry.chart.partial" = "current period, partial";
 "telemetry.switches" = "%d switches";
-"telemetry.chart.stacked" = "Stacked";
-"telemetry.chart.split" = "Split";
+
+// MARK: - Dashboard insights (stage 4a model)
+"insights.same_account_as" = "same account as %@";
+"insights.excluded_toggle" = "excluded by its auto-switch toggle";
+"insights.excluded_free" = "free plan";

@@ -170,6 +170,41 @@ enum DashboardBanner: Hashable {
     case hiddenByOverflow(Profile.ProviderKind)
 }
 
+// MARK: - Filter
+
+/// What the dashboard's roster can be narrowed to (UX revamp stage 4, the
+/// Insights block's filter). Pure; nil / empty means "no constraint".
+struct DashboardFilter: Hashable {
+    var readiness: Set<AccountReadiness> = []
+    var provenance: Set<MeasurementProvenance> = []
+    /// Only rows whose own reading is older than this many minutes.
+    var staleMinutes: Int?
+    var queuedOnly = false
+    var provider: Profile.ProviderKind?
+
+    var isEmpty: Bool {
+        readiness.isEmpty && provenance.isEmpty && staleMinutes == nil && !queuedOnly && provider == nil
+    }
+}
+
+extension RosterRow {
+    /// Whether this row of `provider`'s roster survives `filter` at `now`.
+    /// A row with no measurement never matches a provenance or staleness
+    /// constraint: absence is not evidence of either.
+    nonisolated func matches(_ filter: DashboardFilter, provider: Profile.ProviderKind, now: Date) -> Bool {
+        if let wanted = filter.provider, wanted != provider { return false }
+        if !filter.readiness.isEmpty, !filter.readiness.contains(readiness) { return false }
+        if filter.queuedOnly, queuePosition == nil { return false }
+        if !filter.provenance.isEmpty {
+            guard let m = measurement, filter.provenance.contains(m.provenance) else { return false }
+        }
+        if let minutes = filter.staleMinutes {
+            guard let m = measurement, now.timeIntervalSince(m.measuredAt) > Double(minutes) * 60 else { return false }
+        }
+        return true
+    }
+}
+
 // MARK: - Snapshot
 
 struct DashboardSnapshot: Hashable {

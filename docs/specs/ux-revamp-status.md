@@ -88,7 +88,8 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 3c Settings › Display (`DisplaySettingsView`: mode, per-provider layout, click-opens, cosmetics; ⇄ toggle; popover times; Appearance link) and › Advanced (`AdvancedSettingsView`: startup, `ShortcutRowsCard`, diagnostics with the first `debugAPILoggingEnabled` UI, dead-login flags with Forget, stored-settings registry), `SettingsKeyRegistry` + `SharedDataStore/ProfileStore.registeredKeys` + the "no key lost" test, `SettingsRoute.canonical` aliases (manageProfiles/general → accounts, cliAccount/codexAccount → accounts+login, popover → display, appSettings/shortcuts → advanced; appearance waits for 3d) | `feat/ux-revamp-3c-display-advanced` | #102 | **merged** `0b827af` |
 | 3d-move (additive): `SingleAccountBarCards` onto Display + `.appearance` alias, the three marker toggles (parity), roster (+) Add account, shared components moved out of the legacy files, `cuwSlotPinsVersion` registered legacy-unread | `feat/ux-revamp-3d-move` | draft | spec §12.6 |
 | 3d-delete: remove the eight legacy pages and their sections | — | — | **gated on the owner's OK** (asked via the orchestrator 2026-09-04) |
-| 4a / 4b insights, 4.1 resets | — | — | after 3 / the reset seams |
+| 4a `FleetInsights` (timeline, blindness, drift, switch log, burn, incidents ring, capacity, why-not), `IncidentRing` + `DriftLog`, `MenuBarManager.makeFleetInsights()`, `SwitchEvent.fromHeadroom/providerRaw` | `feat/ux-revamp-4a-insights-model` | draft | seam agreed in writing with the redesign session (insights ride inside `DashboardSnapshot`; the roster filter is theirs); incident call sites requested from the fixes session |
+| 4b `DashboardInsightsView` (redesign embeds); 4.1 resets | — | — | after 4a |
 
 ## Open items
 
