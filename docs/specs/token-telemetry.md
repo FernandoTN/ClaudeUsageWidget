@@ -237,11 +237,17 @@ provider (tooltip: from → to, trigger, reason), `×` for a Claude rate-limit
 death. Markers are recessive glyphs in the secondary colour with a status
 colour only on hover.
 
-Scale: the two July Codex days (35 B and 14 B) would flatten every other
-column of an "All indexed" fleet chart. Rule: when the largest column exceeds
-20× the median, the chart switches to **small multiples per stack series**
-(one row each, own y-axis, shared x) and says so in the title. Never a log
-axis (the eye cannot stack logs), never a dual axis.
+Scale, two problems, one mechanism. (a) Across providers: in the last 7 days
+Codex + Grok are 1.1 % of Claude (0.86 B vs 78.3 B) — stacked, they are
+one-pixel slivers. (b) Across days: the two July Codex days (35 B and 14 B)
+would flatten every other column of an "All indexed" chart. The chart
+therefore has two modes, `Stacked` and `Split` (small multiples: one row per
+series, own y-axis, shared x, the row title carrying the series total and
+share). **Fleet defaults to Split**; a provider or account scope defaults to
+Stacked (its models are within an order of magnitude of each other) and
+auto-switches to Split when the largest column exceeds 20× the median, saying
+so in the title. Never a log axis (the eye cannot stack logs), never a dual
+axis.
 
 **Frame 4 — two tables.** *By model*: model, units, input-class, cached %,
 output, reasoning %, ≈ cost, and an inline share bar (share of the scope's
@@ -351,6 +357,13 @@ updated.
 9. The disclaimer started as a banner; it became the header's second line.
 10. Deep link from the inspector: the sidebar selection *is* the deep link,
     so the window has one state model, not a "filtered mode".
+11. Drawing the Fleet chart with real numbers showed Codex and Grok as
+    one-pixel slivers under Claude (1.1 %); the Fleet scope now defaults to
+    Split (small multiples with the share in each row title) with Stacked one
+    click away, and the spike rule reuses the same mechanism.
+12. The check-in mockup's per-account rows would have looked authoritative;
+    the mockup labels them illustrative and shows the Unattributed row with
+    the date the ownership log starts.
 
 ## 6. Open questions for the owner (check-in brief)
 

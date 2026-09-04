@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token usage window — design check-in</title>
+<style>
+:root { color-scheme: light dark;
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --mute:#6e6e73; --line:#e3e3e8; --acc:#0a84ff; --rec:#34c759; --warn:#ff9f0a;
+  --surf:#fcfcfb; --grid:#e6e6e3; --t1:#0b0b0b; --t2:#52514e;
+  --s1:#2a78d6; --s1l:#9ec5f4; --s2:#eb6834; --s2l:#f6b79e; --s3:#1baf7a; --s3l:#9adfc4; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --oth:#b8b7b2; --crit:#d03b3b; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111114; --card:#1c1c1f; --ink:#f2f2f7; --mute:#a1a1a6; --line:#2c2c30;
+  --surf:#1a1a19; --grid:#2e2e2c; --t1:#ffffff; --t2:#c3c2b7;
+  --s1:#3987e5; --s1l:#1c5cab; --s2:#d95926; --s2l:#8a3a1b; --s3:#199e70; --s3l:#136a4c; --s4:#c98500; --s5:#d55181; --s6:#008300; --oth:#5c5b57; --crit:#e66767; } }
+* { box-sizing:border-box }
+body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
+h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em }
+h2 { font-size: 19px; margin: 44px 0 10px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p, li { max-width: 78ch }
+.sub { color: var(--mute); margin: 0 0 18px }
+.card { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin: 14px 0; }
+.grid3 { display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px }
+.grid2 { display:grid; grid-template-columns: repeat(2, 1fr); gap: 12px }
+@media (max-width: 720px) { .grid3, .grid2 { grid-template-columns: 1fr } }
+.option { border:1px solid var(--line); border-radius: 10px; padding: 14px 16px; position: relative; background: var(--card) }
+.option.rec { border-color: var(--rec); box-shadow: 0 0 0 3px rgba(52,199,89,0.15) inset; }
+.option.no { opacity:.8 }
+.badge { position:absolute; top: -10px; right: 14px; background: var(--rec); color:#fff; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; letter-spacing: .04em }
+.badge.gray { background: var(--mute) }
+.tag { display:inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: rgba(10,132,255,.12); color: var(--acc); margin-right: 6px }
+.tag.w { background: rgba(255,159,10,.14); color: var(--warn) }
+.meta { color: var(--mute); font-size: 13px }
+.num { font-variant-numeric: tabular-nums }
+table { border-collapse: collapse; width: 100%; font-size: 14px }
+td, th { border-top: 1px solid var(--line); padding: 7px 6px; vertical-align: top; text-align: left }
+th { color: var(--mute); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; border-top: 0 }
+td.r, th.r { text-align: right; font-variant-numeric: tabular-nums }
+.pick { display:flex; gap: 10px; flex-wrap: wrap; margin-top: 10px }
+.pick span { border:1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px }
+.pick span.on { border-color: var(--rec); font-weight: 600 }
+textarea { width:100%; min-height: 120px; border:1px solid var(--line); border-radius: 8px; padding: 10px; font: 14px/1.4 inherit; background: var(--card); color: var(--ink) }
+.mock { background: var(--surf); border:1px solid var(--line); border-radius: 10px; padding: 8px; margin: 10px 0 }
+.mock svg { display:block; width:100%; height:auto; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif }
+.callouts { counter-reset: c; columns: 2; column-gap: 24px; font-size: 14px }
+.callouts li { break-inside: avoid; margin: 0 0 8px 0 }
+.callouts li > b { display:inline-block; min-width: 20px; height: 20px; border-radius: 10px; background: var(--acc); color:#fff; text-align:center; font-size: 12px; line-height: 20px; margin-right: 6px }
+kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px }
+.small { font-size: 13px }
+hr { border:0; border-top:1px solid var(--line); margin: 30px 0 }
+</style></head>
+<body><main>
+
+<h1>Token usage window — design check-in</h1>
+<p class="sub">Token-telemetry sibling · 2026-09-04 · five decisions, each with a marked recommendation. Reply in the session with your picks (or just “go with the recommendations”). Everything measured below was read from this Mac tonight, read-only; consult reviews from Codex <code>gpt-5.6-sol</code> and Grok are running and their findings will be folded into the spec before stage 1 starts.</p>
+
+<div class="card">
+  <h3 style="margin-top:0">What this window is — and is not</h3>
+  <p>It shows <b>consumption</b>: how many tokens the fleet actually sent and received, read from the CLIs’ own local logs, by provider, model, account and day. It is <b>not quota</b> — the providers weigh those tokens their own way, and the bars in the menu bar keep answering “how much is left”. Every headline in the window carries its source and its age. Nothing leaves the machine.</p>
+  <p class="meta">Full write-ups: <code>docs/research/2026-09-04-token-telemetry-sources.md</code> (the data) · <code>docs/specs/token-telemetry.md</code> (the proposal).</p>
+</div>
+
+<h2>0. What was measured tonight</h2>
+<div class="grid3">
+  <div class="option"><span class="tag">Claude Code</span><br>
+    <b class="num">259.7 B</b> input-class tokens on disk · <b class="num">677 M</b> output<br>
+    <span class="meta">861,785 messages, 37 days · <b>96.8 % cache reads</b> · 29.5 % of output is thinking · 59 % of messages are subagents</span>
+    <p class="small meta">Hazard: the CLI deletes transcripts after 30 days. The naive sum over-counts 2.1× (one record per content block).</p></div>
+  <div class="option"><span class="tag">Codex</span><br>
+    <b class="num">54.2 B</b> input · <b class="num">181 M</b> output<br>
+    <span class="meta">1,209 sessions since May 14 · 95.4 % cached · 36 % of output is reasoning · <code>gpt-5.6-sol</code> 99 %</span>
+    <p class="small meta">Two July days hold 50 B of it (159 sessions on 07-16). Nothing is ever deleted.</p></div>
+  <div class="option"><span class="tag">Grok</span><br>
+    <b class="num">0.93 B</b> input · <b class="num">21.3 M</b> output<br>
+    <span class="meta">1,148 sessions, 30 days · 83 % cached · the CLI writes its own cost: <b>$3,112</b> at list price</span>
+    <p class="small meta">Only completed turns are logged (5–10 % under the per-call log). One account, so attribution is trivial.</p></div>
+</div>
+<p class="meta">Swift prototype, warm cache: full 14.2 GB Claude corpus in 50 s; a 24-hour delta in 3 s; Codex archive (11.3 GB) in 13 s. With per-file byte cursors a steady-state tick reads tens of MB.</p>
+
+<h2>1. Layout</h2>
+<p>Three ways to lay out one window. All three share the same report content (KPI tiles, the daily chart, by-model and by-account tables, a provenance footer); they differ in how you get to a provider or an account.</p>
+<div class="grid3">
+  <div class="option"><b>A — Report page</b>
+    <div class="mock"><svg viewBox="0 0 300 190" role="img" aria-label="Layout A wireframe: single column report">
+      <rect x="0" y="0" width="300" height="190" rx="6" style="fill:var(--surf)"/>
+      <rect x="10" y="10" width="140" height="10" rx="2" style="fill:var(--t2)"/>
+      <rect x="200" y="9" width="90" height="12" rx="3" style="fill:none;stroke:var(--grid)"/>
+      <rect x="10" y="26" width="200" height="5" rx="2" style="fill:var(--grid)"/>
+      <g><rect x="10" y="40" width="66" height="30" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="82" y="40" width="66" height="30" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="154" y="40" width="66" height="30" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="226" y="40" width="64" height="30" rx="4" style="fill:none;stroke:var(--grid)"/></g>
+      <g style="fill:var(--s1)"><rect x="24" y="110" width="8" height="20"/><rect x="48" y="96" width="8" height="34"/><rect x="72" y="94" width="8" height="36"/><rect x="96" y="112" width="8" height="18"/><rect x="120" y="98" width="8" height="32"/><rect x="144" y="86" width="8" height="44"/><rect x="168" y="102" width="8" height="28"/><rect x="192" y="124" width="8" height="6"/></g>
+      <line x1="10" y1="130" x2="290" y2="130" style="stroke:var(--grid)"/>
+      <rect x="10" y="142" width="136" height="38" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="154" y="142" width="136" height="38" rx="4" style="fill:none;stroke:var(--grid)"/>
+      <rect x="220" y="26" width="70" height="5" rx="2" style="fill:var(--acc)"/>
+    </svg></div>
+    <p class="small">Filters in the header (provider chips, an account pop-up). Simplest build; everything in one glance.</p>
+    <p class="small meta">Weak spot: a pop-up of 24 account names, and nowhere for an account’s own switch timeline.</p></div>
+  <div class="option rec"><span class="badge">RECOMMENDED</span><b>B — Source list + report</b>
+    <div class="mock"><svg viewBox="0 0 300 190" role="img" aria-label="Layout B wireframe: sidebar scope and report">
+      <rect x="0" y="0" width="300" height="190" rx="6" style="fill:var(--surf)"/>
+      <rect x="0" y="0" width="72" height="190" style="fill:var(--grid);opacity:.45"/>
+      <g style="fill:var(--t2)"><rect x="8" y="12" width="40" height="6" rx="2" style="fill:var(--acc)"/><rect x="8" y="26" width="48" height="5" rx="2"/><rect x="14" y="37" width="34" height="4" rx="2"/><rect x="14" y="46" width="30" height="4" rx="2"/><rect x="14" y="55" width="38" height="4" rx="2"/><rect x="14" y="64" width="44" height="4" rx="2" style="opacity:.5"/><rect x="8" y="78" width="40" height="5" rx="2"/><rect x="14" y="89" width="34" height="4" rx="2"/><rect x="8" y="103" width="34" height="5" rx="2"/></g>
+      <rect x="82" y="10" width="90" height="10" rx="2" style="fill:var(--t2)"/>
+      <rect x="200" y="9" width="90" height="12" rx="3" style="fill:none;stroke:var(--grid)"/>
+      <rect x="82" y="26" width="160" height="5" rx="2" style="fill:var(--grid)"/>
+      <g><rect x="82" y="40" width="48" height="26" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="136" y="40" width="48" height="26" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="190" y="40" width="48" height="26" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="244" y="40" width="46" height="26" rx="4" style="fill:none;stroke:var(--grid)"/></g>
+      <g style="fill:var(--s1)"><rect x="92" y="88" width="6" height="12"/><rect x="112" y="78" width="6" height="22"/><rect x="132" y="77" width="6" height="23"/><rect x="152" y="89" width="6" height="11"/><rect x="172" y="80" width="6" height="20"/><rect x="192" y="72" width="6" height="28"/><rect x="212" y="83" width="6" height="17"/><rect x="232" y="96" width="6" height="4"/></g>
+      <g style="fill:var(--s2)"><rect x="92" y="114" width="6" height="7"/><rect x="112" y="109" width="6" height="12"/><rect x="132" y="113" width="6" height="8"/><rect x="152" y="119" width="6" height="2"/><rect x="172" y="119" width="6" height="2"/><rect x="192" y="103" width="6" height="18"/><rect x="212" y="113" width="6" height="8"/><rect x="232" y="120" width="6" height="1"/></g>
+      <g style="fill:var(--s3)"><rect x="92" y="135" width="6" height="5"/><rect x="112" y="136" width="6" height="4"/><rect x="132" y="126" width="6" height="14"/><rect x="152" y="133" width="6" height="7"/><rect x="172" y="125" width="6" height="15"/><rect x="192" y="122" width="6" height="18"/><rect x="212" y="131" width="6" height="9"/><rect x="232" y="135" width="6" height="5"/></g>
+      <line x1="82" y1="100" x2="290" y2="100" style="stroke:var(--grid)"/><line x1="82" y1="121" x2="290" y2="121" style="stroke:var(--grid)"/><line x1="82" y1="140" x2="290" y2="140" style="stroke:var(--grid)"/>
+      <rect x="82" y="150" width="100" height="30" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="190" y="150" width="100" height="30" rx="4" style="fill:none;stroke:var(--grid)"/>
+    </svg></div>
+    <p class="small">The sidebar <i>is</i> the filter: Fleet → each provider → its accounts → “Unattributed”. The chart’s stacking follows the level (Fleet: per provider; a provider: by model; an account: by model), so the drill-down reads the same at every depth. The inspector’s “Usage history” link simply selects a row.</p>
+    <p class="small meta">Costs a wider minimum window (880 pt). Scales to the 30–40 accounts the UX spec plans for.</p></div>
+  <div class="option no"><span class="badge gray">NOT RECOMMENDED</span><b>C — Tabs</b>
+    <div class="mock"><svg viewBox="0 0 300 190" role="img" aria-label="Layout C wireframe: tabs">
+      <rect x="0" y="0" width="300" height="190" rx="6" style="fill:var(--surf)"/>
+      <g><rect x="10" y="10" width="64" height="16" rx="4" style="fill:var(--acc)"/><rect x="80" y="10" width="64" height="16" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="150" y="10" width="64" height="16" rx="4" style="fill:none;stroke:var(--grid)"/><rect x="220" y="10" width="70" height="16" rx="4" style="fill:none;stroke:var(--grid)"/></g>
+      <rect x="10" y="40" width="280" height="140" rx="6" style="fill:none;stroke:var(--grid)"/>
+      <g style="fill:var(--s1)"><rect x="40" y="120" width="10" height="40"/><rect x="80" y="96" width="10" height="64"/><rect x="120" y="92" width="10" height="68"/><rect x="160" y="124" width="10" height="36"/><rect x="200" y="100" width="10" height="60"/><rect x="240" y="80" width="10" height="80"/></g>
+    </svg></div>
+    <p class="small">Overview / Models / Accounts / Timeline. Every comparison the owner asked for (“per provider or the aggregate… trends… through time”) needs two tabs open at once.</p></div>
+</div>
+
+<h3>B, frame by frame — Fleet scope, last 7 days, real numbers from tonight’s census</h3>
+<div class="mock"><svg viewBox="0 0 1040 700" role="img" aria-label="Full mockup of the recommended layout">
+  <defs>
+    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--surf)"/><rect width="2.5" height="6" style="fill:var(--s1)"/></pattern>
+    <pattern id="hatch2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--surf)"/><rect width="2.5" height="6" style="fill:var(--s2)"/></pattern>
+    <pattern id="hatch3" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--surf)"/><rect width="2.5" height="6" style="fill:var(--s3)"/></pattern>
+  </defs>
+  <!-- window -->
+  <rect x="0.5" y="0.5" width="1039" height="699" rx="10" style="fill:var(--surf);stroke:var(--line)"/>
+  <rect x="0.5" y="0.5" width="1039" height="30" rx="10" style="fill:var(--grid);opacity:.5"/>
+  <circle cx="18" cy="15" r="5.5" style="fill:#ff5f57"/><circle cx="36" cy="15" r="5.5" style="fill:#febc2e"/><circle cx="54" cy="15" r="5.5" style="fill:#28c840"/>
+  <text x="520" y="20" text-anchor="middle" style="font-size:13px;font-weight:600;fill:var(--t1)">Token usage</text>
+  <!-- sidebar -->
+  <rect x="0.5" y="30" width="220" height="669" style="fill:var(--grid);opacity:.35"/>
+  <line x1="220.5" y1="30" x2="220.5" y2="699" style="stroke:var(--line)"/>
+  <g style="font-size:12px;fill:var(--t1)">
+    <rect x="8" y="42" width="204" height="24" rx="6" style="fill:var(--acc);opacity:.18"/>
+    <text x="18" y="59" style="font-weight:600">Fleet</text><text x="206" y="59" text-anchor="end" class="num" style="fill:var(--t2)">78.5 B</text>
+    <text x="18" y="90" style="fill:var(--t2);font-size:11px;font-weight:600;letter-spacing:.04em">▾ CLAUDE · 17</text><text x="206" y="90" text-anchor="end" style="fill:var(--t2)">78.3 B</text>
+    <text x="30" y="112">dRir</text><text x="66" y="112" style="fill:#32ade6;font-size:9px;font-weight:700">Cl</text><text x="206" y="112" text-anchor="end" style="fill:var(--t2)">24.1 B</text>
+    <text x="30" y="132">dJormun</text><text x="206" y="132" text-anchor="end" style="fill:var(--t2)">18.9 B</text>
+    <text x="30" y="152">dLeo</text><text x="206" y="152" text-anchor="end" style="fill:var(--t2)">9.6 B</text>
+    <text x="30" y="172" style="fill:var(--t2)">14 more…</text>
+    <text x="30" y="194" style="fill:var(--t2)">Unattributed</text><text x="206" y="194" text-anchor="end" style="fill:var(--t2)">14.2 B</text>
+    <text x="18" y="224" style="fill:var(--t2);font-size:11px;font-weight:600;letter-spacing:.04em">▾ CODEX · 5</text><text x="206" y="224" text-anchor="end" style="fill:var(--t2)">0.62 B</text>
+    <text x="30" y="246">xFenrir(dev)</text><text x="112" y="246" style="fill:#32ade6;font-size:9px;font-weight:700">Cx</text><text x="206" y="246" text-anchor="end" style="fill:var(--t2)">0.41 B</text>
+    <text x="30" y="266">xLucifer(dev)</text><text x="206" y="266" text-anchor="end" style="fill:var(--t2)">0.15 B</text>
+    <text x="30" y="286" style="fill:var(--t2)">3 more…</text>
+    <text x="18" y="316" style="fill:var(--t2);font-size:11px;font-weight:600;letter-spacing:.04em">▾ GROK · 1</text><text x="206" y="316" text-anchor="end" style="fill:var(--t2)">0.24 B</text>
+    <text x="30" y="338">GROK</text><text x="66" y="338" style="fill:#32ade6;font-size:9px;font-weight:700">Gk</text><text x="206" y="338" text-anchor="end" style="fill:var(--t2)">0.24 B</text>
+  </g>
+  <!-- header -->
+  <text x="244" y="60" style="font-size:16px;font-weight:700;fill:var(--t1)">Fleet</text>
+  <text x="244" y="80" style="font-size:11px;fill:var(--t2)">Consumption read from local CLI logs · not quota · indexed 12 s ago</text>
+  <g style="font-size:11px">
+    <rect x="812" y="46" width="212" height="22" rx="6" style="fill:none;stroke:var(--line)"/>
+    <text x="838" y="61" text-anchor="middle" style="fill:var(--t2)">Today</text>
+    <rect x="864" y="48" width="52" height="18" rx="4" style="fill:var(--card);stroke:var(--line)"/><text x="890" y="61" text-anchor="middle" style="fill:var(--t1);font-weight:600">7 days</text>
+    <text x="944" y="61" text-anchor="middle" style="fill:var(--t2)">30 days</text>
+    <text x="1000" y="61" text-anchor="middle" style="fill:var(--t2)">All</text>
+  </g>
+  <!-- KPI tiles -->
+  <g style="font-size:11px">
+    <rect x="244" y="96" width="186" height="84" rx="8" style="fill:var(--card);stroke:var(--line)"/>
+    <text x="256" y="114" style="fill:var(--t2)">Input-class tokens</text>
+    <text x="256" y="140" class="num" style="font-size:22px;font-weight:600;fill:var(--t1)">78.3 B</text>
+    <text x="340" y="140" class="num" style="fill:var(--t2)">▲ 48 % vs prior 7 d</text>
+    <text x="256" y="158" style="fill:var(--t2)">97 % cache reads · 3 % writes</text>
+    <polyline points="256,172 268,168 280,166 292,171 304,167 316,162 328,165 340,170 352,164 364,161 376,160 388,166" style="fill:none;stroke:var(--oth);stroke-width:1.5"/><circle cx="388" cy="166" r="2.5" style="fill:var(--acc)"/>
+
+    <rect x="442" y="96" width="186" height="84" rx="8" style="fill:var(--card);stroke:var(--line)"/>
+    <text x="454" y="114" style="fill:var(--t2)">Output tokens</text>
+    <text x="454" y="140" class="num" style="font-size:22px;font-weight:600;fill:var(--t1)">120 M</text>
+    <text x="530" y="140" class="num" style="fill:var(--t2)">▲ 14 %</text>
+    <text x="454" y="158" style="fill:var(--t2)">30 % thinking</text>
+    <polyline points="454,170 466,167 478,168 490,171 502,166 514,163 526,165 538,169 550,163 562,161 574,162 586,165" style="fill:none;stroke:var(--oth);stroke-width:1.5"/><circle cx="586" cy="165" r="2.5" style="fill:var(--acc)"/>
+
+    <rect x="640" y="96" width="186" height="84" rx="8" style="fill:var(--card);stroke:var(--line)"/>
+    <text x="652" y="114" style="fill:var(--t2)">Messages &amp; turns</text>
+    <text x="652" y="140" class="num" style="font-size:22px;font-weight:600;fill:var(--t1)">219 k</text>
+    <text x="730" y="140" class="num" style="fill:var(--t2)">▲ 36 %</text>
+    <text x="652" y="158" style="fill:var(--t2)">59 % from subagents · 3 providers</text>
+    <polyline points="652,171 664,168 676,167 688,172 700,166 712,163 724,166 736,170 748,164 760,161 772,162 784,167" style="fill:none;stroke:var(--oth);stroke-width:1.5"/><circle cx="784" cy="167" r="2.5" style="fill:var(--acc)"/>
+
+    <rect x="838" y="96" width="186" height="84" rx="8" style="fill:var(--card);stroke:var(--line)"/>
+    <text x="850" y="114" style="fill:var(--t2)">≈ Cost at list price</text>
+    <text x="850" y="140" class="num" style="font-size:22px;font-weight:600;fill:var(--t1)">$58.7 k</text>
+    <text x="946" y="140" style="fill:var(--t2)">estimate ⓘ</text>
+    <text x="850" y="158" style="fill:var(--t2)">Claude $58.0 k · Codex + Grok $732</text>
+    <polyline points="850,172 862,168 874,166 886,171 898,167 910,162 922,165 934,170 946,164 958,161 970,160 982,166" style="fill:none;stroke:var(--oth);stroke-width:1.5"/><circle cx="982" cy="166" r="2.5" style="fill:var(--acc)"/>
+  </g>
+  <!-- chart: small multiples -->
+  <text x="244" y="206" style="font-size:12px;font-weight:700;fill:var(--t1)">Input-class tokens per day</text>
+  <text x="418" y="206" style="font-size:11px;fill:var(--t2)">split by provider (own scale each) · ─ 7-day mean · click a row title to isolate</text>
+  <g style="font-size:11px">
+    <rect x="880" y="196" width="140" height="18" rx="5" style="fill:none;stroke:var(--line)"/>
+    <text x="912" y="209" text-anchor="middle" style="fill:var(--t2)">Stacked</text>
+    <rect x="948" y="198" width="70" height="14" rx="3" style="fill:var(--card);stroke:var(--line)"/><text x="983" y="209" text-anchor="middle" style="fill:var(--t1);font-weight:600">Split</text>
+  </g>
+  <!-- row 1: Claude, plot y 226..296 (70px), scale 3.5px per B -->
+  <g style="font-size:10.5px">
+    <text x="244" y="230" style="fill:var(--t1);font-weight:600">Claude</text><text x="290" y="230" class="num" style="fill:var(--t2)">78.3 B · 98.9 % of the fleet · 97 % cache reads</text>
+    <line x1="330" y1="261" x2="1000" y2="261" style="stroke:var(--grid)"/><line x1="330" y1="296" x2="1000" y2="296" style="stroke:var(--grid)"/>
+    <text x="1004" y="230" class="num" style="fill:var(--t2)">20 B</text><text x="1004" y="264" class="num" style="fill:var(--t2)">10 B</text><text x="1004" y="299" class="num" style="fill:var(--t2)">0</text>
+    <g style="fill:var(--s1)">
+      <rect x="360" y="275.7" width="24" height="20.3" rx="3"/><rect x="440" y="247.5" width="24" height="48.5" rx="3"/><rect x="520" y="245.8" width="24" height="50.2" rx="3"/><rect x="600" y="276.5" width="24" height="19.5" rx="3"/><rect x="680" y="251.9" width="24" height="44.1" rx="3"/><rect x="760" y="228.8" width="24" height="67.2" rx="3"/><rect x="840" y="258.1" width="24" height="37.9" rx="3"/>
+    </g>
+    <rect x="920" y="289.4" width="24" height="6.6" rx="3" fill="url(#hatch)" style="stroke:var(--s1);stroke-width:1"/>
+    <polyline points="372,262 452,256 532,252 612,257 692,254 772,250 852,254" style="fill:none;stroke:var(--t2);stroke-width:1.5"/>
+    <text x="772" y="224" text-anchor="middle" class="num" style="fill:var(--t2)">19.2 B</text>
+  </g>
+  <!-- row 2: Codex, plot y 318..388, scale 70px per 250M -->
+  <g style="font-size:10.5px">
+    <text x="244" y="322" style="fill:var(--t1);font-weight:600">Codex</text><text x="290" y="322" class="num" style="fill:var(--t2)">0.62 B · 0.8 % · 96 % cached</text>
+    <line x1="330" y1="353" x2="1000" y2="353" style="stroke:var(--grid)"/><line x1="330" y1="388" x2="1000" y2="388" style="stroke:var(--grid)"/>
+    <text x="1004" y="322" class="num" style="fill:var(--t2)">250 M</text><text x="1004" y="356" class="num" style="fill:var(--t2)">125 M</text><text x="1004" y="391" class="num" style="fill:var(--t2)">0</text>
+    <g style="fill:var(--s2)">
+      <rect x="360" y="364" width="24" height="24" rx="3"/><rect x="440" y="347" width="24" height="41" rx="3"/><rect x="520" y="362" width="24" height="26" rx="3"/><rect x="600" y="381.7" width="24" height="6.3" rx="3"/><rect x="680" y="381.7" width="24" height="6.3" rx="3"/><rect x="760" y="326.6" width="24" height="61.4" rx="3"/><rect x="840" y="361.5" width="24" height="26.5" rx="3"/>
+    </g>
+    <rect x="920" y="382.9" width="24" height="5.1" rx="3" fill="url(#hatch2)" style="stroke:var(--s2);stroke-width:1"/>
+    <polyline points="372,370 452,366 532,364 612,368 692,369 772,362 852,363" style="fill:none;stroke:var(--t2);stroke-width:1.5"/>
+    <text x="772" y="322" text-anchor="middle" class="num" style="fill:var(--t2)">219 M</text>
+  </g>
+  <!-- row 3: Grok, plot y 410..480, scale 1px per M -->
+  <g style="font-size:10.5px">
+    <text x="244" y="414" style="fill:var(--t1);font-weight:600">Grok</text><text x="290" y="414" class="num" style="fill:var(--t2)">0.24 B · 0.3 % · 83 % cached · completed turns only</text>
+    <line x1="330" y1="445" x2="1000" y2="445" style="stroke:var(--grid)"/><line x1="330" y1="480" x2="1000" y2="480" style="stroke:var(--grid)"/>
+    <text x="1004" y="414" class="num" style="fill:var(--t2)">70 M</text><text x="1004" y="448" class="num" style="fill:var(--t2)">35 M</text><text x="1004" y="483" class="num" style="fill:var(--t2)">0</text>
+    <g style="fill:var(--s3)">
+      <rect x="360" y="466.3" width="24" height="13.7" rx="3"/><rect x="440" y="469.4" width="24" height="10.6" rx="3"/><rect x="520" y="434.3" width="24" height="45.7" rx="3"/><rect x="600" y="458.8" width="24" height="21.2" rx="3"/><rect x="680" y="431.4" width="24" height="48.6" rx="3"/><rect x="760" y="419.9" width="24" height="60.1" rx="3"/><rect x="840" y="452.8" width="24" height="27.2" rx="3"/>
+    </g>
+    <rect x="920" y="465.1" width="24" height="14.9" rx="3" fill="url(#hatch3)" style="stroke:var(--s3);stroke-width:1"/>
+    <polyline points="372,462 452,461 532,457 612,455 692,451 772,447 852,448" style="fill:none;stroke:var(--t2);stroke-width:1.5"/>
+    <text x="772" y="414" text-anchor="middle" class="num" style="fill:var(--t2)">60.1 M</text>
+  </g>
+  <!-- shared x axis + markers -->
+  <g style="font-size:10.5px;fill:var(--t2)">
+    <text x="372" y="498" text-anchor="middle">Aug 28</text><text x="452" y="498" text-anchor="middle">29</text><text x="532" y="498" text-anchor="middle">30</text><text x="612" y="498" text-anchor="middle">31</text><text x="692" y="498" text-anchor="middle">Sep 1</text><text x="772" y="498" text-anchor="middle">2</text><text x="852" y="498" text-anchor="middle">3</text><text x="932" y="498" text-anchor="middle">today</text>
+    <text x="700" y="514" text-anchor="middle" style="font-size:10px">⇄</text><text x="738" y="514" text-anchor="middle" style="font-size:10px">⇄</text><text x="790" y="514" text-anchor="middle" style="font-size:10px">⇄⇄</text><text x="846" y="514" text-anchor="middle" style="font-size:10px">⇄</text>
+    <text x="672" y="514" text-anchor="middle" style="font-size:10px;fill:var(--crit)">×</text><text x="777" y="527" text-anchor="middle" style="font-size:10px;fill:var(--crit)">× × ×</text>
+    <text x="244" y="514" style="font-size:10px">⇄ switch of the row’s provider · × rate-limit stop (hover for who → who, why)</text>
+  </g>
+  <!-- tables -->
+  <g style="font-size:10.5px">
+    <rect x="244" y="540" width="382" height="118" rx="8" style="fill:var(--card);stroke:var(--line)"/>
+    <text x="256" y="558" style="font-size:11px;font-weight:700;fill:var(--t1)">By model</text><text x="614" y="558" text-anchor="end" style="fill:var(--t2)">share of input-class · ≈ cost</text>
+    <g style="fill:var(--t1)">
+      <text x="256" y="580">claude-opus-5</text><rect x="380" y="572" width="132" height="8" rx="2" style="fill:var(--s1)"/><text x="524" y="580" class="num" style="fill:var(--t2)">76 %</text><text x="614" y="580" text-anchor="end" class="num">$44.0 k</text>
+      <text x="256" y="598">claude-fable-5</text><rect x="380" y="590" width="26" height="8" rx="2" style="fill:var(--s1)"/><text x="524" y="598" class="num" style="fill:var(--t2)">15 %</text><text x="614" y="598" text-anchor="end" class="num">$9.9 k</text>
+      <text x="256" y="616">claude-sonnet-5</text><rect x="380" y="608" width="7" height="8" rx="2" style="fill:var(--s1)"/><text x="524" y="616" class="num" style="fill:var(--t2)">4 %</text><text x="614" y="616" text-anchor="end" class="num">$1.4 k</text>
+      <text x="256" y="634">claude-fable-5-1</text><rect x="380" y="626" width="5" height="8" rx="2" style="fill:var(--s1)"/><text x="524" y="634" class="num" style="fill:var(--t2)">3 %</text><text x="614" y="634" text-anchor="end" class="num">$2.6 k</text>
+      <text x="256" y="652" style="fill:var(--t2)">gpt-5.6-sol, grok-4.6-build, 3 more…</text><text x="524" y="652" class="num" style="fill:var(--t2)">1 %</text><text x="614" y="652" text-anchor="end" class="num" style="fill:var(--t2)">$0.7 k</text>
+    </g>
+    <rect x="640" y="540" width="384" height="118" rx="8" style="fill:var(--card);stroke:var(--line)"/>
+    <text x="652" y="558" style="font-size:11px;font-weight:700;fill:var(--t1)">By account</text><text x="1012" y="558" text-anchor="end" style="fill:var(--t2)">share · last active</text>
+    <g style="fill:var(--t1)">
+      <text x="652" y="580">dRir</text><text x="682" y="580" style="fill:#32ade6;font-size:9px;font-weight:700">Cl</text><text x="700" y="580" style="fill:var(--t2)">Active for Claude</text><rect x="800" y="572" width="80" height="8" rx="2" style="fill:var(--s1)"/><text x="890" y="580" class="num" style="fill:var(--t2)">31 %</text><text x="1012" y="580" text-anchor="end" style="fill:var(--t2)">12 s ago</text>
+      <text x="652" y="598">dJormun</text><rect x="800" y="590" width="62" height="8" rx="2" style="fill:var(--s1)"/><text x="890" y="598" class="num" style="fill:var(--t2)">24 %</text><text x="1012" y="598" text-anchor="end" style="fill:var(--t2)">3 h ago</text>
+      <text x="652" y="616">dLeo</text><rect x="800" y="608" width="31" height="8" rx="2" style="fill:var(--s1)"/><text x="890" y="616" class="num" style="fill:var(--t2)">12 %</text><text x="1012" y="616" text-anchor="end" style="fill:var(--t2)">yesterday</text>
+      <text x="652" y="634">xFenrir(dev)</text><text x="722" y="634" style="fill:#32ade6;font-size:9px;font-weight:700">Cx</text><rect x="800" y="626" width="2" height="8" rx="1" style="fill:var(--s2)"/><text x="890" y="634" class="num" style="fill:var(--t2)">0.5 %</text><text x="1012" y="634" text-anchor="end" style="fill:var(--t2)">41 m ago</text>
+      <text x="652" y="652" style="fill:var(--t2)">Unattributed (before Sep 3)</text><rect x="800" y="644" width="46" height="8" rx="2" style="fill:var(--oth)"/><text x="890" y="652" class="num" style="fill:var(--t2)">18 %</text>
+    </g>
+  </g>
+  <!-- footer -->
+  <text x="244" y="678" style="font-size:10px;fill:var(--t2)">Sources: Claude Code transcripts (dedup by id) · Codex rollouts (deltas) · Grok completed turns</text>
+  <text x="244" y="692" style="font-size:10px;fill:var(--t2)">Caveats: the Claude CLI deletes transcripts after 30 days · Grok logs only completed turns (5–10 % under its per-call log) · nothing leaves this Mac</text>
+  <text x="1024" y="678" text-anchor="end" style="font-size:10px;fill:var(--t2)">Indexed through 21:04 · 27.1 GB · 1.2 M records</text>
+  <!-- callout numbers -->
+  <g style="font-size:11px;font-weight:700;fill:#fff">
+    <circle cx="232" cy="60" r="9" style="fill:var(--acc)"/><text x="232" y="64" text-anchor="middle">1</text>
+    <circle cx="232" cy="138" r="9" style="fill:var(--acc)"/><text x="232" y="142" text-anchor="middle">2</text>
+    <circle cx="232" cy="300" r="9" style="fill:var(--acc)"/><text x="232" y="304" text-anchor="middle">3</text>
+    <circle cx="232" cy="600" r="9" style="fill:var(--acc)"/><text x="232" y="604" text-anchor="middle">4</text>
+    <circle cx="110" cy="360" r="9" style="fill:var(--acc)"/><text x="110" y="364" text-anchor="middle">5</text>
+    <circle cx="232" cy="684" r="9" style="fill:var(--acc)"/><text x="232" y="688" text-anchor="middle">6</text>
+  </g>
+</svg></div>
+<ol class="callouts">
+  <li><b>1</b><span><b>Header.</b> Scope name from the sidebar; window control <i>Today · 7 days · 30 days · All indexed</i>; one provenance line — “consumption… not quota… indexed 12 s ago” — the only place the disclaimer lives. Never a banner.</span></li>
+  <li><b>2</b><span><b>KPI tiles.</b> Input-class with its cache-read share (the single most important disclosure: 97 % of the load is cache traffic), output with its thinking share, units with the subagent share, and a labelled list-price estimate. Deltas are signed but not coloured — up is neither good nor bad here. 12-point sparklines, current day in the accent.</span></li>
+  <li><b>3</b><span><b>The chart.</b> Fleet defaults to <i>Split</i>: one row per provider with its own scale, shared days — because Codex + Grok are 1.1 % of Claude and would be slivers in a stack. <i>Stacked</i> is one click away. Daily columns ≤ 24 pt, rounded tops, today hatched (partial), hairline gridlines, clean ticks, a 7-day mean in the secondary colour. A provider or account scope stacks by model instead. Hover: one tooltip with every series and the total. Markers under the axis: ⇄ switches, × rate-limit stops (stage 4).</span></li>
+  <li><b>4</b><span><b>Two tables.</b> By model (share bar, cached %, ≈ cost) and by account (name, provider mark on the current owner, “Active for Claude” badge, share, last active). The last row is <i>Unattributed (before …)</i> — shown, never redistributed. In an account scope the second table becomes <i>Switches</i>.</span></li>
+  <li><b>5</b><span><b>Sidebar.</b> Fleet, then a disclosure group per provider with its count; accounts sorted by activity in the window, the cyan Cl/Cx/Gk mark on the current owner only (the bar’s convention), compact totals right-aligned. ↑↓ moves, → expands, type to select. The inspector’s “Usage history” deep link selects a row.</span></li>
+  <li><b>6</b><span><b>Footer.</b> The sources and the caveats for the scope, and “indexed through … · GB · records”. First launch shows “indexing… 41 %” in the tiles with a determinate bar and draws the days that are complete.</span></li>
+</ol>
+<p class="small meta">Numbers in the mockup are tonight’s census (Aug 28 – Sep 4). The per-account split is illustrative: before the ownership log exists only ~25 hours can be attributed, which is why the Unattributed row is there.</p>
+<div class="pick"><span class="on">B — source list + report (recommended)</span><span>A — report page</span><span>C — tabs</span></div>
+
+<h2>2. Default time window</h2>
+<div class="grid3">
+  <div class="option rec"><span class="badge">RECOMMENDED</span><b>7 days</b><p class="small">Long enough for a trend and the weekly rhythm; short enough that a switch two days ago is still on screen. The KPI deltas read “vs prior 7 days”.</p></div>
+  <div class="option"><b>30 days</b><p class="small">Matches the CLI’s retention window; day columns get thin (30 × 24 pt in 670 pt fits, but tight). Deltas “vs prior 30 days” need 60 days of index — empty for the first two months.</p></div>
+  <div class="option"><b>Today</b><p class="small">Hourly columns. Useful for “what is happening right now”, but that question the bar already answers; opening on today hides the trend.</p></div>
+</div>
+<div class="pick"><span class="on">7 days</span><span>30 days</span><span>Today</span></div>
+
+<h2>3. The cost figure</h2>
+<div class="grid3">
+  <div class="option rec"><span class="badge">RECOMMENDED</span><b>Shown, labelled “≈ at list price”</b><p class="small">Subscriptions are flat, so this is an <i>API-equivalent</i> figure, not a bill — but it is the only common unit across Opus/Fable/Sonnet and across providers, and it is what makes “impact” legible: this week’s 78 B cache reads are ≈ $58 k of API. The ⓘ opens the shipped price table with its as-of date; Grok uses the CLI’s own figure and says so.</p></div>
+  <div class="option"><b>Behind a toggle</b><p class="small">Tokens by default; cost when asked. Keeps the first screen purely factual. Costs a setting and a fifth tile state.</p></div>
+  <div class="option"><b>Omit</b><p class="small">No estimate at all. Avoids any reading of “we spent $58 k”; loses the cross-model comparison.</p></div>
+</div>
+<div class="pick"><span class="on">Shown, labelled</span><span>Behind a toggle</span><span>Omit</span></div>
+
+<h2>4. What the first index imports</h2>
+<div class="grid2">
+  <div class="option rec"><span class="badge">RECOMMENDED</span><b>Everything on disk (≈ 27 GB)</b><p class="small">Claude’s 30 days (the CLI deletes older transcripts, so this is the only chance to keep them), Codex since May 14 including the 11 GB July archive (50 B tokens on two days), Grok’s 30 days. ~65 s of CPU spread over bounded ticks. “All indexed” then means something on day one. The July spike is why the chart auto-splits when one column exceeds 20× the median.</p></div>
+  <div class="option"><b>Last 30 days only</b><p class="small">Smaller first pass (≈ 16 GB), no July outliers. Loses Codex history that exists nowhere else once the index starts governing what is kept.</p></div>
+</div>
+<div class="pick"><span class="on">Everything on disk</span><span>Last 30 days only</span></div>
+
+<h2>5. Markers on the timeline (stage 4)</h2>
+<div class="grid2">
+  <div class="option rec"><span class="badge">RECOMMENDED</span><b>Switches and rate-limit stops</b><p class="small">⇄ for every switch of the row’s provider (who → who, manual/auto/queued, the reason), × for every Claude transcript death on the limit (2,228 on disk). Together they explain the dips: a burn that stops at × and resumes on another account after ⇄ is the fleet doing its job — or not.</p></div>
+  <div class="option"><b>Switches only</b><p class="small">Cleaner axis. The rate-limit stops already feed the bar’s tripwire; showing them here is the first time they become visible as history.</p></div>
+</div>
+<div class="pick"><span class="on">Switches + rate-limit stops</span><span>Switches only</span></div>
+
+<hr>
+<h2>Already agreed with the other sessions</h2>
+<ul class="small">
+  <li><b>Entry points</b> (on main since #75): the dashboard header’s chart icon, each dashboard row’s context menu, the popover’s name menu — all post <code>.telemetryWindowRequested</code> (profile id + provider, or nil for Fleet). The UX-revamp sibling adds the ⇄ footer entry and the inspector’s per-account “Usage history”.</li>
+  <li><b>Window plumbing</b>: one <code>TelemetryWindowController</code> under <code>Telemetry/</code>, copying the Settings window pattern; the redesign session owns any shared coordinator later.</li>
+  <li><b>Data ownership</b>: our own timer, our own file store under Application Support, our own append-only ownership log; read-only use of the switch ring and the provider pointers.</li>
+</ul>
+<h2>Staged plan</h2>
+<table>
+  <tr><th>Stage</th><th>Contents</th><th>Size</th></tr>
+  <tr><td>0</td><td>Research, spec, status, consults, this brief</td><td>docs only</td></tr>
+  <tr><td>1</td><td>Three <code>nonisolated</code> readers with the dedup rules, append-only store, cursors, bounded timer, verification harness, fixture tests</td><td>≈ 600 lines + tests</td></tr>
+  <tr><td>2</td><td>Pure report model: windows, local-day buckets, moving average, shares, price table, provenance, the split rule</td><td>≈ 400 + tests</td></tr>
+  <tr><td>3</td><td>The window: controller, sidebar + report, chart, tiles, tables, hover, empty/indexing states, light/dark, keyboard</td><td>≈ 700</td></tr>
+  <tr><td>4</td><td>Ownership log seeded from the switch ring, attribution bands, isolated-home mapping, ⇄ / × markers, the Switches table</td><td>≈ 400 + tests</td></tr>
+</table>
+<p class="small meta">Each stage is one draft PR; Release build + full suite green on the merged tree before merging; every merge sha goes to the fixes session, which deploys.</p>
+
+<h2>Anything else</h2>
+<textarea placeholder="Free text — a metric you want on the first screen, a layout you'd rather have, an account view you'd use daily…"></textarea>
+<p class="meta">If there is no reply, the recommendations proceed: B · 7 days · cost shown and labelled · everything on disk · switches + rate-limit stops.</p>
+</main></body></html>
