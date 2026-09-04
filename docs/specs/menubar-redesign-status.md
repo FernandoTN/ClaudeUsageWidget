@@ -21,42 +21,46 @@ Spec: `docs/specs/menubar-redesign.md`. Check-in brief (self-contained HTML):
 | 18:25 | A1 + A2 committed, rebased onto `origin/main @ 494d223` (#52 isolated-`CODEX_HOME` login, #53, #54 device-code login), full suite 299 / 0 |
 | 18:27 | Push refused by the auto-mode classifier — branches local; commands to publish below |
 | 18:40–19:00 | Owner asked for a frame-by-frame pass before publishing. Rendered the check-in with headless Chrome and audited every frame; measured the renderer's real font widths. Found and fixed: the candidate row (`91→dJo✓` = 45 pt at 8 pt) would have clipped its own 40 pt reserve — now 7 pt with a 52 pt reserve measured from `99Q→WWW✓`; `Q!→` replaced by a red `Q`; the dot matrix right-aligned in the block; the block's height follows the active tile so dots sit on its bars; counts as one row (72 pt measured) — a second row collided with the candidate row; `+N` given two reserved columns; mark column 10 pt (`Gk` = 8.5); the mock frames now use the browser's own text metrics (tspans) and the dashboard has stacked sections and two-line rows. A real-font test (`testReservedWidthsCoverTheRealFonts`) now guards every reserve; it caught two more misses (50.1 and 65.4 pt) before the numbers settled. Both commits rebuilt on `origin/main @ 494d223` (it had moved twice more; a soft reset had silently reverted those files once — caught by diffing the tip against the base); suite 305 / 0. |
+| 19:08–19:15 | Owner: push, open the draft PRs, merge. #55 and #57 squash-merged to main. |
+| 19:20–19:35 | Coordinated with the fixes session (`*********CLAUDECODE-USAGE**********`): it deployed main `50e6d71`, owns the deploy from here, and listed its file areas; provenance contract agreed. |
+| 19:40–20:05 | Stage B1 built on main: provenance, click surface, dashboard snapshot model, 15 tests; PR #59. |
 
-## Stage A — fleet summary layout (in progress → draft PRs)
+## Stage A — fleet summary layout (MERGED)
 
-Split into two stacked draft PRs on the consult's line-budget advice:
+| PR | Merged | Contents |
+|---|---|---|
+| #55 `4365bc4` | 2026-09-04 02:08 UTC | `MenuBarLayout` + `barLayout` on `MultiProfileDisplayConfig` (decode-compat), `Shared/Models/FleetSummary.swift`, `MenuBar/FleetBlockFonts.swift`, `FleetSummaryTests` (15, incl. the real-font width check), spec + consults + check-in |
+| #57 `5b89a0c` | 2026-09-04 02:15 UTC | `MenuBar/MenuBarSummaryRenderer.swift`, `StatusBarUIManager` summary path, `MenuBarManager` (`predictedNextCandidate`, `preflightVerdicts`, paint context), Settings picker, strings |
 
-| PR | Branch | Commit | Contents | State |
-|---|---|---|---|---|
-| A1 | `feat/menubar-redesign-a1` | first commit on `origin/main @ 494d223` | `MenuBarLayout` + `barLayout` on `MultiProfileDisplayConfig` (decode-compat), `Shared/Models/FleetSummary.swift` (readiness, verdicts, provider summary, geometry measured against the real fonts, paint context), `FleetSummaryTests` (15, incl. a real-font width check), spec + consults + check-in | builds and passes on its own; **local only — push blocked** |
-| A2 | `feat/menubar-redesign` (stacked on A1) | tip | `MenuBar/MenuBarSummaryRenderer.swift`, `StatusBarUIManager` summary path, `MenuBarManager` (`predictedNextCandidate`, `preflightVerdicts`, paint context), Settings picker, strings | Release build green, **full suite 305 / 0 failures**; **local only — push blocked** |
+(#56 was the stacked A2 PR; GitHub closed it when the A1 base branch was
+deleted on merge, so the same commit was cherry-picked onto main as #57.)
 
-The authoring session's auto-mode classifier refused the push (twice, plain
-form), so both branches exist only in the worktree
-`.claude/worktrees/menubar-redesign`. Draft PR bodies are ready in the job's
-tmp dir (`/Users/fernandotn/.claude/jobs/6a773b3e/tmp/pr-a1.md`, `pr-a2.md`).
-To publish (from the worktree):
+**Deployed:** the fixes session installed main `50e6d71` (= #57 + #58) at
+19:23 PDT on 2026-09-03; the launch log shows no "rebuilding composite
+groups" line. The layout stays "Every account" until the owner picks
+"Active + dots" / "Active + counts" in Settings → Profiles → Multi-Profile
+Display → Menu bar layout.
 
-```bash
-cd /Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign
-git push -u origin feat/menubar-redesign-a1 feat/menubar-redesign
-gh pr create --draft --base main --head feat/menubar-redesign-a1 \
-  --title "feat(menubar): fleet-summary model, readiness taxonomy and bar-layout option (stage A1)" \
-  --body-file /Users/fernandotn/.claude/jobs/6a773b3e/tmp/pr-a1.md
-gh pr create --draft --base feat/menubar-redesign-a1 --head feat/menubar-redesign \
-  --title "feat(menubar): fleet-summary layouts — active tile + readiness dots/counts + next candidate (stage A2)" \
-  --body-file /Users/fernandotn/.claude/jobs/6a773b3e/tmp/pr-a2.md
-```
+Rollback: pick "Every account" (the default; an absent config key decodes
+to it).
 
-Rollback: Settings → Profiles → Multi-Profile Display → Menu bar layout →
-"Every account" (the default; absent config key decodes to it).
+## Stage B — dashboard (B1 in review, B2 next)
 
-## Stage B — dashboard (not started)
+| PR | Branch | Contents | State |
+|---|---|---|---|
+| B1 #59 | `feat/menubar-dashboard-b1` | `ClaudeUsage.provenance` (`ownEndpoint` / `headerRescue` / `cliCache`, stamped by the header rescue and the CLI-cache adoption), `MultiProfileDisplayConfig.clickSurface`, `MenuBar/DashboardModel.swift` (`DashboardSnapshot.build`), `DashboardModelTests` (15) | draft, full suite green |
+| B2 | — | `DashboardView` (stacked provider sections, two-line rows, inline two-step "Make active…" through `activateProfileDetailed`, repair deep links, snapshot rebuilt once per paint), `AccountDetailView` extracted from the classic popover, type-erased popover factory, per-surface popover/panel sizes, Settings picker for the click surface, `duplicateClaudeAccountGroups` fed into the snapshot | not started |
 
-Scope revised by the consult: stacked provider sections, two-line rows,
-snapshot model, type-erased popover factory, per-surface sizes, inline
-confirmations through `activateProfileDetailed`, reusable account-detail
-component, shared `AutoSwitchPlan` resolver extraction.
+Coordination with the fixes session (2026-09-03 evening): it owns
+`ProfileManager` (activation outcome, identity stamping, duplicate-account
+groups), `ClaudeAPIService`, `NotificationManager`, `walkReaction` and the
+candidate-skip in `findNextAvailableProfile`; it is not touching the popover
+view, the popover lifecycle, `createContentViewController` /
+`detachableWindow`, `Constants.WindowSizes`, or the composite overflow
+branch. Its asks, all folded into B1's model: provenance + age beside every
+number, never a value measured with someone else's credentials, a one-click
+repair route for dead logins, the verdict age on the next-candidate card,
+and duplicate groups shown as one quota with member names.
 
 ## Stage C — overflow (not started)
 
@@ -65,7 +69,7 @@ tests from the composite branch, then a fixture-tested detector, then a
 per-provider `dots → counts → active-only` ladder inside the same status
 item. Never the heal-rebuild path, never an item-count change.
 
-## Open questions for the owner
+## Open questions for the owner (unchanged)
 
 1. Layout default: B (dots) is recommended and implemented; A (counts) is
    selectable. Confirm or pick.

@@ -2583,6 +2583,10 @@ private func observeCredentialChanges() {
         usage.rateLimitedInferred = nil
         usage.projectedSessionPercentage = nil
         usage.lastUpdated = cache.fetchedAt
+        // Attributed to this account by identity, not read with its own
+        // credentials — the dashboard labels it and never shows it as the
+        // active card's headline measurement.
+        usage.provenance = .cliCache
         profileManager.saveClaudeUsage(usage, for: profile.id)
         recordMeasuredSession(usage, for: profile.id)
         burstBackoffs.removeValue(forKey: profile.id)
