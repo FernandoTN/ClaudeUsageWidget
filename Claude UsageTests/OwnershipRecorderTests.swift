@@ -23,7 +23,7 @@ final class OwnershipRecorderTests: XCTestCase {
             ProfileSummary(id: dRir, name: "dRir", provider: .claude, accountStamp: "acct-rir"),
             ProfileSummary(id: dJormun, name: "dJormun", provider: .claude, accountStamp: "acct-jor"),
             ProfileSummary(id: xFenrir, name: "xFenrir(dev)", provider: .codex, accountStamp: "codex-acct"),
-            ProfileSummary(id: grok, name: "GROK", provider: .grok, accountStamp: "fernando@x"),
+            ProfileSummary(id: grok, name: "GROK", provider: .grok, accountStamp: "owner@x"),
             ProfileSummary(id: twinA, name: "Twin", provider: .claude, accountStamp: nil),
             ProfileSummary(id: twinB, name: "Twin", provider: .codex, accountStamp: nil),
         ]

@@ -125,7 +125,7 @@ the shared `Claude Code-credentials` login at `timestamp`.
 | Evidence | Where | Horizon |
 |---|---|---|
 | Switch history ring | `SharedDataStore.loadSwitchHistory()` — `switchHistory_v1`, 30 entries (`at`, `from`, `to`, trigger, reason), names only | measured today: the 30 entries span 24.7 hours (see §5) — about a day, not 30 days |
-| Current owner | `ProfileManager.activeClaudeProfileId` / `activeAccountIds(among:)` (the authority, per the fixes session) and `~/.claude.json` `oauthAccount.accountUuid` (`2fd208e6-…`, the CLI's own record) | now |
+| Current owner | `ProfileManager.activeClaudeProfileId` / `activeAccountIds(among:)` (the authority, per the fixes session) and `~/.claude.json` `oauthAccount.accountUuid` (`<uuid>`, the CLI's own record) | now |
 | Profile ↔ account | `Profile.claudeAccountUUID` stamps (`stampAccountIdentity`) | as stamped |
 | External changes | `.providerOwnerChangedExternally` (fixes session, #70) | going forward |
 
@@ -144,7 +144,7 @@ to **"unattributed"** everywhere else — shown as its own band, never guessed.
 0.93 GB) and `~/.codex/archived_sessions/rollout-*.jsonl` (425 files,
 11.3 GB — the July consult waves). Nothing is deleted: the oldest rollout is
 2026-05-14. Isolated homes created by the widget's in-app login
-(`~/.codex-accounts/{xfenrir-dev, xfho-fer-hotmail-com, xfme-fernando-mymemori-app, xlucifer-dev}`)
+(`~/.codex-accounts/{xfenrir-dev, xfho-example, xfme-example, xlucifer-dev}`)
 have `sessions/` directories with **0 files** tonight; the layout is identical
 and the slug maps to a profile through `Profile.codexHomePath`.
 

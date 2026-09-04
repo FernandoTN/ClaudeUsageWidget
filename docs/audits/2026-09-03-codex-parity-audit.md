@@ -13,7 +13,7 @@ Previous audit: `docs/audits/2026-09-01-thorough-audit.md`. Items from it that a
 |---|---|
 | Release build | **BUILD SUCCEEDED**, 48 warning lines / 23 unique sites (one Codex-specific: `CodexUsageService.swift:511`) |
 | `xcodebuild test` | **230 tests, 0 failures, 0 skipped**, 14 s; the test host made no network requests and rewrote no shared login |
-| Roster | 21 profiles: 18 Claude, 2 Codex (`Cod` 414BCD6D, `Dex` 44A4DB96), 1 Grok; multi-profile display; auto-switch on, session 95 %, weekly default 99 % |
+| Roster | 21 profiles: 18 Claude, 2 Codex (`Cod` <id-1>, `Dex` <id-2>), 1 Grok; multi-profile display; auto-switch on, session 95 %, weekly default 99 % |
 | Codex API shape today | weekly-only (`limit_window_seconds` = 7 d, `secondary_window` null) → `hasSessionWindow = false`, `sessionPercentage = 0` |
 | Codex token lifetimes | access token **10 days**, id token 1 h, refresh token rotates |
 
@@ -23,7 +23,7 @@ Reconstructed from the app log, cfprefsd's log, the Keychain-stored credentials 
 
 1. **All morning `Cod` drew a 401 on every sweep** (1,009 "Failed to refresh profile 'Cod' … status 401" lines since 04:18, roughly every 30 s — it is a *background* profile with a 60 s interval, and there is no backoff for 401). `Dex` owned auth.json and read 200 at weekly 95 %.
 2. **13:49:57** — `codex login` for Cod's account rewrote auth.json. The app adopted it into `Cod` (same `account_id`). **13:50:15** — the user activated `Cod` (auth.json rewritten with the same bytes). **13:50:22** — Sync in *Codex Account*; log: `'Cod' claimed the active Codex login`.
-3. **From 13:50:17 `Dex` 401s on every sweep** and has not recovered. Its stored token was valid at 13:48:53 (200) and is a different account (`72314660…`, JWT issued 09-01 16:30, expires 09-11). The only event between the last 200 and the first 401 is the other account's `codex login`. The retained log contains **no** `Codex: OAuth token refresh` line at all: the app never attempted the 401 forced refresh, because `Dex` was already in `codexDeadLogins_v1` (set by some earlier 4xx while its 10-day access token kept working). The flag blocks `ensureFreshCredentials`, a 200 never clears it, and the relogin notification is deduped per profile forever — so the account went dark silently.
+3. **From 13:50:17 `Dex` 401s on every sweep** and has not recovered. Its stored token was valid at 13:48:53 (200) and is a different account (`<account-id-A>`, JWT issued 09-01 16:30, expires 09-11). The only event between the last 200 and the first 401 is the other account's `codex login`. The retained log contains **no** `Codex: OAuth token refresh` line at all: the app never attempted the 401 forced refresh, because `Dex` was already in `codexDeadLogins_v1` (set by some earlier 4xx while its 10-day access token kept working). The flag blocks `ensureFreshCredentials`, a 200 never clears it, and the relogin notification is deduped per profile forever — so the account went dark silently.
 4. **`codexDeadLogins_v1` on disk still lists both Codex profiles**, including `Cod`, whose flag the code removed at 13:49:57 (adoption) and 13:50:22 (sync). See item 5.
 5. **cfprefsd rejected the app's writes from 12:33:22 to 12:35:24** ("rejecting write of key(s) … because Path not accessible", 15 times; the app's side logged "Couldn't write values for keys … in CFPrefsPlistSource"). The two-minute episode ended, per-sweep keys land again (`profiles_v3` and `measuredSessionHistory_v1` are current to the minute), **but every single-shot key written since has not reached disk**:
 

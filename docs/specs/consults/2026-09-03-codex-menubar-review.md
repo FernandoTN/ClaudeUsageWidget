@@ -23,7 +23,7 @@ The brief is directionally strong but not implementation-ready in four places:
 
 ### The width estimates need correction
 
-The current active progress tile is exactly 24 pt wide. Claude’s two-bar labelled tile is 22 pt high, but a weekly-only Codex/Grok tile is only 16 pt high because the second bar is omitted in [`createMultiProfileProgressBar`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarIconRenderer.swift:995>).
+The current active progress tile is exactly 24 pt wide. Claude’s two-bar labelled tile is 22 pt high, but a weekly-only Codex/Grok tile is only 16 pt high because the second bar is omitted in [`createMultiProfileProgressBar`](<Claude Usage/MenuBar/MenuBarIconRenderer.swift:995>).
 
 For B:
 
@@ -31,7 +31,7 @@ For B:
 - Seventeen other Claude accounts balanced 9/8 occupy 52 pt.
 - Including the existing 1 pt composite padding on each edge, live Claude is therefore `24 + 3 + 52 + 2 = 81 pt`.
 - The Codex estimate of 39 pt is true only while no next-candidate string is present. An 8 pt `→Mem✓` is roughly 28–34 pt; `Q→Mem✓` is closer to 35–42 pt. Armed Codex therefore becomes roughly 58–71 pt.
-- Grok is 26 pt in the current composite geometry, not 24 pt, because [`compositeLayout`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:504>) adds two edge points.
+- Grok is 26 pt in the current composite geometry, not 24 pt, because [`compositeLayout`](<Claude Usage/MenuBar/StatusBarUIManager.swift:504>) adds two edge points.
 - A credible total for B is therefore about **175–200 pt before inter-item/system spacing**, still an excellent reduction from 600 pt.
 
 Option A’s “28 pt” count area is also optimistic. Four dot-plus-two-digit count cells need approximately 34–40 pt per row at the proposed fonts. Option C’s illustrated strings likely exceed 180 pt total. Add renderer tests using `NSString.size(withAttributes:)` with the real fonts; do not approve budgets from character counts.
@@ -57,7 +57,7 @@ Keep the existing active image pixel-for-pixel and compose a right-hand informat
 - Add a small provider identifier or vetted monochrome mark. If text is used, prefer 7 pt `Cl`, `Cx`, `Gk`; avoid `C/X/G`, where X is ambiguous between Codex and xAI.
 - Preserve B for up to 20 “other” accounts, then use `+N` after the final visible dot rather than switching the whole provider to counts at account 21. A discontinuous representation change at 20/21 makes the bar unstable.
 
-The dots should represent the **provider’s switch-relevant fleet**, not merely `isSelectedForDisplay`. Today the switch resolver considers all profiles, while [`multiProfileCreationOrder`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:417>) and group creation filter selected profiles. Otherwise the bar can show twelve ready accounts while the actual next candidate is an unrepresented thirteenth account. In fleet layouts, always include the provider-active and predicted-next accounts even if deselected; keep `isSelectedForDisplay` as the legacy every-account filter.
+The dots should represent the **provider’s switch-relevant fleet**, not merely `isSelectedForDisplay`. Today the switch resolver considers all profiles, while [`multiProfileCreationOrder`](<Claude Usage/MenuBar/StatusBarUIManager.swift:417>) and group creation filter selected profiles. Otherwise the bar can show twelve ready accounts while the actual next candidate is an unrepresented thirteenth account. In fleet layouts, always include the provider-active and predicted-next accounts even if deselected; keep `isSelectedForDisplay` as the legacy every-account filter.
 
 ### A and C
 
@@ -89,8 +89,8 @@ A single `dead/suspected/exhausted/low/unknown/ready` enum mixes:
 
 That creates several wrong encodings:
 
-- `ready` ignores `Profile.isAutoSwitchEnabled`, Claude free-plan exclusion, missing credentials, credential hydration, and queue-specific behavior. [`findNextAvailableProfile`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:3330>) checks some of these separately.
-- No cached usage is treated as candidate headroom by [`hasSessionHeadroom`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:3506>), but that is uncertainty, not green readiness.
+- `ready` ignores `Profile.isAutoSwitchEnabled`, Claude free-plan exclusion, missing credentials, credential hydration, and queue-specific behavior. [`findNextAvailableProfile`](<Claude Usage/MenuBar/MenuBarManager.swift:3330>) checks some of these separately.
+- No cached usage is treated as candidate headroom by [`hasSessionHeadroom`](<Claude Usage/MenuBar/MenuBarManager.swift:3506>), but that is uncertainty, not green readiness.
 - The proposed 60-minute stale boundary conflicts with the actual switch path, which considers Claude candidate data stale after **three minutes** and tries to refresh it before switching.
 - `suspected` currently outranks confirmed weekly/Fable exhaustion in the proposed table. A hard measured exhaustion should not disappear because the session endpoint is also suspect. The existing tile precedence correctly gives weekly-maxed red priority over suspected purple.
 - A selected profile with no usable credentials is neither “unknown usage” nor necessarily “dead login.”
@@ -148,7 +148,7 @@ The suffix should describe login evidence. This allows `→Mem✓` with a gray c
 
 Today’s code cannot truthfully issue the proposed checkmark:
 
-- Codex’s [`isSafeToApplyLogin`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/Shared/Services/CodexUsageService.swift:607>) returns `true` for an inconclusive probe when no dead flag exists. “Safe under uncertainty” is not “verified live.”
+- Codex’s [`isSafeToApplyLogin`](<Claude Usage/Shared/Services/CodexUsageService.swift:607>) returns `true` for an inconclusive probe when no dead flag exists. “Safe under uncertainty” is not “verified live.”
 - Claude preflight mainly verifies token expiry/refreshability, not positive account authorization.
 - Grok preflight verifies expiry after refresh, not billing-endpoint liveness.
 - Claude session-key-only candidates fall through with `alive = true` without any OAuth preflight.
@@ -168,7 +168,7 @@ enum LoginVerdict {
 
 Tie it to credential revision/account identity so a token rotation invalidates the verdict. Thirty minutes is also too broad for every provider; use the underlying evidence TTL, including Codex’s current five-minute positive-success cache.
 
-The queue needs two outputs: the first queued entry and the first executable target. [`selectQueuedSwitchTarget`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:3392>) skips blocked queued entries but leaves them queued. Showing a ranked fallback without indicating `queue head blocked` would misrepresent the user’s plan.
+The queue needs two outputs: the first queued entry and the first executable target. [`selectQueuedSwitchTarget`](<Claude Usage/MenuBar/MenuBarManager.swift:3392>) skips blocked queued entries but leaves them queued. Showing a ranked fallback without indicating `queue head blocked` would misrepresent the user’s plan.
 
 ### Alert dot
 
@@ -188,7 +188,7 @@ The current B also fails to show suspected age on the bar. At minimum, preserve 
 
 **Choose D1 for the first release.** A provider-scoped popover is the correct default for a glance-and-act menu-bar agent. D2 becomes useful only when this evolves into historical analysis, bulk management, or a genuinely sortable 50+ account table.
 
-“Detachable at zero extra window-management cost” is overstated, however. The app already has the lifecycle, but the current detached panel is hard-coded to 320×600 and creates a fresh controller in [`detachableWindow`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:3631>). The current root is fixed to 280 pt in [`PopoverContentView`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/PopoverContentView.swift:151>), while `ensurePopover` uses the shared 320×600 constant. Dashboard and classic sizes must be independent.
+“Detachable at zero extra window-management cost” is overstated, however. The app already has the lifecycle, but the current detached panel is hard-coded to 320×600 and creates a fresh controller in [`detachableWindow`](<Claude Usage/MenuBar/MenuBarManager.swift:3631>). The current root is fixed to 280 pt in [`PopoverContentView`](<Claude Usage/MenuBar/PopoverContentView.swift:151>), while `ensurePopover` uses the shared 320×600 constant. Dashboard and classic sizes must be independent.
 
 ### What D1 must add
 
@@ -239,7 +239,7 @@ The classic detail should be extracted into a reusable account-detail component.
 
 ### Do not duplicate the switch resolver
 
-The brief says the ranking is “already static,” but only [`rankAutoSwitchCandidates`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:3487>) is pure. Candidate selection also depends on:
+The brief says the ranking is “already static,” but only [`rankAutoSwitchCandidates`](<Claude Usage/MenuBar/MenuBarManager.swift:3487>) is pure. Candidate selection also depends on:
 
 - provider;
 - per-profile eligibility;
@@ -261,7 +261,7 @@ login verdict
 other blocked candidates
 ```
 
-Use that same result in [`checkAutoSwitchIfNeeded`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:2913>), [`preflightCandidates`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:3246>), the bar, and dashboard.
+Use that same result in [`checkAutoSwitchIfNeeded`](<Claude Usage/MenuBar/MenuBarManager.swift:2913>), [`preflightCandidates`](<Claude Usage/MenuBar/MenuBarManager.swift:3246>), the bar, and dashboard.
 
 Queue writes currently have no notification or publisher: `ManageProfilesView` saves directly into `SharedDataStore`. The bar affix and an open dashboard will otherwise remain stale until an unrelated sweep. Add a typed queue/threshold-change notification or an observable switch-plan store.
 
@@ -269,7 +269,7 @@ Queue writes currently have no notification or publisher: `ManageProfilesView` s
 
 Do not represent the summary as one active-profile image inside the existing `tileImages` dictionary.
 
-[`paintTiles`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:989>) and [`assembleComposites`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:1300>) assume:
+[`paintTiles`](<Claude Usage/MenuBar/StatusBarUIManager.swift:989>) and [`assembleComposites`](<Claude Usage/MenuBar/StatusBarUIManager.swift:1300>) assume:
 
 - one image per selected profile;
 - membership derived from all selected profiles;
@@ -303,19 +303,19 @@ A separate-file extension of `MenuBarIconRenderer` cannot use that file’s `pri
 
 ### Preserve status items and stable widths
 
-A bar-layout setting must travel through [`handleDisplayCosmeticsChange`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:1103>), never the structural setup path.
+A bar-layout setting must travel through [`handleDisplayCosmeticsChange`](<Claude Usage/MenuBar/MenuBarManager.swift:1103>), never the structural setup path.
 
-The current composite branch still recreates every provider item when the provider set changes in [`updateMultiProfileButtons`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:869>). Stage A should not add another path through `setupMultiProfile` or `cleanup`.
+The current composite branch still recreates every provider item when the provider set changes in [`updateMultiProfileButtons`](<Claude Usage/MenuBar/StatusBarUIManager.swift:869>). Stage A should not add another path through `setupMultiProfile` or `cleanup`.
 
 Likewise, do not implement C by removing two `groupItems`. If an ultra-compact combined drawing is ever retained, it must be rendered into an already-existing host while the other persistent items remain allocated. The better answer is the per-provider compact rung.
 
-Reserve stable summary width across readiness and affix changes. [`assembleComposites`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:1380>) changes `statusItem.length` whenever image width changes; this does not leak a CAContext, but it does relayout the bar at exactly the moment an account becomes critical.
+Reserve stable summary width across readiness and affix changes. [`assembleComposites`](<Claude Usage/MenuBar/StatusBarUIManager.swift:1380>) changes `statusItem.length` whenever image width changes; this does not leak a CAContext, but it does relayout the bar at exactly the moment an account becomes critical.
 
 ### Active account and selection are not the same thing
 
-[`ProfileManager`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/Shared/Services/ProfileManager.swift:22>) distinguishes focused profile from provider-active Claude and Codex owners. The summary must use the provider owner, not `activeProfile`.
+[`ProfileManager`](<Claude Usage/Shared/Services/ProfileManager.swift:22>) distinguishes focused profile from provider-active Claude and Codex owners. The summary must use the provider owner, not `activeProfile`.
 
-If the provider-active account is deselected, the existing renderer omits it because [`groupActiveIds`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:1021>) is built only from selected profiles. A fleet summary whose active block disappears is a fatal semantic failure. Include it regardless of display selection or render a prominent “owner hidden/untracked” state.
+If the provider-active account is deselected, the existing renderer omits it because [`groupActiveIds`](<Claude Usage/MenuBar/StatusBarUIManager.swift:1021>) is built only from selected profiles. A fleet summary whose active block disappears is a fatal semantic failure. Include it regardless of display selection or render a prominent “owner hidden/untracked” state.
 
 Add `clickedProvider` separately from `clickedProfileId`. Stage B must be able to open a provider dashboard even if there is no valid active profile to use as a fake click segment.
 
@@ -333,13 +333,13 @@ clickSurface =
 
 Keep the existing custom defaults for older `showPaceMarker` and `usePaceColoring`; do not accidentally replace the custom decoder with synthesized decoding.
 
-[`createContentViewController`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarManager.swift:587>) currently returns `NSHostingController<PopoverContentView>`. Selecting between two unrelated roots requires `NSViewController`, `NSHostingController<AnyView>`, or a shared enum-backed root view.
+[`createContentViewController`](<Claude Usage/MenuBar/MenuBarManager.swift:587>) currently returns `NSHostingController<PopoverContentView>`. Selecting between two unrelated roots requires `NSViewController`, `NSHostingController<AnyView>`, or a shared enum-backed root view.
 
 Use one dashboard model for the lifetime of an open surface. Detachment currently constructs a new controller, so provider tab, route, expanded rows, and scroll state will otherwise reset when the popover becomes a panel.
 
 ### Test discipline
 
-Follow the existing pure-function style in [`CompositeTileLayoutTests`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude UsageTests/CompositeTileLayoutTests.swift:1>). The highest-value tests are:
+Follow the existing pure-function style in [`CompositeTileLayoutTests`](<Claude UsageTests/CompositeTileLayoutTests.swift:1>). The highest-value tests are:
 
 - active-but-deselected account;
 - excluded/free/missing-credential states;
@@ -376,7 +376,7 @@ For each provider button:
 
 Apple defines that API as returning the frontmost window that would receive a mouse-down at the screen point. [Apple documentation](https://developer.apple.com/documentation/appkit/nswindow/windownumber%28at%3Abelowwindowwithwindownumber%3A%29?changes=_9)
 
-This codebase is unusually well-suited to that probe: [`applyEventShapeBackdrop`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/MenuBarIconRenderer.swift:688>) deliberately gives the entire composite a nontransparent event shape. Interior hit tests should therefore resolve across gaps as well as drawn pixels.
+This codebase is unusually well-suited to that probe: [`applyEventShapeBackdrop`](<Claude Usage/MenuBar/MenuBarIconRenderer.swift:688>) deliberately gives the entire composite a nontransparent event shape. Interior hit tests should therefore resolve across gaps as well as drawn pixels.
 
 Use the existing duplicate-frame signature only as secondary evidence. Avoid `CGWindowListCopyWindowInfo` in the 30-second sweep unless profiling proves it cheap; Apple describes full window-list dictionary generation as relatively expensive. [Apple documentation](https://developer.apple.com/documentation/coregraphics/cgwindowlistcopywindowinfo%28_%3A_%3A%29?language=_5)
 
@@ -390,7 +390,7 @@ Operational rules:
 - Degrade monotonically for the current screen configuration. Reset upward on screen-parameter change or through a deliberate later probe; “visible in counts, therefore immediately try dots again” creates a five-minute dots/counts oscillation.
 - Notify once per hidden episode.
 
-Merely adding a branch inside `strandedTileDetected` is insufficient: the composite path returns at line 910 and never invokes that function. The exposure probe must be called from the composite branch of [`updateMultiProfileButtons`](</Users/fernandotn/Projects/ClaudeUsageWidget/.claude/worktrees/menubar-redesign/Claude Usage/MenuBar/StatusBarUIManager.swift:851>) and publish hidden providers back through a delegate/observable state for the dashboard.
+Merely adding a branch inside `strandedTileDetected` is insufficient: the composite path returns at line 910 and never invokes that function. The exposure probe must be called from the composite branch of [`updateMultiProfileButtons`](<Claude Usage/MenuBar/StatusBarUIManager.swift:851>) and publish hidden providers back through a delegate/observable state for the dashboard.
 
 ## 6. Missing items, ranked by value and effort
 

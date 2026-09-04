@@ -172,7 +172,7 @@ final class LocalLimitSignalTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: file) }
         let json = """
         {"cachedUsageUtilization": {
-            "accountUuid": "acb1c52d-333c-4852-8128-4c6748f0407d",
+            "accountUuid": "11111111-2222-4333-8444-555555555555",
             "fetchedAtMs": 1786600000000,
             "utilization": {"limits": [
                 {"kind":"session","group":"session","percent":29,"severity":"normal","is_active":false,"scope":null,"resets_at":"2026-08-13T05:49:59.889031+00:00"},
@@ -185,7 +185,7 @@ final class LocalLimitSignalTests: XCTestCase {
 
         let cache = LocalLimitSignalService.readCLICachedUsage(path: file.path)
         XCTAssertNotNil(cache)
-        XCTAssertEqual(cache?.accountUuid, "acb1c52d-333c-4852-8128-4c6748f0407d")
+        XCTAssertEqual(cache?.accountUuid, "11111111-2222-4333-8444-555555555555")
         XCTAssertEqual(cache?.sessionPercent, 29)
         XCTAssertEqual(cache?.weeklyPercent, 46)
         XCTAssertEqual(cache?.fablePercent, 53)

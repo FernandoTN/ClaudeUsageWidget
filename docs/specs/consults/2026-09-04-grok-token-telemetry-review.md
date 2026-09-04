@@ -43,7 +43,7 @@ That merge **cannot be “write one JSONL event and forget”**. A tick that see
 
 Live counterexample, whole file has a **single** `token_count`:
 
-```132:132:/Users/fernandotn/.codex/archived_sessions/rollout-2026-08-11T12-05-05-019ff236-ce29-72f1-ad4e-5f28a775c7dc.jsonl
+```132:132:~/.codex/archived_sessions/<rollout>.jsonl
 … "total_token_usage":{"input_tokens":0, … "output_tokens":0, … "total_tokens":11177} …
 ```
 
