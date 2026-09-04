@@ -3645,7 +3645,7 @@ private func observeCredentialChanges() {
             context: makeFleetSummaryContext(),
             queue: SharedDataStore.shared.loadAutoSwitchQueue(),
             history: SharedDataStore.shared.loadSwitchHistory(),
-            hiddenProviders: [],
+            hiddenProviders: statusBarUIManager?.hiddenProviders ?? [],
             // Same Anthropic account behind several profiles (#60): the
             // dashboard shows them as one quota with the member names.
             duplicateGroups: profileManager.duplicateClaudeAccountGroups

@@ -347,6 +347,9 @@ final class StatusBarUIManager {
         tileImageSeq.removeAll()
         lastCompositeKey.removeAll()
         clearFleetSummaryState()
+        stopObservingExposureTriggers()
+        exposureTracker = GroupExposureTracker()
+        hiddenProviders = []
 
         // Deallocated buttons can leave ObjectIdentifier keys that a NEW button
         // may reuse (same address) — a stale cache hit would skip drawing its
@@ -365,6 +368,9 @@ final class StatusBarUIManager {
     func clearOverflowParkedState() {
         overflowParkedIds.removeAll()
         lastRenderKey.removeAll()
+        // A display change re-lays the bar out from scratch: judge afresh.
+        exposureTracker = GroupExposureTracker()
+        scheduleExposureProbe(reason: "screen change")
     }
 
     /// Storm-remediation stage 1: cycle every multi-profile item's visibility
@@ -674,6 +680,7 @@ final class StatusBarUIManager {
 
         LoggingService.shared.logUIEvent(
             "Multi-profile: composite mode — \(groupItems.count) group items for \(selectedProfiles.count) profiles")
+        observeExposureTriggers()
     }
 
     /// True when on-screen x-positions no longer strictly DESCEND in creation
@@ -925,6 +932,7 @@ final class StatusBarUIManager {
                 pruneTileState(keeping: Set(selected.map(\.id)))
             }
             assembleComposites(profiles: profiles)
+            scheduleExposureProbe(reason: "paint")
             return
         }
 
@@ -1623,6 +1631,110 @@ final class StatusBarUIManager {
         guard !multiProfileOrder.isEmpty, !profiles.isEmpty else { return [] }
         let idsInGroup = Set(profiles.filter { $0.providerKind == provider }.map(\.id))
         return Self.compositePaintOrder(multiProfileOrder).filter { idsInGroup.contains($0) }
+    }
+
+    // MARK: - Provider-group exposure (menu-bar overflow, stage C0)
+
+    /// Provider groups CONFIRMED hidden by the menu bar (two consecutive
+    /// hidden probes; cleared after three exposed ones). Observe-only today:
+    /// logged, mirrored to `debugGroupExposure`, and shown as a dashboard
+    /// banner. Never feeds the heal-rebuild path — an overflowed item cannot
+    /// be made to fit by recreating it, and every recreate leaks CAContexts.
+    private(set) var hiddenProviders: Set<Profile.ProviderKind> = []
+    private var exposureTracker = GroupExposureTracker()
+    private var exposureObserver: NSObjectProtocol?
+    private var lastExposureLogValue: String?
+    private var exposureProbeScheduled = false
+
+    /// Overflow is decided by the frontmost app's menu width, so it flips on
+    /// app activation, not on sweeps: probe on both.
+    private func observeExposureTriggers() {
+        guard exposureObserver == nil else { return }
+        exposureObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.scheduleExposureProbe(reason: "app activation") }
+        }
+    }
+
+    private func stopObservingExposureTriggers() {
+        if let exposureObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(exposureObserver)
+        }
+        exposureObserver = nil
+    }
+
+    /// Samples on the NEXT runloop turn — AppKit lays the bar out after the
+    /// length/image assignment returns, so a synchronous probe would read
+    /// the pre-layout frames. Coalesces bursts into one probe.
+    private func scheduleExposureProbe(reason: String) {
+        guard Self.useCompositeTiles, !groupItems.isEmpty, !exposureProbeScheduled else { return }
+        exposureProbeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.exposureProbeScheduled = false
+            self.probeGroupExposure(reason: reason)
+        }
+    }
+
+    private func probeGroupExposure(reason: String) {
+        guard !groupItems.isEmpty else { return }
+        var verdicts: [Profile.ProviderKind: GroupExposure.Verdict] = [:]
+        var snapshot: [String] = []
+        for provider in [Profile.ProviderKind.claude, .grok, .codex] {
+            guard let item = groupItems[provider] else { continue }
+            let observation = Self.observeExposure(of: item)
+            let verdict = GroupExposure.verdict(observation)
+            verdicts[provider] = verdict
+            let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
+            let hits = observation.hits.map { $0 ? "1" : "0" }.joined()
+            snapshot.append("\(provider)=\(verdict) [\(frame) len=\(Int(item.length)) hits=\(hits)]")
+        }
+        let confirmed = exposureTracker.record(verdicts)
+        let changed = confirmed != hiddenProviders
+        hiddenProviders = confirmed
+        let value = snapshot.joined(separator: " ")
+        if value != lastExposureLogValue || changed {
+            lastExposureLogValue = value
+            // Default level (not .info): this is the only post-hoc evidence of
+            // a provider vanishing from the bar, and it only fires on change.
+            LoggingService.shared.log(
+                "Menu bar exposure (\(reason)): \(value)"
+                    + (confirmed.isEmpty ? "" : " — CONFIRMED HIDDEN: \(confirmed.map { "\($0)" }.sorted().joined(separator: ","))"))
+            UserDefaults.standard.set(
+                "\(Self.debugTileLayoutDateFormatter.string(from: Date())) \(value)",
+                forKey: "debugGroupExposure"
+            )
+        }
+    }
+
+    /// One observation of a group item: its window geometry plus a screen-
+    /// point hit test at 25 / 50 / 75 % of the button width, mid-height.
+    private static func observeExposure(of item: NSStatusItem) -> GroupExposure.Observation {
+        guard let button = item.button, let window = button.window else {
+            return GroupExposure.Observation(frame: nil, screenFrame: nil, isVisible: false, occluded: true,
+                                             length: item.length, hits: [])
+        }
+        var hits: [Bool] = []
+        if window.screen != nil {
+            for fraction in GroupExposure.probeFractions {
+                let local = NSPoint(x: button.bounds.minX + button.bounds.width * fraction, y: button.bounds.midY)
+                let inWindow = button.convert(local, to: nil)
+                let onScreen = window.convertPoint(toScreen: inWindow)
+                let under = NSWindow.windowNumber(at: onScreen, belowWindowWithWindowNumber: 0)
+                hits.append(under == window.windowNumber)
+            }
+        }
+        return GroupExposure.Observation(
+            frame: window.frame,
+            screenFrame: window.screen?.frame,
+            isVisible: window.isVisible,
+            occluded: !window.occlusionState.contains(.visible),
+            length: item.length,
+            hits: hits
+        )
     }
 
     // MARK: - Fleet summary layouts (menu-bar redesign, stage A)

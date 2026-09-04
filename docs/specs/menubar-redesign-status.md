@@ -26,6 +26,8 @@ Spec: `docs/specs/menubar-redesign.md`. Check-in brief (self-contained HTML):
 | 19:40–20:05 | Stage B1 built on main: provenance, click surface, dashboard snapshot model, 15 tests; PR #59. |
 | 20:10 | B1 merged (`ee0e5ff`). Fixes session merged #60 (duplicate accounts) and #61. |
 | 20:15–20:45 | Stage B2: dashboard view + wiring; rendered from the test harness and inspected at full height (no overlaps; Codex "nowhere with headroom", single-account Grok, collapsed switches all correct). UX-revamp sibling (`fe2aabe1`) agreed a file split: it owns the selection vocabulary model, per-provider selectors, the inspector, Settings restructure, counts; I keep the bar, dashboard view/model, popover lifecycle, overflow. |
+| 21:05 | B2 merged (#62, `8da0c3d`). Fixes session deployed main `46bc36a` (B2 + #63), then `98aff7b` (+ #64) at 19:51 PDT: 23 profiles / 22 tiles, default layout, no composite rebuild at launch. |
+| 21:10–21:55 | Stage C0: observe-only exposure telemetry. Pure `MenuBar/GroupExposure.swift` (verdict over one observation + hysteresis tracker), the probe in `StatusBarUIManager` (next runloop after every composite assembly, and on `NSWorkspace.didActivateApplicationNotification`), `hiddenProviders` fed to the dashboard's overflow banner, `GroupExposureTests` (5). Full suite 350 / 0. |
 
 ## Stage A — fleet summary layout (MERGED)
 
@@ -46,12 +48,12 @@ Display → Menu bar layout.
 Rollback: pick "Every account" (the default; an absent config key decodes
 to it).
 
-## Stage B — dashboard (B1 merged, B2 in review)
+## Stage B — dashboard (MERGED)
 
 | PR | Branch | Contents | State |
 |---|---|---|---|
 | B1 #59 `ee0e5ff` | merged 2026-09-04 02:5x UTC | `ClaudeUsage.provenance` (`ownEndpoint` / `headerRescue` / `cliCache`, stamped by the header rescue and the CLI-cache adoption), `MultiProfileDisplayConfig.clickSurface`, `MenuBar/DashboardModel.swift` (`DashboardSnapshot.build`), `DashboardModelTests` (15) | merged |
-| B2 | `feat/menubar-dashboard-b2` | `MenuBar/DashboardView.swift` (stacked provider sections; active card with the threshold each window fires at, provenance + age, suspected caveat, ETA; Next line with verdict age + headroom age; queue slice; two-line roster rows with state chips, queue position, same-account captions, provenance; row tap → account detail reusing the classic usage rows; context menu with an inline two-step "Make active…" through `activateProfileDetailed`, Queue next / Remove, repair deep links; recent switches collapsed), `DashboardStore` (the view observes one snapshot per paint, not the manager), `MenuBarManager` wiring (snapshot rebuilt once per paint while showing, `clickedProvider`, type-erased content factory, per-surface popover/panel sizes 320×600 / 380×640, `duplicateClaudeAccountGroups` fed in), the "Click opens" picker, `DashboardViewTests` (6) + an opt-in preview render test (`TEST_RUNNER_CUW_DASHBOARD_PREVIEW=<png>` [+ `_HEIGHT`]) used to inspect the layout frame by frame without launching the app | draft PR, full suite green |
+| B2 #62 `8da0c3d` | merged | `MenuBar/DashboardView.swift` (stacked provider sections; active card with the threshold each window fires at, provenance + age, suspected caveat, ETA; Next line with verdict age + headroom age; queue slice; two-line roster rows with state chips, queue position, same-account captions, provenance; row tap → account detail reusing the classic usage rows; context menu with an inline two-step "Make active…" through `activateProfileDetailed`, Queue next / Remove, repair deep links; recent switches collapsed), `DashboardStore` (the view observes one snapshot per paint, not the manager), `MenuBarManager` wiring (snapshot rebuilt once per paint while showing, `clickedProvider`, type-erased content factory, per-surface popover/panel sizes 320×600 / 380×640, `duplicateClaudeAccountGroups` fed in), the "Click opens" picker, `DashboardViewTests` (6) + an opt-in preview render test (`TEST_RUNNER_CUW_DASHBOARD_PREVIEW=<png>` [+ `_HEIGHT`]) used to inspect the layout frame by frame without launching the app | merged; deployed by the fixes session as main `46bc36a` / `98aff7b` |
 
 Coordination with the fixes session (2026-09-03 evening): it owns
 `ProfileManager` (activation outcome, identity stamping, duplicate-account
@@ -64,12 +66,28 @@ number, never a value measured with someone else's credentials, a one-click
 repair route for dead logins, the verdict age on the next-candidate card,
 and duplicate groups shown as one quota with member names.
 
-## Stage C — overflow (not started)
+## Stage C — overflow (C0 in review)
 
 Scope revised by the consult: C0 observe-only telemetry with screen-point hit
 tests from the composite branch, then a fixture-tested detector, then a
 per-provider `dots → counts → active-only` ladder inside the same status
 item. Never the heal-rebuild path, never an item-count change.
+
+| PR | Branch | Contents | State |
+|---|---|---|---|
+| C0 | `feat/menubar-overflow-c0` | `MenuBar/GroupExposure.swift`: `GroupExposure.Observation` (window frame, screen frame, visibility, occlusion, item length, per-probe hits) → `verdict` (a hit on the item's own window is proof of exposure; nil window/screen → unknown; never laid out, off a screen edge, parked below the 100 pt bar band, a stub narrower than half the item length, not visible, or every probe resolving to another window → hidden; a plausible frame with no probe → unknown) and `GroupExposureTracker` (confirmed hidden after 2 consecutive hidden samples, cleared after 3 exposed, unknown leaves the state alone, vanished items drop out). `StatusBarUIManager`: `scheduleExposureProbe` coalesced onto the next runloop turn after every `assembleComposites` (AppKit lays the bar out after the assignment returns) and on `NSWorkspace.didActivateApplicationNotification` (the frontmost app's menu width decides the overflow); `observeExposure(of:)` hit-tests 25 / 50 / 75 % of the button width at mid-height with `NSWindow.windowNumber(at:belowWindowWithWindowNumber: 0)`; `hiddenProviders` (confirmed set) → `DashboardSnapshot.Inputs.hiddenProviders` → the dashboard's "hidden by the menu bar" banner; one default-level log line per change (`Menu bar exposure (<reason>): claude=exposed [x=… w=… h=… len=… hits=111] …`) mirrored to the `debugGroupExposure` default; the tracker resets on `clearOverflowParkedState` (screen change) and `cleanup`. `GroupExposureTests` (5). | draft PR, full suite 350 / 0 |
+
+What C0 deliberately does not do: no notification, no ladder, no rebuild.
+The next stage reads the log lines this one produces on the owner's machine
+(a real overflow, a full-screen app, a display change) before the detector's
+thresholds are trusted to drive a repaint.
+
+Reading the telemetry after a deploy:
+
+```bash
+/usr/bin/log show --predicate 'process == "Claude Usage"' --last 1h | grep "Menu bar exposure"
+defaults read com.claudeusagewidget.app debugGroupExposure
+```
 
 ## Open questions for the owner (unchanged)
 
