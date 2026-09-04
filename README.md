@@ -98,7 +98,11 @@ There is no wizard step for Codex (yet):
 
 The CLI honours `$CODEX_HOME` for its config directory, so every extra account gets its own home, where there is nothing to revoke. Two ways to do that:
 
-**From the widget (easiest).** Go to the profile that should hold the account, then **Settings → Codex Account → Log in a new Codex account…**. The widget runs `codex login` with `CODEX_HOME` pointed at a folder of its own under `~/.codex-accounts`; your browser opens, and the finished login is imported. Cancel, or a five-minute timeout, leaves every account untouched. This never runs against the default home.
+**From the widget (easiest).** Go to the profile that should hold the account, then **Settings → Codex Account → Log in a new Codex account…**. The widget runs the CLI's login with `CODEX_HOME` pointed at a folder of its own under `~/.codex-accounts`, and imports the finished login. This never runs against the default home, and Cancel leaves every account untouched.
+
+The default flow is **device code** (`codex login --device-auth`), which opens no browser at all. The sheet shows two things as the CLI prints them, each with a Copy button: a **link** and a **one-time code**. Open the link in whatever browser — or private window, or profile — is signed in to the account you are adding, enter the code, and the sheet finishes on its own. That is the point: the browser flow always opens your *default* browser (`open_browser` is hard-coded `true` in the CLI), which signs in whichever account that browser already holds — exactly wrong when you are adding a second one. The code expires in fifteen minutes, which is also how long the CLI polls.
+
+**Open in default browser instead** switches back to the localhost-callback flow (`codex login`). Your default browser opens by itself, and the sheet still shows that flow's URL with a Copy button, so you can finish it somewhere else if the browser landed in the wrong session. That path times out after five minutes.
 
 Where the login lands follows the profile you are looking at:
 
