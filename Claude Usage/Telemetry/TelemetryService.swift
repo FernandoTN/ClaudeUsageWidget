@@ -229,7 +229,10 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
     /// Set from the window's "Pause indexing"; ownership keeps recording.
     var paused = false
 
+    private(set) var ledgerURL: URL?
+
     func open(ledgerURL: URL, ring: [SwitchEvent], roster: [ProfileSummary], roots: TelemetrySourceRoots) {
+        self.ledgerURL = ledgerURL
         do {
             let ledger = try TelemetryLedger(url: ledgerURL)
             let recorder = OwnershipRecorder(ledger: ledger)
@@ -280,8 +283,8 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
     }
 
     func indexingStatus() -> IndexingStatus {
-        guard let ledger else { return IndexingStatus() }
-        var status = IndexingStatus(ledgerAvailable: true, isCatchingUp: catchingUp, isPaused: paused)
+        guard let ledger else { return IndexingStatus(ledgerPath: ledgerURL?.path) }
+        var status = IndexingStatus(ledgerAvailable: true, isCatchingUp: catchingUp, isPaused: paused, ledgerPath: ledger.url.path)
         for provider in TelemetryProvider.allCases {
             guard let health = try? ledger.health(provider: provider) else { continue }
             status.filesSeen += health.filesSeen

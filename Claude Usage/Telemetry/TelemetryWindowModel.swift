@@ -25,6 +25,8 @@ nonisolated struct IndexingStatus: Sendable, Equatable {
     var storageBytes: Int64 = 0
     var scannedAt: Date?
     var dataThrough: [TelemetryProvider: Date] = [:]
+    /// Where the ledger lives (or should), for the degraded message.
+    var ledgerPath: String?
 
     /// 0…1 while catching up, from files done over files known.
     var progress: Double {
@@ -72,6 +74,10 @@ final class TelemetryWindowModel: ObservableObject {
     var effectiveChartMode: TelemetryChartMode {
         chartMode ?? (scope == .fleet ? .split : .stacked)
     }
+    /// "About these numbers" disclosure, remembered in the ledger's meta.
+    @Published var caveatsExpanded = false {
+        didSet { if caveatsExpanded != oldValue { service.setMeta("caveatsExpanded", caveatsExpanded ? "1" : "0") } }
+    }
     @Published private(set) var report: TelemetryReport?
     @Published private(set) var fleetReport: TelemetryReport?
     @Published private(set) var status = IndexingStatus()
@@ -100,6 +106,10 @@ final class TelemetryWindowModel: ObservableObject {
         observers.append(NotificationCenter.default.addObserver(forName: .telemetryLedgerUpdated, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.scheduleReload(after: 2) }
         })
+        service.meta("caveatsExpanded") { [weak self] value in
+            guard let self, value == "1", !self.caveatsExpanded else { return }
+            self.caveatsExpanded = true
+        }
     }
 
     deinit { observers.forEach(NotificationCenter.default.removeObserver) }

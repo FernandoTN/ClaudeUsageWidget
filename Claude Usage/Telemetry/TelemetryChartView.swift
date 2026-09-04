@@ -59,6 +59,9 @@ struct TelemetryChartView: View {
     var onSelectBucket: (Int) -> Void
     /// The harness passes a fixed pointer position; the window uses hover.
     var interactive = true
+    /// Every bucket scaled to 100 % (By kind's share view: the 3 % of
+    /// uncached input that matters is invisible at a linear scale).
+    var normalized = false
 
     private let axisWidth: CGFloat = 48
     private let axisHeight: CGFloat = 22
@@ -147,6 +150,9 @@ struct TelemetryChartView: View {
 
     private func rows(size: CGSize) -> [Row] {
         let plotHeight = size.height - axisHeight
+        if normalized {
+            return [Row(key: nil, index: 0, top: 0, height: max(1, plotHeight), ceiling: 100)]
+        }
         switch mode {
         case .stacked:
             let raw = report.outliers?.typicalMax ?? report.buckets.map { value($0.total) }.max() ?? 1
@@ -184,7 +190,7 @@ struct TelemetryChartView: View {
                 let y = row.top + row.height * (1 - fraction)
                 context.stroke(Path { $0.move(to: CGPoint(x: 0, y: y)); $0.addLine(to: CGPoint(x: plotWidth, y: y)) },
                                with: .color(grid), lineWidth: 1)
-                let label = fraction == 0 ? "0" : format(Int(Double(row.ceiling) * fraction))
+                let label = normalized ? "\(Int(fraction * 100))\u{2009}%" : (fraction == 0 ? "0" : format(Int(Double(row.ceiling) * fraction)))
                 context.draw(Text(label).font(.system(size: 9)).foregroundColor(secondary),
                              at: CGPoint(x: size.width, y: y), anchor: fraction == 1 ? .topTrailing : (fraction == 0 ? .bottomTrailing : .trailing))
             }
@@ -201,9 +207,9 @@ struct TelemetryChartView: View {
                     ?? series.map { ($0, value(bucket.series[$0])) }
                 let total = segments.reduce(0) { $0 + $1.1 }
                 guard total > 0 else { continue }
-                let clipped = row.key == nil && (report.outliers?.indices.contains(index) ?? false)
+                let clipped = row.key == nil && !normalized && (report.outliers?.indices.contains(index) ?? false)
                 let scale = row.height / CGFloat(row.ceiling)
-                let columnHeight = min(row.height, CGFloat(total) * scale)
+                let columnHeight = normalized ? row.height : min(row.height, CGFloat(total) * scale)
                 var y = row.top + row.height
                 var drawn = 0
                 for (seriesIndex, (key, part)) in segments.enumerated() where part > 0 {
@@ -238,9 +244,10 @@ struct TelemetryChartView: View {
                 }
             }
 
-            // Trailing mean.
-            let values = buckets.map { bucket in row.key.map { value(bucket.series[$0]) } ?? value(bucket.total) }
-            let means = row.key == nil ? report.movingAverage : TelemetryChartMath.trailingMean(values, partial: buckets.map(\.isPartial))
+            // Trailing mean — on the CLIPPED series, so it never rides the
+            // clip ceiling for seven buckets and reads as data (T16).
+            let values = buckets.map { bucket in min(row.ceiling, row.key.map { value(bucket.series[$0]) } ?? value(bucket.total)) }
+            let means = normalized ? [] : TelemetryChartMath.trailingMean(values, partial: buckets.map(\.isPartial))
             var line = Path()
             var started = false
             for (index, mean) in means.enumerated() {
@@ -261,11 +268,18 @@ struct TelemetryChartView: View {
                            with: .color(secondary.opacity(0.6)), lineWidth: 1)
         }
 
-        // Axis labels and switch marks.
+        // Axis labels and switch marks: every k-th bucket, plus the first of a
+        // month so a 30-day axis names the boundary; a regular label that
+        // would sit right beside a boundary label yields to it.
         let labelEvery = buckets.count <= 12 ? 1 : max(1, buckets.count / 8)
+        let calendar = report.query.calendar
+        let boundary = Set(buckets.indices.filter { index in
+            index > 0 && report.range.granularity == .day && calendar.component(.day, from: buckets[index].start) == 1
+        })
         for (index, bucket) in buckets.enumerated() {
             let centerX = CGFloat(index) * pitch + pitch / 2
-            if index % labelEvery == 0 {
+            let regular = index % labelEvery == 0 && !boundary.contains(index - 1) && !boundary.contains(index + 1)
+            if regular || boundary.contains(index) {
                 let label = TelemetryFormatting.bucketLabel(bucket.start, granularity: report.range.granularity,
                                                             calendar: report.query.calendar, first: index == 0)
                 context.draw(Text(label).font(.system(size: 9)).foregroundColor(secondary),
@@ -318,6 +332,10 @@ struct TelemetryChartView: View {
                         Rectangle().fill(color(key, index: seriesIndex)).frame(width: 10, height: 2)
                         Text(key.label).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 6)
+                        if normalized, value(bucket.total) > 0 {
+                            Text(TelemetryFormatting.percent(Double(part) / Double(value(bucket.total))))
+                                .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
+                        }
                         Text(format(part)).font(.system(size: 9)).monospacedDigit()
                     }
                 }

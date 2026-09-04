@@ -33,18 +33,23 @@ enum TelemetryFrameHarness {
 
         func frame(_ name: String, scope: TelemetryScope, window: TelemetryWindow = .days7, metric: TelemetryMetric = .inputClass,
                    report: TelemetryReport?, status: IndexingStatus = status, paused: Bool = false, title: String? = nil,
-                   mode: TelemetryChartMode? = nil, hover: Int? = nil, isolated: SeriesKey? = nil) {
+                   mode: TelemetryChartMode? = nil, hover: Int? = nil, isolated: SeriesKey? = nil, notes: Bool = false, share: Bool = false,
+                   height: CGFloat = size.height) {
             let view = TelemetryFrameView(
                 sections: sections, selection: .constant(scope), report: report, status: status, isLoading: false, isPaused: paused,
                 // (bindings are constant: the harness renders one state per frame)
                 scopeTitle: title ?? scopeTitle(scope), window: .constant(window), metric: .constant(metric),
-                chartMode: .constant(mode ?? (scope == .fleet ? .split : .stacked)),
+                chartMode: .constant(mode ?? (scope == .fleet ? .split : .stacked)), caveatsExpanded: .constant(notes),
                 owners: Set(Fixture.sidebarProfiles.filter(\.isOwner).map(\.id)), actions: TelemetryActions(),
-                initialHover: hover, initialIsolated: isolated, interactive: false)
-            emit(view, name: "telemetry-\(name)", to: dir, index: &index)
+                initialHover: hover, initialIsolated: isolated, initialShare: share, interactive: false)
+            emit(view, name: "telemetry-\(name)", to: dir, index: &index, height: height)
         }
 
         frame("fleet-7d", scope: .fleet, report: report(.fleet, .days7, input: input, now: now))
+        // Taller: at the default height the expanded notes tip the pane into
+        // its scrolling layout, which `ImageRenderer` cannot draw.
+        frame("fleet-7d-notes", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), notes: true, height: 760)
+        frame("fleet-by-kind-share", scope: .fleet, metric: .inputByKind, report: report(.fleet, .days7, metric: .inputByKind, input: input, now: now), share: true)
         frame("fleet-7d-stacked", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), mode: .stacked)
         frame("fleet-7d-hover", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), hover: 5)
         frame("provider-claude-isolated", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now),
@@ -61,7 +66,8 @@ enum TelemetryFrameHarness {
         frame("indexing", scope: .fleet, report: nil, status: Fixture.indexingStatus(now: now))
         frame("empty", scope: .account(Fixture.dLeo), report: report(.account(Fixture.dLeo), .days7, input: input, now: now))
         frame("paused", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), status: Fixture.status(now: now, paused: true), paused: true)
-        frame("degraded", scope: .fleet, report: nil, status: IndexingStatus())
+        frame("degraded", scope: .fleet, report: nil,
+              status: IndexingStatus(ledgerPath: "~/Library/Application Support/Claude Usage/telemetry/ledger.sqlite"))
 
         let indexURL = dir.appendingPathComponent("index.md")
         var existing = (try? String(contentsOf: indexURL, encoding: .utf8)) ?? ""
@@ -86,11 +92,11 @@ enum TelemetryFrameHarness {
         }
     }
 
-    private static func emit<V: View>(_ view: V, name: String, to dir: URL, index: inout [String]) {
+    private static func emit<V: View>(_ view: V, name: String, to dir: URL, index: inout [String], height: CGFloat = size.height) {
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             let file = "\(name)-\(suffix)@2x.png"
-            let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height)
+            let renderer = ImageRenderer(content: view.frame(width: size.width, height: height)
                 .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, scheme))
             renderer.scale = 2
             guard let cg = renderer.cgImage else { continue }

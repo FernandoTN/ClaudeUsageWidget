@@ -112,6 +112,18 @@ nonisolated struct NativeCount: Sendable, Equatable {
     var detail: String?
 }
 
+/// An interval in which the scoped account held a provider's CLI login,
+/// clipped to the report's range (the account scope's card, spec §3.2 frame 4).
+nonisolated struct OwnershipSpan: Sendable, Equatable {
+    var provider: TelemetryProvider
+    var start: Date
+    /// nil = still the owner at the end of the range.
+    var end: Date?
+    var basis: OwnershipRecord.Basis
+    /// True when `start` was clipped to the range (the span began earlier).
+    var startsBeforeRange: Bool
+}
+
 nonisolated struct TelemetryReport: Sendable, Equatable {
     var query: TelemetryQuery
     var range: TelemetryQuery.Range
@@ -128,6 +140,8 @@ nonisolated struct TelemetryReport: Sendable, Equatable {
     var provenance: [ProviderProvenance]
     var outliers: OutlierVerdict?
     var priceTable: TokenPriceTable
+    /// Account scope only: when this account held its provider's login.
+    var ownershipSpans: [OwnershipSpan] = []
 }
 
 nonisolated enum TelemetryReportBuilder {
@@ -246,12 +260,51 @@ nonisolated enum TelemetryReportBuilder {
                                       caveats: caveats(for: provider, firstIndexedAt: input.firstIndexedAt, query: query), health: health)
         }
 
+        var spans: [OwnershipSpan] = []
+        if case .account(let id) = query.scope {
+            spans = ownershipSpans(for: id, ownership: input.ownership, from: range.start, to: range.end)
+        }
+
         return TelemetryReport(
             query: query, range: range, buckets: buckets, seriesOrder: kept, totals: totals, previousTotals: previousTotals,
             movingAverage: movingAverage, models: models, accounts: accounts,
-            nativeCount: nativeCount(for: query.scope, totals: totals, codexSessions: input.codexSessions),
+            nativeCount: nativeCount(for: query.scope, totals: totals, codexSessions: input.codexSessions,
+                                     accountProvider: { id in input.roster.first { $0.id == id }?.provider }),
             coverage: coverage, provenance: provenance, outliers: outlierVerdict(values: values, partial: buckets.map(\.isPartial)),
-            priceTable: input.prices)
+            priceTable: input.prices, ownershipSpans: spans)
+    }
+
+    /// The intervals in `[from, to)` during which `profileId` was the recorded
+    /// owner of a provider's login: a span opens at a record naming it and
+    /// closes at the next record naming someone else (heartbeats and repeat
+    /// sightings of the same owner keep it open). A nil `end` means the
+    /// profile still held the login when the window ended — "→ now".
+    static func ownershipSpans(for profileId: UUID, ownership: [OwnershipRecord], from: Date, to: Date) -> [OwnershipSpan] {
+        var spans: [OwnershipSpan] = []
+        for provider in TelemetryProvider.allCases {
+            let records = ownership.filter { $0.provider == provider }.sorted { ($0.at, $0.seq ?? 0) < ($1.at, $1.seq ?? 0) }
+            var open: (start: Date, basis: OwnershipRecord.Basis)?
+            for record in records {
+                if record.profileId == profileId {
+                    if open == nil { open = (record.at, record.basis) }
+                } else if let current = open {
+                    spans.append(OwnershipSpan(provider: provider, start: current.start, end: record.at, basis: current.basis, startsBeforeRange: false))
+                    open = nil
+                }
+            }
+            if let current = open {
+                spans.append(OwnershipSpan(provider: provider, start: current.start, end: nil, basis: current.basis, startsBeforeRange: false))
+            }
+        }
+        return spans.compactMap { span in
+            let end = span.end ?? to
+            guard end > from, span.start < to else { return nil }
+            var clipped = span
+            if span.start < from { clipped.start = from; clipped.startsBeforeRange = true }
+            // Past the window's end is "→ now": every window ends at now.
+            if let spanEnd = span.end, spanEnd > to { clipped.end = nil }
+            return clipped
+        }.sorted { $0.start < $1.start }
     }
 
     // MARK: - Pieces
@@ -339,19 +392,22 @@ nonisolated enum TelemetryReportBuilder {
         }.sorted { $0.totals.inputClass > $1.totals.inputClass }
     }
 
-    static func nativeCount(for scope: TelemetryScope, totals: TokenTotals, codexSessions: Int?) -> NativeCount? {
+    static func nativeCount(for scope: TelemetryScope, totals: TokenTotals, codexSessions: Int?,
+                            accountProvider: (UUID) -> TelemetryProvider? = { _ in nil }) -> NativeCount? {
         let provider: TelemetryProvider?
         switch scope {
         case .fleet: return nil
         case .provider(let p), .unattributed(let p): provider = p
-        case .account: provider = nil
+        // An account's tile speaks its provider's unit; "units" only when the
+        // roster no longer knows the profile.
+        case .account(let id): provider = accountProvider(id)
         }
         switch provider {
         case .claude:
             let share = totals.units > 0 ? Int((Double(totals.sidechainUnits) / Double(totals.units) * 100).rounded()) : 0
             return NativeCount(label: "messages", value: totals.units, detail: "\(share) % from subagents")
         case .codex:
-            return NativeCount(label: "sessions", value: codexSessions ?? 0, detail: "\(TelemetryFormatting.compact(totals.units)) counter deltas")
+            return NativeCount(label: "sessions", value: codexSessions ?? 0, detail: "\(TelemetryFormatting.compact(totals.units)) usage records")
         case .grok:
             return NativeCount(label: "completed turns", value: totals.units, detail: "cancelled turns are not logged")
         case nil:
