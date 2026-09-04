@@ -25,7 +25,10 @@ messaged to it. Never `/Applications` or the running process.
 | 20:20 | Owner ask relayed: Codex usage limit resets; slot reserved (§4.1); research dispatched by the fixes session |
 | 20:30 | Codex + Fable reviews in (both approve with revisions; same three fixes); #66 seams merged (`ead8c54`); per-site list written for the `fix/focus-is-never-authority` PR (dispatched) |
 | 20:50 | Reset facts verified (endpoints, shapes, hazards) → §4.1 designed on them; service contract agreed |
-| 21:00 | **v3** spec, regenerated check-in, this status; docs PR opened; check-in opened for the owner |
+| 21:00 | **v3** spec, regenerated check-in, this status; docs PR #68 opened; check-in opened for the owner |
+| 21:10 | Owner (via the fixes session): "use your best judgment and go with your recommendations"; design bar: "go frame by frame and 100× make it better" — per-surface design passes recorded per stage. A token-usage telemetry sibling introduced itself; window-plumbing ownership agreed (redesign session owns a future `WindowCoordinator`; telemetry and Settings are registered kinds) |
+| 21:20 | Reset seams merged (#69, `9d86552`); focus-authority merged (#70, `96c9aa5`: `providerOwnerId(for:among:)`, owner guard in `checkAutoSwitchIfNeeded`, R7 pinned-view veto, `.providerOwnerChangedExternally`, delete → view, `.common` timers); popover survives focus change (#71, `cee4c07`) |
+| 21:30 | #68 squash-merged (`80949d2`). Stage 1a built on the merged tree: Release build OK, 393 tests / 0 failures; draft PR opened |
 
 ## Ownership (agreed in writing)
 
@@ -62,15 +65,27 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 
 | Stage | Branch | PR | State |
 |---|---|---|---|
-| 0 spec | `feat/ux-revamp-spec` | draft | v3 pushed |
-| F (fixes session) | `fix/focus-is-never-authority`, reset seams | — | in flight |
-| 1a models + picker/hotkey rewire | `feat/ux-revamp-1a-models` | — | next (base ≥ `ead8c54`) |
-| 1b selector | `feat/ux-revamp-1b-selector` | — | after 1a + F |
+| 0 spec | `feat/ux-revamp-spec` | #68 | **merged** `80949d2` |
+| F (fixes session) | `fix/focus-is-never-authority`, reset seams | #70, #69 | **merged** `96c9aa5`, `9d86552` |
+| 1a models + picker/hotkey rewire + wizard ownership claim (#28) | `feat/ux-revamp-1a-models` | draft | built on `96c9aa5`+`80949d2`; 393/0 |
+| 1b selector | `feat/ux-revamp-1b-selector` | — | after 1a |
 | 2a / 2b / 2c inspector | — | — | after F |
 | 3a / 3b / 3c / 3d Settings | — | — | after 2 |
 | 4a / 4b insights, 4.1 resets | — | — | after 3 / the reset seams |
 
-## Open questions
+## Open items
 
-Spec §9: selector default, non-suppressible confirmation, view-only popover
-menu, fleet alert defaults, stage-4 order, window 820, which §11 gap first.
+- Owner check-in answers (spec §9) — the owner said to proceed on the
+  recommendations; the page stays open for notes.
+- `.providerOwnerChangedExternally` (#70) is posted but unconsumed — the ⇄
+  selector / inspector consume it (stage 1b: one banner per episode).
+- B2.1 (redesign session): dashboard header vocabulary, popover name menu →
+  `viewProfile`, `FleetCounts.Provider` in the header, the selector link.
+- Telemetry sibling: launch points agreed (⇄ footer "Token usage…", dashboard
+  footer via the redesign session, per-account "Usage history" in the inspector
+  Overview, `.telemetryWindowRequested` object = profile UUID?); reverse link via
+  `SettingsRoute` from stage 2a.
+- Design passes: every surface gets a recorded frame-by-frame pass (hierarchy,
+  density, typography, all states incl. loading / degraded / dead / suspected /
+  duplicate / at-limit / blind, keyboard, light + dark) before its PR is marked
+  ready — spec §12 (added with stage 1b).

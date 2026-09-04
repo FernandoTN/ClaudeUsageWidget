@@ -68,4 +68,11 @@ extension Notification.Name {
     /// and its cached usage is stale by construction, so an observer should
     /// refresh that profile rather than wait for the next sweep.
     static let codexResetActivated = Notification.Name("codexResetActivated")
+
+    /// Posted to open the token-usage telemetry window (the telemetry
+    /// session's surface). object = the profile `UUID` to open filtered to one
+    /// account, or nil for the fleet view; userInfo may carry
+    /// "provider": `Profile.ProviderKind`. Declared here so the file has one
+    /// writer; the observer lives under `Telemetry/`.
+    static let telemetryWindowRequested = Notification.Name("telemetryWindowRequested")
 }

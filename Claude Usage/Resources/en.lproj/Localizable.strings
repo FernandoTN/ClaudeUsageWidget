@@ -807,3 +807,29 @@
 "notifications.sound.default" = "Default";
 "notifications.sound.none" = "None";
 "notifications.sound.preview" = "Preview sound";
+
+// MARK: - Viewing vs Active-for-provider vocabulary (docs/specs/ux-revamp.md §1.3)
+"active.viewing" = "Viewing";
+"active.active_for" = "Active for %@";
+"active.make_active" = "Make active for %@…";
+"active.no_active_login" = "No active %@ login";
+"active.viewing_line" = "Viewing %@ · Active for %@: %@";
+"active.viewing_line_none" = "Viewing %@ · no active %@ login";
+"active.changed_outside" = "Active for %@ changed outside the app: now %@";
+"provider.claude" = "Claude";
+"provider.codex" = "Codex";
+"provider.grok" = "Grok";
+"provider.cli.claude" = "Claude Code";
+"provider.cli.codex" = "Codex CLI";
+"provider.cli.grok" = "Grok CLI";
+"counts.profiles_accounts" = "%d %@ profiles, %d accounts";
+"counts.ready" = "%d ready";
+"counts.low" = "%d low";
+"counts.unknown" = "%d unmeasured";
+"counts.suspected" = "%d suspected";
+"counts.exhausted" = "%d exhausted";
+"counts.excluded" = "%d excluded";
+"counts.dead" = "%d dead";
+"counts.duplicates" = "%d duplicate rows";
+"counts.eligible" = "%d eligible now";
+"section.viewing_desc" = "The account the popover and Settings show. Viewing never changes what a CLI uses.";
