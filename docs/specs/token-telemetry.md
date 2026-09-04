@@ -524,9 +524,11 @@ By-kind share toggle):
     and the shares on the Input-class tile.
 36. The partial-bucket legend swatch is drawn exactly as the column is —
     the series colour tinted and hatched — so the two agree.
-37. Provider badge letters carry the shared "Active for Claude" tooltip
-    and accessibility label; the `ActivePill` component replaces the
-    letters the stage after it lands on main (one-line swap).
+37. The provider-active mark is the shared `ActivePill` (ux-revamp §1 R1,
+    on main as f887cdf mid-stage) in the sidebar and the By account rows:
+    one mark for one concept, "Active" in the active colour with the
+    provider in its tooltip and accessibility label. The interim letter
+    codes (Cl / Cx / Gk) are gone.
 38. Account scope: the "By account" card was a 100 % self-reference. It
     is now "Active for <provider> in this window": claim-to-claim
     intervals from the ownership log, "since before this window" for a

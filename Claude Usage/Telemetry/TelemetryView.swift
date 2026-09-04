@@ -202,13 +202,9 @@ struct TelemetrySidebarView: View {
                     Text("\(count)").font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
                 }
                 if row.isOwner, let provider = row.provider {
-                    // The bar's mark for the provider-active account; the shared
-                    // ActivePill replaces it once that component is on main.
-                    Text(mark(for: provider))
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.cyan)
-                        .help(ActiveVocabulary.activeFor(kind(provider)))
-                        .accessibilityLabel(ActiveVocabulary.activeFor(kind(provider)))
+                    // The one mark for "Active for <provider>" (ux-revamp §1 R1);
+                    // the provider is in its tooltip, the row sits under its header.
+                    ActivePill(provider: kind(provider))
                 }
                 Spacer(minLength: 4)
                 Text(row.total.map(TelemetryFormatting.compact) ?? "—")
@@ -226,14 +222,6 @@ struct TelemetrySidebarView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func mark(for provider: TelemetryProvider) -> String {
-        switch provider {
-        case .claude: return "Cl"
-        case .codex: return "Cx"
-        case .grok: return "Gk"
-        }
     }
 
     private func kind(_ provider: TelemetryProvider) -> Profile.ProviderKind {
@@ -737,8 +725,7 @@ struct TelemetryTableView: View {
                 .foregroundStyle(unattributed ? .secondary : .primary)
                 .lineLimit(1)
             if kind == .accounts, let ownerId, owners.contains(ownerId), let provider = row.key.provider {
-                Text(ActiveVocabulary.activeFor(kind(provider)))
-                    .font(.system(size: 8.5)).foregroundStyle(.cyan).lineLimit(1)
+                ActivePill(provider: kind(provider))
             }
             Spacer(minLength: 4)
             ZStack(alignment: .leading) {
