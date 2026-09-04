@@ -1212,3 +1212,5 @@
 "resets.error_api_key" = "Usage limit resets exist only for ChatGPT-login accounts.";
 "resets.error_stale" = "The at-limit measurement is too old; refresh and try again.";
 "resets.days" = "%d d";
+"insights.left_at" = "left at %d %% session";
+"insights.window_ratio" = "5-hour window %d %%";

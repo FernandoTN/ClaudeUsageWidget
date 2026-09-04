@@ -1233,3 +1233,10 @@ did ("Reset applied · 2 windows cleared"). The rule sentence closes the card.
 
 **Rejected.** Any automatic redemption (a grant is the owner's to spend);
 offering Redeem on a cached or inferred number; showing "0" for null.
+
+**Round-3 addendum (merged-tree frames):** timeline labels say the window's
+usage that resets ("W 84 %", not "+84"); a switch row states the outgoing level
+once (the recorder's reason, else "left at 96 % session"); an affirmed stamp's
+raw retry-after is dropped (its "40 min left" says it) and a rescue's header
+ratio reads "5-hour window 86 %"; a why-not row lets the verdict say "dead" once;
+a header rescue stays in the incidents list as an informational ○, not a green ✓.
