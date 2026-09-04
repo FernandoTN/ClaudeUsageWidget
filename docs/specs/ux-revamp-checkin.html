@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UX revamp — design check-in</title>
+<style>
+:root { color-scheme: light dark; --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --mute:#6e6e73; --line:#e3e3e8; --acc:#0a84ff; --rec:#34c759; --cyan:#32ade6; --red:#ff453a; --org:#ff9f0a; --pur:#bf5af2; --menu:#f2f2f4; --menuink:#111; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111114; --card:#1c1c1f; --ink:#f2f2f7; --mute:#a1a1a6; --line:#2c2c30; --menu:#2a2a2e; --menuink:#f2f2f7; } }
+* { box-sizing:border-box }
+body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif; }
+main { max-width: 1000px; margin: 0 auto; padding: 32px 20px 90px; }
+h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em }
+h2 { font-size: 19px; margin: 42px 0 10px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p, li { max-width: 80ch }
+.sub { color: var(--mute); margin: 0 0 18px }
+.card { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin: 14px 0; }
+.opt { display:grid; grid-template-columns: 1fr; gap: 14px; }
+.two { display:grid; grid-template-columns: 1fr 1fr; gap: 14px }
+@media (max-width: 760px) { .two { grid-template-columns: 1fr } }
+.option { border:1px solid var(--line); border-radius: 10px; padding: 14px 16px; position: relative; background: var(--card) }
+.option.rec { border-color: var(--rec); box-shadow: 0 0 0 3px rgba(52,199,89,0.15) inset; }
+.badge { position:absolute; top: -10px; right: 14px; background: var(--rec); color:#fff; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; letter-spacing: .04em }
+.badge.no { background: var(--mute) }
+.tag { display:inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: rgba(10,132,255,.12); color: var(--acc); margin-right: 6px }
+.strip { background:#2b2b2e; border-radius: 8px; padding: 8px 10px; overflow-x: auto; margin: 8px 0 }
+.strip svg { display:block }
+.meta { color: var(--mute); font-size: 13px }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px }
+td, th { border-top: 1px solid var(--line); padding: 7px 6px; vertical-align: top; text-align: left }
+th { color: var(--mute); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; border-top: 0 }
+.pick { display:flex; gap: 10px; flex-wrap: wrap; margin-top: 10px }
+.pick span { border:1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px }
+.pick span.on { border-color: var(--rec); font-weight: 600 }
+textarea { width:100%; min-height: 80px; border:1px solid var(--line); border-radius: 8px; padding: 10px; font: 14px/1.45 -apple-system, Helvetica, Arial; background: var(--card); color: var(--ink) }
+code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(127,127,127,.12); padding: 1px 5px; border-radius: 4px }
+.warn { border-left: 4px solid #ff9f0a; padding: 10px 14px; background: rgba(255,159,10,.10); border-radius: 6px }
+.kv { display:grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px }
+.dot { display:inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: -1px; margin-right: 4px }
+/* fake NSMenu */
+.menu { background: var(--menu); color: var(--menuink); border:1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.25); width: 360px; padding: 5px 0; font: 12.5px/1.45 -apple-system, "SF Pro Text", Helvetica, Arial; margin: 10px 0 }
+.menu .h { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; color: var(--mute); padding: 6px 14px 2px }
+.menu .i { padding: 3px 14px 3px 22px; white-space: pre; font-variant-numeric: tabular-nums; position: relative }
+.menu .i.dis { color: var(--mute) }
+.menu .i.act { background: var(--acc); color:#fff; border-radius: 4px; margin: 0 5px; padding-left: 17px }
+.menu .i .g { position:absolute; left: 6px; }
+.menu .sep { border-top: 1px solid var(--line); margin: 5px 10px }
+.menu .sub { display:inline-block; float:right; color: var(--mute) }
+.cy { color: var(--cyan) } .rd { color: var(--red) } .gr { color: var(--rec) } .or { color: var(--org) } .pu { color: var(--pur) } .mu { color: var(--mute) }
+/* wireframe */
+.wf { border:1px solid var(--line); border-radius: 10px; background: var(--card); display:grid; grid-template-columns: 230px 1fr; min-height: 420px; overflow: hidden; font-size: 12px; margin: 10px 0 }
+.wf .side { border-right: 1px solid var(--line); background: rgba(127,127,127,.06); padding: 10px 8px; display:flex; flex-direction: column }
+.wf .side .grp { font-size: 10px; font-weight: 700; letter-spacing: .05em; color: var(--mute); margin: 8px 6px 2px; display:flex; justify-content: space-between }
+.wf .row { display:flex; justify-content: space-between; padding: 2px 6px; border-radius: 4px; font-variant-numeric: tabular-nums; white-space: pre }
+.wf .row.sel { background: var(--acc); color: #fff }
+.wf .bottom { margin-top:auto; border-top: 1px solid var(--line); padding-top: 6px; display:flex; gap: 4px; flex-wrap: wrap; font-size: 10px; color: var(--mute) }
+.wf .bottom span { border:1px solid var(--line); border-radius: 4px; padding: 2px 5px }
+.wf .det { padding: 12px 16px }
+.wf .det h4 { margin: 0; font-size: 14px } .wf .det .l { color: var(--mute); font-size: 11px; margin-bottom: 8px }
+.wf .btns { display:flex; gap: 6px; margin: 8px 0 } .wf .btns span { border:1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 11px } .wf .btns span.pri { background: var(--acc); color:#fff; border-color: var(--acc) }
+.wf .tabs { display:flex; gap: 14px; border-bottom: 1px solid var(--line); margin: 6px 0 10px; font-size: 11.5px } .wf .tabs b { border-bottom: 2px solid var(--acc); padding-bottom: 3px }
+.wf .g { display:grid; grid-template-columns: 56px 1fr 46px 130px; gap: 6px 8px; align-items:center; font-variant-numeric: tabular-nums; font-size: 11.5px }
+.bar { height: 6px; background: rgba(127,127,127,.2); border-radius: 3px; position: relative } .bar i { position:absolute; left:0; top:0; bottom:0; border-radius:3px; background: var(--rec) }
+.q { margin-top: 10px }
+</style></head><body><main>
+<h1>UX revamp — design check-in</h1>
+<p class="sub">ClaudeUsageWidget · 2026-09-03 · branch <code>feat/ux-revamp-spec</code> · full proposal: <code>docs/specs/ux-revamp.md</code> · status: <code>docs/specs/ux-revamp-status.md</code></p>
+
+<div class="card">
+<h3 style="margin-top:0">Where we are</h3>
+<div class="kv">
+<b>Your ask</b><span>Two menu-bar surfaces — one to <i>look at</i> a profile and do its logins, another to <i>select the active</i> account, per provider (Claude / Codex / Grok); account counts; a deeper dashboard; a Settings clean-up (Appearance / General are stale).</span>
+<b>The root cause</b><span>One verb — "activate" — both moves what you are looking at AND rewrites a CLI's login. Since #58 those two can differ (blue letters say xFernando, Settings says xFho). The in-flight "second click completes the switch" PR patches the symptom; below is the model fix.</span>
+<b>Decisions below</b><span>6 decisions, each with a marked recommendation and room for your notes. Nothing blocks: the spec is written; code starts after this check-in on the recommendations unless you say otherwise. Menu-bar redesign stage B2 (fleet dashboard) merged tonight as #62 and is the base, not a competitor.</span>
+<b>Reviews</b><span>A pinned Codex <b>gpt-5.6-sol</b> (xhigh, read-only), an independent Fable review and a Grok advisory are running against the proposal; their verdicts are folded into the spec's §10 when they land and this page is regenerated if anything changes.</span>
+</div>
+</div>
+
+<h2>The model: two words, three pointers</h2>
+<div class="card">
+<div class="two">
+<div class="option"><h3 style="margin-top:0"><span class="tag">free</span>Viewing</h3>
+<p>The one account the popover, the inspector and single-account bar mode show and operate on. Clicking a tile, picking a name in the popover, choosing a row in Accounts, the ⌘-hotkey — all of these only <b>view</b>. Never touches a CLI, never records a switch, never needs the dead-login gate. (Storage: today's <code>activeProfileId</code>, unchanged.)</p></div>
+<div class="option"><h3 style="margin-top:0"><span class="tag">costly · deliberate</span>Active for Claude · Active for Codex · Active for Grok</h3>
+<p>The three accounts the CLIs actually use. Changed only by <b>"Make active for &lt;provider&gt;…"</b> (always with a confirmation that states the cost and the candidate's evidence), by the auto-switch, or by a login you made on the CLI side that the sweep adopts (reported as "Active for Claude changed outside the app: now dLeo"). The cyan tile label keeps meaning exactly this. (Storage: the two existing pointers + a new Grok one.)</p></div>
+</div>
+<p class="meta" style="margin-top:12px">Rule everywhere: when the account you are viewing is not the provider's active one, both facts are shown side by side — <b>Viewing dJormun · Active for Claude: dRir</b>. The word "Active" without a provider is never displayed again. Every number carries provenance + age ("own · 28 s ago", "headers · 3 m ago"), so a blind account reads as blind, not as a stale number that looks live.</p>
+</div>
+
+<h2>Decision 1 — where the per-provider ACTIVE selector lives</h2>
+<p class="meta">What it must answer per provider in one glance: who is active, headroom + how fresh, who is next (queued vs ranked) and whether that login is <i>proven</i> live, and "switch now" with its cost.</p>
+<div class="opt">
+
+<div class="option rec"><span class="badge">RECOMMENDED · S2a</span>
+<h3 style="margin-top:0">One dedicated ⇄ selector item (24 pt) with a native menu — three sections, one per provider</h3>
+<div class="strip"><svg viewBox="0 0 470 30" width="1128" style="max-width:100%;height:auto" xmlns="http://www.w3.org/2000/svg" role="img">
+<rect x="0" y="0" width="470" height="30" fill="#2b2b2e"/>
+<!-- Claude fleet tile -->
+<rect x="6" y="4" width="24" height="4" rx="2" fill="rgba(255,255,255,.22)"/><rect x="6" y="4" width="18.7" height="4" rx="2" fill="#ff9f0a"/>
+<rect x="6" y="10" width="24" height="4" rx="2" fill="rgba(255,255,255,.22)"/><rect x="6" y="10" width="4" height="4" rx="2" fill="#34c759"/>
+<text x="18" y="24" font-size="8" font-weight="600" fill="#32ade6" text-anchor="middle" font-family="-apple-system,Helvetica">dRi</text>
+<text x="34" y="9" font-size="6" fill="#bbb" font-family="-apple-system,Helvetica">Cl</text>
+<g fill="#34c759"><circle cx="48" cy="6" r="2"/><circle cx="54" cy="6" r="2"/><circle cx="60" cy="6" r="2"/><circle cx="66" cy="6" r="2"/></g>
+<g fill="#ff453a"><circle cx="72" cy="6" r="2"/><circle cx="78" cy="6" r="2"/><circle cx="84" cy="6" r="2"/><circle cx="90" cy="6" r="2"/><circle cx="96" cy="6" r="2"/><circle cx="48" cy="12" r="2"/><circle cx="54" cy="12" r="2"/><circle cx="60" cy="12" r="2"/><circle cx="66" cy="12" r="2"/><circle cx="72" cy="12" r="2"/><circle cx="78" cy="12" r="2"/></g>
+<text x="86" y="14.5" font-size="6" fill="#ff9f0a" font-family="-apple-system,Helvetica">×</text><g fill="#ff453a"><circle cx="96" cy="12" r="2"/></g>
+<text x="44" y="24" font-size="7" font-weight="600" fill="#fff" font-family="-apple-system,Helvetica">91→</text><text x="58" y="24" font-size="7" font-weight="600" fill="#34c759" font-family="-apple-system,Helvetica">dJo</text><text x="72" y="24" font-size="7" font-weight="600" fill="#34c759" font-family="-apple-system,Helvetica">✓</text>
+<!-- Codex -->
+<rect x="112" y="7" width="24" height="4" rx="2" fill="rgba(255,255,255,.22)"/><rect x="112" y="7" width="22.8" height="4" rx="2" fill="#ff453a"/>
+<text x="124" y="24" font-size="8" font-weight="600" fill="#32ade6" text-anchor="middle" font-family="-apple-system,Helvetica">xFe</text>
+<text x="140" y="12" font-size="6" fill="#bbb" font-family="-apple-system,Helvetica">Cx</text>
+<g><circle cx="154" cy="9" r="2" fill="#34c759"/><text x="158" y="11.5" font-size="6" fill="#ff9f0a" font-family="-apple-system,Helvetica">×</text><text x="164" y="11.5" font-size="6" fill="#ff9f0a" font-family="-apple-system,Helvetica">×</text></g>
+<text x="150" y="24" font-size="7" font-weight="600" fill="#ff453a" font-family="-apple-system,Helvetica">95→—</text>
+<!-- Grok -->
+<rect x="196" y="7" width="24" height="4" rx="2" fill="rgba(255,255,255,.22)"/><rect x="196" y="7" width="3" height="4" rx="2" fill="#34c759"/>
+<text x="208" y="24" font-size="8" font-weight="600" fill="#32ade6" text-anchor="middle" font-family="-apple-system,Helvetica">Grk</text>
+<!-- selector item -->
+<rect x="232" y="3" width="24" height="24" rx="5" fill="rgba(255,255,255,.10)"/>
+<text x="244" y="20" font-size="14" fill="#fff" text-anchor="middle" font-family="-apple-system,Helvetica">⇄</text>
+<text x="244" y="29" font-size="5" fill="#9a9a9e" text-anchor="middle" font-family="-apple-system,Helvetica">new · 24 pt</text>
+<!-- system items -->
+<text x="272" y="19" font-size="10" fill="#ddd" font-family="-apple-system,Helvetica">🔋 📶 🔍</text>
+<text x="330" y="19" font-size="10" fill="#ddd" font-family="-apple-system,Helvetica">Wed 3 Sep  19:52</text>
+</svg></div>
+<p class="meta">To scale (dark bar). Left: the existing provider tiles ("Active + dots" layout) — they stay the <b>viewing</b> surface (click → dashboard / popover). Right, next to the system items: the new ⇄ item — created first, so it lands rightmost and survives overflow. Click it →</p>
+<div class="menu">
+<div class="h">ACTIVE FOR CLAUDE</div>
+<div class="i dis"><span class="g cy">●</span>dRir          S 78 %   W 16 %   F 16 %    own · 28 s ago</div>
+<div class="i dis"><span class="g gr">→</span>next → dJormun   <span class="gr">✓</span> verified 12 m ago (probe) · headroom 3 m ago</div>
+<div class="i">Switch Claude to next (dJormun)…</div>
+<div class="i act">Switch Claude to<span class="sub" style="color:#fff">▸</span></div>
+<div class="i">Queue: Memori › 2026                                 Edit…</div>
+<div class="i">View dRir</div>
+<div class="h">ACTIVE FOR CODEX</div>
+<div class="i dis"><span class="g cy">●</span>xFernando(dev)    W 95 %   fires at 99 %      own · 1 m ago</div>
+<div class="i dis rd"><span class="g rd">→</span>next → —   nobody with headroom (2 of 4 dead)</div>
+<div class="i">Switch Codex to<span class="sub">▸</span></div>
+<div class="i">Repair 2 dead Codex logins…</div>
+<div class="h">ACTIVE FOR GROK</div>
+<div class="i dis"><span class="g cy">●</span>Grok          W 12 %   single account</div>
+<div class="sep"></div>
+<div class="i dis">Auto-switch ON · 95 % session / 99 % weekly · never on suspicion, never between duplicates</div>
+<div class="i">Accounts…                 Dashboard…                 Settings…</div>
+</div>
+<div class="menu" style="width:420px;margin-left:40px">
+<div class="h">SWITCH CLAUDE TO   <span class="mu" style="font-weight:400;letter-spacing:0">(hold ⌥ → "Queue X next")</span></div>
+<div class="i"><span class="g gr">●</span>dJormun      S 12   W 70   F 99    <span class="gr">✓</span> 12 m        ranked #1</div>
+<div class="i"><span class="g gr">●</span>Memori       S 40   W 55   F 61    <span class="mu">?</span> unverified  queued #1</div>
+<div class="i"><span class="g gr">●</span>2026         S  3   W 20   F 20    <span class="mu">?</span>             queued #2</div>
+<div class="i dis"><span class="g or">◐</span>Stanford     S 93   W 20   F 20    excluded (free plan)</div>
+<div class="sep"></div>
+<div class="i dis"><span class="g rd">▲</span>Commits      weekly maxed · resets Mon 09:41</div>
+<div class="i dis"><span class="g rd">▲</span>BBR          session exhausted · 3 h 10 m</div>
+<div class="i"><span class="g or">×</span>Ai           login dead — Repair…</div>
+<div class="i dis"><span class="g mu">⧉</span>Google       same account as dRir</div>
+</div>
+<p><b>Then a confirmation</b> (native alert, with "Don't ask again for Claude"): <i>"Switch the Claude Code login to dJormun? Every running Claude Code session re-reads its context on the new account (≈10–15 % of dJormun's 5-hour window). dJormun: session 12 %, weekly 70 %, Fable 99 % — login verified 12 m ago (usage probe). dRir keeps 22 % of its session until 14:02."</i> A refusal (dead login, switch in flight) is shown in the same place, with a button into Accounts › Login.</p>
+<p class="meta">Why: native, keyboard-navigable, no popover lifecycle to fight, one click shows all three owners, 24 pt after the fleet layouts freed ~400 pt. The menu is built only when opened. Tooltip on the item: "Active: Claude dRir 78 % · Codex xFernando 95 % · Grok 12 % — 23 accounts, 3 dead, 2 duplicates".</p>
+</div>
+
+<div class="option"><span class="badge no">S2b · a setting</span>
+<h3 style="margin-top:0">Three selector items, one per provider (Cl / Cx / Gk, ~78 pt)</h3>
+<div class="strip"><svg viewBox="0 0 300 30" width="720" style="max-width:100%;height:auto" xmlns="http://www.w3.org/2000/svg"><rect width="300" height="30" fill="#2b2b2e"/>
+<g font-family="-apple-system,Helvetica" font-weight="600" fill="#fff"><rect x="6" y="3" width="26" height="24" rx="5" fill="rgba(255,255,255,.10)"/><text x="19" y="12" font-size="6" text-anchor="middle" fill="#bbb">Cl</text><text x="19" y="22" font-size="8" text-anchor="middle" fill="#32ade6">dRi</text>
+<rect x="36" y="3" width="26" height="24" rx="5" fill="rgba(255,255,255,.10)"/><text x="49" y="12" font-size="6" text-anchor="middle" fill="#bbb">Cx</text><text x="49" y="22" font-size="8" text-anchor="middle" fill="#32ade6">xFe</text>
+<rect x="66" y="3" width="26" height="24" rx="5" fill="rgba(255,255,255,.10)"/><text x="79" y="12" font-size="6" text-anchor="middle" fill="#bbb">Gk</text><text x="79" y="22" font-size="8" text-anchor="middle" fill="#32ade6">Grk</text>
+<text x="110" y="19" font-size="10" fill="#ddd" font-weight="400">🔋 📶 🔍   Wed 3 Sep  19:52</text></g></svg></div>
+<p>The literal reading of your ask. Same menu builder, filtered to one provider per item. Costs 54 pt more than S2a and repeats what the fleet tiles already show (the active account is on them); loses the one-click overview of all three owners. Kept as a Display setting ("Selector: one item / one per provider") because it is nearly free to offer.</p></div>
+
+<div class="option"><span class="badge no">S1 · later, after measuring</span>
+<h3 style="margin-top:0">Right-click (or ⌥-click) on each provider tile opens that provider's selector</h3>
+<p>Zero bar width; left-click = view, right-click = select. But composite status items on macOS 27 deliver <i>synthesized</i> click events (the "always opens Commits" incident) and right-click delivery through the group button has not been measured; a selector that sometimes opens the popover instead is worse than none. Planned as an accelerator in a later stage once measured, not as the primary surface.</p></div>
+
+<div class="option"><span class="badge no">S3 · mirror only</span>
+<h3 style="margin-top:0">No new item: the selector as a card inside the dashboard and a Settings page</h3>
+<p>Zero bar cost, but it keeps the switching control inside the viewing surface — the conflation you asked to end — and a popover closes on the outside click a confirmation needs. The card is still built (Settings › Active &amp; Auto-switch; the dashboard's section header links to the ⇄ menu), as a mirror, never as the only selector.</p></div>
+</div>
+<div class="pick"><span class="on">S2a one ⇄ item (recommended)</span><span>S2b one per provider</span><span>S1 right-click only</span><span>S3 no new item</span></div>
+<div class="q"><textarea placeholder="Notes on decision 1 (selector shape)…"></textarea></div>
+
+<h2>Decision 2 — selector on by default, and the confirmation</h2>
+<div class="card">
+<div class="two">
+<div class="option rec"><span class="badge">RECOMMENDED</span><h3 style="margin-top:0">On by default · confirm every manual switch, suppressible per provider</h3><p>It is what you asked for and it is additive (one toggle in Display removes it). The confirmation carries the cost sentence and the candidate's evidence; "Don't ask again for Claude" is a per-provider checkbox, resettable in Advanced. Auto-switches never confirm (they already meet the thresholds and the queue you set).</p></div>
+<div class="option"><h3 style="margin-top:0">Alternatives</h3><p><b>Off by default</b> — you enable it once. <b>Always confirm</b> — no suppression checkbox. <b>Never confirm</b> — the menu row's text carries the cost, one click switches (fastest, least deliberate).</p></div>
+</div>
+<div class="pick"><span class="on">On + suppressible confirm (recommended)</span><span>Off by default</span><span>Always confirm</span><span>Never confirm</span></div>
+<div class="q"><textarea placeholder="Notes on decision 2…"></textarea></div>
+</div>
+
+<h2>Decision 3 — the profile inspector (Viewing surface)</h2>
+<div class="opt">
+<div class="option rec"><span class="badge">RECOMMENDED · I1</span>
+<h3 style="margin-top:0">Settings › Accounts as master-detail: the sidebar becomes the roster</h3>
+<div class="wf">
+<div class="side">
+<div class="row mu" style="font-size:11px">⌕ filter</div>
+<div class="grp"><span>CLAUDE 18</span><span><span class="gr">●4</span> <span class="or">◐2</span> <span class="rd">▲11</span> <span class="or">×1</span> <span class="mu">⧉2</span></span></div>
+<div class="row"><span><span class="gr">●</span> dRir</span><span>78  <b class="cy">Cl</b></span></div>
+<div class="row sel"><span>● dJormun</span><span>12  ✓</span></div>
+<div class="row"><span><span class="gr">●</span> Memori</span><span>40  Q1</span></div>
+<div class="row"><span><span class="gr">●</span> 2026</span><span> 3  Q2</span></div>
+<div class="row"><span><span class="or">◐</span> Stanford</span><span>93  <span class="mu">free</span></span></div>
+<div class="row"><span><span class="rd">▲</span> Commits</span><span><span class="rd">W!</span> Mon 09:41</span></div>
+<div class="row"><span><span class="rd">▲</span> BBR</span><span><span class="rd">S!</span> 3 h 10 m</span></div>
+<div class="row"><span><span class="or">×</span> Ai</span><span><span class="or">dead</span></span></div>
+<div class="row"><span><span class="mu">⧉</span> Google</span><span><span class="mu">= dRir</span></span></div>
+<div class="row mu"><span>  … 9 more</span><span></span></div>
+<div class="grp"><span>CODEX 4</span><span><span class="gr">●1</span> <span class="or">◐1</span> <span class="or">×2</span></span></div>
+<div class="row"><span><span class="gr">●</span> xFernando(dev)</span><span>95  <b class="cy">Cx</b></span></div>
+<div class="row"><span><span class="or">×</span> xFenrir(dev)</span><span><span class="or">dead</span></span></div>
+<div class="grp"><span>GROK 1</span><span><span class="gr">●1</span></span></div>
+<div class="row"><span><span class="gr">●</span> Grok</span><span>12  <b class="cy">Gk</b></span></div>
+<div class="row mu"><span>+ Add account…</span><span></span></div>
+<div class="bottom"><span><b>Accounts</b></span><span>Active</span><span>Alerts</span><span>Display</span><span>Advanced</span><span>About</span><span>⏻</span></div>
+</div>
+<div class="det">
+<h4>Viewing  dJormun <span class="mu" style="font-weight:400">· Claude</span></h4>
+<div class="l">not active · <b>Active for Claude: dRir</b></div>
+<div class="btns"><span class="pri">Make active for Claude…</span><span>Queue next</span><span>Sync</span><span>Open in dashboard</span></div>
+<div class="tabs"><b>Overview</b><span>Login</span><span>Alerts</span><span>Display</span></div>
+<div class="g">
+<span>Session</span><div class="bar"><i style="width:12%"></i></div><span>12 %</span><span class="mu">resets 4 h 02 m</span>
+<span>Weekly</span><div class="bar"><i style="width:70%;background:var(--org)"></i></div><span>70 %</span><span class="mu">resets Mon 09:41</span>
+<span>Fable</span><div class="bar"><i style="width:99%;background:var(--red)"></i></div><span>99 %</span><span class="rd">at the 99 % threshold</span>
+</div>
+<p class="meta" style="margin:8px 0 0">measured 3 m ago · own endpoint · not stale</p>
+<div class="g" style="margin-top:10px;grid-template-columns:70px 1fr">
+<span class="mu">Readiness</span><span>ready · login <span class="gr">verified</span> 12 m ago (usage probe)</span>
+<span class="mu">Identity</span><span>fer…@… · account …9f3a · org …c2</span>
+<span class="mu">Fetch</span><span>every sweep · no backoff</span>
+<span class="mu">History</span><span>active 2× in 24 h · last switch 2 h ago (auto, from Memori)</span>
+</div>
+<p class="meta" style="margin-top:14px">Login tab = today's CLI Account / Codex Account pages (Sync, <b>Log in a new Codex account</b> with the device code, Import from another home, Remove, masked token, dead-login banner with the exact repair). Alerts tab = per-account thresholds or "use fleet defaults". Display tab = tile label, show on the bar, refresh interval, auto-switch eligibility. Footer: Rename · Delete.</p>
+</div></div>
+<p>Selecting a row = Viewing (free). The only switching control is the explicit "Make active for Claude…" button, which runs the same confirmation as the ⇄ menu. Deep links from notifications and the dashboard ("Repair…") land here on the Login tab. 40 rows scroll; the filter matches names, emails and state words ("dead", "maxed", "queued"). Window stays 720 × 750 (230 pt roster + 490 pt detail); can widen to 800 if you prefer more room.</p></div>
+<div class="two">
+<div class="option"><span class="badge no">I2 · later if needed</span><h3 style="margin-top:0">A separate Accounts window</h3><p>Cleaner split (data vs preferences) but a second window lifecycle in an app that has already fought orphaned windows and activation-policy storms, and every repair deep link learns a second target. The Accounts section can be lifted into its own window later without changing its content.</p></div>
+<div class="option"><span class="badge no">I3 · no</span><h3 style="margin-top:0">The dashboard's account detail as the inspector</h3><p>380 pt wide and it closes on an outside click — a device-code login takes minutes and a browser hop. The dashboard row gets "Open in Accounts" instead.</p></div>
+</div>
+</div>
+<div class="pick"><span class="on">I1 Settings › Accounts master-detail (recommended)</span><span>I2 separate window</span><span>Widen the window to 800</span></div>
+<div class="q"><textarea placeholder="Notes on decision 3 (inspector)…"></textarea></div>
+
+<h2>Decision 4 — the one habit change: the popover's name menu and the ⌘-hotkey become view-only</h2>
+<div class="card">
+<p>Today picking a name in the popover menu (and the "next profile" hotkey) <b>switches the CLI</b>. Under the model above they only <b>view</b>; switching lives in the ⇄ menu, the inspector header, and the dashboard's "Make active…" (which already confirms in two steps). The hotkey also stops crossing providers (today it can hand a Claude session a Codex login — audit M7). This is the change you will feel in your fingers on day one.</p>
+<div class="pick"><span class="on">View-only (recommended)</span><span>Keep the popover menu switching (with a confirmation)</span></div>
+<div class="q"><textarea placeholder="Notes on decision 4…"></textarea></div>
+</div>
+
+<h2>Counts — where "how many accounts do I have" lives</h2>
+<div class="card">
+<table><tr><th>Place</th><th>Form</th></tr>
+<tr><td>Accounts sidebar, per provider header</td><td><code>CLAUDE 18 · ●4 ◐2 ▲11 ×1 ⧉2</code> — total, then ready / low / exhausted / dead / duplicates (the bar's own glyphs and taxonomy)</td></tr>
+<tr><td>⇄ menu, per section</td><td>a one-line sentence under the owner whenever anything is dead, duplicated or has no candidate: "18 Claude accounts: 4 ready, 2 low, 11 exhausted, 1 dead, 2 duplicates — 6 usable now"</td></tr>
+<tr><td>⇄ item tooltip</td><td>"Active: Claude dRir 78 % · Codex xFernando 95 % · Grok 12 % — 23 accounts, 3 dead, 2 duplicates"</td></tr>
+<tr><td>Dashboard header</td><td>per-provider strips (the redesign session consumes the same model)</td></tr>
+<tr><td>The bar</td><td>unchanged — the "Active + counts" layout already exists</td></tr></table>
+<p class="meta">Two planning numbers are added to the taxonomy: <b>usable now</b> (ready + low: has headroom and is a legal target) and <b>live</b> (not dead, not excluded: could be a target once its window resets).</p>
+</div>
+
+<h2>Settings — before → after (every key kept)</h2>
+<div class="card">
+<table><tr><th>Today</th><th>After</th></tr>
+<tr><td>App › Manage Profiles (roster, display config, auto-switch)</td><td><b>Accounts</b> (roster/inspector) · <b>Display</b> (display config, the redesign's "Menu bar layout" + "Click opens" pickers, the ⇄ item toggle, popover time settings) · <b>Active &amp; Auto-switch</b> (three "Active for" cards, enable, thresholds, queue, eligibility, the two rules stated)</td></tr>
+<tr><td>App › Popover · App Settings · Shortcuts</td><td><b>Display › Popover</b> · <b>Advanced</b> (launch at login, shortcuts, diagnostics: preferences-degraded state + "re-assert settings now", open log, debug API logging — a key with no UI today)</td></tr>
+<tr><td>Profile › General (refresh, notifications) · Profile › Appearance</td><td>refresh → Accounts › Display (per account); notifications → <b>Alerts</b> (fleet defaults, new) + Accounts › Alerts (override); Appearance → Display › Single-account bar (shown only in single mode)</td></tr>
+<tr><td>Profile › CLI Account / Codex Account</td><td>Accounts › <b>Login</b> tab (same behaviour, same buttons, same sheets)</td></tr>
+<tr><td>Sidebar "Active Profile" picker (activates)</td><td>gone — the roster is the picker and it only views</td></tr></table>
+<p class="meta">Migration: no key is renamed or moved; the spec's §5.2 maps all 40-odd keys (profiles_v3 and its per-profile fields, the three active pointers, display config, thresholds, queue, history, dead-login flags, one-time flags, legacy single-mode keys) to their new page. Four new keys: the Grok pointer, the selector setting, the per-provider "don't ask again" set, fleet alert defaults. A key registry + test asserts nothing is lost. Old deep-link names (<code>cliAccount</code>, <code>manageProfiles</code>…) keep resolving.</p>
+<div class="pick"><span class="on">Top level: Accounts · Active &amp; Auto-switch · Alerts · Display · Advanced · About (recommended)</span><span>Fold Active &amp; Auto-switch into Accounts</span></div>
+<div class="q"><textarea placeholder="Notes on Settings…"></textarea></div>
+</div>
+
+<h2>Dashboard depth (stage 4) — pick the order</h2>
+<div class="card">
+<p class="meta">B2 already shows: active card with gauges + thresholds + provenance + suspected caveat + ETA, next candidate with verdict age, the queue slice, two-line roster rows with chips and repair links, account detail, "Make active…" two-step, five recent switches. Stage 4 adds, all additive:</p>
+<ol>
+<li><b>Reset timeline</b> — the next 7 days with a marker per account at its weekly / Fable reset and the headroom that returns (when does capacity come back).</li>
+<li><b>Blind spots</b> — per active account: seconds since the last <i>own</i> measurement, provenance of the shown number, header-rescue count per hour, backoff state (tonight's 3-minute blind window, 19:35–19:38).</li>
+<li><b>Burn rate</b> — pp/min with the last samples as a sparkline; why an account is projected to cross, not just when.</li>
+<li><b>Switch log</b> — the full 30-entry ring with provider filter, trigger and reason.</li>
+<li><b>Rate-limit incidents</b> — transcript tripwire events, stamps, probe 429s, per account, last 24 h.</li>
+<li><b>Roster filters</b> — readiness, provenance, stale &gt; N min, queued only.</li>
+<li><b>Capacity remaining</b> — Σ (100 − weekly) over live accounts, per provider.</li>
+</ol>
+<div class="q"><textarea placeholder="Reorder / drop / add…"></textarea></div>
+</div>
+
+<h2>Staged plan</h2>
+<div class="card">
+<table><tr><th>Stage</th><th>Contents</th><th>Flag</th><th>Needs</th></tr>
+<tr><td>0</td><td>spec + this brief + consult logs (docs only)</td><td>—</td><td>—</td></tr>
+<tr><td>1</td><td>⇄ selector item + menu + confirmation; Viewing / Active-for vocabulary; <code>FleetCounts</code>; Settings sidebar says "Viewing"; ≤ 15 tests on the pure model</td><td>selector toggle (on)</td><td>B2 ✓; the fixes session's <code>viewProfile</code> + Grok pointer (Grok section reads "single account" until then)</td></tr>
+<tr><td>2</td><td>Accounts inspector (roster + Overview / Login / Alerts / Display), filter, deep-link aliases</td><td><code>settingsLayout_v2</code></td><td>the fixes session's two Settings PRs merged</td></tr>
+<tr><td>3</td><td>Settings top level, Active &amp; Auto-switch, Alerts (fleet defaults), Display, Advanced, key registry + "nothing lost" test; flag flipped once verified; old pages removed a stage later</td><td>same flag</td><td>2</td></tr>
+<tr><td>4</td><td>dashboard depth (above), embedded by the redesign session</td><td>additive</td><td>3</td></tr>
+<tr><td>5 (opt.)</td><td>right-click on a provider tile → its selector section, after measuring click delivery</td><td>setting</td><td>1</td></tr></table>
+<p class="meta">Each stage: one draft PR ≤ ~600 lines, Release build + full suite green on the merged tree, no assistant trailers, merge sha messaged to the orchestrating session for deploy. Nothing touches <code>/Applications</code> or the running app.</p>
+</div>
+
+<h2>Anything else</h2>
+<div class="card"><textarea placeholder="Anything I got wrong, anything missing, anything you want first…" style="min-height:120px"></textarea>
+<p class="meta" style="margin-top:8px">Reply in the session (or leave notes here and tell me the file changed). Default if I hear nothing: proceed on every recommendation above.</p></div>
+</main></body></html>
