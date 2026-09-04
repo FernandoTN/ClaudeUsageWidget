@@ -1,9 +1,6 @@
-//
 //  CodexHomeImportTests.swift
 //  Claude UsageTests
-//
 //  Tests for importing a Codex account from an isolated CODEX_HOME.
-//
 //  Why the feature exists: `codex login` REVOKES, server-side, whatever
 //  credentials already sit in the home it runs in before it starts the browser
 //  flow (codex-rs/cli/src/login.rs: login_with_chatgpt →
@@ -11,11 +8,9 @@
 //  logged into the default ~/.codex therefore killed the previous one — three
 //  accounts died that way on 2026-09-03. The fix is to log each account in
 //  under its OWN home, where there is nothing to revoke, and import it.
-//
 //  The roster mutation is a pure function over `[Profile]` precisely so these
 //  assertions need no Keychain and no ProfileStore: a test that wrote real
 //  credentials would leave Keychain items behind on the developer's machine.
-//
 
 import XCTest
 @testable import Claude_Usage
