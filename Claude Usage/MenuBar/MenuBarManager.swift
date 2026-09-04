@@ -174,6 +174,18 @@ class MenuBarManager: NSObject, ObservableObject {
             cleanup()
         }
 
+        // The view-pinning predicate for automatic switches. ProfileManager
+        // decides whether a sweep-driven switch may move the view; only this
+        // class knows whether the user is working inside the Settings window,
+        // so it supplies the answer rather than reaching for AppKit down there.
+        profileManager.viewIsPinnedByOpenUI = { [weak self] in
+            guard let self else { return false }
+            if let settings = self.settingsWindow, settings.isKeyWindow || settings.attachedSheet != nil {
+                return true
+            }
+            return NSApp.keyWindow?.attachedSheet != nil
+        }
+
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
@@ -566,10 +578,12 @@ class MenuBarManager: NSObject, ObservableObject {
         refreshTimer?.invalidate()
         refreshTimer = nil
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refreshUsage()
         }
-        refreshTimer?.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        timer.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        RunLoop.main.add(timer, forMode: .common)  // keeps sweeping while an NSMenu is tracking
+        refreshTimer = timer
 
         LoggingService.shared.log("Updated refresh interval to \(interval)s")
     }
@@ -980,11 +994,13 @@ class MenuBarManager: NSObject, ObservableObject {
 
     private func startAutoRefresh() {
         let interval = profileManager.activeProfile?.refreshInterval ?? 30.0
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.lastAutoRefreshTime = Date()
             self?.refreshUsage()
         }
-        refreshTimer?.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        timer.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        RunLoop.main.add(timer, forMode: .common)  // keeps sweeping while an NSMenu is tracking
+        refreshTimer = timer
         LoggingService.shared.log("Started auto-refresh with interval: \(interval)s")
     }
 
@@ -1971,11 +1987,16 @@ private func observeCredentialChanges() {
                         settings: profile.notificationSettings
                     )
 
-                    // Check if auto-switch should trigger. This path fetches for
-                    // the VIEWED profile, which need not own any CLI login —
-                    // `checkAutoSwitchIfNeeded`'s owner guard is what keeps a
-                    // merely-viewed account from rotating somebody else's login.
-                    self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                    // Check if auto-switch should trigger. This path FETCHES for
+                    // the VIEWED profile — that is what single-profile mode
+                    // displays, and it stays keyed on the view — but the trigger
+                    // is owner-only, so a merely-viewed account cannot rotate
+                    // somebody else's login. (`checkAutoSwitchIfNeeded` guards
+                    // the same way; this one keeps the rule visible where the
+                    // call is made.)
+                    if self.mayTriggerAutoSwitch(profile.id) {
+                        self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                    }
                 }
 
                 // Record success for circuit breaker
@@ -3032,12 +3053,6 @@ private func observeCredentialChanges() {
     /// catches up. The weekly threshold is tighter because forfeited weekly
     /// quota does not come back until the weekly reset.
     private func checkAutoSwitchIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
-        // Switch-away decisions never see an inferred throttle stamp — only
-        // measured percentages or a server-affirmed (long Retry-After) stamp
-        // may displace the active account (see autoSwitchTriggerUsage; the
-        // 2026-08-11 'BBR' switch at a real ~40% session is the incident).
-        let usage = Self.autoSwitchTriggerUsage(usage)
-
         // GUARD: only a PROVIDER OWNER may trigger a switch away from itself.
         //
         // This is the backstop for the whole "focus is never authority" rule.
@@ -3053,6 +3068,12 @@ private func observeCredentialChanges() {
             LoggingService.shared.log("AutoSwitch: '\(currentProfile.name)' is not a provider owner — no CLI is signed into it, so its usage cannot trigger a switch", type: .info)
             return
         }
+
+        // Switch-away decisions never see an inferred throttle stamp — only
+        // measured percentages or a server-affirmed (long Retry-After) stamp
+        // may displace the active account (see autoSwitchTriggerUsage; the
+        // 2026-08-11 'BBR' switch at a real ~40% session is the incident).
+        let usage = Self.autoSwitchTriggerUsage(usage)
 
         // Guard: feature must be enabled
         guard SharedDataStore.shared.loadAutoSwitchProfileEnabled() else { return }

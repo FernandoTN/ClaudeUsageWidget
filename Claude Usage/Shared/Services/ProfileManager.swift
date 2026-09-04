@@ -35,6 +35,19 @@ class ProfileManager: ObservableObject {
     /// carry a Grok login.
     @Published private(set) var activeGrokProfileId: UUID?
 
+    /// Whether a window the user is actively working IN would be disrupted by
+    /// moving the view: the Settings window is key, or a sheet is up. An
+    /// AUTOMATIC switch honours it and stays put even when the view WAS the
+    /// outgoing owner — the user is mid-repair on a login screen, and the sweep
+    /// pulling the inspector onto another account under their hands is the exact
+    /// interruption the focus-preserving rule exists to prevent. A user's own
+    /// "Make active" is unaffected: they asked for the move from that window.
+    ///
+    /// Installed by `MenuBarManager.setup()`, which owns the Settings window.
+    /// The default answers false, so tests and headless callers see the plain
+    /// outgoing-owner rule.
+    var viewIsPinnedByOpenUI: () -> Bool = { false }
+
     /// Mirrors `ProfileStore.preferencesDegraded` for SwiftUI. True while macOS's
     /// preferences daemon is refusing reads and the store is serving cached values;
     /// settings changes will not persist until cfprefsd is restarted.
@@ -408,6 +421,11 @@ class ProfileManager: ObservableObject {
     ///   sharp case — and a sweep-driven rotation must not yank the screen off
     ///   a repair nobody asked to abandon.
     ///
+    /// - `viewIsPinned` vetoes the automatic move even out of the outgoing
+    ///   owner: a Settings window is key or a sheet is up, so the user is
+    ///   working IN the view (`viewIsPinnedByOpenUI`). It never vetoes a
+    ///   user-initiated switch — they asked for it from that very window.
+    ///
     /// This deliberately narrows `docs/specs/ux-revamp.md` D5 / §6, which had
     /// the view follow every switch: D5's reasoning ("you switched to look at
     /// it") is a statement about a switch the user ASKED for, and once viewing
@@ -416,10 +434,12 @@ class ProfileManager: ObservableObject {
         userInitiated: Bool,
         focusIsTarget: Bool,
         focusWasOutgoingOwner: Bool,
-        hasFocus: Bool
+        hasFocus: Bool,
+        viewIsPinned: Bool = false
     ) -> Bool {
         guard hasFocus else { return true }
-        return userInitiated || focusIsTarget || focusWasOutgoingOwner
+        if userInitiated || focusIsTarget { return true }
+        return focusWasOutgoingOwner && !viewIsPinned
     }
 
     /// How a provider set is named in the ownership-repair log line.
@@ -856,7 +876,8 @@ class ProfileManager: ObservableObject {
             userInitiated: userInitiated,
             focusIsTarget: isFocused,
             focusWasOutgoingOwner: focusWasOutgoingOwner,
-            hasFocus: activeProfile != nil
+            hasFocus: activeProfile != nil,
+            viewIsPinned: viewIsPinnedByOpenUI()
         ) {
             activeProfile = updated
             profileStore.saveActiveProfileId(id)
@@ -1051,6 +1072,27 @@ class ProfileManager: ObservableObject {
         guard let focusedId = activeProfile?.id,
               let refreshed = profiles.first(where: { $0.id == focusedId }) else { return }
         activeProfile = refreshed
+    }
+
+    /// Announces that a provider's owner changed WITHOUT the app switching:
+    /// a `/login` in the terminal, or a `codex login` in an isolated home, that
+    /// an adoption pass then routed to the matching profile. The view does not
+    /// follow such a change (see `refreshFocusedProfileCopy`), so the UI needs
+    /// to be able to SAY it happened — "Active for Claude changed outside the
+    /// app: now dLeo" — rather than leave the user to notice a moved badge.
+    ///
+    /// Posted only from the two adoption passes, and only inside their
+    /// pointer-actually-moved branches, so it fires once per episode rather than
+    /// once per sweep.
+    private func announceExternalOwnerChange(provider: Profile.ProviderKind, newOwner: Profile) {
+        NotificationCenter.default.post(
+            name: .providerOwnerChangedExternally,
+            object: newOwner.id,
+            userInfo: [
+                "provider": String(describing: provider),
+                "ownerName": newOwner.name
+            ]
+        )
     }
 
     // MARK: - Provider Owner Resolution — FOCUS IS NEVER AUTHORITY
@@ -1878,6 +1920,7 @@ class ProfileManager: ObservableObject {
             LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
             activeClaudeProfileId = owner.id
             profileStore.saveActiveClaudeProfileId(owner.id)
+            announceExternalOwnerChange(provider: .claude, newOwner: owner)
         }
 
         var changed = false
@@ -2004,6 +2047,7 @@ class ProfileManager: ObservableObject {
             LoggingService.shared.log("ProfileManager: ⚠️ active Codex pointer repaired — auth.json's account belongs to '\(owner.name)', not '\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")'")
             activeCodexProfileId = owner.id
             profileStore.saveActiveCodexProfileId(owner.id)
+            announceExternalOwnerChange(provider: .codex, newOwner: owner)
         }
 
         // Adoption is account-matched and freshness-checked inside the service;

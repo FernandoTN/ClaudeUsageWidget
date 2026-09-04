@@ -218,13 +218,15 @@ final class FocusAuthorityTests: XCTestCase {
             userInitiated: Bool = false,
             focusIsTarget: Bool = false,
             focusWasOutgoingOwner: Bool = false,
-            hasFocus: Bool = true
+            hasFocus: Bool = true,
+            viewIsPinned: Bool = false
         ) -> Bool {
             ProfileManager.focusFollowsSwitch(
                 userInitiated: userInitiated,
                 focusIsTarget: focusIsTarget,
                 focusWasOutgoingOwner: focusWasOutgoingOwner,
-                hasFocus: hasFocus
+                hasFocus: hasFocus,
+                viewIsPinned: viewIsPinned
             )
         }
 
@@ -238,6 +240,11 @@ final class FocusAuthorityTests: XCTestCase {
                       "an ownership repair on the profile already on screen has nowhere else to go")
         XCTAssertTrue(follows(hasFocus: false),
                       "nothing is focused yet — the switch target is the only candidate")
+
+        XCTAssertFalse(follows(focusWasOutgoingOwner: true, viewIsPinned: true),
+                       "a key Settings window or an open sheet means the user is working IN the view — an automatic switch waits")
+        XCTAssertTrue(follows(userInitiated: true, viewIsPinned: true),
+                      "…but they asked for this one, most likely from that very window")
     }
 
     /// The same rule through the real activation. The target carries no
@@ -300,6 +307,27 @@ final class FocusAuthorityTests: XCTestCase {
                        "…but the published copy must still be re-read, or the UI shows stale data")
         XCTAssertEqual(manager.activeClaudeProfileId, newOwner.id,
                        "precondition: the pointer really did move")
+    }
+
+    // MARK: - Measuring with somebody else's token
+
+    /// The shared Claude Code Keychain item always holds the ACTIVE account's
+    /// token. Reading it for any other profile paints one account's usage under
+    /// another account's name, and the user plans around a number that is not
+    /// theirs. Owner only — and with no owner known, nobody: an unknown owner is
+    /// not a licence to guess.
+    func testTheSharedKeychainLoginMayOnlyMeasureItsOwner() {
+        let owner = UUID()
+        let viewed = UUID()
+
+        XCTAssertTrue(ClaudeAPIService.mayUseSharedKeychainLogin(focusedId: owner, claudeOwnerId: owner),
+                      "the owner's own login measures the owner")
+        XCTAssertFalse(ClaudeAPIService.mayUseSharedKeychainLogin(focusedId: viewed, claudeOwnerId: owner),
+                       "a viewed non-owner must not be measured with the owner's token")
+        XCTAssertFalse(ClaudeAPIService.mayUseSharedKeychainLogin(focusedId: viewed, claudeOwnerId: nil),
+                       "no owner known: the fallback is refused rather than guessed")
+        XCTAssertFalse(ClaudeAPIService.mayUseSharedKeychainLogin(focusedId: nil, claudeOwnerId: owner),
+                       "and nothing focused is not the owner either")
     }
 
     // MARK: - Delete
