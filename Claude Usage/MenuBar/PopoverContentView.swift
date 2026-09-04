@@ -72,6 +72,7 @@ struct PopoverContentView: View {
     @State private var pendingSwitch: UUID?
     @State private var switchNote: String?
     @State private var noteFor: UUID?
+    @State private var switchSucceeded = false
     @StateObject private var profileManager = ProfileManager.shared
 
     private func profileInitials(for name: String) -> String {
@@ -158,14 +159,13 @@ struct PopoverContentView: View {
             name: profile.name,
             provider: profile.providerKind,
             ownerName: owner?.name,
-            question: DashboardFormatting.switchQuestion(
-                provider: profile.providerKind,
-                from: owner?.name, fromHeadline: headline(owner?.claudeUsage),
-                to: profile.name, toHeadline: headline(profile.claudeUsage)),
+            ownerHeadline: headline(owner?.claudeUsage),
+            headline: headline(profile.claudeUsage),
             loginDead: ProfileCredentialStatusCache.hasDeadLogin(profile),
             isPending: pendingSwitch == profile.id,
             note: noteFor == profile.id ? switchNote : nil,
-            onBegin: { pendingSwitch = profile.id; switchNote = nil },
+            succeeded: noteFor == profile.id && switchSucceeded,
+            onBegin: { pendingSwitch = profile.id; switchNote = nil; switchSucceeded = false },
             onConfirm: {
                 let id = profile.id
                 let name = profile.name
@@ -174,6 +174,7 @@ struct PopoverContentView: View {
                 Task { @MainActor in
                     let outcome = await onMakeActive(id)
                     switchNote = DashboardFormatting.outcome(outcome, name: name, provider: provider)
+                    switchSucceeded = outcome == .activated
                     noteFor = id
                 }
             },
@@ -552,16 +553,60 @@ struct GroupNavigator: View {
 /// the two-step confirmation (cost stated, dead login warned), and the
 /// outcome note. A pure function of its inputs — the state lives in the
 /// popover — so the frame harness can render every step from fixtures.
+/// The switch question as three aligned lines — "Switch the Claude login?"
+/// / "from X · 78 % session · resets in 2h 59m" / "to Y · 0 % session …" —
+/// instead of one sentence wrapping to three lines at popover width
+/// (round 2, R2-4). Shared by the classic popover and the dashboard.
+struct SwitchQuestionLines: View {
+    let provider: Profile.ProviderKind
+    let from: (name: String, headline: String?)?
+    let to: (name: String, headline: String?)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Switch the \(ActiveVocabulary.providerName(provider)) login?")
+                .font(.system(size: 10, weight: .semibold))
+            if let from { line("from", from.name, from.headline) }
+            line("to", to.name, to.headline)
+        }
+    }
+
+    private func line(_ label: String, _ name: String, _ headline: String?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+                .frame(width: 26, alignment: .trailing)
+            Text(name)
+                .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
+            if let headline {
+                Text("· \(headline)")
+                    .font(.system(size: 9))
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+        }
+    }
+}
+
 struct MakeActiveRow: View {
     let name: String
     let provider: Profile.ProviderKind
     /// Who is active for the provider now (round 1, M1).
     var ownerName: String? = nil
-    /// Both sides named with the candidate's headroom (round 1, M2).
-    var question: String
+    /// The owner's firing-window headline ("78 % session · resets in 2h 59m").
+    var ownerHeadline: String? = nil
+    /// The candidate's firing-window headline.
+    var headline: String? = nil
     let loginDead: Bool
     let isPending: Bool
     let note: String?
+    /// True once the switch succeeded: the row is state now, not an offer
+    /// (round 2, R2-1).
+    var succeeded: Bool = false
     let onBegin: () -> Void
     let onConfirm: () -> Void
     let onCancel: () -> Void
@@ -569,11 +614,9 @@ struct MakeActiveRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if isPending {
-                // Frame harness, first finding: at popover width these
-                // sentences truncated with an ellipsis. They wrap.
-                Text(question)
-                    .font(.system(size: 10, weight: .semibold))
-                    .fixedSize(horizontal: false, vertical: true)
+                SwitchQuestionLines(provider: provider,
+                                    from: ownerName.map { ($0, ownerHeadline) },
+                                    to: (name, headline))
                 Text(DashboardFormatting.switchCost(provider))
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
@@ -600,24 +643,26 @@ struct MakeActiveRow: View {
                 }
                 .controlSize(.small)
             } else {
-                Button(action: onBegin) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(ActiveVocabulary.makeActive(provider))
-                            .font(.system(size: 10, weight: .semibold))
-                        if let ownerName {
-                            Text("· now \(ownerName)")
-                                .font(.system(size: 9))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
+                if !succeeded {
+                    Button(action: onBegin) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.left.arrow.right")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(ActiveVocabulary.makeActive(provider))
+                                .font(.system(size: 10, weight: .semibold))
+                            if let ownerName {
+                                Text("· now \(ownerName)")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
                         }
-                        Spacer()
+                        .foregroundColor(DesignRole.action.color)
+                        .contentShape(Rectangle())
                     }
-                    .foregroundColor(DesignRole.action.color)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 if let note {
                     Text(note)
                         .font(.system(size: 9))

@@ -39,7 +39,10 @@ enum DesignRole: Hashable {
         case .suspected: return .systemPurple
         case .informational: return .secondaryLabelColor
         case .active: return .systemCyan
-        case .action: return .controlAccentColor
+        // The system LINK colour, not the accent: the accent is the user's
+        // choice and on an orange accent it collides with caution (round 2,
+        // R2-5). Links read as links on every accent.
+        case .action: return .linkColor
         }
     }
 
