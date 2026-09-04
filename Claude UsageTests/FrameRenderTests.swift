@@ -186,6 +186,15 @@ final class FrameRenderTests: XCTestCase {
               surface: "dashboard", state: "degraded", size: NSSize(width: width, height: 600), note: "preferences-degraded banner outranking the rest")
         write(DashboardView(store: DashboardStore(snapshot: snapshot(hidden: [.codex]), clickedProvider: .codex), actions: noActions, height: 600),
               surface: "dashboard", state: "overflow", size: NSSize(width: width, height: 600), note: "Codex hidden by the menu bar (banner), scrolled to Codex")
+        // The Insights block in situ, expanded, from the stage-4a fixture
+        // (the block's own frames are the UX-revamp harness's).
+        var withInsights = snap
+        withInsights.insights = FleetInsights.fixture(now: now)
+        let tallWithInsights = NSSize(width: width, height: 2400)
+        write(DashboardView(store: DashboardStore(snapshot: withInsights, clickedProvider: .claude), actions: noActions,
+                            height: tallWithInsights.height, insightsExpanded: true),
+              surface: "dashboard", state: "insights-embedded", size: tallWithInsights,
+              note: "fleet with the INSIGHTS block expanded under the last section (fixture insights)")
 
         // The classic popover's Make-active row: offer, confirmation, dead confirmation, outcome.
         let rowSize = NSSize(width: DashboardSurface.size(for: .classic).width - 20, height: 140)
