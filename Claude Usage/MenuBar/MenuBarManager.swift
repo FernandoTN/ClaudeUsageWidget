@@ -3843,6 +3843,32 @@ private func observeCredentialChanges() {
     /// The per-provider selection the ⇄ menu and its badge render: the same
     /// readiness / candidate / verdict context the tiles and the dashboard use,
     /// built once per call and handed down — never cached across sweeps.
+    // MARK: - Fleet insights (docs/specs/ux-revamp.md §4, stage 4a)
+
+    /// Rate-limit incidents for the dashboard's last-24-h view. The stamp
+    /// sites (affirmed / inferred stamps, header-probe 429s and rescues, the
+    /// transcript tripwire, burst backoffs) record into it.
+    let incidentRing = IncidentRing()
+    /// Every "changed outside the app" episode of this process.
+    let driftLog = DriftLog()
+
+    /// Read-only view of the per-profile burst backoffs for the insights model.
+    var backoffStates: [UUID: FleetInsights.Backoff] {
+        burstBackoffs.mapValues { FleetInsights.Backoff(until: $0.until, streak: $0.streak) }
+    }
+
+    /// The dashboard's insights, derived from what the app already keeps. The
+    /// build itself is pure; this gathers its inputs, as the snapshot does.
+    func makeFleetInsights(now: Date = Date()) -> FleetInsights {
+        let selections = buildActiveSelections()
+        return FleetInsights.build(FleetInsights.Inputs(
+            selections: selections, profiles: profileManager.profiles,
+            switchHistory: SharedDataStore.shared.loadSwitchHistory(),
+            measured: SharedDataStore.shared.loadMeasuredSessionHistory(),
+            incidents: incidentRing.recent(now: now), drift: driftLog.episodes, backoffs: backoffStates,
+            counts: selections.map(\.counts), staleAfter: makeFleetSummaryContext().thresholds.staleAfter, now: now))
+    }
+
     func buildActiveSelections() -> [ProviderActiveSelection] {
         let profiles = profileManager.profiles
         var painted: [Profile.ProviderKind: [UUID]] = [:]
