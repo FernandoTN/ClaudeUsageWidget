@@ -250,8 +250,15 @@ final class FleetSummaryTests: XCTestCase {
         // 17 others: mark (10) + max(dots 52, candidate row 52) = 62; arming never widens it.
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 17, layout: .fleetDots), 71, "width follows the count")
         // 2 others: mark (10) + max(dots 10, candidate row 52) = 62 — reserved even while idle.
-        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetDots), 62)
-        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetCounts), 82)
+        // No floor (owner, 2026-09-04): mark (10) + the dots (2 → 12) = 22; the
+        // candidate row is drawn only when it fits, and never widens a block.
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetDots), 22)
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 4, layout: .fleetDots), 22, "the owner's Codex: 4 dots in 2 × 2")
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetCounts), 10 + FleetBlockGeometry.countsWidthSingleDigit)
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 12, layout: .fleetCounts), 10 + FleetBlockGeometry.countsWidth)
+        XCTAssertGreaterThan(FleetBlockGeometry.fleetWidth(memberCount: 18, layout: .fleetDots),
+                             2 * FleetBlockGeometry.fleetWidth(memberCount: 4, layout: .fleetDots),
+                             "the owner's Claude block is visibly wider than his Codex block")
         XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 17, layout: .fleetDots), 98)
         XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 0, layout: .fleetDots), 24)
         XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 5, layout: .everyAccount), 24)
@@ -283,8 +290,12 @@ final class FleetSummaryTests: XCTestCase {
         for alone in ["→—", "⇄"] {
             XCTAssertLessThanOrEqual(width(alone, affix), FleetBlockGeometry.affixWidth)
         }
+        XCTAssertLessThanOrEqual(width("→WWW", affix), FleetBlockGeometry.affixCompressedWidth,
+                                 "the compressed candidate row must fit its reserve")
         XCTAssertLessThanOrEqual(width("●99 ◐99 ▲99 ×99", FleetBlockFonts.counts) + 3 * 2,
                                  FleetBlockGeometry.countsWidth)
+        XCTAssertLessThanOrEqual(width("●9 ◐9 ▲9 ×9", FleetBlockFonts.counts) + 3 * 2,
+                                 FleetBlockGeometry.countsWidthSingleDigit)
         for mark in ["Cl", "Cx", "Gk", "19", "99"] {
             XCTAssertLessThanOrEqual(width(mark, FleetBlockFonts.mark) + 1, FleetBlockGeometry.markWidth,
                                      "\(mark) must fit the mark column (the count sits under the mark)")
