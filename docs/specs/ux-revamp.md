@@ -1088,3 +1088,25 @@ existing vibrancy material.
 the percentage digit is the scan target; bars live in the detail); an "Active"
 badge without its provider; a 720 pt window (the roster + a readable detail do
 not fit, three reviews); showing empty tabs before their stage ships.
+
+### 12.3 Settings › Active & Auto-switch (stage 3a)
+
+**Frame 0 — page.** Header "Active & Auto-switch". Three cards, one per provider,
+each a mirror of the ⇄ menu's section: title "Active for Claude"; owner row
+(legend glyph in the active cyan, name, compact stats "S 78 · W 16 · F 16",
+provenance + age, "pinned by you"); the suspected caveat in purple when it
+applies; the next line ("next → dJormun · ✓ verified 12 m ago") with the
+"Make active for Claude…" button at the right, which runs the shared
+confirmation; "next: nobody with headroom" in blocking red; "single account" for
+a one-account provider; an amber note when the auto-switch is off. Then the
+policy card (enable, the two typed thresholds, the two rules as one sentence),
+the hand-off queue with a provider filter (All / Claude / Codex / Grok; "next"
+marks the first entry of each provider — what that provider's next switch
+takes), and the eligibility list grouped by provider with the active account's
+pill — the ONE place the toggle lives (the account's Monitoring tab links here).
+
+**States.** Switching → "switching…" in the card, the button disabled. No owner →
+"No active Claude login chosen". Degraded → the window's existing banner.
+
+**Rejected.** Per-provider thresholds (spec §11: a later override); editing the
+queue from the cards (one editor, below); a fourth card for "all providers".

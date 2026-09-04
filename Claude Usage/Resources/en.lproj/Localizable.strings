@@ -1002,3 +1002,21 @@
 "accounts.login.grok_how" = "Log in with the grok CLI, then import its ~/.grok/auth.json into this profile.";
 "accounts.login.grok_missing" = "No grok login found (~/.grok/auth.json has no access token).";
 "codex.activate.from_owner" = "Active for Codex today: %@.";
+
+// MARK: - Settings › Active & Auto-switch (stage 3a, spec §5.1, §12.3)
+"section.active_title" = "Active & Auto-switch";
+"section.active_desc" = "Who is active for each CLI, who is next, and the switch policy";
+"active.title" = "Active & Auto-switch";
+"active.subtitle" = "Which account each CLI is using, who is next, and when the auto-switch fires";
+"active.rules" = "The auto-switch fires only on measured values or server-affirmed limits — never on a suspected throttle — and never between two profiles of the same account. A switch costs every running CLI session a context re-read (≈10–15 % of the new account's window).";
+"active.queue_title" = "Hand-off queue";
+"active.queue_subtitle" = "Who the auto-switch takes next, per provider, before the default order (soonest weekly reset first)";
+"active.queue_all" = "All";
+"active.queue_add" = "Queue account…";
+"active.queue_empty" = "Empty — the auto-switch uses the default order (the account whose weekly limit resets soonest).";
+"active.queue_empty_provider" = "No %@ account queued — the default order applies.";
+"active.queue_next_label" = "next";
+"active.queue_note" = "Each auto-switch consumes its entry; when a provider's entries run out, the default order resumes. Headroom and dead-login checks still apply to queued accounts.";
+"active.disabled_note" = "Auto-switch is off — this provider only changes account when you switch it.";
+"selector.switching_short" = "switching…";
+"counts.none_measured" = "nothing measured yet";

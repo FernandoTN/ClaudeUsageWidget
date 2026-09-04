@@ -86,6 +86,25 @@ enum ActiveVocabulary {
         return parts.joined(separator: " · ")
     }
 
+    /// The roster header's words (owner ruling 2026-09-04, replacing the glyph
+    /// strip): "4 ready · 2 low · 10 exhausted · 1 dead · 2 duplicates". States
+    /// in readiness order, zero counts omitted; the glyph legend moves to hover.
+    static func countsWords(_ counts: FleetCounts.Provider) -> String {
+        var parts: [String] = []
+        let keys: [(AccountReadiness, String)] = [
+            (.ready, "counts.ready"), (.low, "counts.low"), (.unknown, "counts.unknown"),
+            (.suspected, "counts.suspected"), (.exhausted, "counts.exhausted"),
+            (.excluded, "counts.excluded"), (.dead, "counts.dead"),
+        ]
+        for (readiness, key) in keys where counts.count(readiness) > 0 {
+            parts.append(key.localized(with: counts.count(readiness)))
+        }
+        if counts.duplicateProfiles > 0 { parts.append("counts.duplicates_short".localized(with: counts.duplicateProfiles)) }
+        // A count never wraps away from its word; the line breaks only at the separators.
+        let glued = parts.map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }
+        return glued.isEmpty ? "counts.none_measured".localized : glued.joined(separator: " · ")
+    }
+
     /// The counts sentence for a provider (docs/specs/ux-revamp.md §3):
     /// "18 Claude profiles, 17 accounts: 4 ready, 2 low, 1 unmeasured,
     /// 10 exhausted, 1 dead · 2 duplicate rows · 7 eligible now".

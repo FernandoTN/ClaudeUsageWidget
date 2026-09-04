@@ -88,6 +88,7 @@ final class AccountsRosterModelTests: XCTestCase {
         XCTAssertEqual(section.title, "CLAUDE")
         XCTAssertEqual(section.subtitle, "3 profiles · 2 accounts")
         XCTAssertEqual(section.strip, "3 · ●3 · ⧉2")
+        XCTAssertEqual(ActiveVocabulary.countsWords(section.counts), "3\u{00A0}ready · 2\u{00A0}duplicates", "the header shows words (count glued to its word); glyphs stay on hover")
     }
 
     func testBadgesQueuedNextDuplicateExcludedByPrecedence() {
@@ -120,11 +121,11 @@ final class AccountsRosterModelTests: XCTestCase {
         let sections = Model.sections(selections: selections(profiles, active: [claudeOwner.id, codexOwner.id]), profiles: profiles, sort: .alphabetical, filter: "")
         let all = Dictionary(uniqueKeysWithValues: sections.flatMap(\.rows).map { ($0.name, $0.percentageText) })
         XCTAssertEqual(all["dRir"], "S 78", "the binding window with its letter (R2)")
-        XCTAssertEqual(all["BBR"], "S!")
-        XCTAssertEqual(all["Commits"], "F!")
+        XCTAssertEqual(all["BBR"], "▲ S", "legend glyph + the maxed window (R2-2)")
+        XCTAssertEqual(all["Commits"], "▲ F")
         XCTAssertEqual(all["Hotmail"], "—")
         XCTAssertEqual(all["xFernando"], "W 95", "weekly for a weekly-only provider")
-        XCTAssertEqual(all["xFme"], "W!")
+        XCTAssertEqual(all["xFme"], "▲ W")
     }
 
     func testDeadRowAndReloginCaption() {
