@@ -16,8 +16,7 @@ import Foundation
 enum AccountTab: String, CaseIterable, Hashable {
     case overview, login, alerts, monitoring
 
-    /// Tabs that have shipped; Login lands in stage 2c and is never shown empty.
-    static let available: [AccountTab] = [.overview, .alerts, .monitoring]
+    static let available: [AccountTab] = [.overview, .login, .alerts, .monitoring]
 
     var title: String {
         switch self {

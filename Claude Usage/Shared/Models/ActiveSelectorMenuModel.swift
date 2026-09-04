@@ -147,7 +147,7 @@ enum ActiveSelectorMenuModel {
                                 title: deadCount == 1
                                     ? "selector.repair_one".localized(with: ActiveVocabulary.providerName(provider))
                                     : "selector.repair_many".localized(with: deadCount, ActiveVocabulary.providerName(provider)),
-                                glyph: "×", glyphTint: .orange, action: .repairDead(firstDead.id, provider)))
+                                glyph: DesignGlyph.dead, glyphTint: .red, action: .repairDead(firstDead.id, provider)))
             }
         }
 
@@ -321,15 +321,16 @@ enum ActiveSelectorMenuModel {
         FleetCounts.stripGlyphs.first { $0.0 == readiness }?.1 ?? "○"
     }
 
+    /// Colour roles from the shared legend (G1): dead = blocking red, near limit
+    /// and exhausted = caution amber, suspected = purple, ready = green, the
+    /// rest informational gray.
     static func tint(for readiness: AccountReadiness) -> Tint {
-        switch readiness {
+        switch readiness.role {
         case .ready: return .green
-        case .low: return .orange
-        case .unknown: return .secondary
+        case .caution: return .orange
+        case .blocking: return .red
         case .suspected: return .purple
-        case .exhausted: return .red
-        case .excluded: return .secondary
-        case .dead: return .orange
+        case .informational, .action, .active: return .secondary
         }
     }
 
@@ -371,7 +372,7 @@ enum ActiveSelectorMenuModel {
         case .amber: prefix = "selector.badge_amber".localized + " — "
         case nil: prefix = ""
         }
-        return prefix + summaryTooltip(selections: selections)
+        return prefix + summaryTooltip(selections: selections) + "\n" + DesignLegend.line
     }
 
     private static func summaryTooltip(selections: [ProviderActiveSelection]) -> String {

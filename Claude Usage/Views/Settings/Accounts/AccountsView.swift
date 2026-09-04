@@ -175,7 +175,7 @@ struct AccountsSectionHeader: View {
             Text(section.strip)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.secondary)
-                .help(ActiveVocabulary.countsSentence(section.counts))
+                .help(ActiveVocabulary.countsSentence(section.counts) + "\n" + DesignLegend.line)
         }
         .padding(.vertical, 2)
         .accessibilityLabel(ActiveVocabulary.countsSentence(section.counts))
@@ -189,16 +189,16 @@ struct AccountsRosterRow: View {
         HStack(spacing: 6) {
             Text(ActiveSelectorMenuModel.glyph(for: row.readiness))
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor((row.isDead ? Color.red : row.readiness.dashboardColor).opacity(row.isStale ? 0.5 : 1))
+                .foregroundColor(row.readiness.role.color.opacity(row.isStale ? 0.5 : 1))
                 .frame(width: 10)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
                 Text(row.name)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(row.isDead ? .red : .primary)
+                    .foregroundColor(row.isDead ? DesignRole.blocking.color : .primary)
                     .lineLimit(1)
                 if row.needsRelogin {
-                    Text("accounts.relogin_needed".localized).font(.system(size: 9)).foregroundColor(.red)
+                    Text("accounts.relogin_needed".localized).font(.system(size: 9)).foregroundColor(DesignRole.blocking.color)
                 } else if let email = row.email {
                     Text(email).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
                 }
@@ -206,7 +206,7 @@ struct AccountsRosterRow: View {
             Spacer(minLength: 4)
             Text(row.percentageText)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(row.percentageText.hasSuffix("!") ? .red : (row.readiness == .suspected ? .purple : .primary))
+                .foregroundColor(row.percentageText.hasSuffix("!") ? DesignRole.caution.color : (row.readiness == .suspected ? DesignRole.suspected.color : .primary))
                 .help(row.readiness == .suspected ? "accounts.suspected_help".localized : "")
             if let mark = row.badge.mark {
                 if row.badge.isActive {
@@ -215,7 +215,7 @@ struct AccountsRosterRow: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.cyan))
+                        .background(Capsule().fill(DesignRole.active.color))
                 } else {
                     Text(mark)
                         .font(.system(size: 9, weight: .semibold))
@@ -231,10 +231,10 @@ struct AccountsRosterRow: View {
 
     private var markColor: Color {
         switch row.badge {
-        case .activeFor: return .cyan
-        case .queued: return .accentColor
-        case .next(let verdict): return verdict == .verified ? .adaptiveGreen : (verdict == .dead ? .red : .secondary)
-        case .duplicate, .excluded, .none: return .secondary
+        case .activeFor: return DesignRole.active.color
+        case .queued: return DesignRole.action.color
+        case .next(let verdict): return verdict == .verified ? DesignRole.ready.color : (verdict == .dead ? DesignRole.blocking.color : DesignRole.informational.color)
+        case .duplicate, .excluded, .none: return DesignRole.informational.color
         }
     }
 
@@ -264,9 +264,11 @@ struct AccountsDetailView: View {
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
                     header(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate)
                     switch tab {
-                    case .overview, .login:
+                    case .overview:
                         AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate,
-                                           onRepair: { tab = AccountTab.available.contains(.login) ? .login : .overview })
+                                           onRepair: { tab = .login })
+                    case .login:
+                        AccountLoginTab(profile: profile)
                     case .alerts:
                         AccountAlertsTab(profile: profile)
                     case .monitoring:
