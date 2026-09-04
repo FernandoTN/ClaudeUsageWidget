@@ -133,6 +133,15 @@ health    (provider PRIMARY KEY, scanned_at, data_through, files_seen, files_unr
 meta      (key PRIMARY KEY, value)                                    -- schema version, price-table version, window frame, last scope
 ```
 
+**Schema v2 (stage 2, after the first deploy measured ~540 B/event on v1):**
+`file_id`, `session` and `source` are interned into a `strings(id, value
+UNIQUE)` table and stored as integer refs on `events`; a v1 ledger is rebuilt
+in place on first open inside one transaction that also bumps the version
+(measured on a copy of the live 716 MB / 1.26 M-event ledger: 5.6 s including
+`VACUUM`, 302 MB after, 239 B/event). A WAL cap (`journal_size_limit` 64 MB)
+and a `wal_checkpoint(TRUNCATE)` at the end of each catch-up run keep the
+sidecar small.
+
 Why SQLite over the first draft's monthly JSONL (consult §8): the ledger needs
 a **unique unit key** (Claude in-flight upsert, shrink/rewrite re-reads, Codex
 files moving into `archived_sessions`, crash replays) and **one transaction**

@@ -105,12 +105,45 @@ the first deploy, then tens of MB per tick.
 - Stages: 1a ledger + ownership · 1b readers + scheduler · 2 report model ·
   3a window shell (+ DEBUG frame harness) · 3b chart · 4 attribution polish.
 
+## Deploy of 1a + 1b (fixes session, 2026-09-03 22:01 PDT, pid 90169)
+
+Seeded 26 ownership rows from the switch ring; catch-up 141 slices in the
+first 2 m 16 s at ~1 slice/s (64 MB each), backlog 28.07 GB → 0 in 5 m 32 s
+(~68 MB/s); main thread idle throughout (all `sample` frames parked in
+`nextEventMatchingMask`; the work on the `com.claudeusagewidget.telemetry`
+queue); CPU 67–93 % during catch-up then 0 %; RSS peaked 453 MB (the pass's
+working set) and fell to 230 MB; sweep, preflight, ⇄ selector, exposure
+probes unaffected; 0 cfprefsd rejections. **Ledger 683 MB on schema v1**
+(~540 B/event) — the trigger for schema v2 below. Incremental ticks after
+the next deploy (main `d45d518`): "slice: 4 files, 488 KB, +12 events".
+
+## Stage 2 — report model + ledger v2 (PR pending)
+
+`Telemetry/TelemetryQuery.swift` (scope / window / metric / stack; windows →
+local-calendar buckets at query time, hour / day / week → month, DST by the
+calendar; previous period over the same elapsed portion),
+`TokenPriceTable.swift` (shipped list prices, longest-prefix match, nano-USD),
+`AttributionResolver.swift` (timeline with the gap rule, byPath for isolated
+Codex homes, sole account for Grok; two-heartbeat trailing trust),
+`TelemetryReport.swift` (minute aggregates → attributed rows → buckets /
+series with the Other fold, KPI totals + previous, 7-bucket mean over complete
+buckets, model and account tables with Unattributed last, coverage,
+per-provider provenance and caveats, outlier verdict ≥ 14 buckets and > 20×
+the non-zero median, provider-native counts), `TelemetryLedger` v2 (interned
+strings, in-place migration, `aggregateMinutes`, `distinctSessions`,
+checkpoint), slice budget 32 MB. Tests: `TelemetryReportTests` (9),
+`TelemetryLedgerTests` +3 (migration from a hand-built v1 file, aggregation,
+reassignment); opt-in migration timing test.
+
+Measured on an online copy of the live ledger (1,261,884 events): migration
+5.6 s including `VACUUM`, 716 MB → 302 MB (239 B/event); last-24 h minute
+aggregates 6,997 rows.
+
 ## Next
 
-Stage 2 (report model: bucketing, attribution resolver, shares, price table,
-coverage, outlier rule, per-provider provenance), then 3a (window shell +
-DEBUG frame harness `CUW_RENDER_FRAMES`), 3b (chart), 4 (attribution polish).
-The fixes session deploys after 1b so the ledger starts accumulating.
+3a (window shell + DEBUG frame harness `CUW_RENDER_FRAMES`), 3b (chart),
+4 (attribution polish, markers, minute-compaction of raw events older than
+90 days — lossless for the report).
 
 ## Open questions
 

@@ -45,6 +45,9 @@ nonisolated struct ProfileSummary: Sendable, Equatable {
     var name: String
     var provider: TelemetryProvider
     var accountStamp: String?
+    /// Last path component of `Profile.codexHomePath` — an isolated Codex home
+    /// whose rollouts attribute to this profile by path.
+    var codexHomeSlug: String? = nil
 }
 
 nonisolated final class OwnershipRecorder: @unchecked Sendable {

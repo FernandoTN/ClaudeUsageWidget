@@ -39,7 +39,10 @@ nonisolated struct TelemetrySourceRoots: Sendable {
 
 nonisolated struct IndexerBounds: Sendable {
     var maxFiles = 200
-    var maxBytes = 64 << 20
+    /// 32 MB: the first deploy's 64 MB slices peaked the process at 450 MB RSS
+    /// during catch-up (framed lines + parsed objects + SQLite cache); half the
+    /// budget halves the working set at ~the same throughput.
+    var maxBytes = 32 << 20
     var maxSeconds: TimeInterval = 2.0
 }
 

@@ -113,7 +113,8 @@ final class TelemetryService {
         profiles.map { profile in
             let kind = profile.providerKind
             return ProfileSummary(id: profile.id, name: profile.name, provider: TelemetryProvider(kind),
-                                  accountStamp: accountStamp(of: profile, for: kind))
+                                  accountStamp: accountStamp(of: profile, for: kind),
+                                  codexHomeSlug: profile.codexHomePath.map { URL(fileURLWithPath: $0).lastPathComponent })
         }
     }
 
@@ -221,12 +222,19 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
         }
         if report.hitBound, !catchUpQueued {
             catchUpQueued = true
+            catchingUp = true
             queue.asyncAfter(deadline: .now() + Self.catchUpDelay) { [weak self] in
                 guard let self else { return }
                 self.tick(queue: queue)
             }
+        } else if catchingUp, !report.hitBound {
+            // The catch-up run is over: fold the WAL back into the main file.
+            catchingUp = false
+            ledger?.checkpoint()
+            telemetryLog.info("catch-up complete; ledger \(self.ledger?.storageBytes() ?? 0) B on disk")
         }
     }
+    private var catchingUp = false
 
     func recordClaim(provider: TelemetryProvider, newOwner: UUID?, previousOwner: UUID?,
                      accountStamp: String?, name: String?, cause: String?, at: Date) {
