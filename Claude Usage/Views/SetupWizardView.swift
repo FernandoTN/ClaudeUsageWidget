@@ -113,6 +113,16 @@ struct SetupWizardView: View {
 
         do {
             try ClaudeCodeSyncService.shared.syncToProfile(profileId)
+
+            // The profile now holds a copy of the system Keychain login — the
+            // Claude Code CLI's current account — so it owns the shared login
+            // from here on. Without this claim the pointer stays wherever it
+            // was (usually nowhere, on a first run), and every owner test in
+            // the sweep would fall back to inference over a profile the app
+            // KNOWS is the owner. Same beat as CLIAccountView's sync.
+            ProfileManager.shared.claimActiveClaudeOwnership(profileId)
+            Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: profileId, force: true) }
+
             NotificationCenter.default.post(name: .credentialsChanged, object: nil)
             dismiss()
         } catch {
