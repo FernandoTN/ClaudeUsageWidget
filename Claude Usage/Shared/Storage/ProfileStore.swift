@@ -186,6 +186,20 @@ class ProfileStore {
         static let activeGrokProfileId = "activeGrokProfileId"
     }
 
+    /// This store's keys for `SettingsKeyRegistry` (spec §5.2).
+    static let registeredKeys: [RegisteredKey] = [
+        RegisteredKey(Keys.profiles, .profileStore, .live, ui: "Accounts"),
+        RegisteredKey(Keys.activeProfileId, .profileStore, .live, ui: "Accounts (Viewing)"),
+        RegisteredKey(Keys.displayMode, .profileStore, .live, ui: "Display › Menu bar"),
+        RegisteredKey(Keys.multiProfileConfig, .profileStore, .live, ui: "Display › Menu bar"),
+        RegisteredKey(Keys.credentialsMigratedToKeychain, .profileStore, .migrationFlag),
+        RegisteredKey(Keys.credentialsRepairedV2, .profileStore, .migrationFlag),
+        RegisteredKey(Keys.keychainRebuiltV3, .profileStore, .migrationFlag),
+        RegisteredKey(Keys.activeClaudeProfileId, .profileStore, .live, ui: "Active & Auto-switch; ⇄ selector"),
+        RegisteredKey(Keys.activeCodexProfileId, .profileStore, .live, ui: "Active & Auto-switch; ⇄ selector"),
+        RegisteredKey(Keys.activeGrokProfileId, .profileStore, .live, ui: "Active & Auto-switch; ⇄ selector"),
+    ]
+
     // MARK: - Preferences (cfprefsd) degradation resilience
     //
     // macOS's preferences daemon can lose access to plist files while the app is

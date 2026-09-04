@@ -1132,3 +1132,27 @@ opens on what was in force rather than on stale type defaults.
 **Rejected.** A second editor implementation for the fleet card (one component,
 two bindings); deleting an account's settings when it follows the fleet (kept,
 so "own" is reversible); seeding the fleet key from the viewed row.
+
+### 12.5 Settings › Display and Advanced (stage 3c)
+
+**Display.** Header, then "Menu bar": the mode picker (Single account /
+Multiple accounts) with the note that WHICH accounts show is each account's own
+Monitoring setting; in multi mode the icon style, layout and click-opens
+pickers with their one-line notes, then the three cosmetic toggles. "Active-
+account selector" is the ⇄ toggle moved from Manage Profiles. "Popover" holds
+the two time pickers. "Single-account bar" is a note + link to Appearance — the
+icon configuration moves here with 3d, together with the `.appearance` route
+alias (aliasing it now would loop the link back onto Display).
+
+**Advanced.** "Startup" (launch at login), "Keyboard shortcuts" (the rows are
+now `ShortcutRowsCard`, shared with the legacy page until 3d deletes it),
+"Diagnostics" (the first UI for `debugAPILoggingEnabled`, the `log show`
+command with Copy, version), "Dead-login flags" (one row per flagged login with
+"Forget flag" — clears through the owning service, credentials untouched, the
+note says where the repair is) and "Stored settings" (live / registered / on
+disk counts, an amber alarm for any on-disk key nobody registered, a
+disclosure listing every key with its on-disk mark and where it is edited).
+
+**Rejected.** Duplicating the shortcut rows (extracted instead); a "reset all
+settings" button (nothing in the spec asks for it, and the empty-overwrite
+guard exists for a reason); deleting unregistered keys from the Advanced page.

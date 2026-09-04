@@ -64,6 +64,13 @@ enum DesignFrameHarness {
              width: 560, name: "alerts-overrides", to: dir, index: &index)
         emit(AlertOverridesCard(rows: [], onOpen: { _ in }, onFollow: { _ in }, onFollowAll: {}).padding(16),
              width: 560, name: "alerts-overrides-empty", to: dir, index: &index)
+        emit(DisplayMenuBarCard().padding(16), width: 560, name: "display-menu-bar", to: dir, index: &index)
+        emit(DisplayPopoverCard().padding(16), width: 560, name: "display-popover", to: dir, index: &index)
+        emit(AdvancedDiagnosticsCard().padding(16), width: 560, name: "advanced-diagnostics", to: dir, index: &index)
+        emit(DeadLoginFlagsCard(rows: [DeadLoginFlagRow(id: UUID(), name: "Ai", provider: .claude),
+                                       DeadLoginFlagRow(id: UUID(), name: "xFenrir(dev)", provider: .codex)]) { _ in }.padding(16),
+             width: 560, name: "advanced-dead-logins", to: dir, index: &index)
+        emit(StoredSettingsCard().padding(16), width: 560, name: "advanced-stored-settings", to: dir, index: &index)
         for selection in sel {
             emit(ActiveProviderCard(selection: selection, isEnabled: true) { _ in }.padding(16), width: 560,
                  name: "active-card-\(ActiveVocabulary.providerName(selection.provider).lowercased())", to: dir, index: &index)
