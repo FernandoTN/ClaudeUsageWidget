@@ -72,6 +72,15 @@ struct CLIAccountView: View {
                         .foregroundColor(.orange)
                     }
 
+                    if profileManager.needsAccountRelogin(profile.id) {
+                        Label(
+                            "profiles.needs_account_relogin".localized,
+                            systemImage: "person.crop.circle.badge.exclamationmark"
+                        )
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundColor(.orange)
+                    }
+
                     // Credentials & Actions Card
                     SettingsSectionCard(
                         title: "cli.account_details".localized,

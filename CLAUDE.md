@@ -373,15 +373,36 @@ the identity endpoint, falling back to `~/.claude.json`'s cached
 `oauthAccount.accountUuid` so a refused network call does not silently downgrade
 the guard. A refusal logs once per (profile, refused account) pair and is
 counted in `refusedCredentialWrites`, which the duplicate/contamination log line
-reports. **Manual Sync is deliberately NOT gated by this comparison**:
+reports. **Manual Sync has its own guard, the Codex twin, not this comparison**:
 `syncToProfile` clears the stamp by design because an explicit sync may bring a
 different account (that is the documented `/login` + re-sync repair), so gating
-it on the profile's previous account would refuse the repair. The duplicate
-detector covers that path instead — the forced re-stamp that follows every sync
-fires the notice if the sync created a duplicate. `adoptSystemLoginByIdentity`
+it on the profile's previous account would refuse the repair. It is gated on the
+other axis instead: `syncToProfile` refuses when ANOTHER profile is already
+stamped with the incoming account (`duplicateAccountHolder` →
+`ClaudeCodeError.accountAlreadySynced`, naming the holder), exactly like Codex's
+`account_id` check. Evidence is `~/.claude.json`'s `oauthAccount.accountUuid` —
+the CLI's own record of who it is logged in as, the parallel of Codex reading
+`account_id` out of auth.json: local, non-secret, no network on a user-blocking
+path. Absent or unreadable is NO EVIDENCE and permits the sync; the forced
+re-stamp that follows then surfaces a duplicate through the detector. `adoptSystemLoginByIdentity`
 (identity adoption and the launch repair) needs no separate gate: it already
 writes only into the profile whose stamp equals the shared login's live
 identity.
+
+**Which side of a shared account to fix**: the duplicate caption says two
+profiles share an account; `ProfileManager.profilesNeedingAccountRelogin` says
+which one to re-login, and only when the evidence names it. Two sources:
+`ClaudeCodeSyncService.isLoginContaminated` — the profile carried a stamp and its
+OWN token later reported a different account, which is a write that moved another
+account's login into it (recorded at the moment `stampAccountIdentity` sees the
+disagreement, because the very next line heals the stamp to match the token and
+erases the evidence; persisted under `claudeContaminatedLogins_v1`, cleared on
+agreement or an explicit sync) — and, for a duplicate group that CONTAINS the
+profile owning the shared CLI login, every other member of it. A duplicate group
+the active login is not part of flags nobody: which member is the impostor is
+genuinely unknown there, and guessing would tell the user to re-login the profile
+they meant to keep. Nothing is ever cleared automatically; the caption
+("Re-login needed…") appears on the Manage Profiles row and the CLI Account page.
 
 **Dead-login gate**: `activateProfile` NEVER applies credentials that are still
 expired after the pre-apply refresh (both providers). Writing a dead login over the

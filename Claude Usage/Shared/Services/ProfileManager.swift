@@ -909,6 +909,44 @@ class ProfileManager: ObservableObject {
         return (toNotify, live)
     }
 
+    /// Profiles the user must re-login to resolve a shared-account state. Two
+    /// sources, because they catch different halves of it:
+    ///
+    /// - `contaminated`: the profile's stamp disagreed with the identity its OWN
+    ///   token reports, so a write moved another account's login into it. True
+    ///   regardless of whether a duplicate group exists (the other side may have
+    ///   been deleted since).
+    /// - a duplicate group whose owner is known: every member EXCEPT the profile
+    ///   that owns the shared CLI login is holding a copy of that account. The
+    ///   owner is the one demonstrably logged in, so it is the others that need
+    ///   their own account.
+    ///
+    /// A duplicate group the active login is not part of flags nobody: which
+    /// member is the impostor is genuinely unknown there, and guessing would
+    /// tell the user to re-login the profile they meant to keep. That group is
+    /// still reported as a duplicate — it just gets no verdict about which side
+    /// to fix.
+    nonisolated static func profilesNeedingAccountRelogin(
+        groups: [[UUID]], activeClaudeProfileId: UUID?, contaminated: Set<UUID>
+    ) -> Set<UUID> {
+        var needing = contaminated
+        guard let owner = activeClaudeProfileId else { return needing }
+        for group in groups where group.contains(owner) {
+            needing.formUnion(group.filter { $0 != owner })
+        }
+        return needing
+    }
+
+    /// Published mirror of the above for the settings rows.
+    @Published private(set) var profilesNeedingAccountRelogin: Set<UUID> = []
+
+    /// True when this profile is holding another account's login and only a
+    /// `/login` + Sync of ITS OWN account can fix it. The app never clears the
+    /// credential itself.
+    func needsAccountRelogin(_ profileId: UUID) -> Bool {
+        profilesNeedingAccountRelogin.contains(profileId)
+    }
+
     /// The OTHER profiles that hold a login for the same Anthropic account as
     /// `profileId`, in roster order. Empty when the profile is not duplicated.
     func duplicateClaudeAccountPartnerNames(for profileId: UUID) -> [String] {
@@ -931,6 +969,15 @@ class ProfileManager: ObservableObject {
         let groups = Self.duplicateClaudeAccountGroups(in: profiles)
         if groups != duplicateClaudeAccountGroups {
             duplicateClaudeAccountGroups = groups
+        }
+
+        let needingRelogin = Self.profilesNeedingAccountRelogin(
+            groups: groups,
+            activeClaudeProfileId: activeClaudeProfileId,
+            contaminated: Set(profiles.map(\.id).filter { ClaudeCodeSyncService.shared.isLoginContaminated($0) })
+        )
+        if needingRelogin != profilesNeedingAccountRelogin {
+            profilesNeedingAccountRelogin = needingRelogin
         }
 
         let (toNotify, live) = Self.duplicateClaudeAccountNotices(

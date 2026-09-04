@@ -666,6 +666,15 @@ struct ProfileRow: View {
                         .font(.system(size: 10))
                         .foregroundColor(.orange)
                 }
+
+                // The actionable half: which side of a shared account to fix.
+                // Shown only when the evidence names one (see
+                // ProfileManager.profilesNeedingAccountRelogin) — never a guess.
+                if profileManager.needsAccountRelogin(profile.id) {
+                    Text("profiles.needs_account_relogin".localized)
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
             }
 
             Spacer()

@@ -423,6 +423,34 @@ class ClaudeCodeSyncService {
             throw ClaudeCodeError.noProfileCredentials
         }
 
+        // DUPLICATE-ACCOUNT GUARD (the Claude twin of Codex's account_id check):
+        // syncing one Anthropic account into two profiles gives it two tiles for
+        // ONE quota, doubles its fetch load against an endpoint that rate-limits
+        // per account, and puts both copies in the same auto-switch group.
+        //
+        // It keys on ANOTHER profile holding the incoming account — never on
+        // this profile's own previous account. An explicit sync bringing a
+        // DIFFERENT account into this profile is the documented repair ("/login
+        // with that account, then re-sync"), and refusing that would block the
+        // only way out of a dead login.
+        //
+        // Evidence is the CLI's own record of who it is logged in as
+        // (~/.claude.json), the exact parallel of Codex reading account_id out
+        // of auth.json: local, non-secret, no network on a user-blocking path.
+        // Absent or unreadable is NO EVIDENCE and permits the sync — the forced
+        // re-stamp that follows every sync then surfaces a duplicate through
+        // ProfileManager.duplicateClaudeAccountGroups.
+        if let incoming = cliCachedAccountUUID(),
+           let holder = Self.duplicateAccountHolder(
+               accountUUID: incoming,
+               target: profileId,
+               profiles: profiles,
+               accountUUIDOf: { $0.claudeAccountUUID }
+           ) {
+            LoggingService.shared.log("⛔️ Claude sync refused: account \(String(incoming.prefix(8))) is already held by '\(holder.name)'")
+            throw ClaudeCodeError.accountAlreadySynced(profileName: holder.name)
+        }
+
         profiles[index].cliCredentialsJSON = jsonData
         // An explicit sync may bring a DIFFERENT account's login (the user can
         // /login anywhere between syncs) — the old identity stamp no longer
@@ -432,6 +460,10 @@ class ClaudeCodeSyncService {
         profiles[index].claudeOrganizationUUID = nil
         ProfileStore.shared.saveProfiles(profiles)
         reloginNotifiedProfiles.remove(profileId)
+        // Whatever this profile held before, it now holds the login the user
+        // just chose for it — the old contamination verdict no longer describes
+        // it. The re-stamp that follows re-derives the truth either way.
+        markLoginUncontaminated(profileId)
 
         LoggingService.shared.log("Synced CLI credentials to profile: \(profileId)")
     }
@@ -775,6 +807,18 @@ class ClaudeCodeSyncService {
               let identity = await fetchAccountIdentity(accessToken: token) else { return }
 
         var profiles = ProfileStore.shared.loadProfiles()
+        // A profile that ALREADY carried a stamp and whose own token now reports
+        // a different account did not change accounts by itself — something
+        // wrote another account's login into it. Record that before the stamp is
+        // healed to match the token, which is the line below that would
+        // otherwise erase the only evidence. Agreement clears the flag.
+        if let held = profiles.first(where: { $0.id == profileId })?.claudeAccountUUID, !held.isEmpty {
+            if held == identity.accountUUID {
+                markLoginUncontaminated(profileId)
+            } else {
+                markLoginContaminated(profileId, held: held, reported: identity.accountUUID)
+            }
+        }
         if let index = profiles.firstIndex(where: { $0.id == profileId }),
            profiles[index].claudeAccountUUID != identity.accountUUID
             || profiles[index].claudeAccountEmail != identity.email
@@ -929,6 +973,23 @@ class ClaudeCodeSyncService {
         return cli == target ? .write : .refuse
     }
 
+    /// The OTHER profile already stamped with `accountUUID`, if any. Pure (each
+    /// profile's account is injected) so the sync guard is testable without a
+    /// store, and keyed on the PERSISTED stamp so a profile still matches before
+    /// the background Keychain hydration fills its credentials in — an
+    /// unhydrated profile looks account-less, and a duplicate check that cannot
+    /// see it happily syncs the same account a second time.
+    nonisolated static func duplicateAccountHolder(
+        accountUUID: String,
+        target: UUID,
+        profiles: [Profile],
+        accountUUIDOf: (Profile) -> String?
+    ) -> Profile? {
+        profiles.first {
+            $0.id != target && (accountUUIDOf($0).map { !$0.isEmpty && $0 == accountUUID } ?? false)
+        }
+    }
+
     /// The account behind the CLI's current login. The identity endpoint is the
     /// authority; `~/.claude.json`'s cached `oauthAccount.accountUuid` is the
     /// fallback for when it cannot be reached, so a refused network call does
@@ -952,6 +1013,57 @@ class ClaudeCodeSyncService {
               let oauthAccount = root["oauthAccount"] as? [String: Any],
               let uuid = oauthAccount["accountUuid"] as? String, !uuid.isEmpty else { return nil }
         return uuid
+    }
+
+    // MARK: - Contaminated Logins
+
+    /// Profiles whose PERSISTED stamp disagreed with the identity their own
+    /// stored token actually reports. That is the signature of a credential
+    /// write that moved one account's login into another account's profile: the
+    /// stamp still names who the profile is supposed to be, the token names
+    /// someone else. Recorded at the moment the identity pass sees the
+    /// disagreement, because the stamp is then healed to match the token and the
+    /// evidence would otherwise vanish.
+    ///
+    /// Persisted (like the dead-login set) so the "re-login needed" caption
+    /// survives a relaunch instead of waiting for the next identity resolution.
+    /// The app never clears the credential itself — which profile keeps the
+    /// account is the user's call.
+    private var contaminatedProfiles: Set<UUID> = ClaudeCodeSyncService.loadContaminatedLogins() {
+        didSet { Self.saveContaminatedLogins(contaminatedProfiles) }
+    }
+
+    private static let contaminatedLoginsKey = "claudeContaminatedLogins_v1"
+
+    private static func loadContaminatedLogins() -> Set<UUID> {
+        Set((UserDefaults.standard.stringArray(forKey: contaminatedLoginsKey) ?? []).compactMap(UUID.init(uuidString:)))
+    }
+
+    private static func saveContaminatedLogins(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: contaminatedLoginsKey)
+    }
+
+    /// True when this profile's stored login was found to belong to a different
+    /// account than the profile's own stamp claimed.
+    func isLoginContaminated(_ profileId: UUID) -> Bool {
+        contaminatedProfiles.contains(profileId)
+    }
+
+    /// The profile's stamp and its token agree again (a re-login, a re-sync, or
+    /// an identity resolution that matched).
+    func markLoginUncontaminated(_ profileId: UUID) {
+        contaminatedProfiles.remove(profileId)
+    }
+
+    /// Records that a profile's stored token reports a different account than
+    /// its stamp did. Called only from the identity pass, which has both.
+    private func markLoginContaminated(_ profileId: UUID, held: String, reported: String) {
+        guard !contaminatedProfiles.contains(profileId) else { return }
+        contaminatedProfiles.insert(profileId)
+        let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "?"
+        LoggingService.shared.log(
+            "⛔️ Claude: '\(name)' is stamped \(String(held.prefix(8))) but its stored token reports \(String(reported.prefix(8))) — the login in this profile belongs to another account"
+        )
     }
 
     /// Refusals already logged, keyed by profile + the account that was refused,
@@ -1127,6 +1239,7 @@ enum ClaudeCodeError: LocalizedError {
     case keychainWriteFailed(status: OSStatus)
     case noProfileCredentials
     case tokenRefreshFailed(status: Int)
+    case accountAlreadySynced(profileName: String)
 
     var errorDescription: String? {
         switch self {
@@ -1142,6 +1255,8 @@ enum ClaudeCodeError: LocalizedError {
             return "This profile has no synced CLI account."
         case .tokenRefreshFailed(let status):
             return "Failed to refresh the Claude Code OAuth token (HTTP \(status)). Please re-sync your CLI account."
+        case .accountAlreadySynced(let profileName):
+            return "This Anthropic account is already synced to the profile \u{201C}\(profileName)\u{201D}. Two profiles on one account share one quota. Remove it there first, or run `claude` and `/login` with a different account before syncing here."
         }
     }
 }
