@@ -146,9 +146,22 @@ struct PopoverContentView: View {
     }
 
     private func makeActiveRow(_ profile: Profile) -> some View {
-        MakeActiveRow(
+        let owner = profileManager.profiles.first { $0.providerKind == profile.providerKind && activeAccountIds.contains($0.id) }
+        let thresholds = ReadinessThresholds(
+            session: SharedDataStore.shared.loadAutoSwitchThreshold(),
+            weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+        )
+        func headline(_ usage: ClaudeUsage?) -> String? {
+            usage.flatMap { DashboardFormatting.headline(DashboardSnapshot.gauges(for: $0, thresholds: thresholds)) }
+        }
+        return MakeActiveRow(
             name: profile.name,
             provider: profile.providerKind,
+            ownerName: owner?.name,
+            question: DashboardFormatting.switchQuestion(
+                provider: profile.providerKind,
+                from: owner?.name, fromHeadline: headline(owner?.claudeUsage),
+                to: profile.name, toHeadline: headline(profile.claudeUsage)),
             loginDead: ProfileCredentialStatusCache.hasDeadLogin(profile),
             isPending: pendingSwitch == profile.id,
             note: noteFor == profile.id ? switchNote : nil,
@@ -156,10 +169,11 @@ struct PopoverContentView: View {
             onConfirm: {
                 let id = profile.id
                 let name = profile.name
+                let provider = profile.providerKind
                 pendingSwitch = nil
                 Task { @MainActor in
                     let outcome = await onMakeActive(id)
-                    switchNote = DashboardFormatting.outcome(outcome, name: name)
+                    switchNote = DashboardFormatting.outcome(outcome, name: name, provider: provider)
                     noteFor = id
                 }
             },
@@ -541,6 +555,10 @@ struct GroupNavigator: View {
 struct MakeActiveRow: View {
     let name: String
     let provider: Profile.ProviderKind
+    /// Who is active for the provider now (round 1, M1).
+    var ownerName: String? = nil
+    /// Both sides named with the candidate's headroom (round 1, M2).
+    var question: String
     let loginDead: Bool
     let isPending: Bool
     let note: String?
@@ -553,7 +571,7 @@ struct MakeActiveRow: View {
             if isPending {
                 // Frame harness, first finding: at popover width these
                 // sentences truncated with an ellipsis. They wrap.
-                Text("Switch the \(ActiveVocabulary.providerName(provider)) login to \(name)?")
+                Text(question)
                     .font(.system(size: 10, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 Text(DashboardFormatting.switchCost(provider))
@@ -561,16 +579,24 @@ struct MakeActiveRow: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if loginDead {
-                    Text("This login is dead; the switch will be refused. Log in again first.")
+                    Text("This login is dead; the switch would be refused. Log in again first.")
                         .font(.system(size: 9))
-                        .foregroundColor(.orange)
+                        .foregroundColor(DesignRole.caution.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {
-                    Button("Switch", action: onConfirm)
-                        .keyboardShortcut(.defaultAction)
-                    Button("common.cancel".localized, action: onCancel)
-                        .keyboardShortcut(.cancelAction)
+                    if loginDead {
+                        // A dead login cannot be switched to: the primary
+                        // action says so and Cancel is the default (M3).
+                        Button("Log in first") {}.disabled(true)
+                        Button("common.cancel".localized, action: onCancel)
+                            .keyboardShortcut(.defaultAction)
+                    } else {
+                        Button("Switch", action: onConfirm)
+                            .keyboardShortcut(.defaultAction)
+                        Button("common.cancel".localized, action: onCancel)
+                            .keyboardShortcut(.cancelAction)
+                    }
                 }
                 .controlSize(.small)
             } else {
@@ -580,9 +606,15 @@ struct MakeActiveRow: View {
                             .font(.system(size: 9, weight: .semibold))
                         Text(ActiveVocabulary.makeActive(provider))
                             .font(.system(size: 10, weight: .semibold))
+                        if let ownerName {
+                            Text("· now \(ownerName)")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
                         Spacer()
                     }
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(DesignRole.action.color)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -590,6 +622,7 @@ struct MakeActiveRow: View {
                     Text(note)
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -597,7 +630,7 @@ struct MakeActiveRow: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isPending ? Color.orange.opacity(0.10) : Color.primary.opacity(0.03))
+                .fill(isPending ? DesignRole.caution.color.opacity(0.10) : Color.primary.opacity(0.03))
         )
     }
 }
