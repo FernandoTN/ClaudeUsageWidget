@@ -1972,7 +1972,37 @@ private func observeCredentialChanges() {
         // sentinel — replace it with this profile's last known boundary before
         // anything displays or persists the result.
         usage.healMissingResetStamps(previous: profile.claudeUsage)
-        return usage
+        return reconcileMonotonicWindows(usage, for: profile)
+    }
+
+    /// Applies the monotonic-window guard to a freshly measured value before it
+    /// is saved or shown to `checkAutoSwitchIfNeeded`: a window whose fresh
+    /// percentage dropped below the last server-affirmed one while its own
+    /// reset boundary is still in the future keeps the previous value (see
+    /// `ClaudeUsage.reconciledWithPrevious` for the incident and the rules).
+    ///
+    /// CLAUDE ONLY. A Codex account can legitimately reset its window early by
+    /// spending a "usage limit reset" credit (`codexResetCreditsAvailable`), so
+    /// a mid-window drop there is a real measurement, not a bad payload.
+    private func reconcileMonotonicWindows(_ fresh: ClaudeUsage, for profile: Profile) -> ClaudeUsage {
+        guard profile.providerKind == .claude else { return fresh }
+        let previous = profile.claudeUsage
+        let (reconciled, suspectedLow) = fresh.reconciledWithPrevious(previous, now: Date())
+        guard !suspectedLow.isEmpty, let previous else { return reconciled }
+
+        let said = fresh.percentages(for: suspectedLow)
+        let holding = previous.percentages(for: suspectedLow)
+        let windows = suspectedLow.joined(separator: "/")
+        // Default level deliberately (not .info): .info never persists to
+        // `log show`, and this line is the only post-hoc evidence that a
+        // displayed percentage is a held one rather than a fresh measurement.
+        LoggingService.shared.log(
+            "MenuBarManager: '\(profile.name)' fresh reading dropped below the last server-affirmed value before its reset — held \(windows) (own endpoint said \(said), holding \(holding))"
+        )
+        incidentRing.record(FleetInsights.Incident(
+            at: Date(), profileId: profile.id, name: profile.name, provider: .claude, kind: .heldLowReading,
+            detail: "held \(windows) — fresh \(said), holding \(holding)"))
+        return reconciled
     }
 
     private func fetchRawUsageForProfile(_ profile: Profile) async throws -> ClaudeUsage {
@@ -2153,6 +2183,10 @@ private func observeCredentialChanges() {
                 // Carry forward last known reset boundaries for windows the API
                 // reported without a resets_at stamp (idle rollover — sentinel).
                 newUsage.healMissingResetStamps(previous: profile.claudeUsage)
+                // ...then refuse a payload that claims a window UNBURNED itself
+                // before its boundary passed (this path fetches directly, so it
+                // does not get the guard `fetchUsageForProfile` applies).
+                newUsage = self.reconcileMonotonicWindows(newUsage, for: profile)
 
                 // Stale-completion guard (Codex review): this fetch ran for the
                 // profile captured at trigger time. If the user switched
@@ -2983,6 +3017,10 @@ private func observeCredentialChanges() {
             let headerUsage = try await apiService.fetchUsageFromMessageHeaders(oauthAccessToken: accessToken)
             var merged = (profile.claudeUsage ?? .empty).mergingHeaderMeasurement(headerUsage)
             merged.healMissingResetStamps(previous: profile.claudeUsage)
+            // The headers are a real measurement, but the same monotonic rule
+            // applies to what they report — and it must run before the log
+            // below prints the numbers this rescue is about to save.
+            merged = reconcileMonotonicWindows(merged, for: profile)
             LoggingService.shared.log(
                 "MenuBarManager: '\(profile.name)' usage endpoint refused — read live counters from the Messages API headers instead: session \(Int(merged.sessionPercentage))%, weekly \(Int(merged.weeklyPercentage))%\(merged.rateLimitedUntil != nil ? " (5h window REJECTED — sessions are blocked)" : "")"
             )

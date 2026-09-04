@@ -54,6 +54,18 @@ struct ClaudeUsage: Codable, Equatable {
     /// (`mergingHeaderMeasurement`) and the CLI-cache adoption.
     var provenance: MeasurementProvenance? = nil
 
+    /// Windows whose percentage this value HELD from the previously cached
+    /// reading because the fresh payload reported LESS utilization while the
+    /// window's own reset boundary was still in the future — see
+    /// `reconciledWithPrevious`. nil (or empty) means every window here is as
+    /// measured. Optional with nil default so previously cached usage JSON
+    /// still decodes (the synthesized decoder uses `decodeIfPresent` for
+    /// optionals only, which is why this is not a non-optional `[String]`).
+    var heldWindows: [String]? = nil
+
+    /// The held window names, empty when nothing was held.
+    var heldWindowNames: [String] { heldWindows ?? [] }
+
     /// True while an INFERRED (unverified) throttle stamp is live: the account
     /// is SUSPECTED to be rate-limited from behavioral evidence, but the server
     /// never affirmed it. Display surfaces render this as a distinct state
@@ -288,6 +300,132 @@ struct ClaudeUsage: Codable, Equatable {
             boundary = boundary.addingTimeInterval(7 * 24 * 3600)
         }
         return boundary
+    }
+
+    // MARK: - Monotonic windows
+
+    /// Holds each window's percentage at the last server-affirmed value when a
+    /// fresh reading claims LESS utilization before that window's reset
+    /// boundary has passed.
+    ///
+    /// A quota window's utilization cannot decrease while the window is still
+    /// open, so a sharp drop with the boundary still in the future is a bad
+    /// payload, not a measurement. Live incident (2026-09-04 13:06 PDT): the
+    /// active Claude owner 'dJormun' was measured at session 56 % / weekly 70 %
+    /// / Fable 89 % (own endpoint 13:04:20, header rescue 13:05:21) and then
+    /// `oauth/usage` answered HTTP 200 parsing to 0 / 0 / 0. The zeros were
+    /// saved over the real numbers and became what `checkAutoSwitchIfNeeded`
+    /// read, so the account could never reach the 95 % switch — and because the
+    /// header rescue carries no Fable value, a Fable exhaustion would never
+    /// have been seen at all.
+    ///
+    /// Each window is decided INDEPENDENTLY, and a hold requires all of:
+    /// `previous` exists, was measured with the account's own credentials
+    /// (`.ownEndpoint` / `.headerRescue`; a nil provenance is the legacy
+    /// own-endpoint default), the window's previous reset stamp is known and
+    /// still in the future at `now`, and the new percentage is lower than the
+    /// previous one by more than `tolerance` points. Anything else accepts the
+    /// new reading unchanged. A reading is never raised above what was
+    /// measured, no reset stamp is invented, and `lastUpdated` always stays the
+    /// new reading's.
+    ///
+    /// Two windows have no reset stamp of their own: the Opus weekly window is
+    /// governed by the all-models `weeklyResetTime` (the account's weekly
+    /// boundary, which every weekly window shares) and the Sonnet one by
+    /// `sonnetWeeklyResetTime` when the payload carried it, else the same
+    /// all-models boundary. A window that DISAPPEARS from the payload (Fable
+    /// present before, nil now) is not a drop and is never held — an account
+    /// that genuinely loses a scoped limit must not be pinned to a stale
+    /// percentage for a week.
+    nonisolated func reconciledWithPrevious(
+        _ previous: ClaudeUsage?,
+        now: Date = Date(),
+        tolerance: Double = 5
+    ) -> (usage: ClaudeUsage, suspectedLow: [String]) {
+        var result = self
+        result.heldWindows = nil
+        guard let previous, Self.isServerAffirmed(previous) else { return (result, []) }
+
+        /// A boundary that is known (not the sentinel) and has NOT passed.
+        func boundaryStillOpen(_ stamp: Date?) -> Bool {
+            guard let stamp, stamp != Self.unknownResetSentinel else { return false }
+            return stamp > now
+        }
+        func droppedSuspiciously(_ new: Double, _ old: Double) -> Bool {
+            old - new > tolerance
+        }
+
+        var held: [String] = []
+
+        if boundaryStillOpen(previous.sessionResetTime),
+           droppedSuspiciously(sessionPercentage, previous.sessionPercentage) {
+            result.sessionPercentage = previous.sessionPercentage
+            result.sessionTokensUsed = previous.sessionTokensUsed
+            result.sessionResetTime = previous.sessionResetTime
+            held.append("session")
+        }
+
+        if boundaryStillOpen(previous.weeklyResetTime),
+           droppedSuspiciously(weeklyPercentage, previous.weeklyPercentage) {
+            result.weeklyPercentage = previous.weeklyPercentage
+            result.weeklyTokensUsed = previous.weeklyTokensUsed
+            result.weeklyResetTime = previous.weeklyResetTime
+            held.append("weekly")
+        }
+
+        if let previousFable = previous.fableWeeklyPercentage,
+           let newFable = fableWeeklyPercentage,
+           boundaryStillOpen(previous.fableWeeklyResetTime),
+           droppedSuspiciously(newFable, previousFable) {
+            result.fableWeeklyPercentage = previousFable
+            result.fableWeeklyResetTime = previous.fableWeeklyResetTime
+            held.append("fable")
+        }
+
+        // Opus has no reset stamp of its own — the account's weekly boundary is
+        // the one its window rides.
+        if boundaryStillOpen(previous.weeklyResetTime),
+           droppedSuspiciously(opusWeeklyPercentage, previous.opusWeeklyPercentage) {
+            result.opusWeeklyPercentage = previous.opusWeeklyPercentage
+            result.opusWeeklyTokensUsed = previous.opusWeeklyTokensUsed
+            held.append("opus")
+        }
+
+        if boundaryStillOpen(previous.sonnetWeeklyResetTime ?? previous.weeklyResetTime),
+           droppedSuspiciously(sonnetWeeklyPercentage, previous.sonnetWeeklyPercentage) {
+            result.sonnetWeeklyPercentage = previous.sonnetWeeklyPercentage
+            result.sonnetWeeklyTokensUsed = previous.sonnetWeeklyTokensUsed
+            result.sonnetWeeklyResetTime = previous.sonnetWeeklyResetTime ?? sonnetWeeklyResetTime
+            held.append("sonnet")
+        }
+
+        result.heldWindows = held.isEmpty ? nil : held
+        return (result, held)
+    }
+
+    /// True when the value was measured with the ACCOUNT'S OWN credentials, so
+    /// it is fit to hold a fresh reading against. A nil provenance is the
+    /// legacy own-endpoint default — nothing in the fetch path stamps
+    /// `.ownEndpoint` explicitly, so treating nil as unaffirmed would make the
+    /// guard above dead code in production.
+    nonisolated static func isServerAffirmed(_ usage: ClaudeUsage) -> Bool {
+        (usage.provenance ?? .ownEndpoint).isOwnMeasurement
+    }
+
+    /// The percentages this value reports for `windows`, rounded, in order —
+    /// the "0/0/0" and "56/70/89" halves of the held-reading log line. A window
+    /// this value does not report at all prints as "-".
+    nonisolated func percentages(for windows: [String]) -> String {
+        windows.map { name -> String in
+            switch name {
+            case "session": return String(Int(sessionPercentage.rounded()))
+            case "weekly": return String(Int(weeklyPercentage.rounded()))
+            case "fable": return fableWeeklyPercentage.map { String(Int($0.rounded())) } ?? "-"
+            case "opus": return String(Int(opusWeeklyPercentage.rounded()))
+            case "sonnet": return String(Int(sonnetWeeklyPercentage.rounded()))
+            default: return "-"
+            }
+        }.joined(separator: "/")
     }
 
 }

@@ -1177,6 +1177,7 @@
 "insights.kind_probe_429" = "header probe refused";
 "insights.kind_rescue" = "measured through the Messages headers";
 "insights.kind_burst" = "burst 429 (streak %d)";
+"insights.kind_held_low" = "held the previous reading (fresh payload dropped before reset)";
 "insights.evidence_age" = "%@ ago";
 
 // MARK: - Round-3 design pass (spec §12.8)

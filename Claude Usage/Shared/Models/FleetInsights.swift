@@ -115,6 +115,11 @@ struct FleetInsights: Hashable {
             case headerRescue
             /// A burst-class 429 backed the fetch off.
             case burst429(streak: Int)
+            /// A fresh reading claimed LESS utilization than the last
+            /// server-affirmed one before the window's boundary had passed, so
+            /// the previous percentage was held (see
+            /// `ClaudeUsage.reconciledWithPrevious`).
+            case heldLowReading
         }
         var at: Date
         var profileId: UUID?
