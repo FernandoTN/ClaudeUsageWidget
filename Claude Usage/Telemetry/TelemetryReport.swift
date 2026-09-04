@@ -168,6 +168,8 @@ nonisolated enum TelemetryReportBuilder {
         var firstIndexedAt: Date?
         /// Rate-limit / quota-rejected markers inside the window (stage 4a overlay).
         var markers: [TelemetryMarker] = []
+        /// Isolated-home Codex rollouts still to be re-attributed (stage 4d).
+        var codexReindexPending = 0
     }
 
     static let outlierMinimumBuckets = 14
@@ -283,7 +285,8 @@ nonisolated enum TelemetryReportBuilder {
         let provenance = TelemetryProvider.allCases.filter(scopeProviders.contains).map { provider in
             let health = input.health.first { $0.provider == provider } ?? ProviderHealth(provider: provider)
             return ProviderProvenance(provider: provider, scannedAt: health.scannedAt, dataThrough: health.dataThrough,
-                                      caveats: caveats(for: provider, firstIndexedAt: input.firstIndexedAt, query: query), health: health)
+                                      caveats: caveats(for: provider, firstIndexedAt: input.firstIndexedAt, query: query,
+                                                       codexReindexPending: input.codexReindexPending), health: health)
         }
 
         var spans: [OwnershipSpan] = []
@@ -412,7 +415,13 @@ nonisolated enum TelemetryReportBuilder {
         case .account: return accountKey(for: row, roster: roster)
         case .originator:
             let source = row.aggregate.source ?? "unknown"
-            return SeriesKey(id: "\(row.aggregate.provider.rawValue):\(source)", label: source, provider: row.aggregate.provider)
+            // Codex: "xfenrir-dev/exec" reads "exec (xfenrir-dev)" — two homes with
+            // the same originator would otherwise be two series with one label.
+            var label = source
+            if row.aggregate.provider == .codex, source.contains("/"), let home = AttributionResolver.codexHomeSlug(in: source) {
+                label = "\(AttributionResolver.codexOriginator(in: source)) (\(home))"
+            }
+            return SeriesKey(id: "\(row.aggregate.provider.rawValue):\(source)", label: label, provider: row.aggregate.provider)
         case .sidechain:
             return row.aggregate.sidechain
                 ? SeriesKey(id: "\(row.aggregate.provider.rawValue):subagents", label: "Subagents", provider: row.aggregate.provider)
@@ -473,7 +482,8 @@ nonisolated enum TelemetryReportBuilder {
         }
     }
 
-    static func caveats(for provider: TelemetryProvider, firstIndexedAt: Date?, query: TelemetryQuery) -> [String] {
+    static func caveats(for provider: TelemetryProvider, firstIndexedAt: Date?, query: TelemetryQuery,
+                        codexReindexPending: Int = 0) -> [String] {
         switch provider {
         case .claude:
             var list = ["The Claude CLI deletes transcripts after 30 days; the ledger is the archive."]
@@ -483,7 +493,11 @@ nonisolated enum TelemetryReportBuilder {
             }
             return list
         case .codex:
-            return ["Default-home sessions are attributed by time; isolated homes by path."]
+            var list = ["Default-home sessions are attributed by time; isolated homes by path."]
+            if codexReindexPending > 0 {
+                list.append("Re-attributing isolated-home Codex sessions · \(codexReindexPending) file\(codexReindexPending == 1 ? "" : "s") to go — the Unattributed share moves until this finishes.")
+            }
+            return list
         case .grok:
             return ["Completed turns only — cancelled turns are not logged (≈ 5–10 % under the per-call log)."]
         }

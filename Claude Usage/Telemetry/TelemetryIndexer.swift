@@ -21,6 +21,15 @@ nonisolated struct TelemetrySourceRoots: Sendable {
     /// Codex homes: each contributes `sessions/` and `archived_sessions/`.
     var codexHomes: [URL]
     var grokSessions: [URL]
+    /// The default Codex home (`$CODEX_HOME` or `~/.codex`); every other home
+    /// is isolated and its rollouts carry "<home>/<originator>" as source.
+    /// nil = the first of `codexHomes`.
+    var defaultCodexHome: URL? = nil
+
+    func isIsolatedCodexHome(_ home: URL) -> Bool {
+        guard let defaultHome = defaultCodexHome ?? codexHomes.first else { return false }
+        return home.standardizedFileURL.path != defaultHome.standardizedFileURL.path
+    }
 
     static func live() -> TelemetrySourceRoots {
         let fm = FileManager.default
@@ -33,7 +42,8 @@ nonisolated struct TelemetrySourceRoots: Sendable {
         return TelemetrySourceRoots(
             claudeProjects: [Constants.ClaudePaths.projectsDirectory],
             codexHomes: homes,
-            grokSessions: [Constants.ClaudePaths.homeDirectory.appendingPathComponent(".grok/sessions")])
+            grokSessions: [Constants.ClaudePaths.homeDirectory.appendingPathComponent(".grok/sessions")],
+            defaultCodexHome: CodexUsageService.defaultCodexHome)
     }
 }
 
@@ -70,11 +80,18 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
         let cursor: TelemetryCursor?
         /// Grok: the session's decoded working directory.
         let source: String?
+        /// Codex: the slug of an isolated home, prefixed onto every event's
+        /// source ("xfenrir-dev/exec"); nil for the default home.
+        var isolatedCodexHome: String? = nil
+        /// Stage 4d one-time re-index: this file's rows were written under the
+        /// old source rule — delete them and re-derive from offset 0 in one
+        /// transaction. Never set on a resumed candidate.
+        var replace = false
         var unreadBytes: Int64 { max(0, size - (cursor?.offset ?? 0)) }
 
         func resuming(from cursor: TelemetryCursor) -> Candidate {
             Candidate(provider: provider, fileId: fileId, url: url, inode: inode, size: size, mtime: mtime,
-                      cursor: cursor, source: source)
+                      cursor: cursor, source: source, isolatedCodexHome: isolatedCodexHome, replace: false)
         }
     }
 
@@ -161,10 +178,12 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
     // MARK: - Enumeration
 
     private func enumerateCandidates(tallies: inout [TelemetryProvider: ProviderTally]) -> [Candidate] {
+        reindexPending = 0
         let cursors = Dictionary(uniqueKeysWithValues: ((try? ledger.allCursors()) ?? []).map { ($0.fileId, $0) })
         var candidates: [Candidate] = []
         var seenFileIds = Set<String>()
-        func consider(_ provider: TelemetryProvider, fileId: String, url: URL, source: String?, tally: inout ProviderTally) {
+        func consider(_ provider: TelemetryProvider, fileId: String, url: URL, source: String?, tally: inout ProviderTally,
+                      isolatedCodexHome: String? = nil) {
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
                   let size = (attributes[.size] as? NSNumber)?.int64Value,
                   let mtime = attributes[.modificationDate] as? Date else { return }
@@ -175,9 +194,15 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
             // mtime tolerance: the Date → REAL → Date round trip can drift by an ulp.
             let changed = cursor == nil || cursor!.inode != inode || size != cursor!.offset
                 || mtime.timeIntervalSince(cursor!.mtime) > 0.001
-            guard changed else { return }
+            // Stage 4d: an isolated home's rollout indexed under the old source
+            // rule is re-derived once, whether or not the file changed.
+            let replace = isolatedCodexHome != nil && cursor != nil
+                && Self.codexSourceVersion(of: cursor!) < CodexRolloutReader.sourceVersion
+            if replace { reindexPending += 1 }
+            guard changed || replace else { return }
             candidates.append(Candidate(provider: provider, fileId: fileId, url: url, inode: inode, size: size,
-                                        mtime: mtime, cursor: cursor, source: source))
+                                        mtime: mtime, cursor: replace ? nil : cursor, source: source,
+                                        isolatedCodexHome: isolatedCodexHome, replace: replace))
         }
 
         var claude = tallies[.claude] ?? ProviderTally()
@@ -204,7 +229,8 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
                     // The basename carries the rollout uuid; a move into
                     // archived_sessions is the same file, not a new one.
                     consider(.codex, fileId: "codex:" + url.lastPathComponent, url: url,
-                             source: home.lastPathComponent, tally: &codex)
+                             source: home.lastPathComponent, tally: &codex,
+                             isolatedCodexHome: roots.isIsolatedCodexHome(home) ? home.lastPathComponent : nil)
                 }
             }
         }
@@ -284,7 +310,13 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
             newState = try encoder.encode(out.state)
         case .codex:
             let previous = state.flatMap { try? decoder.decode(CodexRolloutReader.State.self, from: $0) } ?? .init()
-            let out = CodexRolloutReader.parse(lines: framed.lines, fileId: candidate.fileId, state: previous)
+            var out = CodexRolloutReader.parse(lines: framed.lines, fileId: candidate.fileId, state: previous)
+            if let home = candidate.isolatedCodexHome {
+                // "<home>/<originator>": the home is what attributes by path; the
+                // originator stays readable after the slash (stage 4d).
+                for index in out.events.indices { out.events[index].source = "\(home)/\(out.events[index].source ?? "unknown")" }
+            }
+            out.state.sourceVersion = CodexRolloutReader.sourceVersion
             events = out.events; dataThrough = out.dataThrough; reassignModel = out.firstModel
             tally.malformed += out.malformed; tally.unknown += out.unknownShapes
             newState = try encoder.encode(out.state)
@@ -297,11 +329,16 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
         let cursor = TelemetryCursor(fileId: candidate.fileId, path: candidate.url.path, inode: candidate.inode,
                                      size: candidate.size, mtime: candidate.mtime, offset: framed.nextOffset, state: newState)
         try ledger.transaction {
+            // Replace, never append: the old rows go in the same transaction
+            // that writes the re-derived ones and the cursor that marks the
+            // file done, so a crash leaves either the old file or the new.
+            if candidate.replace { try ledger.deleteEvents(fileId: candidate.fileId) }
             if let reassignModel { try ledger.reassignUnknownModel(fileId: candidate.fileId, to: reassignModel) }
             try ledger.upsert(events)
             try ledger.insert(markers)
             try ledger.save(cursor)
         }
+        if candidate.replace { reindexPending = max(0, reindexPending - 1) }
         // Done with this file for now when the snapshot is consumed, or when
         // only a trailing fragment (no newline yet) remains.
         let finished = !framed.hitByteBound
@@ -309,7 +346,20 @@ nonisolated final class TelemetryIndexer: @unchecked Sendable {
                            finished: finished, dataThrough: dataThrough, cursor: cursor)
     }
 
+    /// Files still to re-derive under the current Codex source rule, counted
+    /// at scan time and decremented as each completes; published through meta
+    /// so the window's notes can say "N files to go".
+    static let codexReindexPendingKey = "codexReindexPending_v1"
+    private var reindexPending = 0
+
+    private static func codexSourceVersion(of cursor: TelemetryCursor) -> Int {
+        guard let data = cursor.state,
+              let state = try? JSONDecoder().decode(CodexRolloutReader.State.self, from: data) else { return 0 }
+        return state.sourceVersion ?? 0
+    }
+
     private func recordHealth(tallies: [TelemetryProvider: ProviderTally], report: IndexerPassReport, now: Date) {
+        try? ledger.setMeta(Self.codexReindexPendingKey, String(reindexPending))
         for (provider, tally) in tallies {
             guard var health = try? ledger.health(provider: provider) else { continue }
             health.scannedAt = now

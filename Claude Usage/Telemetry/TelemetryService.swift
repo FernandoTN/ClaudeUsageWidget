@@ -288,9 +288,11 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
             codexSessions = nil
         }
         let firstIndexed = ledger.meta("firstIndexedAt").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+        let reindexPending = ledger.meta(TelemetryIndexer.codexReindexPendingKey).flatMap(Int.init) ?? 0
         let input = TelemetryReportBuilder.Input(aggregates: aggregates, previousAggregates: previous, ownership: ownership,
                                                  roster: roster, health: health, codexSessions: codexSessions,
-                                                 prices: .shipped, firstIndexedAt: firstIndexed, markers: markers)
+                                                 prices: .shipped, firstIndexedAt: firstIndexed, markers: markers,
+                                                 codexReindexPending: reindexPending)
         return (query, input)
     }
 

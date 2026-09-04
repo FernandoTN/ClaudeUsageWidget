@@ -45,7 +45,15 @@ nonisolated enum CodexRolloutReader {
         var model: String?
         var originator: String?
         var seq = 0
+        /// The source rule this file's rows were written with. 0 (or absent,
+        /// for cursors saved before stage 4d): plain originator everywhere, so
+        /// an isolated home's rows must be re-derived; 1: "<home>/<originator>"
+        /// for isolated homes. Saved with the cursor as each file completes.
+        var sourceVersion: Int?
     }
+
+    /// The current source rule (see `State.sourceVersion`).
+    static let sourceVersion = 1
 
     struct Output: Sendable {
         var events: [TelemetryEvent] = []
