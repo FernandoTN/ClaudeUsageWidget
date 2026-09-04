@@ -13,7 +13,9 @@ import os.log
 class ProfileManager: ObservableObject {
     static let shared = ProfileManager()
 
-    @Published var profiles: [Profile] = []
+    @Published var profiles: [Profile] = [] {
+        didSet { refreshDuplicateClaudeAccountGroups() }
+    }
     @Published var activeProfile: Profile?
     @Published var displayMode: ProfileDisplayMode = .single
     @Published var multiProfileConfig: MultiProfileDisplayConfig = .default
@@ -734,6 +736,102 @@ class ProfileManager: ObservableObject {
         return ids
     }
 
+    // MARK: - Duplicate Claude Accounts
+
+    /// Sets of profiles that hold logins for the SAME Anthropic account, keyed
+    /// by `Profile.claudeAccountUUID`. Two such profiles are two tiles over ONE
+    /// quota: the usage windows are identical by construction, and an
+    /// auto-switch between them buys no headroom while costing every running
+    /// session its context re-read. Recomputed on every profile mutation and
+    /// published so settings rows can caption the duplicates.
+    ///
+    /// Only ACCOUNT-STAMPED profiles can appear here — an unstamped login is no
+    /// evidence of anything (that is exactly the hole the background identity
+    /// pass fills). Empty in the healthy case.
+    @Published private(set) var duplicateClaudeAccountGroups: [[UUID]] = []
+
+    /// Duplicate groups the user has already been told about this run, keyed by
+    /// the group's member ids. In-memory by design: the episode is "this set of
+    /// profiles is doubled up right now", and a group that disappears (one side
+    /// re-logged into a different account, or was removed) re-arms so a
+    /// recurrence is reported again.
+    private var notifiedDuplicateClaudeGroups: Set<String> = []
+
+    /// Groups of Claude-credentialed profiles sharing one `claudeAccountUUID`.
+    /// Pure and order-stable: groups follow the first member's position in
+    /// `profiles`, members follow theirs, so the caption and the log line read
+    /// the same on every evaluation.
+    nonisolated static func duplicateClaudeAccountGroups(in profiles: [Profile]) -> [[UUID]] {
+        var order: [String] = []
+        var byAccount: [String: [UUID]] = [:]
+        for profile in profiles {
+            guard profile.carriesClaudeAccount,
+                  let uuid = profile.claudeAccountUUID, !uuid.isEmpty else { continue }
+            if byAccount[uuid] == nil { order.append(uuid) }
+            byAccount[uuid, default: []].append(profile.id)
+        }
+        return order.compactMap { uuid in
+            let members = byAccount[uuid] ?? []
+            return members.count > 1 ? members : nil
+        }
+    }
+
+    /// Which duplicate groups still owe the user a notification, and the
+    /// updated "already told" set. Split out from the side effects so the
+    /// once-per-episode rule is testable: the same groups asked twice notify
+    /// once, and a group that vanishes is forgotten (a recurrence notifies
+    /// again).
+    nonisolated static func duplicateClaudeAccountNotices(
+        groups: [[UUID]], alreadyNotified: Set<String>
+    ) -> (toNotify: [[UUID]], notified: Set<String>) {
+        let signatures = groups.map { $0.map(\.uuidString).sorted().joined(separator: "+") }
+        let live = Set(signatures)
+        let toNotify = zip(groups, signatures)
+            .filter { !alreadyNotified.contains($0.1) }
+            .map(\.0)
+        return (toNotify, live)
+    }
+
+    /// The OTHER profiles that hold a login for the same Anthropic account as
+    /// `profileId`, in roster order. Empty when the profile is not duplicated.
+    func duplicateClaudeAccountPartnerNames(for profileId: UUID) -> [String] {
+        guard let group = duplicateClaudeAccountGroups.first(where: { $0.contains(profileId) }) else { return [] }
+        return group
+            .filter { $0 != profileId }
+            .compactMap { id in profiles.first(where: { $0.id == id })?.name }
+    }
+
+    /// Recomputes the duplicate groups and reports newly-discovered ones once.
+    /// Called from `profiles`' `didSet`, so it runs after every load, save and
+    /// in-place usage patch; the published array is only reassigned when the
+    /// grouping actually changes, so the common case publishes nothing.
+    ///
+    /// This NEVER touches credentials. A duplicate is the user's own doing (two
+    /// logins into one account) and only they can decide which profile keeps
+    /// it — the app's job is to say so, stop double-counting the quota in the
+    /// auto-switch, and get out of the way.
+    private func refreshDuplicateClaudeAccountGroups() {
+        let groups = Self.duplicateClaudeAccountGroups(in: profiles)
+        if groups != duplicateClaudeAccountGroups {
+            duplicateClaudeAccountGroups = groups
+        }
+
+        let (toNotify, live) = Self.duplicateClaudeAccountNotices(
+            groups: groups, alreadyNotified: notifiedDuplicateClaudeGroups
+        )
+        notifiedDuplicateClaudeGroups = live
+        guard !toNotify.isEmpty else { return }
+
+        for group in toNotify {
+            let names = group.compactMap { id in profiles.first(where: { $0.id == id })?.name }
+            guard names.count > 1 else { continue }
+            LoggingService.shared.log(
+                "ProfileManager: \u{26A0}\u{FE0F} duplicate Anthropic account \u{2014} \(names.joined(separator: ", ")) hold logins for the SAME account (one quota, \(names.count) tiles)"
+            )
+            NotificationManager.shared.sendDuplicateClaudeAccountNotification(profileNames: names)
+        }
+    }
+
     // MARK: - Credentials
 
     func loadCredentials(for profileId: UUID) throws -> ProfileCredentials {
@@ -1256,7 +1354,19 @@ class ProfileManager: ObservableObject {
 
         var reloaded = profileStore.loadProfiles()
         applyPendingOverlay(to: &reloaded)
-        let owner = reloaded.first(where: { $0.claudeAccountUUID == identity.accountUUID })
+        // Ownership is ambiguous the moment two profiles are stamped with the
+        // SAME account (a real roster state — see `duplicateClaudeAccountGroups`),
+        // and picking by array order there would hand the pointer to whichever
+        // profile happens to be stored first and then treat the true holder as
+        // contaminated. Resolve by evidence instead: the profile whose stored
+        // token IS the shared login wins, then the standing pointer, and only
+        // then the account stamp.
+        let stampMatches = reloaded.filter { $0.claudeAccountUUID == identity.accountUUID }
+        let owner = stampMatches.first(where: {
+                $0.cliCredentialsJSON.flatMap(sync.extractAccessToken(from:)) == systemToken
+            })
+            ?? stampMatches.first(where: { $0.id == activeClaudeProfileId })
+            ?? stampMatches.first
             ?? reloaded.first(where: {
                 $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
                     && $0.organizationId == identity.organizationUUID
@@ -1307,6 +1417,19 @@ class ProfileManager: ObservableObject {
             let sameToken = sync.extractAccessToken(from: json) == systemToken
             let sameAccountStamp = profile.claudeAccountUUID == identity.accountUUID
             guard sameToken || sameAccountStamp else { continue }
+            // A same-account profile holding a DIFFERENT login that is still
+            // usable is not contamination — it is a second, independent login
+            // into one account, which only the user can resolve. Clearing it
+            // would delete a working credential behind their back. Report it
+            // (duplicateClaudeAccountGroups + one notification) and leave it
+            // alone; the auto-switch already refuses to rotate between the two.
+            // The stale copies this guard was built for are still cleared: a
+            // byte-identical copy of the live token, or a same-account token
+            // that is expired with no refresh token left.
+            if !sameToken, profile.hasUsableCLIOAuth {
+                LoggingService.shared.log("ProfileManager: '\(profile.name)' holds a SECOND live login for '\(owner.name)'s account (one quota, two profiles) — kept, not cleared")
+                continue
+            }
             profileStore.clearProfileCredential(profile.id, key: .cliCredentials)
             reloaded[index].cliCredentialsJSON = nil
             reloaded[index].hasCliAccount = false

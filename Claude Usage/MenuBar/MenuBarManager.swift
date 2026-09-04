@@ -1665,6 +1665,19 @@ private func observeCredentialChanges() {
             // FILE in step so headless sessions that read the file aren't left
             // presenting the previous (possibly exhausted) account's token.
             await ClaudeCodeSyncService.shared.healCredentialsFileFromKeychainOffMain()
+
+            // Learn WHOSE account each stored Claude login belongs to, one
+            // profile per sweep, oldest unstamped first. Until a profile is
+            // stamped, every account-keyed check (adoption matching, the
+            // duplicate detector, the auto-switch's same-account skip) reads
+            // nil and concludes nothing — which is how two profiles holding
+            // ONE Anthropic account were displayed as two independent quotas.
+            // A stamped profile is never a candidate again, so this costs one
+            // request per newly-synced login and nothing in steady state.
+            if !self.profileManager.isSwitchingProfile,
+               await ClaudeCodeSyncService.shared.stampNextUnstampedIdentity() != nil {
+                self.profileManager.loadProfiles()
+            }
         }
     }
 
@@ -3381,8 +3394,38 @@ private func observeCredentialChanges() {
     private func findNextAvailableProfile(after currentProfile: Profile, excluding: Set<UUID> = []) -> Profile? {
         findNextAvailableProfile(
             provider: currentProfile.providerKind,
-            excluding: excluding.union([currentProfile.id])
+            excluding: excluding.union([currentProfile.id]),
+            alsoBlockingAccountOf: currentProfile
         )
+    }
+
+    /// The Anthropic accounts a Claude switch can gain nothing by moving to:
+    /// whatever account the provider-active login already belongs to, plus the
+    /// outgoing profile's when the walk names one. Two profiles stamped with
+    /// the same `claudeAccountUUID` share ONE quota — switching between them
+    /// changes the label and nothing else, while costing every running session
+    /// a full context re-read. Empty unless the roster actually holds a
+    /// duplicate, and empty for Codex/Grok (their duplicate guard runs at sync
+    /// time, on `account_id`).
+    private func blockedClaudeAccountUUIDs(alsoBlockingAccountOf current: Profile?) -> Set<String> {
+        let active = profileManager.profiles.first(where: { $0.id == profileManager.activeClaudeProfileId })
+        return Set([active?.claudeAccountUUID, current?.claudeAccountUUID]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty })
+    }
+
+    /// Drops candidates whose stored login belongs to an account already in
+    /// use. Pure so the walk's same-account rule is testable without a live
+    /// profile manager; an unstamped candidate (nil uuid) is never dropped —
+    /// no stamp is no evidence, not a match.
+    nonisolated static func excludingBlockedClaudeAccounts(
+        _ candidates: [Profile], blocked: Set<String>
+    ) -> [Profile] {
+        guard !blocked.isEmpty else { return candidates }
+        return candidates.filter { candidate in
+            guard let uuid = candidate.claudeAccountUUID, !uuid.isEmpty else { return true }
+            return !blocked.contains(uuid)
+        }
     }
 
     /// The same ranking keyed by PROVIDER rather than by an outgoing profile,
@@ -3392,7 +3435,8 @@ private func observeCredentialChanges() {
     private func findNextAvailableProfile(
         provider switchingProvider: Profile.ProviderKind,
         excluding: Set<UUID>,
-        quiet: Bool = false
+        quiet: Bool = false,
+        alsoBlockingAccountOf currentProfile: Profile? = nil
     ) -> Profile? {
         let now = Date()
         // Candidates are held to the SAME per-window thresholds the trigger
@@ -3431,10 +3475,25 @@ private func observeCredentialChanges() {
             return true
         }
 
+        // Same-account rule: a candidate holding a login for the account that
+        // is ALREADY active shares its quota, so switching to it buys no
+        // headroom (see `blockedClaudeAccountUUIDs`). Applied after the filter
+        // above so the log line names the profile once, by the same walk that
+        // would otherwise have picked it.
+        let blocked = switchingProvider == .claude
+            ? blockedClaudeAccountUUIDs(alsoBlockingAccountOf: currentProfile)
+            : []
+        let distinctAccounts = Self.excludingBlockedClaudeAccounts(candidates, blocked: blocked)
+        if !quiet {
+            for dropped in candidates where !distinctAccounts.contains(where: { $0.id == dropped.id }) {
+                LoggingService.shared.log("AutoSwitch: Skipping '\(dropped.name)' (same Anthropic account as the active login — one quota, no headroom to gain)")
+            }
+        }
+
         // Default ranking only — the consumable switch QUEUE is handled one
         // level up in the candidate walk (popQueuedSwitchTarget), so an empty
         // queue falls through to this ranking untouched.
-        let ranked = Self.rankAutoSwitchCandidates(candidates, customOrder: nil, now: now)
+        let ranked = Self.rankAutoSwitchCandidates(distinctAccounts, customOrder: nil, now: now)
 
         for candidate in ranked {
             if hasSessionHeadroom(candidate, threshold: sessionThreshold)

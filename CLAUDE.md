@@ -327,6 +327,31 @@ sweeps never run mid-switch, and a launch repair re-derives the true owner of th
 shared login from its live identity — clearing byte-identical contaminated copies
 from other profiles (never touching the token itself).
 
+**Duplicate accounts (2026-09-03)**: `stampAccountIdentity` only ever ran for the
+profile being APPLIED to the CLI, so a profile synced once and never activated
+carried no `claudeAccountUUID` — and every account-keyed check reads nil as "no
+evidence". Two live profiles held logins for ONE Anthropic account, invisible to
+all of them: one quota drawn as two tiles, two auto-switch candidates that share
+it, and an owner who read two exhausted accounts where the API said 19%. Three
+mechanisms close it. (1) `ClaudeCodeSyncService.stampNextUnstampedIdentity`, run
+at sweep end, resolves ONE unstamped login per sweep, oldest first, with that
+PROFILE'S OWN token — never the system Keychain fallback, which holds the ACTIVE
+account's login and would stamp every profile with it and manufacture the
+duplicates. Ineligible: already stamped, flagged dead, or an expired token (a
+background refresh rotates a refresh token the CLI may still hold). Costs nothing
+in steady state. (2) `ProfileManager.duplicateClaudeAccountGroups` groups stamped
+profiles by account on every roster mutation, logs and notifies once per episode,
+and captions the rows in Manage Profiles / CLI Account. It never touches
+credentials — which profile keeps the account is the user's call. (3) The
+auto-switch candidate filter drops a candidate whose `claudeAccountUUID` matches
+the provider-active (or outgoing) profile's: same account, same quota, no
+headroom to gain. Consequences for the contamination dedupe in
+`adoptSystemLoginByIdentity`: two profiles can now carry the SAME stamp, so
+ownership resolves by evidence (stored token == the shared login, then the
+standing pointer, then the stamp) instead of array order, and a same-account
+profile whose own login is still usable is REPORTED rather than cleared — only
+byte-identical copies and dead same-account tokens are still wiped.
+
 **Dead-login gate**: `activateProfile` NEVER applies credentials that are still
 expired after the pre-apply refresh (both providers). Writing a dead login over the
 shared CLI login bricks every running session ("login expired. Please run /login"

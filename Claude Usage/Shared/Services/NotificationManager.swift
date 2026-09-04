@@ -517,6 +517,35 @@ class NotificationManager {
         }
     }
 
+    /// Tells the user that two or more profiles hold logins for the SAME
+    /// Anthropic account, so their tiles show one quota twice. Sent once per
+    /// episode (`ProfileManager.refreshDuplicateClaudeAccountGroups`); the
+    /// identifier is keyed by the member names so a different pair reports
+    /// separately while a repeat of the same pair replaces rather than stacks.
+    ///
+    /// Deliberately advisory: the app never removes a credential to resolve
+    /// this. Which profile keeps the account is the user's call.
+    func sendDuplicateClaudeAccountNotification(profileNames: [String]) {
+        let names = ListFormatter.localizedString(byJoining: profileNames)
+        let content = UNMutableNotificationContent()
+        content.title = "notification.duplicate_claude_account.title".localized
+        content.body = "notification.duplicate_claude_account.message".localized(with: names)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "duplicate_claude_account_\(profileNames.sorted().joined(separator: "_"))",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send duplicate-account notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that macOS's preferences daemon has stopped serving this app's plist, so
     /// the UI is running on cached values and settings changes will not persist. Sent
     /// once per degraded episode (`ProfileManager.syncPreferencesDegradedState`); the

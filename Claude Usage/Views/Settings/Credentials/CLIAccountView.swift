@@ -58,6 +58,20 @@ struct CLIAccountView: View {
                             .strokeBorder(DesignTokens.Colors.cardBorder, lineWidth: 1)
                     )
 
+                    // One Anthropic account behind two profiles shows the same
+                    // quota twice and makes an auto-switch between them
+                    // pointless. Say so here too, where the account this page
+                    // manages is in view.
+                    let sameAccountAs = profileManager.duplicateClaudeAccountPartnerNames(for: profile.id)
+                    if !sameAccountAs.isEmpty {
+                        Label(
+                            "profiles.same_account_as".localized(with: ListFormatter.localizedString(byJoining: sameAccountAs)),
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundColor(.orange)
+                    }
+
                     // Credentials & Actions Card
                     SettingsSectionCard(
                         title: "cli.account_details".localized,
