@@ -1217,3 +1217,26 @@ and an Unpin (`MenuBarManager.clearManualPin`, one log line, nothing else); R8
 the diagnostics command filters on the app's subsystem (the process predicate
 also matched the test host). S1 was the facsimile's clamp (widened; the live menu
 has no cap); S2 waits for a reset-credit expiry on the model; S3 stays a toggle.
+
+### 12.9 Codex usage limit resets (stage 4.1)
+
+**Frame 0 — Overview, Codex profile.** The facts list carries a "Usage limit
+resets" row: the count line ("Usage limit resets: 2 available"; a null reads
+"none or unknown", never "0"), a "Details" link that fetches the grants ON DEMAND
+(never on the sweep; a 429 reads "unknown right now"), the grants by expiry
+("Welcome reset · expires in 3 d", "Usage limit reset · never expires", "Details
+fetched 2 m ago"), and "Use one usage limit reset…" — enabled only with a grant
+in hand AND a readiness of exhausted from the account's OWN measurement; the
+tooltip says which condition is missing. The confirmation names the account,
+the number of grants and the evidence; the outcome line says what the server
+did ("Reset applied · 2 windows cleared"). The rule sentence closes the card.
+
+**Rejected.** Any automatic redemption (a grant is the owner's to spend);
+offering Redeem on a cached or inferred number; showing "0" for null.
+
+**Round-3 addendum (merged-tree frames):** timeline labels say the window's
+usage that resets ("W 84 %", not "+84"); a switch row states the outgoing level
+once (the recorder's reason, else "left at 96 % session"); an affirmed stamp's
+raw retry-after is dropped (its "40 min left" says it) and a rescue's header
+ratio reads "5-hour window 86 %"; a why-not row lets the verdict say "dead" once;
+a header rescue stays in the incidents list as an informational ○, not a green ✓.

@@ -173,10 +173,10 @@ enum InsightsFormatting {
         CGFloat(min(max(date.timeIntervalSince(now) / FleetInsights.timelineHorizon, 0), 1))
     }
 
-    /// "dRir W +84" — name, window letter, headroom that returns.
+    /// "dRir W 84 %" — name, window letter, the window's usage that resets.
     static func timelineLabel(_ marker: FleetInsights.ResetMarker) -> String {
         let letter = marker.window == .fable ? "F" : "W"
-        return "\(marker.name) \(letter) +\(Int(marker.headroomReturning.rounded()))"
+        return "\(marker.name) \(letter) \(Int(marker.headroomReturning.rounded())) %"
     }
 
     static func blind(_ spot: FleetInsights.BlindSpot, now: Date) -> String {
@@ -204,8 +204,11 @@ enum InsightsFormatting {
 
     static func switchDetail(_ row: FleetInsights.SwitchRow, now: Date) -> String {
         var parts = [DashboardFormatting.age(row.at, now: now), trigger(row.trigger)]
-        if let headroom = row.fromHeadroom { parts.append("insights.headroom_left".localized(with: Int(headroom.rounded()))) }
-        if let reason = row.reason, !reason.isEmpty { parts.append(reason) }
+        if let reason = row.reason, !reason.isEmpty {
+            parts.append(reason)
+        } else if let headroom = row.fromHeadroom {
+            parts.append("insights.left_at".localized(with: Int((100 - headroom).rounded())))
+        }
         if row.isLegacy { parts.append("insights.legacy_row".localized) }
         return parts.joined(separator: " · ")
     }
@@ -230,23 +233,41 @@ enum InsightsFormatting {
         case .burst429(let streak): kind = "insights.kind_burst".localized(with: streak)
         }
         var parts = [DashboardFormatting.age(incident.at, now: now), kind]
-        if let detail = incident.detail, !detail.isEmpty { parts.append(detail) }
+        if let detail = incidentDetail(incident) { parts.append(detail) }
         return parts.joined(separator: " · ")
     }
 
+    /// The recorder's free-text detail in human form: dropped for an affirmed
+    /// stamp (its "left" phrase says it), the header ratio ("5h 0.86") as
+    /// "5-hour window 86 %", anything else verbatim.
+    static func incidentDetail(_ incident: FleetInsights.Incident) -> String? {
+        guard let detail = incident.detail, !detail.isEmpty else { return nil }
+        if case .affirmedStamp = incident.kind { return nil }
+        let parts = detail.split(separator: " ")
+        if parts.count == 2, parts[0] == "5h", let ratio = Double(parts[1]) {
+            return "insights.window_ratio".localized(with: Int((ratio * 100).rounded()))
+        }
+        return detail
+    }
+
     static func whyNot(_ why: FleetInsights.WhyNot) -> String {
-        var parts = [why.evidence]
+        var parts: [String] = []
         if let verdict = why.verdictText {
-            parts.append(verdict)
+            // The row's own glyph already carries the status; the verdict text starts with the same glyph.
+            parts.append(verdict.hasPrefix("\(DesignGlyph.dead) ") || verdict.hasPrefix("\(DesignGlyph.verified) ")
+                         ? String(verdict.dropFirst(2)) : verdict)
         } else if let age = why.evidenceAge {
+            parts.append(why.evidence)
             parts.append("insights.evidence_age".localized(with: DashboardFormatting.duration(age)))
+        } else {
+            parts.append(why.evidence)
         }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     static func glyph(for kind: FleetInsights.Incident.Kind) -> String {
         switch kind {
-        case .headerRescue: return DesignGlyph.verified
+        case .headerRescue: return DesignGlyph.unmeasured
         case .inferredStamp: return DesignGlyph.suspected
         case .tripwire, .affirmedStamp, .headerProbe429, .burst429: return DesignGlyph.exhausted
         }
@@ -254,7 +275,7 @@ enum InsightsFormatting {
 
     static func tint(for kind: FleetInsights.Incident.Kind) -> Color {
         switch kind {
-        case .headerRescue: return DesignRole.ready.color
+        case .headerRescue: return DesignRole.informational.color
         case .inferredStamp: return DesignRole.suspected.color
         case .tripwire, .affirmedStamp: return DesignRole.blocking.color
         case .headerProbe429, .burst429: return DesignRole.caution.color
