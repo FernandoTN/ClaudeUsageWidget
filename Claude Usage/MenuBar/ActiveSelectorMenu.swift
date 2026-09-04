@@ -31,7 +31,7 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         var makeActive: (UUID) async -> ProfileManager.ActivationOutcome
         var queueNext: (UUID) -> Void
         /// View `profileId` (when given) and open Settings on `section`.
-        var viewAndOpenSettings: (UUID?, SettingsSection?) -> Void
+        var viewAndOpenSettings: (UUID?, SettingsRoute?) -> Void
         var openDashboard: () -> Void
         var openTelemetry: () -> Void
         var setAutoSwitchEnabled: (Bool) -> Void
@@ -303,13 +303,13 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
             actions.queueNext(id)
             scheduleRepaint()
         case .editQueue:
-            actions.viewAndOpenSettings(nil, .manageProfiles)
-        case .repairDead(let id, let provider):
-            actions.viewAndOpenSettings(id, provider == .codex ? .codexAccount : .cliAccount)
+            actions.viewAndOpenSettings(nil, SettingsRoute(section: .activeAccounts))
+        case .repairDead(let id, _):
+            actions.viewAndOpenSettings(id, SettingsRoute(section: .accounts, profileId: id, tab: .login))
         case .openActiveSettings:
-            actions.viewAndOpenSettings(nil, .manageProfiles)
+            actions.viewAndOpenSettings(nil, SettingsRoute(section: .activeAccounts))
         case .openAccounts:
-            actions.viewAndOpenSettings(nil, .manageProfiles)
+            actions.viewAndOpenSettings(nil, SettingsRoute(section: .accounts))
         case .openDashboard:
             actions.openDashboard()
         case .openTelemetry:
@@ -359,7 +359,7 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
             alert.addButton(withTitle: "selector.repair_in_accounts".localized)
             alert.addButton(withTitle: "common.ok".localized)
             if alert.runModal() == .alertFirstButtonReturn {
-                actions.viewAndOpenSettings(profileId, provider == .codex ? .codexAccount : .cliAccount)
+                actions.viewAndOpenSettings(profileId, SettingsRoute(section: .accounts, profileId: profileId, tab: .login))
             }
         }
     }

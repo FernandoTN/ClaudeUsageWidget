@@ -124,7 +124,7 @@ struct AccountMonitoringTab: View {
                             .font(DesignTokens.Typography.body)
                         Spacer()
                         Button("accounts.monitoring.eligible_edit".localized) {
-                            NotificationCenter.default.post(name: .settingsSectionRequested, object: SettingsRoute(section: .manageProfiles))
+                            NotificationCenter.default.post(name: .settingsSectionRequested, object: SettingsRoute(section: .activeAccounts))
                         }
                         .buttonStyle(.link)
                     }

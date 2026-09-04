@@ -750,7 +750,7 @@ class MenuBarManager: NSObject, ObservableObject {
             },
             onManageProfiles: { [weak self] in
                 self?.closePopoverOrWindow()
-                self?.preferencesClicked(section: .manageProfiles)
+                self?.preferencesClicked(section: .accounts)
             },
             onTokenUsage: { [weak self] id, provider in
                 self?.closePopoverOrWindow()
@@ -3987,10 +3987,15 @@ private func observeCredentialChanges() {
                 SharedDataStore.shared.saveAutoSwitchQueue([id] + rest)
                 self?.rebuildDashboardSnapshot()
             },
-            viewAndOpenSettings: { [weak self] id, section in
+            viewAndOpenSettings: { [weak self] id, route in
                 guard let self else { return }
                 if let id { self.profileManager.viewProfile(id) }
-                self.preferencesClicked(section: section)
+                self.preferencesClicked(section: route?.section)
+                // A tab is only reachable through the typed route; the window
+                // (existing or just built) picks it up on the next runloop turn.
+                if let route, route.tab != nil {
+                    DispatchQueue.main.async { NotificationCenter.default.post(name: .settingsSectionRequested, object: route) }
+                }
             },
             openDashboard: { [weak self] in self?.togglePopover(nil) },
             openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) },
