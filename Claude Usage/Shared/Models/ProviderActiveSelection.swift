@@ -49,6 +49,9 @@ enum ActiveVocabulary {
     }
 
     /// "Active for Claude"
+    /// The one word on the active mark ("Active"); the provider goes in the tooltip.
+    static var activeWord: String { "active.word".localized }
+
     static func activeFor(_ provider: Profile.ProviderKind) -> String {
         "active.active_for".localized(with: providerName(provider))
     }

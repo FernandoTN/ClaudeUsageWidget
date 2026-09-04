@@ -29,9 +29,12 @@ struct ActiveSwitchView: View {
 
                 // The three owners, one card each.
                 ForEach(store.selections, id: \.provider) { selection in
-                    ActiveProviderCard(selection: selection, isEnabled: autoSwitchEnabled) { candidate in
+                    ActiveProviderCard(selection: selection, isEnabled: autoSwitchEnabled, onSwitch: { candidate in
                         Task { await makeActive(candidate, selection: selection) }
-                    }
+                    }, onUnpin: { id in
+                        MenuBarManager.current?.clearManualPin(id)
+                        store.refresh()
+                    })
                 }
                 if let switchNote {
                     Text(switchNote).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
@@ -150,12 +153,7 @@ struct ActiveSwitchView: View {
                                              set: { profileManager.updateAutoSwitchEnabled($0, for: profile.id) })) {
                             HStack(spacing: DesignTokens.Spacing.small) {
                                 Text(profile.name).font(DesignTokens.Typography.body).lineLimit(1)
-                                if profileManager.isProviderActive(profile) {
-                                    Text(ActiveVocabulary.activeFor(provider))
-                                        .font(.system(size: 9, weight: .bold)).foregroundColor(.white)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Capsule().fill(DesignRole.active.color))
-                                }
+                                if profileManager.isProviderActive(profile) { ActivePill(provider: provider) }
                             }
                         }
                         .toggleStyle(.switch).controlSize(.mini)
@@ -180,6 +178,7 @@ struct ActiveProviderCard: View {
     let selection: ProviderActiveSelection
     let isEnabled: Bool
     let onSwitch: (CandidateRow) -> Void
+    var onUnpin: ((UUID) -> Void)? = nil
 
     var body: some View {
         SettingsContentCard {
@@ -197,7 +196,15 @@ struct ActiveProviderCard: View {
                         Text(owner.name).font(DesignTokens.Typography.bodyMedium)
                         Text(ActiveSelectorMenuModel.compactGaugeText(owner.gauges)).font(DesignTokens.Typography.captionMono).foregroundColor(.secondary)
                         if let m = owner.measurement { Text(DashboardFormatting.provenance(m)).font(DesignTokens.Typography.caption).foregroundColor(.secondary) }
-                        if owner.isManuallyPinned { Text("selector.pinned".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary) }
+                        if owner.isManuallyPinned {
+                            HStack(spacing: 4) {
+                                Text("selector.pinned".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                                if let onUnpin {
+                                    Button("active.unpin".localized) { onUnpin(owner.id) }.buttonStyle(.link).font(DesignTokens.Typography.caption)
+                                }
+                            }
+                            .help("active.pinned_help".localized)
+                        }
                     }
                     if let caveat = owner.suspected {
                         Text("selector.last_measured".localized(with: Int(caveat.lastMeasured.rounded()), DashboardFormatting.age(caveat.measuredAt)))
@@ -216,7 +223,7 @@ struct ActiveProviderCard: View {
                             .foregroundColor(ActiveSelectorItem.color(ActiveSelectorMenuModel.tint(for: next.verdict)).asColor)
                         Spacer()
                         if row.status == .eligible {
-                            Button(ActiveVocabulary.makeActive(selection.provider)) { onSwitch(row) }
+                            Button("active.make_named".localized(with: row.name)) { onSwitch(row) }
                                 .disabled(selection.isSwitching)
                         }
                     }

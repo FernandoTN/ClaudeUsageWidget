@@ -54,7 +54,7 @@ struct AdvancedSettingsView: View {
 
 struct AdvancedDiagnosticsCard: View {
     @State private var debugLogging = SharedDataStore.shared.loadDebugAPILoggingEnabled()
-    private let logCommand = "log show --predicate 'process == \"Claude Usage\"' --info --last 10m"
+    private let logCommand = "log show --predicate 'subsystem == \"\(Bundle.main.bundleIdentifier ?? "com.claudeusagewidget.app")\"' --info --last 10m"
 
     private var versionLine: String {
         let info = Bundle.main.infoDictionary

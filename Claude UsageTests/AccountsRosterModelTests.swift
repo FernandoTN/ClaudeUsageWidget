@@ -75,7 +75,7 @@ final class AccountsRosterModelTests: XCTestCase {
         XCTAssertEqual(rows(sections, .claude).map(\.name), ["dRir", "dJormun", "Commits", "Memori"],
                        "owner first, then soonest weekly reset first — blocked rows keep their rank, unlike the selector's eligible-first menu")
         XCTAssertEqual(rows(sections, .claude)[0].badge, .activeFor(.claude))
-        XCTAssertEqual(rows(sections, .claude)[0].badge.mark, "Claude", "the provider's own word, drawn as a cyan pill (R1)")
+        XCTAssertEqual(rows(sections, .claude)[0].badge.mark, "Active", "one word on the active mark; the provider is the tooltip (round-3 R2)")
     }
 
     func testAlphabeticalSortAndSectionHeaderText() {
@@ -121,11 +121,11 @@ final class AccountsRosterModelTests: XCTestCase {
         let sections = Model.sections(selections: selections(profiles, active: [claudeOwner.id, codexOwner.id]), profiles: profiles, sort: .alphabetical, filter: "")
         let all = Dictionary(uniqueKeysWithValues: sections.flatMap(\.rows).map { ($0.name, $0.percentageText) })
         XCTAssertEqual(all["dRir"], "S 78", "the binding window with its letter (R2)")
-        XCTAssertEqual(all["BBR"], "▲ S", "legend glyph + the maxed window (R2-2)")
-        XCTAssertEqual(all["Commits"], "▲ F")
+        XCTAssertEqual(all["BBR"]?.hasPrefix("▲ S "), true, "legend glyph + the maxed window + its value (round-3 R1)")
+        XCTAssertEqual(all["Commits"]?.hasPrefix("▲ F "), true)
         XCTAssertEqual(all["Hotmail"], "—")
         XCTAssertEqual(all["xFernando"], "W 95", "weekly for a weekly-only provider")
-        XCTAssertEqual(all["xFme"], "▲ W")
+        XCTAssertEqual(all["xFme"]?.hasPrefix("▲ W "), true)
     }
 
     func testDeadRowAndReloginCaption() {

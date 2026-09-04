@@ -54,6 +54,15 @@ class MenuBarManager: NSObject, ObservableObject {
     /// mirror of `autoSwitchedProfileIds` for the selector and the dashboard.
     var manuallyPinnedProfileIds: Set<UUID> { autoSwitchedProfileIds }
 
+    /// The user un-pins a manually chosen active account (Settings › Active &
+    /// Auto-switch, round-3 R7): the auto-switch may move it again on the next
+    /// sweep. Nothing else changes — no switch, no pointer, no credentials.
+    func clearManualPin(_ profileId: UUID) {
+        guard autoSwitchedProfileIds.remove(profileId) != nil else { return }
+        let name = profileManager.profiles.first { $0.id == profileId }?.name ?? profileId.uuidString
+        LoggingService.shared.log("Pin cleared for '\(name)' by the user")
+    }
+
     /// What the fleet dashboard observes: its snapshot — rebuilt ONCE per
     /// paint while a dashboard is showing (`rebuildDashboardSnapshot`), never
     /// row by row — and the provider group whose tile was clicked (the
