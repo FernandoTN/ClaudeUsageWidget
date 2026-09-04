@@ -186,8 +186,9 @@ final class AccountsRosterModelTests: XCTestCase {
     func testAccountsSectionIsListedAndTitled() {
         XCTAssertTrue(SettingsSection.allCases.contains(.accounts))
         XCTAssertEqual(SettingsSection.accounts.title, "Accounts")
-        XCTAssertFalse(SettingsSection.accounts.isProfileSetting)
-        XCTAssertFalse(SettingsSection.accounts.isCredential)
+        XCTAssertFalse(SettingsSection.accounts.isBottomBarItem)
+        XCTAssertEqual(SettingsSection.allCases, [.accounts, .activeAccounts, .alerts, .display, .advanced, .about],
+                       "the revamp's five pages plus About — the legacy sections are gone (stage 3d)")
         XCTAssertEqual(SettingsSection(rawValue: "accounts"), .accounts)
     }
 
