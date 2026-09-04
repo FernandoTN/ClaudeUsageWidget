@@ -222,7 +222,8 @@ final class FleetSummaryTests: XCTestCase {
         XCTAssertEqual(small.dotMembers().shown.count, 20)
         // 18 dots in 9 columns + 2 reserved columns for "+N" = 11 columns,
         // plus the gap between "+N" and the matrix (round 1, B3).
-        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 25), 64 + FleetBlockGeometry.overflowGap)
+        // 18 dots in 9 columns + 2 reserved columns at a 7 pt pitch with 5 pt dots.
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 25), 75 + FleetBlockGeometry.overflowGap)
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 40, layout: .fleetDots),
                        FleetBlockGeometry.fleetWidth(memberCount: 25, layout: .fleetDots),
                        "fixed once the roster overflows the grid")
@@ -235,21 +236,25 @@ final class FleetSummaryTests: XCTestCase {
                        "a single-account provider has no fleet block")
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 17).columns, 9, "two balanced rows past ten")
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 17).rows, 2)
-        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 10).rows, 1, "one row up to ten")
-        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 10), 58)
-        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 17), 52)
+        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 10).rows, 2, "two rows from four accounts")
+        // Two rows from four accounts (owner round B1): 10 → 5 × 2, 17 → 9 × 2.
+        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 3).rows, 1)
+        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 4).rows, 2)
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 10), 33)
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 17), 61)
         // 17 others: mark (10) + max(dots 52, candidate row 52) = 62; arming never widens it.
-        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 17, layout: .fleetDots), 62)
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 17, layout: .fleetDots), 71, "width follows the count")
         // 2 others: mark (10) + max(dots 10, candidate row 52) = 62 — reserved even while idle.
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetDots), 62)
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetCounts), 82)
-        XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 17, layout: .fleetDots), 89)
+        XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 17, layout: .fleetDots), 98)
         XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 0, layout: .fleetDots), 24)
         XCTAssertEqual(FleetBlockGeometry.tileWidth(activeWidth: 24, memberCount: 5, layout: .everyAccount), 24)
         // Heights: the block matches the active tile whenever it fits, so the
         // dot row sits on the tile's bar; two dot rows need the 22 pt tile.
-        XCTAssertEqual(FleetBlockGeometry.blockHeight(activeHeight: 16, memberCount: 2, layout: .fleetDots), 16)
-        XCTAssertEqual(FleetBlockGeometry.blockHeight(activeHeight: 16, memberCount: 2, layout: .fleetCounts), 16)
+        // Always the full bar height: the mark column carries the account count.
+        XCTAssertEqual(FleetBlockGeometry.blockHeight(activeHeight: 16, memberCount: 2, layout: .fleetDots), 22)
+        XCTAssertEqual(FleetBlockGeometry.blockHeight(activeHeight: 16, memberCount: 2, layout: .fleetCounts), 22)
         XCTAssertEqual(FleetBlockGeometry.blockHeight(activeHeight: 16, memberCount: 17, layout: .fleetDots), 22)
         XCTAssertEqual(FleetBlockGeometry.blockHeight(activeHeight: 22, memberCount: 5, layout: .fleetDots), 22)
     }
@@ -275,8 +280,9 @@ final class FleetSummaryTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(width("●99 ◐99 ▲99 ×99", FleetBlockFonts.counts) + 3 * 2,
                                  FleetBlockGeometry.countsWidth)
-        for mark in ["Cl", "Cx", "Gk"] {
-            XCTAssertLessThanOrEqual(width(mark, FleetBlockFonts.mark) + 1, FleetBlockGeometry.markWidth)
+        for mark in ["Cl", "Cx", "Gk", "19", "99"] {
+            XCTAssertLessThanOrEqual(width(mark, FleetBlockFonts.mark) + 1, FleetBlockGeometry.markWidth,
+                                     "\(mark) must fit the mark column (the count sits under the mark)")
         }
         XCTAssertLessThanOrEqual(width("+99", FleetBlockFonts.mark),
                                  CGFloat(FleetBlockGeometry.overflowColumns) * FleetBlockGeometry.dotPitch + FleetBlockGeometry.overflowGap,

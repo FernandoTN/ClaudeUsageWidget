@@ -65,13 +65,15 @@ enum DesignGlyph {
 }
 
 extension AccountReadiness {
+    /// Owner ruling 2026-09-04: any window AT its limit — session, weekly
+    /// or Fable weekly — is RED; amber is only for approaching one.
     var role: DesignRole {
         switch self {
         case .ready: return .ready
-        case .low, .exhausted: return .caution
+        case .low: return .caution
+        case .exhausted, .dead: return .blocking
         case .suspected: return .suspected
         case .unknown, .excluded: return .informational
-        case .dead: return .blocking
         }
     }
 
@@ -93,7 +95,7 @@ extension AccountReadiness {
         case .low: return "near limit"
         case .unknown: return "unmeasured"
         case .suspected: return "suspected"
-        case .exhausted: return "exhausted"
+        case .exhausted: return "at a limit"
         case .excluded: return "excluded"
         case .dead: return "dead"
         }
