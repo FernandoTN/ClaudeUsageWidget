@@ -340,6 +340,7 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
         do {
             try recorder?.recordClaim(provider: provider, newOwner: newOwner, previousOwner: previousOwner,
                                       accountStamp: accountStamp, name: name, cause: cause, at: at)
+            telemetryLog.info("ownership claim \(provider.rawValue, privacy: .public) → \(name ?? "none", privacy: .public) (\(cause ?? "unknown", privacy: .public))")
         } catch {
             telemetryLog.error("claim write failed — \(String(describing: error))")
         }
@@ -348,6 +349,7 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
     func recordExternalChange(provider: TelemetryProvider, newOwner: UUID, name: String?, at: Date) {
         do {
             try recorder?.recordExternalChange(provider: provider, newOwner: newOwner, name: name, at: at)
+            telemetryLog.info("ownership observed outside the app: \(provider.rawValue, privacy: .public) → \(name ?? "?", privacy: .public)")
         } catch {
             telemetryLog.error("external-change write failed — \(String(describing: error))")
         }

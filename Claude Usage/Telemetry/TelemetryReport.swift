@@ -71,6 +71,10 @@ nonisolated struct TelemetryBucket: Sendable, Equatable {
     var total: TokenTotals
     /// Ownership changes of the scope's provider(s) inside the bucket (heartbeats excluded).
     var switchCount: Int
+    /// The bucket's own breakdown, whatever the chart stacks by — for the
+    /// click-a-bucket popover ("what was 16 July?").
+    var byModel: [SeriesKey: TokenTotals] = [:]
+    var byAccount: [SeriesKey: TokenTotals] = [:]
 }
 
 nonisolated struct TelemetryRow: Sendable, Equatable {
@@ -189,6 +193,9 @@ nonisolated enum TelemetryReportBuilder {
         for row in current {
             guard let index = TelemetryQuery.bucketIndex(for: row.aggregate.minute, in: range.buckets) else { continue }
             buckets[index].total.add(row.totals)
+            buckets[index].byModel[SeriesKey(id: row.aggregate.model, label: row.aggregate.model, provider: row.aggregate.provider),
+                                   default: TokenTotals()].add(row.totals)
+            buckets[index].byAccount[accountKey(for: row, roster: names), default: TokenTotals()].add(row.totals)
             if stack == .kind {
                 var uncached = TokenTotals(); uncached.input = row.totals.input; uncached.units = row.totals.units
                 var writes = TokenTotals(); writes.cacheWrite = row.totals.cacheWrite; writes.cacheWrite1h = row.totals.cacheWrite1h

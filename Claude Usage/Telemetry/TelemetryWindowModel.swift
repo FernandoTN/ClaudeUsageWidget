@@ -60,9 +60,18 @@ struct TelemetrySidebarProfile: Equatable {
 }
 
 final class TelemetryWindowModel: ObservableObject {
-    @Published var scope: TelemetryScope = .fleet { didSet { if scope != oldValue { reload() } } }
+    @Published var scope: TelemetryScope = .fleet {
+        didSet { if scope != oldValue { chartMode = nil; reload() } }
+    }
     @Published var window: TelemetryWindow = .days7 { didSet { if window != oldValue { reload() } } }
     @Published var metric: TelemetryMetric = .inputClass { didSet { if metric != oldValue { reload() } } }
+    /// nil = the scope's default: Fleet splits (Codex and Grok are slivers
+    /// under Claude), a provider or account stacks its models.
+    @Published var chartMode: TelemetryChartMode?
+
+    var effectiveChartMode: TelemetryChartMode {
+        chartMode ?? (scope == .fleet ? .split : .stacked)
+    }
     @Published private(set) var report: TelemetryReport?
     @Published private(set) var fleetReport: TelemetryReport?
     @Published private(set) var status = IndexingStatus()

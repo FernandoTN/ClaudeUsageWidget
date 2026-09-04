@@ -475,6 +475,28 @@ in light and dark (13 states × 2), reviewed frame by frame:
 25. Segment labels "All indexed" and "Input by kind" wrapped to two lines
     at the control's width; they are "All" and "By kind".
 
+Stage 3b, the chart proper (Canvas), rendered in split / stacked / hover /
+isolated states:
+
+26. In Fleet the stacked chart was a Claude chart with two invisible
+    slivers; Fleet now opens in Split (one row per provider, own scale,
+    shared days, the row title carrying total and share) with Stacked one
+    click away; a provider or account opens Stacked.
+27. The chart had a fixed 250 pt height and left a 100 pt gap above the
+    footer in a 680 pt window; it now takes the pane's spare height.
+28. The "7-bucket mean" legend entry appeared in Split even when no mean
+    could be drawn (seven buckets, one partial); it appears only when a
+    mean is drawn.
+29. The partial bucket was a dimmed column that read as a lighter series;
+    it is hatched in the surface colour at 55 % opacity, with the legend
+    swatch matching.
+30. Hover: a crosshair and a column band across every row, one tooltip
+    with the bucket, every series' value and the total; ←/→ move it from the
+    keyboard and Return opens the bucket's breakdown — the same popover a
+    click opens, listing that bucket's own by-model and by-account rows.
+31. Legend click isolates a series (the others fade to 22 %, nothing is
+    recoloured); a second click restores.
+
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 
 1. Layout **B** vs A. 2. Default **7 days** vs 30. 3. Cost **shown, labelled**

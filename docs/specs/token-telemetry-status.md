@@ -168,14 +168,34 @@ under `telemetry.*` in `Localizable.strings`. Tests: `TelemetryWindowTests`
 (4, renders the frames with `TEST_RUNNER_CUW_RENDER_FRAMES`). Design passes
 17–25 recorded in the spec §5. Full suite 502 / 0 (2 opt-ins skipped).
 
+Stage 3a merged as `2ea61f9` (#105). WAL note from the fixes session: on a
+normal launch the end-of-catch-up TRUNCATE leaves the WAL at ~300 KB; the
+64 MB residue was the migration launch (VACUUM after the checkpoint), and
+the checkpoint follows the VACUUM since 2ea61f9. The 22:29 PDT auto-switch
+(Google → jskxkxjssh) was confirmed in the live ledger as ownership seq 30,
+exactClaim / activate.
+
+## Stage 3b — the chart (PR #108)
+
+`Telemetry/TelemetryChartView.swift`: Canvas columns (≤ 24 pt, 2 pt gaps,
+rounded top), hairline gridlines, nice-number axis, 7-bucket mean, hatched
+partial bucket, clipped outliers with a break mark and value, ⇄ counts;
+Stacked and Split modes (Fleet opens Split); hover crosshair + column band +
+one tooltip with every series; ←/→ and Return; click → the bucket's own
+by-model / by-account breakdown (`TelemetryBucketBreakdown`, fed by the new
+`byModel` / `byAccount` on every `TelemetryBucket`); legend click isolates.
+`TelemetryChartMath` pure (ceiling, trailing mean, hit-test). Frames added:
+fleet-7d-stacked, fleet-7d-hover, provider-claude-isolated. Ownership claim
+and external-observation writes log one line each. Design passes 26–31.
+Full suite on the merged tree 519 / 0.
+
 ## Next
 
-3b (the chart proper: Canvas columns with hover crosshair + tooltip, Split
-small multiples as the Fleet default, bucket click → breakdown, legend
-isolate, hatched partial bucket, collapsed switch markers), 4 (attribution
-polish, Switches table, rate-limit overlay opt-in, by-kind / by-originator /
-main-vs-subagent stacks, minute-compaction of raw events older than 90 days —
-lossless for the report, export).
+4 (attribution polish: Switches table in the account scope, rate-limit
+overlay opt-in, by-kind / by-originator / main-vs-subagent stacks, export;
+minute-compaction of raw events older than 90 days — lossless for the
+report), then the fixes session's punch list on the shell (typography,
+sidebar density, footer actions) once its pixel pass lands.
 
 ## Open questions
 
