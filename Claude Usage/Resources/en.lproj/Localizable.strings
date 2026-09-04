@@ -530,6 +530,11 @@
 "multiprofile.show_label_description" = "Display profile name below the icon";
 "multiprofile.use_system_color" = "Monochrome";
 "multiprofile.use_system_color_description" = "Use white color instead of status colors (green/orange/red)";
+"multiprofile.layout" = "Menu Bar Layout";
+"multiprofile.layout_every" = "Every account";
+"multiprofile.layout_dots" = "Active + dots";
+"multiprofile.layout_counts" = "Active + counts";
+"multiprofile.layout_description" = "Fleet layouts show one tile per provider: the active account's tile plus a readiness dot (or count) per other account. Green = ready, orange = near a limit, red = exhausted, purple = suspected throttle, orange × = dead login, grey dash = excluded from auto-switch, hollow ring = never measured, dimmed = stale reading. The next auto-switch candidate appears under the dots once the active account passes 75% or a hand-off is queued.";
 
 /* ==================== */
 /* MARK: - General Settings (Profile-Level) */
