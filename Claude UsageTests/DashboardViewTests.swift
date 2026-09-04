@@ -67,6 +67,7 @@ final class DashboardViewTests: XCTestCase {
             "Switch the Claude login from dRir (78 % session · resets in 2h 59m) to dJormun (0 % session · resets in 4h)?")
         XCTAssertEqual(DashboardFormatting.switchQuestion(provider: .codex, from: nil, fromHeadline: nil, to: "Cod", toHeadline: nil),
                        "Switch the Codex login to Cod?")
+        XCTAssertEqual(DashboardFormatting.nobodyWithHeadroom(nil), "nobody with headroom")
     }
 
     func testSwitchOutcomeNotesNeverReadAsASilentNoOp() {

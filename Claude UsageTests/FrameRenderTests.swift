@@ -189,19 +189,23 @@ final class FrameRenderTests: XCTestCase {
 
         // The classic popover's Make-active row: offer, confirmation, dead confirmation, outcome.
         let rowSize = NSSize(width: DashboardSurface.size(for: .classic).width - 20, height: 140)
-        let question = DashboardFormatting.switchQuestion(provider: .claude, from: "dRir(Fenrir)", fromHeadline: "78 % session · resets in 2h 59m",
-                                                          to: "dJormun", toHeadline: "0 % session · resets in 4h")
+        let ownerHeadline = "78 % session · resets in 2h 59m"
         let steps: [(String, MakeActiveRow, String)] = [
-            ("offer", MakeActiveRow(name: "dJormun", provider: .claude, ownerName: "dRir(Fenrir)", question: question, loginDead: false,
-                                    isPending: false, note: nil, onBegin: {}, onConfirm: {}, onCancel: {}), "the offer on a viewed non-owner, owner named"),
-            ("confirm", MakeActiveRow(name: "dJormun", provider: .claude, ownerName: "dRir(Fenrir)", question: question, loginDead: false,
-                                      isPending: true, note: nil, onBegin: {}, onConfirm: {}, onCancel: {}), "confirmation: both sides, headroom, cost"),
-            ("confirm-dead", MakeActiveRow(name: "Ai", provider: .claude, ownerName: "dRir(Fenrir)",
-                                           question: DashboardFormatting.switchQuestion(provider: .claude, from: "dRir(Fenrir)", fromHeadline: "78 % session · resets in 2h 59m", to: "Ai", toHeadline: "0 % session"),
-                                           loginDead: true, isPending: true, note: nil, onBegin: {}, onConfirm: {}, onCancel: {}), "confirmation on a dead login: Log in first disabled, Cancel default"),
-            ("outcome", MakeActiveRow(name: "dJormun", provider: .codex, ownerName: nil, question: question, loginDead: false, isPending: false,
-                                      note: DashboardFormatting.outcome(.activated, name: "dJormun", provider: .codex),
-                                      onBegin: {}, onConfirm: {}, onCancel: {}), "state after a successful switch"),
+            ("offer", MakeActiveRow(name: "dJormun", provider: .claude, ownerName: "dRir(Fenrir)", ownerHeadline: ownerHeadline,
+                                    headline: "0 % session · resets in 4h", loginDead: false, isPending: false, note: nil,
+                                    onBegin: {}, onConfirm: {}, onCancel: {}), "the offer on a viewed non-owner, owner named"),
+            ("confirm", MakeActiveRow(name: "dJormun", provider: .claude, ownerName: "dRir(Fenrir)", ownerHeadline: ownerHeadline,
+                                      headline: "0 % session · resets in 4h", loginDead: false, isPending: true, note: nil,
+                                      onBegin: {}, onConfirm: {}, onCancel: {}), "confirmation: from / to lines with headroom, cost"),
+            ("confirm-dead", MakeActiveRow(name: "Ai", provider: .claude, ownerName: "dRir(Fenrir)", ownerHeadline: ownerHeadline,
+                                           headline: "0 % session", loginDead: true, isPending: true, note: nil,
+                                           onBegin: {}, onConfirm: {}, onCancel: {}), "confirmation on a dead login: Log in first disabled, Cancel default"),
+            ("outcome", MakeActiveRow(name: "dJormun", provider: .codex, ownerName: nil, loginDead: false, isPending: false,
+                                      note: DashboardFormatting.outcome(.activated, name: "dJormun", provider: .codex), succeeded: true,
+                                      onBegin: {}, onConfirm: {}, onCancel: {}), "state after a successful switch — no action label"),
+            ("refused", MakeActiveRow(name: "Ai", provider: .claude, ownerName: "dRir(Fenrir)", loginDead: true, isPending: false,
+                                      note: DashboardFormatting.outcome(.credentialsRefused, name: "Ai", provider: .claude),
+                                      onBegin: {}, onConfirm: {}, onCancel: {}), "after a refused switch — the offer stays"),
         ]
         for (state, row, note) in steps {
             write(row.padding(10), surface: "makeactive", state: state, size: rowSize, note: note)

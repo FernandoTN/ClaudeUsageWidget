@@ -159,6 +159,15 @@ enum DashboardFormatting {
         return text
     }
 
+    /// "nobody with headroom · 2 of 3 dead" — the ⇄ menu's form (round 2, R2-2).
+    static func nobodyWithHeadroom(_ counts: FleetCounts.Provider?) -> String {
+        var text = "nobody with headroom"
+        if let counts, counts.count(.dead) > 0 {
+            text += " · \(counts.count(.dead)) of \(counts.profiles) dead"
+        }
+        return text
+    }
+
     /// Both sides named, with the candidate's headroom, so the trade can be
     /// judged before the CLI login moves (round 1, M2).
     static func switchQuestion(provider: Profile.ProviderKind, from: String?, fromHeadline: String?,
@@ -670,7 +679,7 @@ struct DashboardView: View {
                 } else if section.roster.isEmpty {
                     Text("single account").font(.system(size: 8.5)).foregroundColor(.secondary)
                 } else {
-                    Text("\(DesignGlyph.next) — nobody with headroom")
+                    Text(DashboardFormatting.nobodyWithHeadroom(section.selection?.counts))
                         .font(.system(size: 9.5, weight: .semibold))
                         .foregroundColor(DesignRole.blocking.color)
                 }
@@ -718,8 +727,8 @@ struct DashboardView: View {
                                 .foregroundColor(row.readiness.role.color)
                                 .frame(width: 10)
                             Text(row.name).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
-                            if row.isNext { tag("next", role: .action) }
-                            if let position = row.queuePosition { tag("queued #\(position)", role: .action) }
+                            if row.isNext { tag("next", role: .informational) }
+                            if let position = row.queuePosition { tag("queued #\(position)", role: .informational) }
                             if row.needsRelogin { tag("re-login needed", role: .caution) }
                             if !row.sameAccountAs.isEmpty {
                                 tag("same account as \(row.sameAccountAs.joined(separator: ", "))", role: .informational)
@@ -788,8 +797,16 @@ struct DashboardView: View {
         .padding(.horizontal, 12)
     }
 
+    /// Informational tags are neutral pills (round 2, R2-3: "queued" and
+    /// "next" are facts, not actions); caution tags keep their colour.
     private func tag(_ text: String, role: DesignRole) -> some View {
-        Text(text).font(.system(size: 8, weight: .semibold)).foregroundColor(role.color).lineLimit(1)
+        Text(text)
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundColor(role == .informational ? .secondary : role.color)
+            .lineLimit(1)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(role == .informational ? Color.primary.opacity(0.08) : role.color.opacity(0.12)))
     }
 
     @State private var noteFor: UUID?
@@ -797,12 +814,10 @@ struct DashboardView: View {
     private func switchConfirm(_ row: RosterRow, section: ProviderSection) -> some View {
         let dead = row.readiness == .dead
         return VStack(alignment: .leading, spacing: 5) {
-            Text(DashboardFormatting.switchQuestion(
+            SwitchQuestionLines(
                 provider: section.provider,
-                from: section.active?.name, fromHeadline: section.active.flatMap { DashboardFormatting.headline($0.gauges) },
-                to: row.name, toHeadline: DashboardFormatting.headline(row.gauges)))
-                .font(.system(size: 10, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
+                from: section.active.map { ($0.name, DashboardFormatting.headline($0.gauges)) },
+                to: (row.name, DashboardFormatting.headline(row.gauges)))
             Text(DashboardFormatting.switchCost(section.provider))
                 .font(.system(size: 9))
                 .foregroundColor(.secondary)
