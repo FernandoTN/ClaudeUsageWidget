@@ -1202,3 +1202,18 @@ fresh deploy must not read as a broken section.
 **Rejected.** Charts with axes (the popover is 400 pt wide); a per-row context
 menu (the roster already has one); a second switch surface (the redesign's
 "Recent switches" disclosure goes when this lands).
+
+### 12.8 Round-3 pass (fixes session review of the rendered frames)
+
+R1 maxed marks carry the value ("▲ W 100"); R2 one `ActivePill` ("Active", provider
+in the tooltip) on the roster row, the eligibility list and — by agreement — the
+telemetry sidebar; R3 dead rows: the × and the caption are the one red, the name
+stays in the label colour; R4 the dead banner's copy stops repeating what its
+button says, and the frame passes the repair action; R5 the innocent duplicate's
+"Same account" fact is in the caution tone with a "View <name>" link (the
+re-login banner stays reserved for the contaminated case the manager flags); R6
+"Make dJormun active…" names the candidate; R7 the pin is a badge with a tooltip
+and an Unpin (`MenuBarManager.clearManualPin`, one log line, nothing else); R8
+the diagnostics command filters on the app's subsystem (the process predicate
+also matched the test host). S1 was the facsimile's clamp (widened; the live menu
+has no cap); S2 waits for a reset-credit expiry on the model; S3 stays a toggle.

@@ -28,7 +28,7 @@ enum DesignFrameHarness {
         for (state, degraded, external) in [("healthy", false, [:]), ("degraded", true, [:]), ("changed-outside", false, [Profile.ProviderKind.claude: "dLeo"])] as [(String, Bool, [Profile.ProviderKind: String])] {
             let sel = Fixture.selections(degraded: degraded, now: now)
             let rows = ActiveSelectorMenuModel.rows(selections: sel, preferencesDegraded: degraded, externalChanges: external, switching: nil, now: now)
-            emit(SelectorMenuFacsimile(rows: rows), width: 400, name: "selector-menu-\(state)", to: dir, index: &index)
+            emit(SelectorMenuFacsimile(rows: rows), width: 560, name: "selector-menu-\(state)", to: dir, index: &index)
         }
         for badge in [nil, ActiveSelectorMenuModel.Badge.red, .purple, .amber] {
             emit(SelectorItemFacsimile(badge: badge), width: 48, name: "selector-item-\(badge.map { "\($0)" } ?? "rest")", to: dir, index: &index)
@@ -43,7 +43,7 @@ enum DesignFrameHarness {
                   let selection = sel.first(where: { $0.provider == profile.providerKind }) else { continue }
             let isOwner = selection.owner?.id == profile.id
             let candidate = selection.candidates.first { $0.id == profile.id }
-            emit(AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate).padding(16),
+            emit(AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate, onRepair: {}).padding(16),
                  width: 560, name: "accounts-overview-\(state)", to: dir, index: &index)
         }
         if let profile = Fixture.profiles.first {

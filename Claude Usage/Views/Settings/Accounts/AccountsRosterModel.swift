@@ -148,9 +148,9 @@ enum AccountsRosterModel {
         guard !gauges.isEmpty else { return "—" }
         if readiness == .exhausted {
             // The legend's exhausted glyph + the window that is maxed (R2-2).
-            if let session = gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold { return DesignGlyph.exhausted + " S" }
-            if let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return DesignGlyph.exhausted + " F" }
-            if let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return DesignGlyph.exhausted + " W" }
+            if let session = gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold { return "\(DesignGlyph.exhausted) S \(Int(session.percentage.rounded()))" }
+            if let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return "\(DesignGlyph.exhausted) F \(Int(fable.percentage.rounded()))" }
+            if let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return "\(DesignGlyph.exhausted) W \(Int(weekly.percentage.rounded()))" }
         }
         guard let keyed = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly }) else { return "—" }
         return "\(keyed.kind == .session ? "S" : "W") \(Int(keyed.percentage.rounded()))"
@@ -211,7 +211,7 @@ extension AccountsRosterModel.Badge {
     /// duplicate.
     var mark: String? {
         switch self {
-        case .activeFor(let provider): return ActiveVocabulary.providerName(provider)
+        case .activeFor: return ActiveVocabulary.activeWord
         case .queued(let position): return "accounts.badge.queued".localized(with: position)
         case .next(let verdict): return verdict.glyph
         case .duplicate: return "⧉"
