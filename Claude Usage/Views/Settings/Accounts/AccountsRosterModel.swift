@@ -56,6 +56,13 @@ enum AccountsRosterModel {
         /// "18 profiles · 17 accounts" — stated so nobody sums the glyphs.
         var subtitle: String {
             if counts.profiles == 1 { return "accounts.roster.profile_one".localized }
+            // Only stamped identities can be counted as accounts; until every
+            // profile is identified the honest number is how many are.
+            if counts.identifiedAccounts < counts.profiles - (counts.profiles - counts.distinctAccounts) {
+                return counts.identifiedAccounts == 0
+                    ? "accounts.roster.profiles".localized(with: counts.profiles)
+                    : "accounts.roster.profiles_identified".localized(with: counts.profiles, counts.identifiedAccounts)
+            }
             return counts.profiles == counts.distinctAccounts
                 ? "accounts.roster.profiles".localized(with: counts.profiles)
                 : "accounts.roster.profiles_accounts".localized(with: counts.profiles, counts.distinctAccounts)

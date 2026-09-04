@@ -1233,3 +1233,6 @@
 "telemetry.ledger_unavailable_path" = "Telemetry ledger unavailable at %@ — nothing is shown rather than a guess. Refresh now retries.";
 "selector.resets_expires" = "expires %@ (as of %@)";
 "selector.resets_never_expires" = "never expires (as of %@)";
+"accounts.roster.profiles_identified" = "%d profiles · %d identified";
+"insights.timeline_row" = "in %@ · %@";
+"insights.timeline_more" = "+%d more";

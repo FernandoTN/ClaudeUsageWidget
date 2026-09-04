@@ -69,7 +69,8 @@ struct DashboardInsightsView: View {
             section("insights.capacity".localized, empty: insights.capacity.isEmpty ? "insights.capacity_empty".localized : nil) {
                 ForEach([Profile.ProviderKind.claude, .codex, .grok], id: \.self) { p in
                     if let value = insights.capacity[p] {
-                        Text("insights.capacity_line".localized(with: ActiveVocabulary.providerName(p), value))
+                        // FleetCounts sums headroom in percentage points; one account = 100.
+                        Text("insights.capacity_line".localized(with: ActiveVocabulary.providerName(p), value / 100))
                             .font(.system(size: 9.5)).monospacedDigit()
                     }
                 }
@@ -111,15 +112,93 @@ struct DashboardInsightsView: View {
     }
 }
 
-// MARK: - Timeline strip (7 days)
+// MARK: - Timeline strip (7 days) — collision-aware (owner finding V1)
+
+/// Pure label layout for the strip: markers sharing a slot merge into one
+/// label, labels are staggered into as many rows as they need (up to `maxRows`),
+/// and past that the strip keeps its dots and hands the labels to a list. The
+/// height is a function of the layout, so the block always reserves its own
+/// space and never paints over the next section.
+enum InsightsTimelineLayout {
+    struct Placement: Hashable {
+        var x: CGFloat
+        var row: Int
+        var text: String
+        var isFable: Bool
+    }
+    struct Result: Hashable {
+        var placements: [Placement]
+        var rows: Int
+        /// True when the labels did not fit `maxRows`: draw dots only and list them.
+        var overflow: Bool
+        var height: CGFloat
+    }
+
+    static let axisHeight: CGFloat = 16
+    static let rowHeight: CGFloat = 11
+    static let charWidth: CGFloat = 4.6
+    static let gap: CGFloat = 6
+    static let slotTolerance: CGFloat = 6
+
+    static func layout(markers: [FleetInsights.ResetMarker], width: CGFloat, now: Date, maxRows: Int = 3) -> Result {
+        let sorted = markers.sorted { $0.resetAt < $1.resetAt }
+        // 1. Merge markers that land on the same slot.
+        var groups: [(x: CGFloat, members: [FleetInsights.ResetMarker])] = []
+        for marker in sorted {
+            let x = width * InsightsFormatting.timelinePosition(marker.resetAt, now: now)
+            if let last = groups.last, abs(last.x - x) < slotTolerance {
+                groups[groups.count - 1].members.append(marker)
+            } else {
+                groups.append((x, [marker]))
+            }
+        }
+        // 2. Stagger labels into rows.
+        var lastRight: [CGFloat] = []
+        var placements: [Placement] = []
+        var overflow = false
+        for group in groups {
+            let text = mergedLabel(group.members)
+            let labelWidth = CGFloat(text.count) * charWidth
+            let left = min(max(group.x - labelWidth / 2, 0), max(width - labelWidth, 0))
+            var row = lastRight.firstIndex { $0 + gap <= left }
+            if row == nil {
+                if lastRight.count < maxRows { lastRight.append(0); row = lastRight.count - 1 } else { overflow = true; row = 0 }
+            }
+            lastRight[row!] = left + labelWidth
+            placements.append(Placement(x: group.x, row: row!, text: text, isFable: group.members.allSatisfy { $0.window == .fable }))
+        }
+        let rows = overflow ? 0 : lastRight.count
+        return Result(placements: placements, rows: rows, overflow: overflow, height: axisHeight + CGFloat(rows) * rowHeight + 4)
+    }
+
+    /// "dRir · Commits W 100 %" when the merged markers share a window and
+    /// value; otherwise each keeps its own suffix.
+    static func mergedLabel(_ members: [FleetInsights.ResetMarker]) -> String {
+        guard let first = members.first else { return "" }
+        let sameSuffix = members.allSatisfy { $0.window == first.window && Int($0.headroomReturning.rounded()) == Int(first.headroomReturning.rounded()) }
+        if members.count > 1, sameSuffix {
+            let suffix = InsightsFormatting.timelineLabel(first).dropFirst(first.name.count + 1)
+            return members.map(\.name).joined(separator: " · ") + " " + suffix
+        }
+        return members.map(InsightsFormatting.timelineLabel).joined(separator: " · ")
+    }
+}
 
 struct InsightsTimelineStrip: View {
     let markers: [FleetInsights.ResetMarker]
     let now: Date
+    /// The dashboard column minus its padding; the live width arrives through
+    /// a preference and re-lays out once.
+    @State private var width: CGFloat = 372
+    private static let listCap = 8
+
+    private var layout: InsightsTimelineLayout.Result {
+        InsightsTimelineLayout.layout(markers: markers, width: width, now: now)
+    }
 
     var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
+        let layout = self.layout
+        VStack(alignment: .leading, spacing: 3) {
             ZStack(alignment: .topLeading) {
                 Path { p in
                     p.move(to: CGPoint(x: 0, y: 10)); p.addLine(to: CGPoint(x: width, y: 10))
@@ -129,19 +208,38 @@ struct InsightsTimelineStrip: View {
                     }
                 }
                 .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
-                ForEach(Array(markers.enumerated()), id: \.offset) { index, marker in
-                    let x = width * InsightsFormatting.timelinePosition(marker.resetAt, now: now)
-                    Circle().fill(marker.window == .fable ? DesignRole.suspected.color : DesignRole.ready.color)
-                        .frame(width: 6, height: 6).position(x: x, y: 10)
-                    Text(InsightsFormatting.timelineLabel(marker))
-                        .font(.system(size: 8)).monospacedDigit().lineLimit(1)
-                        .position(x: min(max(x, 22), width - 22), y: index.isMultiple(of: 2) ? 22 : 32)
+                ForEach(Array(layout.placements.enumerated()), id: \.offset) { _, placement in
+                    Circle().fill(placement.isFable ? DesignRole.suspected.color : DesignRole.ready.color)
+                        .frame(width: 6, height: 6).position(x: placement.x, y: 10)
+                    if !layout.overflow {
+                        Text(placement.text)
+                            .font(.system(size: 8)).monospacedDigit().lineLimit(1)
+                            .position(x: min(max(placement.x, CGFloat(placement.text.count) * InsightsTimelineLayout.charWidth / 2), width - CGFloat(placement.text.count) * InsightsTimelineLayout.charWidth / 2),
+                                      y: InsightsTimelineLayout.axisHeight + 6 + CGFloat(placement.row) * InsightsTimelineLayout.rowHeight)
+                    }
+                }
+            }
+            .frame(height: layout.height)
+            .clipped()
+            .background(GeometryReader { geo in Color.clear.preference(key: InsightsWidthKey.self, value: geo.size.width) })
+            .onPreferenceChange(InsightsWidthKey.self) { if $0 > 0, abs($0 - width) > 1 { width = $0 } }
+            if layout.overflow {
+                ForEach(Array(markers.sorted { $0.resetAt < $1.resetAt }.prefix(Self.listCap).enumerated()), id: \.offset) { _, marker in
+                    Text("insights.timeline_row".localized(with: DashboardFormatting.duration(max(0, marker.resetAt.timeIntervalSince(now))), InsightsFormatting.timelineLabel(marker)))
+                        .font(.system(size: 8.5)).foregroundColor(.secondary).monospacedDigit().lineLimit(1)
+                }
+                if markers.count > Self.listCap {
+                    Text("insights.timeline_more".localized(with: markers.count - Self.listCap)).font(.system(size: 8.5)).foregroundColor(.secondary)
                 }
             }
         }
-        .frame(height: 40)
         .accessibilityLabel(markers.map(InsightsFormatting.timelineLabel).joined(separator: ", "))
     }
+}
+
+private struct InsightsWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 // MARK: - Sparkline
@@ -341,7 +439,7 @@ extension FleetInsights {
                 Incident(at: now.addingTimeInterval(-5 * h), profileId: nil, name: "BBR", provider: .claude, kind: .tripwire, detail: nil),
                 Incident(at: now.addingTimeInterval(-7 * h), profileId: b, name: "Commits", provider: .claude, kind: .burst429(streak: 4), detail: nil),
             ],
-            capacity: [.claude: 3.4, .codex: 1.1, .grok: 0.9],
+            capacity: [.claude: 340, .codex: 110, .grok: 90],
             whyNotOthers: [
                 WhyNot(id: b, name: "Ai", provider: .claude, status: .blocked(.dead), evidence: "dead login", verdictText: "× login dead 2 h ago", evidenceAge: 2 * h),
                 WhyNot(id: c, name: "Google", provider: .claude, status: .duplicateOfOwner(ownerName: "dRir"), evidence: "same account as dRir", verdictText: nil, evidenceAge: 60),

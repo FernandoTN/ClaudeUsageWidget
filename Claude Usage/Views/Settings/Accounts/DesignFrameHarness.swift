@@ -36,6 +36,17 @@ enum DesignFrameHarness {
         let sel = Fixture.selections(degraded: false, now: now)
         let sections = AccountsRosterModel.sections(selections: sel, profiles: Fixture.profiles, sort: .bar, filter: "")
         emit(RosterFacsimile(sections: sections), width: 250, name: "accounts-roster-all-states", to: dir, index: &index)
+        let largeSel = Fixture.selections(degraded: false, now: now, profiles: Fixture.largeProfiles)
+        let largeSections = AccountsRosterModel.sections(selections: largeSel, profiles: Fixture.largeProfiles, sort: .bar, filter: "")
+        emit(RosterFacsimile(sections: largeSections), width: 250, name: "accounts-roster-19", to: dir, index: &index)
+        let largeInsights = FleetInsights.build(FleetInsights.Inputs(selections: largeSel, profiles: Fixture.largeProfiles, switchHistory: [], measured: [:],
+                                                                     incidents: [], drift: [], backoffs: [:], counts: largeSel.map(\.counts), now: now))
+        emit(DashboardInsightsView(insights: largeInsights, now: now).padding(14), width: 400, name: "dashboard-insights-19", to: dir, index: &index)
+        var crowded = largeInsights
+        crowded.resetTimeline = Array(repeating: largeInsights.resetTimeline, count: 2).flatMap { $0 }.enumerated().map { i, m in
+            var m = m; m.resetAt = m.resetAt.addingTimeInterval(Double(i) * 1800); return m
+        }
+        emit(DashboardInsightsView(insights: crowded, now: now).padding(14), width: 400, name: "dashboard-insights-overflow", to: dir, index: &index)
         emit(ViewingPickerFacsimile(name: "dJormun"), width: 190, name: "settings-viewing-picker", to: dir, index: &index)
         for (state, name) in [("owner", "dRir"), ("viewed-non-owner", "dJormun"), ("dead", "Ai"), ("suspected", "Outlook"),
                               ("duplicate", "Google"), ("at-limit", "Commits"), ("never-measured", "Hotmail"), ("codex-owner", "xFernando")] {
@@ -160,7 +171,18 @@ enum DesignFrameHarness {
             Profile(name: "Grok", grokCredentialsJSON: "{\"k\":{\"key\":\"x\"}}", grokEmail: "grok@x.ai",
                     claudeUsage: usage(weekly: 12, sessionWindow: false)),
         ]
-        static func selections(degraded: Bool, now: Date) -> [ProviderActiveSelection] {
+        /// The owner's scale: the ten Claude profiles above plus nine more, mostly
+        /// unstamped, with weekly resets that crowd the first two days of the strip.
+        static let largeProfiles: [Profile] = profiles + [
+            ("2026", 5.0, 30.0, 2.0), ("Alpha", 55.0, 88.0, 9.0), ("Beta", 61.0, 100.0, 9.5), ("Gamma", 8.0, 100.0, 10.0),
+            ("Delta", 15.0, 42.0, 26.0), ("Echo", 90.0, 100.0, 27.0), ("Foxtrot", 33.0, 12.0, 27.5), ("Golf", 70.0, 64.0, 60.0), ("Hotel", 2.0, 9.0, 150.0),
+        ].map { name, session, weekly, hours -> Profile in
+            var u = usage(session: session, weekly: weekly)
+            u.weeklyResetTime = now.addingTimeInterval(hours * 3600)
+            return claude(name, u, email: "\(name.lowercased())@example.com")
+        }
+        static func selections(degraded: Bool, now: Date, profiles roster: [Profile] = profiles) -> [ProviderActiveSelection] {
+            let profiles = roster
             let byName = Dictionary(uniqueKeysWithValues: profiles.map { ($0.name, $0) })
             let dead: Set<UUID> = [byName["Ai"]!.id, byName["xFenrir(dev)"]!.id]
             let free: Set<UUID> = [byName["Stanford"]!.id]

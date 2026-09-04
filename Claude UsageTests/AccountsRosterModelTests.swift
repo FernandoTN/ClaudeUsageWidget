@@ -86,7 +86,7 @@ final class AccountsRosterModelTests: XCTestCase {
         XCTAssertEqual(rows(sections, .claude).map(\.name), ["alpha", "Mid", "Zed"])
         let section = sections[0]
         XCTAssertEqual(section.title, "CLAUDE")
-        XCTAssertEqual(section.subtitle, "3 profiles · 2 accounts")
+        XCTAssertEqual(section.subtitle, "3 profiles · 1 identified")
         XCTAssertEqual(section.strip, "3 · ●3 · ⧉2")
         XCTAssertEqual(ActiveVocabulary.countsWords(section.counts), "3\u{00A0}ready · 2\u{00A0}duplicates", "the header shows words (count glued to its word); glyphs stay on hover")
     }

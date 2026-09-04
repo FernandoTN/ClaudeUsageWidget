@@ -1245,3 +1245,19 @@ once (the recorder's reason, else "left at 96 % session"); an affirmed stamp's
 raw retry-after is dropped (its "40 min left" says it) and a rescue's header
 ratio reads "5-hour window 86 %"; a why-not row lets the verdict say "dead" once;
 a header rescue stays in the incidents list as an informational ○, not a green ✓.
+
+### 12.10 Owner findings at the real scale (19 Claude profiles)
+
+**V1 — reset strip.** Labels are laid out by a pure `InsightsTimelineLayout`:
+markers sharing a slot merge ("dRir · Commits W 100 %"), labels stagger into up
+to three rows, and past that the strip keeps its dots and lists the resets under
+it ("in 9 h · dRir W 84 %", capped at eight with "+N more"). The block's height
+is a function of the layout, so it always reserves its own space.
+
+**V2 — roster header.** The census line is one line with the sentence on hover
+(the List's header row clips a second line), and the count says what it knows:
+"18 profiles · 3 identified" until every profile carries an account stamp,
+"18 profiles · 17 accounts" once they all do, "18 profiles" when no stamp
+exists yet. `FleetCounts.Provider.identifiedAccounts` is the new number.
+
+Frames: `accounts-roster-19`, `dashboard-insights-19`, `dashboard-insights-overflow`.
