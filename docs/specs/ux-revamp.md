@@ -291,11 +291,20 @@ roster walk in the delegate; the snapshot is built once per menu open (and once
 per paint by the dashboard) from `makeFleetSummaryContext()` (made internal — one
 word — in stage 1b, agreed), never cached across sweeps.
 
-The item is created ONCE in `MenuBarManager.setup()` BEFORE `StatusBarUIManager`
-creates the provider groups — each new status item lands LEFT of the existing ones
-(`StatusBarUIManager.setupCompositeGroups`, creation order Claude → Grok → Codex
-puts Claude rightmost), so an item created first is rightmost and stays there
-across group rebuilds. It is **owned by `MenuBarManager`**, never placed in
+**Placement (measured, revised 2026-09-03 late).** The item is created ONCE in
+`MenuBarManager.setup()` **AFTER** the provider groups. The v3 plan created it
+first so it would land rightmost, and a fresh AppKit process with fixed-length
+items confirms the textbook rule (new item lands leftmost: S,C,G,X → X G C S).
+The deployed app disagreed: with the selector first, the groups came up
+claude < grok < codex < ⇄ — the opposite of the designed codex < grok < claude
+(Codex clips first on overflow) — and neither a ≥ 2-minute quit (per-bundle bar
+state dropped) nor fixed-length placeholder lengths for the groups (#83) changed
+it. Rather than encode an unexplained tiebreak, the selector is created last: the
+groups keep their order and the selector sits at the LEFT edge of the app's
+cluster, clipping first on overflow — a documented trade-off, visible in the
+exposure probe's `order=` field. Known limit: a later group REBUILD (a provider
+appearing or disappearing; membership changes reuse the items) may land the
+new groups left of the then-existing selector. It is **owned by `MenuBarManager`**, never placed in
 `StatusBarUIManager`'s dictionaries (whose `cleanup()` removes every item it owns on
 each group rebuild). `MenuBarManager.setup()` re-entry (AppDelegate's delayed
 retry, post-wizard) calls `MenuBarManager.cleanup()` — that path must **keep** the
