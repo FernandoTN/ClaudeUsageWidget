@@ -444,6 +444,37 @@ leaves draft; merge sha to the fixes session; status doc updated.
 16. (consult) A click on a bucket opens its breakdown — without it the hero
     chart is a poster.
 
+Stage 3a, rendered through the `CUW_RENDER_FRAMES` harness at 1040 × 680
+in light and dark (13 states × 2), reviewed frame by frame:
+
+17. `List`, segmented `Picker`, `ScrollView` and `ProgressView` are
+    AppKit-backed on macOS and render as blank/prohibited blocks in
+    `ImageRenderer`: the sidebar, both segmented controls and the progress
+    bar became pure SwiftUI (the sidebar scrolls only when its content is
+    taller than the pane; ↑↓ move the selection through `onMoveCommand`).
+18. Account share bars took palette slots by row index, so dJormun wore
+    Codex's orange under a legend that said orange = Codex; account bars now
+    carry their provider's hue, model bars their model family's.
+19. "indexed 0 s ago" — ages used the wall clock while the fixture's clock
+    was elsewhere; every age in the pane is measured against the report's
+    `now`, so a rendered frame and the live window agree.
+20. The Coverage tile's sub-line repeated its own value ("99 % · 99 %
+    attributed") and clipped; it now says what is missing ("0.6 %
+    unattributed · oldest 15:14").
+21. The axis ceiling rounded 26.5 B up to 50 B (columns at half height) and
+    printed "50.0 B"; the ceiling now snaps to 1 / 1.2 / 1.5 / 2 / 2.5 / 3 / 4 /
+    5 / 6 / 8 / 10 × 10ⁿ and compact numbers drop false trailing zeros.
+22. Four identical "indexing… 41 %" tiles read as a glitch; the indexing
+    state is one wide tile with the remaining-files count and a bar, and the
+    chart area says the numbers appear as files complete.
+23. "CLAUDE · 3" as a section header above a "Claude" row said the same
+    thing twice; the provider row is the header, count beside the name.
+24. A clipped outlier column's "▲ 35.1 B" label truncated to "▲ 3…" at a
+    30-bucket pitch, as did "Aug 6" on the axis; labels are `fixedSize` and
+    the legend names the clipped bucket ("Aug 18: 35.1 B").
+25. Segment labels "All indexed" and "Input by kind" wrapped to two lines
+    at the control's width; they are "All" and "By kind".
+
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 
 1. Layout **B** vs A. 2. Default **7 days** vs 30. 3. Cost **shown, labelled**
