@@ -312,10 +312,10 @@ hr { border:0; border-top:1px solid var(--line); margin: 30px 0 }
 
 <h2>5. Markers on the timeline (stage 4)</h2>
 <div class="grid2">
-  <div class="option rec"><span class="badge">RECOMMENDED</span><b>Switches and rate-limit stops</b><p class="small">⇄ for every switch of the row’s provider (who → who, manual/auto/queued, the reason), × for every Claude transcript death on the limit (2,228 on disk). Together they explain the dips: a burn that stops at × and resumes on another account after ⇄ is the fleet doing its job — or not.</p></div>
-  <div class="option"><b>Switches only</b><p class="small">Cleaner axis. The rate-limit stops already feed the bar’s tripwire; showing them here is the first time they become visible as history.</p></div>
+  <div class="option rec"><span class="badge">RECOMMENDED · revised after the consults</span><b>Switches only by default, collapsed per day (⇄3); rate-limit stops as an opt-in overlay</b><p class="small">Both reviews: this is a consumption chart, and the fleet switches ~30 times a day — uncollapsed marks make the axis unreadable, and the rate-limit deaths (2,228 on disk, ~60/day) are quota events that already drive the bar’s tripwire. A “Show rate-limit stops” toggle brings them in as ×N per day when you want them to explain a dip.</p></div>
+  <div class="option"><b>Switches and rate-limit stops always on</b><p class="small">What the first draft of this brief recommended. Together they explain the dips without a toggle; the cost is a busy axis on every open.</p></div>
 </div>
-<div class="pick"><span class="on">Switches + rate-limit stops</span><span>Switches only</span></div>
+<div class="pick"><span class="on">Switches only, stops opt-in</span><span>Both always on</span></div>
 
 <hr>
 <h2>Already agreed with the other sessions</h2>
@@ -337,5 +337,5 @@ hr { border:0; border-top:1px solid var(--line); margin: 30px 0 }
 
 <h2>Anything else</h2>
 <textarea placeholder="Free text — a metric you want on the first screen, a layout you'd rather have, an account view you'd use daily…"></textarea>
-<p class="meta">If there is no reply, the recommendations proceed: B · 7 days · cost shown and labelled · everything on disk · switches + rate-limit stops.</p>
+<p class="meta">If there is no reply, the recommendations proceed: B · 7 days · cost shown and labelled “API list-price equivalent · not billed” · everything on disk · switches only (stops opt-in). Consult verdicts (both “approve with revisions”) and every change they caused are in the spec’s §8 and §5.</p>
 </main></body></html>
