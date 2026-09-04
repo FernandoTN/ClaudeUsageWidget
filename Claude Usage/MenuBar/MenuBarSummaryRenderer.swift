@@ -103,7 +103,7 @@ extension MenuBarIconRenderer {
             drawFleetDots(summary, originX: matrixX, rightEdge: width, top: height)
         }
 
-        drawCandidateRow(summary, at: NSPoint(x: matrixX, y: 0))
+        drawCandidateRow(summary, at: NSPoint(x: matrixX, y: 0), available: width - matrixX)
         return image
     }
 
@@ -200,15 +200,22 @@ extension MenuBarIconRenderer {
     /// candidate's name (tinted by its quota evidence) and the verdict glyph
     /// (tinted by the login evidence), each segment separated by
     /// `FleetBlockGeometry.candidateGap` (round 1, B2/B4). Nothing while idle.
-    private func drawCandidateRow(_ summary: ProviderSummary, at origin: NSPoint) {
+    private func drawCandidateRow(_ summary: ProviderSummary, at origin: NSPoint, available: CGFloat) {
         guard let affix = summary.affix else { return }
+        // Nothing is reserved for this row (owner, 2026-09-04): the full row
+        // when the block is wide enough, the arrow and tag when only that
+        // fits, nothing when neither does — the ⇄ menu carries it. The
+        // width of the block never depends on this decision.
+        let full = available >= FleetBlockGeometry.affixWidth
+        let compressed = !full && available >= FleetBlockGeometry.affixCompressedWidth
+        guard full || compressed || summary.next == nil || summary.isSwitching else { return }
         var x = origin.x
         func draw(_ string: String, _ color: NSColor, gapAfter: CGFloat = FleetBlockGeometry.candidateGap) {
             let attributes: [NSAttributedString.Key: Any] = [.font: Self.affixFont, .foregroundColor: color]
             (string as NSString).draw(at: NSPoint(x: x, y: origin.y), withAttributes: attributes)
             x += (string as NSString).size(withAttributes: attributes).width + gapAfter
         }
-        if let digits = summary.activeDigits, !summary.isSwitching {
+        if let digits = summary.activeDigits, !summary.isSwitching, full {
             let color: NSColor
             switch summary.activeReadiness {
             case .suspected?: color = DesignRole.suspected.nsColor
@@ -230,10 +237,14 @@ extension MenuBarIconRenderer {
             default: labelColor = Self.dimText
             }
             draw(String(affix.dropFirst(DesignGlyph.next.count)), labelColor)
-            if let glyph = summary.verdictGlyph {
+            if let glyph = summary.verdictGlyph, full {
                 draw(glyph, Self.verdictColor(next.verdict), gapAfter: 0)
             }
         } else {
+            // "→—" (nobody) and "⇄" (switching) are short; draw them whenever
+            // they fit the block at all.
+            let attributes: [NSAttributedString.Key: Any] = [.font: Self.affixFont]
+            guard (affix as NSString).size(withAttributes: attributes).width <= available else { return }
             draw(affix, summary.isSwitching ? Self.dimText : DesignRole.blocking.nsColor, gapAfter: 0)
         }
     }

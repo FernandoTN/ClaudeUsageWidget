@@ -546,12 +546,22 @@ enum FleetBlockGeometry {
     /// Counts row: `●99 ◐99 ▲99 ×99` in one row at 6 pt semibold — 65.4 pt of
     /// glyphs plus three 2 pt gaps, measured.
     nonisolated static let countsWidth: CGFloat = 72
-    /// The candidate row (`99 →WWW ✓` at its widest, 7 pt semibold with the
-    /// two gaps: measured by `testReservedWidthsCoverTheRealFonts`) lives
-    /// UNDER the dots, so the block is as wide as the wider of the two —
-    /// reserved whenever the provider has more than one account, armed or
-    /// not.
+    /// The counts row for a roster under ten: `●9 ◐9 ▲9 ×9` plus three 2 pt
+    /// gaps, measured.
+    nonisolated static let countsWidthSingleDigit: CGFloat = 50
+    nonisolated static func countsWidth(memberCount: Int) -> CGFloat {
+        memberCount < 10 ? countsWidthSingleDigit : countsWidth
+    }
+    /// The FULL candidate row (`99 →WWW ✓` at its widest, 7 pt semibold with
+    /// the two gaps: measured by `testReservedWidthsCoverTheRealFonts`). It
+    /// is NOT a floor on the block's width any more (owner, 2026-09-04: a
+    /// five-account Codex block padded to it looked as wide as Claude's);
+    /// the block is exactly as wide as its dots or counts, and the row is
+    /// drawn only when it fits — compressed to `→WWW` when only that fits,
+    /// left to the ⇄ menu otherwise. Widths still never move with arming.
     nonisolated static let affixWidth: CGFloat = 52
+    /// The compressed candidate row, `→WWW` at 7 pt semibold, measured.
+    nonisolated static let affixCompressedWidth: CGFloat = 30
     /// Columns reserved at the LEFT of the matrix for the `+N` mark when the
     /// roster is larger than the grid (`+17` at 6 pt is 11 pt wide).
     nonisolated static let overflowColumns = 2
@@ -597,10 +607,10 @@ enum FleetBlockGeometry {
         let matrix: CGFloat
         switch layout {
         case .everyAccount: return 0
-        case .fleetCounts: matrix = countsWidth
+        case .fleetCounts: matrix = countsWidth(memberCount: memberCount)
         case .fleetDots: matrix = dotMatrixWidth(memberCount: memberCount)
         }
-        return markWidth + max(matrix, affixWidth)
+        return markWidth + matrix
     }
 
     /// Height of the fleet block beside an active tile of `activeHeight`:
