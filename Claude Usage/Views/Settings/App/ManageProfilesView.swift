@@ -185,6 +185,37 @@ struct ManageProfilesView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
 
+                            // What a click opens: the fleet dashboard or the
+                            // classic single-account popover. "Follow layout"
+                            // (nil) = dashboard for fleet layouts, classic for
+                            // every-account.
+                            VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+                                Text("multiprofile.click_surface".localized)
+                                    .font(DesignTokens.Typography.caption)
+                                    .foregroundColor(.secondary)
+
+                                Picker("", selection: Binding(
+                                    get: { profileManager.multiProfileConfig.clickSurface?.rawValue ?? "auto" },
+                                    set: { raw in
+                                        var config = profileManager.multiProfileConfig
+                                        config.clickSurface = ClickSurface(rawValue: raw)
+                                        profileManager.updateMultiProfileConfig(config)
+                                    }
+                                )) {
+                                    Text("multiprofile.click_surface_auto".localized).tag("auto")
+                                    Text("multiprofile.click_surface_dashboard".localized).tag(ClickSurface.dashboard.rawValue)
+                                    Text("multiprofile.click_surface_classic".localized).tag(ClickSurface.classic.rawValue)
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+
+                                Text("multiprofile.click_surface_description".localized)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
                             // Show Week Toggle
                             SettingToggle(
                                 title: "multiprofile.show_week".localized,
