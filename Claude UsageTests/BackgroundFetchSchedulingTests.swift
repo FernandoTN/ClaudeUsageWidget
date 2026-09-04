@@ -6,7 +6,7 @@
 //  scheduler that decides which background Claude profiles get the per-sweep
 //  oauth/usage budget. It replaced a blind round-robin cursor under which a
 //  dead login burned a rotation slot every cycle and an account cached at 70%
-//  session waited behind idle accounts ('Memori' sat 33 min stale while its
+//  session waited behind idle accounts ('Fjord' sat 33 min stale while its
 //  real session usage hit 100% — 2026-08-11 incident). The scheduler must:
 //  spend the budget only on fetchable profiles, sample near-limit accounts
 //  more often, and never starve anyone.
@@ -258,7 +258,7 @@ final class BackgroundFetchSchedulingTests: XCTestCase {
 
     func testFreshLowCacheBlocksInference() {
         // A 5h window does not jump 45pp in one backoff interval: a FRESH
-        // cache far below every limit means the 429s are IP noise ('BBR'
+        // cache far below every limit means the 429s are IP noise ('Iris'
         // false positive — cached 8-55%, stamped exhausted, fleet switched).
         let victim = UUID(), other = UUID()
         let success: (UUID, Date) = (other, now.addingTimeInterval(-10))

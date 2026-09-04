@@ -1196,7 +1196,7 @@ class ProfileManager: ObservableObject {
     /// an adoption pass then routed to the matching profile. The view does not
     /// follow such a change (see `refreshFocusedProfileCopy`), so the UI needs
     /// to be able to SAY it happened — "Active for Claude changed outside the
-    /// app: now dLeo" — rather than leave the user to notice a moved badge.
+    /// app: now Lark" — rather than leave the user to notice a moved badge.
     ///
     /// Posted only from the two adoption passes, and only inside their
     /// pointer-actually-moved branches, so it fires once per episode rather than

@@ -95,7 +95,7 @@ Staged isolation, each step changing ONE variable, measuring steady-state CPU (`
 - Accept per PR: build + tests green; zero remaining references (grep); identical core behavior.
 
 ### Phase 6 (follow-up TODOs, not this refactor)
-Grok settings UI parity; condensed tile mode (if Phase 0 shows window count is the hard ceiling, this becomes the strategic fix — owner decision); '2026' profile missing-credentials surfaced in UI instead of failing every rotation turn; debug entitlements alignment (drop `cs.allow-unsigned-executable-memory` from debug).
+Grok settings UI parity; condensed tile mode (if Phase 0 shows window count is the hard ceiling, this becomes the strategic fix — owner decision); 'Ridge' profile missing-credentials surfaced in UI instead of failing every rotation turn; debug entitlements alignment (drop `cs.allow-unsigned-executable-memory` from debug).
 
 ---
 
@@ -137,4 +137,4 @@ All phases landed on `refactor/latency-14-accounts` (14 commits, pushed). Measur
 - De-bloat: ~7,000 lines removed (dead code, API-Console billing, claude.ai session-key cluster, DataStore, URLBuilder, design-system duplicate, ErrorLogger buffer) with decode-compat pinned by tests; `organizationId`/identity-adoption preserved per consult.
 - User-reported popover same-tile toggle bug fixed (semitransient auto-close race).
 - **Incident during execution:** parallel test hosts + shared real UserDefaults clobbered `profiles_v3` with a test fixture (tearDown aborted mid-restore). Roster fully reconstructed from Keychain UUIDs + legacy-bundle plist + tile-layout diagnostic; credentials never lost. Hardened: ProfileStore uses an isolated defaults suite under XCTest; scheme test parallelization disabled.
-- Follow-ups (§Phase 6 still open): Grok settings UI; condensed tile mode (optional; window count proved non-causal for CPU); '2026' missing-credential surfacing; residual loadProfiles dedup in services (§2.6, ~16 loads/min, cosmetic at 0% CPU); 6 orphan `cli-creds` Keychain items from deleted/test profiles (left untouched); one account's login needs `/login` re-sync.
+- Follow-ups (§Phase 6 still open): Grok settings UI; condensed tile mode (optional; window count proved non-causal for CPU); 'Ridge' missing-credential surfacing; residual loadProfiles dedup in services (§2.6, ~16 loads/min, cosmetic at 0% CPU); 6 orphan `cli-creds` Keychain items from deleted/test profiles (left untouched); one account's login needs `/login` re-sync.

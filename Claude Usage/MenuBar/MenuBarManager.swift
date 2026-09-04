@@ -27,7 +27,7 @@ class MenuBarManager: NSObject, ObservableObject {
 
     /// What the last candidate preflight (or auto-switch walk) learned about
     /// each candidate's login, keyed by profile id. Before this existed the
-    /// verdict was a log line only; the fleet-summary tile's `›Mem✓` affix
+    /// verdict was a log line only; the fleet-summary tile's `›Fjo✓` affix
     /// and the dashboard read it (docs/specs/menubar-redesign.md §4).
     @Published private(set) var preflightVerdicts: [UUID: PreflightVerdict] = [:]
 
@@ -1010,7 +1010,7 @@ class MenuBarManager: NSObject, ObservableObject {
         // as FrontBoard NSMenuBarNavigateActions and AppKit re-dispatches
         // them with a SYNTHESIZED event at the button's CENTER — 14
         // production clicks all logged rawX == width/2, resolving every
-        // click to the center tile ("always opens Commits", owner report
+        // click to the center tile ("always opens Harbor", owner report
         // 2026-07-30). The physical pointer position is the click location;
         // read it from the window server, never from the event.
         let clickX: CGFloat? = {
@@ -1558,7 +1558,7 @@ private func observeCredentialChanges() {
         // fresh numbers for. This replaced a blind round-robin cursor under
         // which a dead login consumed a full slot every cycle and an account
         // cached at 70% session waited behind half a dozen idle accounts —
-        // observed 2026-08-11: 'Memori' sat 33 min stale while its real
+        // observed 2026-08-11: 'Fjord' sat 33 min stale while its real
         // session usage hit 100%. Codex/Grok hit different hosts and refresh
         // every sweep (never counted against the Claude budget).
         // DISPLAY + OWNER priority, deliberately: the account on screen is the
@@ -1696,7 +1696,7 @@ private func observeCredentialChanges() {
                 let burstBackoffUntil = burstBackoffs[profile.id]?.until
                 let usageBackedOff = burstBackoffUntil.map { $0 > Date() } ?? false
                 // A dead-flagged login that cannot fetch burns a rotation slot
-                // plus an error log every cycle (profile 'Ai' did so for six
+                // plus an error log every cycle (profile 'Echo' did so for six
                 // days; the Codex twin drew 1,009 401s in nine hours). The
                 // per-provider rule lives in shouldSkipFetchForDeadLogin —
                 // Claude pairs the flag with an expired access token, Codex and
@@ -2694,7 +2694,7 @@ private func observeCredentialChanges() {
     /// burn-rate projection that keeps a suspected profile's display honest
     /// while reads fail — only real fetch results are recorded, never stamps
     /// or projections. Persisted because an in-memory basis died at every
-    /// relaunch: the 2026-08-12 deploy wiped it mid-incident and 'Commits'
+    /// relaunch: the 2026-08-12 deploy wiped it mid-incident and 'Harbor'
     /// fell back to a frozen 67% (real 100%) with nothing to project from.
     private lazy var measuredSessionHistory: [UUID: [(at: Date, pct: Double)]] =
         SharedDataStore.shared.loadMeasuredSessionHistory()
@@ -2785,7 +2785,7 @@ private func observeCredentialChanges() {
     /// the usage endpoint exactly when an account burns hardest:
     /// - a transcript `error: "rate_limit"` event means a session DIED on the
     ///   API's own 429 — server-affirmed exhaustion of whichever account
-    ///   owned the shared CLI login at that moment ('Commits' displayed 67%
+    ///   owned the shared CLI login at that moment ('Harbor' displayed 67%
     ///   for 35 min while this exact event sat on disk, 2026-08-12);
     /// - `~/.claude.json`'s cachedUsageUtilization is the CLI's own last
     ///   usage fetch — adopted as a free measurement when fresher than ours.
@@ -2953,7 +2953,7 @@ private func observeCredentialChanges() {
     /// usage. Returns nil when the probe is not allowed, has no token, or
     /// fails — callers then fall through to the existing 429 handling.
     ///
-    /// The 2026-08-13 incident this closes: 'BBR' (06:36→06:59) and 'Outlook'
+    /// The 2026-08-13 incident this closes: 'Iris' (06:36→06:59) and 'Kite'
     /// (12:41→13:40) were burned 0→100% by ~30 parallel sessions while their
     /// own usage endpoint refused most reads, so the widget's number never
     /// even reached the 25% preflight milestone and the 95% switch never fired.
@@ -3015,16 +3015,16 @@ private func observeCredentialChanges() {
     /// Backoff ceiling by role. The ACTIVE account retries EVERY SWEEP (30s):
     /// its number gates the auto-switch and its usage moves fastest exactly
     /// when the shared IP is busiest — the old 120s cap, re-armed by each
-    /// failed retry, left 'Commits' blind for 22 minutes while parallel
+    /// failed retry, left 'Harbor' blind for 22 minutes while parallel
     /// sessions burned it 67%→100% (2026-08-12). A SUSPECTED profile retries
     /// within ~2 sweeps (60s) even in the background: persistent 429s follow
     /// an account whose own sessions saturate its per-org request bucket —
     /// i.e. the accounts whose numbers are moving — and after the user
     /// switches away from one it must not go 8-min-blind while still
-    /// burning (the post-switch 'Commits' sat 35 min stale). One retry per
+    /// burning (the post-switch 'Harbor' sat 35 min stale). One retry per
     /// 30-60s per such account stays within the measured budget. Exhausted
     /// accounts answer their usage endpoint once their sessions idle
-    /// ('Memori' returned 200 at a real 100%), so reading through the noise
+    /// ('Fjord' returned 200 at a real 100%), so reading through the noise
     /// is safe. Idle background profiles keep the 8-min cap.
     nonisolated static func burstBackoffCap(isActiveAccount: Bool, isSuspected: Bool) -> TimeInterval {
         if isActiveAccount { return 30 }
@@ -3074,7 +3074,7 @@ private func observeCredentialChanges() {
     // MARK: - Inferred Account Throttle (429 with useless Retry-After)
 
     /// The Retry-After floor above cannot catch every account-level refusal:
-    /// 2026-08-11 incident — an exhausted account ('Ass-FerminAssistant')
+    /// 2026-08-11 incident — an exhausted account ('Sorrel')
     /// refused its own usage reads with HTTP 429 `retry-after: 0`, so no
     /// stamp fired, the burst backoff ate every retry, and the tile froze at
     /// a stale 74% while the account had zero capacity. Retry-After alone no
@@ -3095,7 +3095,7 @@ private func observeCredentialChanges() {
     nonisolated static let inferredThrottleTTL: TimeInterval = 300
     /// Precision gate on the cached usage: exhaustion minutes after a FRESH
     /// low reading is implausible (a 5h window does not jump 45pp in one
-    /// backoff interval — the 'BBR' false positive was cached at 8-55%). A
+    /// backoff interval — the 'Iris' false positive was cached at 8-55%). A
     /// fresh cache must already read near a limit before suspicion; a cache
     /// older than `inferredThrottleStaleCacheAge` proves nothing either way
     /// (the frozen-74% case) and does not block.
@@ -3293,7 +3293,7 @@ private func observeCredentialChanges() {
         // Switch-away decisions never see an inferred throttle stamp — only
         // measured percentages or a server-affirmed (long Retry-After) stamp
         // may displace the active account (see autoSwitchTriggerUsage; the
-        // 2026-08-11 'BBR' switch at a real ~40% session is the incident).
+        // 2026-08-11 'Iris' switch at a real ~40% session is the incident).
         let usage = Self.autoSwitchTriggerUsage(usage)
 
         // Guard: feature must be enabled

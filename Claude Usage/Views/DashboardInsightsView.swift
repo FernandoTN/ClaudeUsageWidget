@@ -171,7 +171,7 @@ enum InsightsTimelineLayout {
         return Result(placements: placements, rows: rows, overflow: overflow, height: axisHeight + CGFloat(rows) * rowHeight + 4)
     }
 
-    /// "dRir · Commits W 100 %" when the merged markers share a window and
+    /// "Atlas · Harbor W 100 %" when the merged markers share a window and
     /// value; otherwise each keeps its own suffix.
     static func mergedLabel(_ members: [FleetInsights.ResetMarker]) -> String {
         guard let first = members.first else { return "" }
@@ -271,7 +271,7 @@ enum InsightsFormatting {
         CGFloat(min(max(date.timeIntervalSince(now) / FleetInsights.timelineHorizon, 0), 1))
     }
 
-    /// "dRir W 84 %" — name, window letter, the window's usage that resets.
+    /// "Atlas W 84 %" — name, window letter, the window's usage that resets.
     static func timelineLabel(_ marker: FleetInsights.ResetMarker) -> String {
         let letter = marker.window == .fable ? "F" : "W"
         return "\(marker.name) \(letter) \(Int(marker.headroomReturning.rounded())) %"
@@ -407,43 +407,43 @@ extension FleetInsights {
         let h: TimeInterval = 3600
         return FleetInsights(
             resetTimeline: [
-                ResetMarker(id: a, name: "dRir", provider: .claude, window: .weekly, resetAt: now.addingTimeInterval(9 * h), headroomReturning: 84),
-                ResetMarker(id: b, name: "Commits", provider: .claude, window: .weekly, resetAt: now.addingTimeInterval(31 * h), headroomReturning: 100),
-                ResetMarker(id: a, name: "dRir", provider: .claude, window: .fable, resetAt: now.addingTimeInterval(2 * 24 * h), headroomReturning: 10),
-                ResetMarker(id: c, name: "xFho", provider: .codex, window: .weekly, resetAt: now.addingTimeInterval(4.5 * 24 * h), headroomReturning: 90),
+                ResetMarker(id: a, name: "Atlas", provider: .claude, window: .weekly, resetAt: now.addingTimeInterval(9 * h), headroomReturning: 84),
+                ResetMarker(id: b, name: "Harbor", provider: .claude, window: .weekly, resetAt: now.addingTimeInterval(31 * h), headroomReturning: 100),
+                ResetMarker(id: a, name: "Atlas", provider: .claude, window: .fable, resetAt: now.addingTimeInterval(2 * 24 * h), headroomReturning: 10),
+                ResetMarker(id: c, name: "Petrel", provider: .codex, window: .weekly, resetAt: now.addingTimeInterval(4.5 * 24 * h), headroomReturning: 90),
                 ResetMarker(id: d, name: "Grok", provider: .grok, window: .weekly, resetAt: now.addingTimeInterval(6.2 * 24 * h), headroomReturning: 88),
             ],
             blindness: [
-                BlindSpot(id: a, name: "dRir", provider: .claude, sinceOwnMeasurement: 30, provenance: .ownEndpoint, headerRescuesLastHour: 0, backoff: nil, isBlind: false),
-                BlindSpot(id: c, name: "xFernando(dev)", provider: .codex, sinceOwnMeasurement: 4 * 60, provenance: .headerRescue, headerRescuesLastHour: 2,
+                BlindSpot(id: a, name: "Atlas", provider: .claude, sinceOwnMeasurement: 30, provenance: .ownEndpoint, headerRescuesLastHour: 0, backoff: nil, isBlind: false),
+                BlindSpot(id: c, name: "Marlin (dev)", provider: .codex, sinceOwnMeasurement: 4 * 60, provenance: .headerRescue, headerRescuesLastHour: 2,
                           backoff: Backoff(until: now.addingTimeInterval(120), streak: 3), isBlind: true),
                 BlindSpot(id: d, name: "Grok", provider: .grok, sinceOwnMeasurement: nil, provenance: .cliCache, headerRescuesLastHour: 0, backoff: nil, isBlind: true),
             ],
-            drift: [Drift(at: now.addingTimeInterval(-12 * 60), provider: .claude, newOwnerId: b, newOwnerName: "jskxkxjssh")],
+            drift: [Drift(at: now.addingTimeInterval(-12 * 60), provider: .claude, newOwnerId: b, newOwnerName: "Delta")],
             switchLog: [
-                SwitchRow(at: now.addingTimeInterval(-12 * 60), from: "Google", to: "jskxkxjssh", trigger: .auto, reason: "session 96 %", provider: .claude, isLegacy: false, fromHeadroom: 4),
-                SwitchRow(at: now.addingTimeInterval(-3 * h), from: "xFenrir(dev)", to: "xFho", trigger: .queued, reason: nil, provider: .codex, isLegacy: false, fromHeadroom: nil),
-                SwitchRow(at: now.addingTimeInterval(-26 * h), from: "Memori", to: "dRir", trigger: .manual, reason: nil, provider: .claude, isLegacy: true, fromHeadroom: nil),
+                SwitchRow(at: now.addingTimeInterval(-12 * 60), from: "Beacon", to: "Delta", trigger: .auto, reason: "session 96 %", provider: .claude, isLegacy: false, fromHeadroom: 4),
+                SwitchRow(at: now.addingTimeInterval(-3 * h), from: "Juniper (dev)", to: "Petrel", trigger: .queued, reason: nil, provider: .codex, isLegacy: false, fromHeadroom: nil),
+                SwitchRow(at: now.addingTimeInterval(-26 * h), from: "Fjord", to: "Atlas", trigger: .manual, reason: nil, provider: .claude, isLegacy: true, fromHeadroom: nil),
             ],
             burn: [
-                Burn(id: a, name: "dRir", provider: .claude, ratePerMinute: 2.1,
+                Burn(id: a, name: "Atlas", provider: .claude, ratePerMinute: 2.1,
                      samples: [60, 90, 120, 150].enumerated().map { Burn.Sample(at: now.addingTimeInterval(-Double(150 - $0.element)), pct: 70 + Double($0.offset) * 3) },
                      projectedCrossing: now.addingTimeInterval(8 * 60)),
-                Burn(id: c, name: "xFho", provider: .codex, ratePerMinute: nil,
+                Burn(id: c, name: "Petrel", provider: .codex, ratePerMinute: nil,
                      samples: [Burn.Sample(at: now.addingTimeInterval(-90), pct: 30), Burn.Sample(at: now.addingTimeInterval(-30), pct: 30)], projectedCrossing: nil),
             ],
             incidents: [
-                Incident(at: now.addingTimeInterval(-9 * 60), profileId: b, name: "Google", provider: .claude, kind: .affirmedStamp(until: now.addingTimeInterval(40 * 60)), detail: "retry-after 2918 s"),
-                Incident(at: now.addingTimeInterval(-14 * 60), profileId: c, name: "xFernando(dev)", provider: .codex, kind: .headerRescue, detail: "5h 0.86"),
-                Incident(at: now.addingTimeInterval(-50 * 60), profileId: a, name: "Outlook", provider: .claude, kind: .inferredStamp, detail: "streak 3, cache 89 %"),
-                Incident(at: now.addingTimeInterval(-5 * h), profileId: nil, name: "BBR", provider: .claude, kind: .tripwire, detail: nil),
-                Incident(at: now.addingTimeInterval(-7 * h), profileId: b, name: "Commits", provider: .claude, kind: .burst429(streak: 4), detail: nil),
+                Incident(at: now.addingTimeInterval(-9 * 60), profileId: b, name: "Beacon", provider: .claude, kind: .affirmedStamp(until: now.addingTimeInterval(40 * 60)), detail: "retry-after 2918 s"),
+                Incident(at: now.addingTimeInterval(-14 * 60), profileId: c, name: "Marlin (dev)", provider: .codex, kind: .headerRescue, detail: "5h 0.86"),
+                Incident(at: now.addingTimeInterval(-50 * 60), profileId: a, name: "Kite", provider: .claude, kind: .inferredStamp, detail: "streak 3, cache 89 %"),
+                Incident(at: now.addingTimeInterval(-5 * h), profileId: nil, name: "Iris", provider: .claude, kind: .tripwire, detail: nil),
+                Incident(at: now.addingTimeInterval(-7 * h), profileId: b, name: "Harbor", provider: .claude, kind: .burst429(streak: 4), detail: nil),
             ],
             capacity: [.claude: 340, .codex: 110, .grok: 90],
             whyNotOthers: [
-                WhyNot(id: b, name: "Ai", provider: .claude, status: .blocked(.dead), evidence: "dead login", verdictText: "× login dead 2 h ago", evidenceAge: 2 * h),
-                WhyNot(id: c, name: "Google", provider: .claude, status: .duplicateOfOwner(ownerName: "dRir"), evidence: "same account as dRir", verdictText: nil, evidenceAge: 60),
-                WhyNot(id: d, name: "Stanford", provider: .claude, status: .excluded(.freePlan), evidence: "free plan", verdictText: nil, evidenceAge: nil),
+                WhyNot(id: b, name: "Echo", provider: .claude, status: .blocked(.dead), evidence: "dead login", verdictText: "× login dead 2 h ago", evidenceAge: 2 * h),
+                WhyNot(id: c, name: "Beacon", provider: .claude, status: .duplicateOfOwner(ownerName: "Atlas"), evidence: "same account as Atlas", verdictText: nil, evidenceAge: 60),
+                WhyNot(id: d, name: "Granite", provider: .claude, status: .excluded(.freePlan), evidence: "free plan", verdictText: nil, evidenceAge: nil),
             ])
     }
 }

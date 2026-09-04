@@ -139,7 +139,7 @@ final class CodexUsageServiceTests: XCTestCase {
 
     /// A 200 from the usage endpoint is the app's only positive proof that a
     /// login works, so it must clear the flag AND re-arm the notification. It
-    /// did neither: 'Cod' sat flagged-but-working, and its sibling went dark
+    /// did neither: 'Kestrel' sat flagged-but-working, and its sibling went dark
     /// with no second notification.
     func testSuccessfulUsageFetchClearsTheDeadFlag() {
         let service = CodexUsageService.shared
@@ -247,8 +247,8 @@ final class CodexUsageServiceTests: XCTestCase {
     /// hydrated yet — that is the window a duplicate slips through.
     func testDuplicateCodexAccountIsRefusedOnSync() {
         let target = Profile(name: "New")
-        let hydrated = Profile(name: "Dex", codexAccountId: "acct-A")
-        let other = Profile(name: "Cod", codexAccountId: "acct-B")
+        let hydrated = Profile(name: "Osprey", codexAccountId: "acct-A")
+        let other = Profile(name: "Kestrel", codexAccountId: "acct-B")
         let unhydrated = Profile(name: "Ghost", codexAccountId: "acct-C")
         let roster = [target, hydrated, other, unhydrated]
         let accountIdOf: (Profile) -> String? = { $0.codexAccountId }
@@ -256,7 +256,7 @@ final class CodexUsageServiceTests: XCTestCase {
         let holder = CodexUsageService.duplicateAccountHolder(
             accountId: "acct-A", target: target.id, profiles: roster, accountIdOf: accountIdOf
         )
-        XCTAssertEqual(holder?.name, "Dex")
+        XCTAssertEqual(holder?.name, "Osprey")
 
         // Pre-hydration: the persisted stamp is the only evidence there is.
         XCTAssertEqual(
@@ -277,8 +277,8 @@ final class CodexUsageServiceTests: XCTestCase {
 
         // The refusal names the other profile — a bare "already synced" leaves
         // the user hunting through 20 profiles for it.
-        let message = CodexError.accountAlreadySynced(profileName: "Dex").errorDescription ?? ""
-        XCTAssertTrue(message.contains("Dex"), message)
+        let message = CodexError.accountAlreadySynced(profileName: "Osprey").errorDescription ?? ""
+        XCTAssertTrue(message.contains("Osprey"), message)
     }
 
     // MARK: - Sweep-end owner re-derivation (audit H4)
@@ -290,13 +290,13 @@ final class CodexUsageServiceTests: XCTestCase {
     func testOwnerReDerivationPicksTheAuthFileAccount() {
         let service = CodexUsageService.shared
         let hydrated = Profile(
-            name: "Dex",
+            name: "Osprey",
             codexCredentialsJSON: authJSON(accountId: "acct-A"),
             codexAccountId: "acct-A"
         )
         // Credentials not hydrated yet: only the non-secret stamp is present.
-        let stampedOnly = Profile(name: "Cod", codexAccountId: "acct-B")
-        let claudeOnly = Profile(name: "Memori")
+        let stampedOnly = Profile(name: "Kestrel", codexAccountId: "acct-B")
+        let claudeOnly = Profile(name: "Fjord")
         let roster = [claudeOnly, hydrated, stampedOnly]
 
         XCTAssertEqual(service.accountId(of: hydrated), "acct-A")
@@ -308,13 +308,13 @@ final class CodexUsageServiceTests: XCTestCase {
             CodexUsageService.profileMatchingAccount(
                 "acct-B", in: roster, accountIdOf: { service.accountId(of: $0) }
             )?.name,
-            "Cod"
+            "Kestrel"
         )
         XCTAssertEqual(
             CodexUsageService.profileMatchingAccount(
                 "acct-A", in: roster, accountIdOf: { service.accountId(of: $0) }
             )?.name,
-            "Dex"
+            "Osprey"
         )
         // An account no profile holds leaves the pointer alone rather than
         // routing it to an arbitrary profile.

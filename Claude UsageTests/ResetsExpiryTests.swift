@@ -27,7 +27,7 @@ final class ResetsExpiryTests: XCTestCase {
     }
 
     func testCachedDetailMapsOntoTheOwnerRowSoonestFirst() {
-        var codex = Profile(name: "xFho", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "x@example.com")
+        var codex = Profile(name: "Petrel", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "x@example.com")
         var usage = ClaudeUsage(sessionTokensUsed: 0, sessionLimit: 100, sessionPercentage: 10, sessionResetTime: fetchedAt.addingTimeInterval(3600),
                                 weeklyTokensUsed: 0, weeklyLimit: 100, weeklyPercentage: 10, weeklyResetTime: fetchedAt.addingTimeInterval(86400),
                                 opusWeeklyTokensUsed: 0, opusWeeklyPercentage: 0, sonnetWeeklyTokensUsed: 0, sonnetWeeklyPercentage: 0,

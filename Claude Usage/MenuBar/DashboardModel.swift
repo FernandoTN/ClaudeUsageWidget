@@ -89,7 +89,7 @@ struct ActiveCard: Hashable {
     /// pace; nil when it will not before the window resets (or no pace yet).
     var etaToThreshold: TimeInterval?
     /// Other profiles that are the SAME provider account (one quota): named
-    /// so the card can say "same account as Google".
+    /// so the card can say "same account as Beacon".
     var sameAccountAs: [String] = []
 }
 

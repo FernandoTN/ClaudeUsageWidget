@@ -214,7 +214,7 @@ final class PreferencesWriteVerificationTests: XCTestCase {
     func testChecksAreScopedToTheOwningStore() {
         preferenceStore.rejecting = [switchHistoryKey]
         sharedStore.recordSwitchEvent(
-            SwitchEvent(at: Date(), from: "Dex", to: "Cod", trigger: .manual, reason: nil)
+            SwitchEvent(at: Date(), from: "Osprey", to: "Kestrel", trigger: .manual, reason: nil)
         )
 
         XCTAssertEqual(store.reassertPendingWrites(), 0, "the ProfileStore sweep must not touch another store's key")

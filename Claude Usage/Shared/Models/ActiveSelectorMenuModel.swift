@@ -381,7 +381,7 @@ enum ActiveSelectorMenuModel {
         return nil
     }
 
-    /// "Active: Claude dRir 78 % · Codex xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates",
+    /// "Active: Claude Atlas 78 % · Codex Marlin 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates",
     /// prefixed with the badge's meaning when one is shown (I2).
     static func tooltip(selections: [ProviderActiveSelection], badge: Badge? = nil) -> String {
         let prefix: String
@@ -425,7 +425,7 @@ enum ActiveSelectorMenuModel {
         var cancelButton: String { "common.cancel".localized }
     }
 
-    /// "From dRir (78 % session) to dJormun (12 % session · resets in 4 h)." then
+    /// "From Atlas (78 % session) to Cedar (12 % session · resets in 4 h)." then
     /// the cost sentence, then the candidate's evidence — both sides named.
     static func confirmation(provider: Profile.ProviderKind, candidate: CandidateRow, owner: OwnerRow?, now: Date) -> Confirmation {
         let cli = ActiveVocabulary.cliName(provider)

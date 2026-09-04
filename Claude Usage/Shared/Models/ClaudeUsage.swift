@@ -39,7 +39,7 @@ struct ClaudeUsage: Codable, Equatable {
     /// account: a profile switch invalidates every concurrent CLI session's
     /// prompt cache (~10-15% of quota re-reading context), far too costly to
     /// spend on circumstantial evidence (2026-08-11: an inferred stamp on
-    /// 'BBR' auto-switched the fleet away at a real ~40% session). Optional
+    /// 'Iris' auto-switched the fleet away at a real ~40% session). Optional
     /// with nil default so previously cached usage JSON still decodes.
     var rateLimitedInferred: Bool? = nil
 
@@ -66,7 +66,7 @@ struct ClaudeUsage: Codable, Equatable {
     /// percentage projected forward from the recent MEASURED burn rate —
     /// written by the sweep, cleared automatically by the next successful
     /// fetch (fresh parses carry the nil default). Exists because a frozen
-    /// last-measured value under-reports exactly when it matters: 'Commits'
+    /// last-measured value under-reports exactly when it matters: 'Harbor'
     /// displayed 67% for 22 blind minutes while parallel sessions burned it
     /// to a real 100% (2026-08-12). An estimate from measured burn is honest
     /// where a synthetic 100 was not; the purple suspected marking stays on.

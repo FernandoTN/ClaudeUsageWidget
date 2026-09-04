@@ -127,7 +127,7 @@ final class SharedDataStoreTests: XCTestCase {
         XCTAssertEqual(store.loadSwitchHistory(), [])
 
         let event = SwitchEvent(at: Date(timeIntervalSince1970: 1_786_600_000),
-                                from: "Commits", to: "Memori", trigger: .auto, reason: "session 96%")
+                                from: "Harbor", to: "Fjord", trigger: .auto, reason: "session 96%")
         store.recordSwitchEvent(event)
 
         // A nil read here would make `attributeRateLimitEvent` stamp the

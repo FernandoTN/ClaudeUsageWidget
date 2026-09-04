@@ -81,8 +81,8 @@ final class ProviderActiveSelectionTests: XCTestCase {
     // MARK: - Owner vs Viewing
 
     func testOwnerIsTheProviderActiveAccountNeverTheViewedOne() {
-        let owner = claude("dRir", usage(session: 78, weekly: 16))
-        let viewed = claude("dJormun", usage(session: 12, weekly: 70))
+        let owner = claude("Atlas", usage(session: 78, weekly: 16))
+        let viewed = claude("Cedar", usage(session: 12, weekly: 70))
         let built = ProviderActiveSelection.build(inputs([owner, viewed], active: [owner.id], viewing: viewed.id,
                                                          pinned: [owner.id]))
         let claude = selection(built, .claude)
@@ -94,8 +94,8 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testNoOwnerAndNobodyToGoToRaisesTheNoCandidateAlert() {
-        let a = claude("Commits", usage(session: 10, weekly: 99.5))
-        let b = claude("BBR", usage(session: 99, weekly: 40))
+        let a = claude("Harbor", usage(session: 10, weekly: 99.5))
+        let b = claude("Iris", usage(session: 99, weekly: 40))
         let built = ProviderActiveSelection.build(inputs([a, b], active: []))
         let claude = selection(built, .claude)
         XCTAssertNil(claude.owner)
@@ -108,14 +108,14 @@ final class ProviderActiveSelectionTests: XCTestCase {
     // MARK: - Candidates
 
     func testEligibleCandidatesComeFirstInRankOrderThenBlocked() {
-        let owner = claude("dRir", usage(session: 78))
-        let soon = claude("dJormun", usage(session: 12, weekly: 70, weeklyResetIn: 86400))
-        let later = claude("Memori", usage(session: 40, weekly: 55, weeklyResetIn: 5 * 86400))
-        let maxed = claude("Commits", usage(session: 10, weekly: 99.5, weeklyResetIn: 3600))
-        let exhausted = claude("BBR", usage(session: 99, weekly: 40, weeklyResetIn: 7200))
+        let owner = claude("Atlas", usage(session: 78))
+        let soon = claude("Cedar", usage(session: 12, weekly: 70, weeklyResetIn: 86400))
+        let later = claude("Fjord", usage(session: 40, weekly: 55, weeklyResetIn: 5 * 86400))
+        let maxed = claude("Harbor", usage(session: 10, weekly: 99.5, weeklyResetIn: 3600))
+        let exhausted = claude("Iris", usage(session: 99, weekly: 40, weeklyResetIn: 7200))
         let built = ProviderActiveSelection.build(inputs([owner, later, maxed, soon, exhausted], active: [owner.id]))
         let rows = selection(built, .claude).candidates
-        XCTAssertEqual(rows.map(\.name), ["dJormun", "Memori", "Commits", "BBR"],
+        XCTAssertEqual(rows.map(\.name), ["Cedar", "Fjord", "Harbor", "Iris"],
                        "eligible in soonest-weekly-reset order, then the blocked rows in rank order")
         XCTAssertEqual(rows[0].status, .eligible)
         XCTAssertEqual(rows[2].status, .blocked(.weeklyHitSoon), "weekly maxed, reset within a day")
@@ -123,38 +123,38 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testQueuedCandidatesRankFirstAndCarryTheirPosition() {
-        let owner = claude("dRir", usage(session: 78))
-        let soon = claude("dJormun", usage(session: 12, weeklyResetIn: 86400))
-        let queued1 = claude("Memori", usage(session: 40, weeklyResetIn: 5 * 86400))
-        let queued2 = claude("2026", usage(session: 3, weeklyResetIn: 6 * 86400))
+        let owner = claude("Atlas", usage(session: 78))
+        let soon = claude("Cedar", usage(session: 12, weeklyResetIn: 86400))
+        let queued1 = claude("Fjord", usage(session: 40, weeklyResetIn: 5 * 86400))
+        let queued2 = claude("Ridge", usage(session: 3, weeklyResetIn: 6 * 86400))
         let built = ProviderActiveSelection.build(inputs([owner, soon, queued1, queued2], active: [owner.id],
                                                          queue: [queued1.id, queued2.id]))
         let claude = selection(built, .claude)
-        XCTAssertEqual(claude.candidates.map(\.name), ["Memori", "2026", "dJormun"])
+        XCTAssertEqual(claude.candidates.map(\.name), ["Fjord", "Ridge", "Cedar"])
         XCTAssertEqual(claude.candidates[0].queuePosition, 1)
         XCTAssertEqual(claude.candidates[1].queuePosition, 2)
         XCTAssertNil(claude.candidates[2].queuePosition)
-        XCTAssertEqual(claude.queue.map(\.name), ["Memori", "2026"])
+        XCTAssertEqual(claude.queue.map(\.name), ["Fjord", "Ridge"])
     }
 
     func testDuplicateOfTheOwnerIsNeverEligible() {
-        let owner = claude("dRir", usage(session: 78), account: "acct-1")
-        let twin = claude("Google", usage(session: 78), account: "acct-1")
-        let other = claude("dJormun", usage(session: 12), account: "acct-2")
+        let owner = claude("Atlas", usage(session: 78), account: "acct-1")
+        let twin = claude("Beacon", usage(session: 78), account: "acct-1")
+        let other = claude("Cedar", usage(session: 12), account: "acct-2")
         let built = ProviderActiveSelection.build(inputs([owner, twin, other], active: [owner.id],
                                                          needsRelogin: [twin.id]))
         let claude = selection(built, .claude)
         let twinRow = claude.candidates.first { $0.id == twin.id }!
-        XCTAssertEqual(twinRow.status, .duplicateOfOwner(ownerName: "dRir"))
+        XCTAssertEqual(twinRow.status, .duplicateOfOwner(ownerName: "Atlas"))
         XCTAssertTrue(twinRow.needsRelogin)
         XCTAssertEqual(claude.eligibleCandidates.map(\.id), [other.id])
-        XCTAssertEqual(claude.owner?.sameAccountAs, ["Google"])
+        XCTAssertEqual(claude.owner?.sameAccountAs, ["Beacon"])
     }
 
     func testExcludedSplitsTheUserToggleFromAFreePlanLogin() {
-        let owner = claude("dRir", usage(session: 78))
-        let off = claude("Ass", usage(session: 5), autoSwitch: false)
-        let free = claude("Stanford", usage(session: 93))
+        let owner = claude("Atlas", usage(session: 78))
+        let off = claude("Sorrel", usage(session: 5), autoSwitch: false)
+        let free = claude("Granite", usage(session: 93))
         let ctx = context(freePlan: [free.id])
         let built = ProviderActiveSelection.build(inputs([owner, off, free], active: [owner.id], context: ctx))
         let claude = selection(built, .claude)
@@ -165,9 +165,9 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testNeverMeasuredAccountIsEligibleAndDeadOneCarriesARepair() {
-        let owner = claude("dRir", usage(session: 78))
-        let unknown = claude("Hotmail", nil)
-        let dead = claude("Ai", usage(session: 20))
+        let owner = claude("Atlas", usage(session: 78))
+        let unknown = claude("Pebble", nil)
+        let dead = claude("Echo", usage(session: 20))
         let ctx = context(dead: [dead.id])
         let built = ProviderActiveSelection.build(inputs([owner, unknown, dead], active: [owner.id], context: ctx))
         let claude = selection(built, .claude)
@@ -182,11 +182,11 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testNextCandidateCarriesItsVerdictKindAndAgeAsTwoAxes() {
-        let owner = claude("dRir", usage(session: 78))
-        let next = claude("dJormun", usage(session: 12, age: 180))
+        let owner = claude("Atlas", usage(session: 78))
+        let next = claude("Cedar", usage(session: 12, age: 180))
         let probedAt = now.addingTimeInterval(-720)
         let ctx = context(
-            next: [.claude: PredictedCandidate(id: next.id, label: "dJo", queued: false, queueHeadBlocked: false)],
+            next: [.claude: PredictedCandidate(id: next.id, label: "Ced", queued: false, queueHeadBlocked: false)],
             verdicts: [next.id: PreflightVerdict(isLive: true, at: probedAt, kind: .probed)]
         )
         let built = ProviderActiveSelection.build(inputs([owner, next], active: [owner.id], context: ctx))
@@ -203,12 +203,12 @@ final class ProviderActiveSelectionTests: XCTestCase {
     // MARK: - Counts
 
     func testCountsPartitionTheRowsAndKeepDuplicatesOrthogonal() {
-        let owner = claude("dRir", usage(session: 78, weekly: 16), account: "acct-1")
-        let twin = claude("Google", usage(session: 78, weekly: 16), account: "acct-1")
-        let low = claude("Stanford", usage(session: 85))
-        let maxed = claude("Commits", usage(weekly: 99.5))
-        let unknown = claude("Hotmail", nil)
-        let dead = claude("Ai", usage(), account: "acct-3")
+        let owner = claude("Atlas", usage(session: 78, weekly: 16), account: "acct-1")
+        let twin = claude("Beacon", usage(session: 78, weekly: 16), account: "acct-1")
+        let low = claude("Granite", usage(session: 85))
+        let maxed = claude("Harbor", usage(weekly: 99.5))
+        let unknown = claude("Pebble", nil)
+        let dead = claude("Echo", usage(), account: "acct-3")
         let profiles = [owner, twin, low, maxed, unknown, dead]
         let ctx = context(dead: [dead.id])
         let built = ProviderActiveSelection.build(inputs(profiles, active: [owner.id], context: ctx))
@@ -225,10 +225,10 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testDistinctAccountsLoginLiveAndCapacityCountEachAccountOnce() {
-        let owner = claude("dRir", usage(weekly: 20, age: 5), account: "acct-1")
-        let twin = claude("Google", usage(weekly: 60, age: 600), account: "acct-1")
-        let other = claude("dJormun", usage(weekly: 70), account: "acct-2")
-        let dead = claude("Ai", usage(weekly: 0), account: "acct-3")
+        let owner = claude("Atlas", usage(weekly: 20, age: 5), account: "acct-1")
+        let twin = claude("Beacon", usage(weekly: 60, age: 600), account: "acct-1")
+        let other = claude("Cedar", usage(weekly: 70), account: "acct-2")
+        let dead = claude("Echo", usage(weekly: 0), account: "acct-3")
         let ctx = context(dead: [dead.id])
         let built = ProviderActiveSelection.build(inputs([owner, twin, other, dead], active: [owner.id], context: ctx))
         let counts = selection(built, .claude).counts
@@ -240,10 +240,10 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testEligibleIncludesUnknownWhileMeasuredHeadroomDoesNot() {
-        let owner = claude("dRir", usage(session: 78))
-        let ready = claude("dJormun", usage(session: 12))
-        let low = claude("Stanford", usage(session: 85))
-        let unknown = claude("Hotmail", nil)
+        let owner = claude("Atlas", usage(session: 78))
+        let ready = claude("Cedar", usage(session: 12))
+        let low = claude("Granite", usage(session: 85))
+        let unknown = claude("Pebble", nil)
         let built = ProviderActiveSelection.build(inputs([owner, ready, low, unknown], active: [owner.id]))
         let counts = selection(built, .claude).counts
         XCTAssertEqual(counts.measuredHeadroom, 3, "owner + ready + low")
@@ -251,9 +251,9 @@ final class ProviderActiveSelectionTests: XCTestCase {
     }
 
     func testCodexDuplicateGroupsAreDerivedFromTheAccountIdStamp() {
-        let a = codex("xFernando", usage(weekly: 95, sessionWindow: false), account: "c-1")
-        let b = codex("xFenrir", usage(weekly: 10, sessionWindow: false), account: "c-1")
-        let c = codex("xFho", usage(weekly: 10, sessionWindow: false), account: "c-2")
+        let a = codex("Marlin", usage(weekly: 95, sessionWindow: false), account: "c-1")
+        let b = codex("Juniper", usage(weekly: 10, sessionWindow: false), account: "c-1")
+        let c = codex("Petrel", usage(weekly: 10, sessionWindow: false), account: "c-2")
         let claudeTwins = [UUID(), UUID()]
         let groups = FleetCounts.duplicateGroups(in: [a, b, c], published: [claudeTwins])
         XCTAssertEqual(groups.count, 2)
@@ -263,7 +263,7 @@ final class ProviderActiveSelectionTests: XCTestCase {
         let built = ProviderActiveSelection.build(inputs([a, b, c], active: [a.id], duplicates: groups))
         let codex = selection(built, .codex)
         XCTAssertEqual(codex.counts.distinctAccounts, 2)
-        XCTAssertEqual(codex.candidates.first { $0.id == b.id }?.status, .duplicateOfOwner(ownerName: "xFernando"))
+        XCTAssertEqual(codex.candidates.first { $0.id == b.id }?.status, .duplicateOfOwner(ownerName: "Marlin"))
         XCTAssertEqual(codex.eligibleCandidates.map(\.id), [c.id])
     }
 
@@ -283,15 +283,15 @@ final class ProviderActiveSelectionTests: XCTestCase {
         XCTAssertEqual(ActiveVocabulary.viewing, "Viewing")
         XCTAssertEqual(ActiveVocabulary.activeFor(.claude), "Active for Claude")
         XCTAssertEqual(ActiveVocabulary.makeActive(.codex), "Make active for Codex…")
-        XCTAssertEqual(ActiveVocabulary.viewingLine(viewing: "dJormun", provider: .claude, owner: "dRir"),
-                       "Viewing dJormun · Active for Claude: dRir")
+        XCTAssertEqual(ActiveVocabulary.viewingLine(viewing: "Cedar", provider: .claude, owner: "Atlas"),
+                       "Viewing Cedar · Active for Claude: Atlas")
         XCTAssertEqual(ActiveVocabulary.viewingLine(viewing: "Grok", provider: .grok, owner: nil),
                        "Viewing Grok · no active Grok login")
-        XCTAssertEqual(ActiveVocabulary.changedOutside(.claude, newOwner: "dLeo"),
-                       "Active for Claude changed outside the app: now dLeo")
-        let owner = claude("dRir", usage(session: 78), account: "a")
-        let twin = claude("Google", usage(session: 78), account: "a")
-        let unknown = claude("Hotmail", nil)
+        XCTAssertEqual(ActiveVocabulary.changedOutside(.claude, newOwner: "Lark"),
+                       "Active for Claude changed outside the app: now Lark")
+        let owner = claude("Atlas", usage(session: 78), account: "a")
+        let twin = claude("Beacon", usage(session: 78), account: "a")
+        let unknown = claude("Pebble", nil)
         let counts = selection(ProviderActiveSelection.build(inputs([owner, twin, unknown], active: [owner.id])), .claude).counts
         XCTAssertEqual(ActiveVocabulary.countsSentence(counts),
                        "3 Claude profiles, 2 accounts: 2 ready, 1 unmeasured · 2 duplicate rows · 3 eligible now")

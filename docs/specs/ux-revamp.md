@@ -41,8 +41,8 @@ FOCUSED profile as if it were a CLI owner in 28 places (§1.2; all three reviews
 found it independently), one of which can rewrite the CLI login and one of which
 can fire the auto-switch from an account the CLI is not even using. Since #58 a
 click on a profile with a dead login moves the focus without applying the login,
-so the two answers now visibly diverge ("the active profile is xFho but the blue
-letters show xFernando"). #63 makes "Make active" on the viewed non-owner
+so the two answers now visibly diverge ("the active profile is Petrel but the blue
+letters show Marlin"). #63 makes "Make active" on the viewed non-owner
 complete the switch; that closes one gap. This spec replaces the model:
 
 > **Viewing** is free, instant, never touches a CLI, costs no network request and
@@ -83,7 +83,7 @@ Invariants the UI can now state and test:
   <provider>" action (every surface routes through
   `ProfileManager.activateProfileDetailed(_:userInitiated: true)`), the
   auto-switch, a login made on the CLI side that the sweep adopts (reported
-  once as "Active for Claude changed outside the app: now dLeo"), and a **manual
+  once as "Active for Claude changed outside the app: now Lark"), and a **manual
   Import/Sync** into a profile (the wizard included) — which copies the CLI's
   CURRENT login into a profile and claims the pointer, so it is a switching
   action and is labelled and confirmed as one (§2.2). A nil pointer means
@@ -95,7 +95,7 @@ Invariants the UI can now state and test:
   runs the dead-login gate, never recreates the popover, never starts a fetch,
   never changes the sweep timer.
 - **R3.** Wherever an account is shown and it is not the provider's active one,
-  both facts are visible: *"Viewing dJormun · Active for Claude: dRir"* — on the
+  both facts are visible: *"Viewing Cedar · Active for Claude: Atlas"* — on the
   inspector header, the selector, the dashboard header and the popover. The
   cyan tile label keeps meaning "Active for <provider>" and nothing else. Grok
   interim: nil pointer with more than one Grok profile → "no active Grok login
@@ -118,7 +118,7 @@ Invariants the UI can now state and test:
   viewing paths in this spec ship only after that pass lands.
 - **R7.** An automatic switch never moves Viewing while a Settings window is key
   or a sheet (device-code login, import) is presented; the header says "Active
-  for Claude: dJormun (changed 12 s ago)" instead.
+  for Claude: Cedar (changed 12 s ago)" instead.
 
 ### 1.2 Seams — landed and in flight (fixes session)
 
@@ -167,12 +167,12 @@ blocker.
 | Settings sidebar picker label | "Active Profile" (activates) | "Viewing" (`viewProfile`) — same PR as the label, never a picker named Viewing that switches CLIs |
 | Popover name menu (`ProfileSwitcherCompact`) | activates on pick, ✓ = focus | "View account" — `viewProfile`; ✓ = Viewing; a cyan `Cl`/`Cx`/`Gk` mark = Active for that provider (redesign session, B2.1) |
 | Manage Profiles / roster badge | "Active" | "Active for Claude" / "…Codex" / "…Grok" |
-| Dashboard section header (B2) | "CLAUDE   active: dRir" + "focused" chip | "CLAUDE · Active: dRir" + "Viewing" chip; header links to the selector (B2.1) |
-| Tile tooltip | "Claude: dRir 78 % …" | unchanged — it already names the active account |
+| Dashboard section header (B2) | "CLAUDE   active: Atlas" + "focused" chip | "CLAUDE · Active: Atlas" + "Viewing" chip; header links to the selector (B2.1) |
+| Tile tooltip | "Claude: Atlas 78 % …" | unchanged — it already names the active account |
 | Hotkey "Next profile" | activates the next profile in array order (cross-provider!) | "View next account" — within the viewed provider group, in the bar's painted order (`paintedGroupMembers(for:)`, like the popover's ‹ › walk) |
 | Switch verb | "Activate" / "Switch" | "Make active for <provider>…" (always with the ellipsis: a confirmation follows) |
 | Sync button | "Sync from Claude Code" | "Import the CLI's current login into this profile…" — names the account the CLI holds and who is Active for it |
-| Outside change | (silent) | "Active for Claude changed outside the app: now dLeo" (one banner per episode) |
+| Outside change | (silent) | "Active for Claude changed outside the app: now Lark" (one banner per episode) |
 
 ---
 
@@ -200,22 +200,22 @@ stage, after a measurement pass**, not the primary surface. (All three reviews.)
 all three reviews)
 
 ```
-menu bar:   … [ ▓▓░ dRi ●●●●●●●●● 91→dJo✓ ] [ ▓░ xFe ●×●× →— ] [ Grk ] [ ⇄ ] 🔋 📶 12:41
+menu bar:   … [ ▓▓░ Atl ●●●●●●●●● 91→Ced✓ ] [ ▓░ Mar ●×●× →— ] [ Grk ] [ ⇄ ] 🔋 📶 12:41
                     Claude group (existing)     Codex (existing)   Grok  ↑ new, 24 pt fixed, created FIRST
                                                                           so it sits rightmost and
                                                                           survives overflow
 click ⇄ →
 ┌──────────────────────────────────────────────────────────┐
 │ ACTIVE FOR CLAUDE                                        │
-│   ● dRir        S 78 %  W 16 %  F 16 %   own · 28 s ago  │  ← owner row (disabled, cyan mark). "headers · 3 m" when rescued;
+│   ● Atlas       S 78 %  W 16 %  F 16 %   own · 28 s ago  │  ← owner row (disabled, cyan mark). "headers · 3 m" when rescued;
 │                                                          │     purple "last measured 74 % · 12 m" when suspected; "pinned by you"
-│   next → dJormun  ✓ probed 12 m ago · headroom 3 m ago   │  ← evidence row: verdict KIND + age, quota age — two axes
-│   Switch Claude to next (dJormun)…                       │  ← the common action
+│   next → Cedar    ✓ probed 12 m ago · headroom 3 m ago   │  ← evidence row: verdict KIND + age, quota age — two axes
+│   Switch Claude to next (Cedar)…                         │  ← the common action
 │   Switch Claude to                                     ▸ │  ← submenu, ranked order (no rank numbers); ⌥ = "Queue X next"
 │   Queue next                                           ▸ │  ← explicit path too (⌥ must not be the only one)
-│   Queue: Memori › 2026                          Edit…    │
+│   Queue: Fjord › Ridge                          Edit…    │
 │ ACTIVE FOR CODEX                                         │
-│   ● xFernando(dev)   W 95 %  fires at 99 %   own · 1 m   │
+│   ● Marlin (dev)     W 95 %  fires at 99 %   own · 1 m   │
 │   Resets: 2 available · next expires Sep 9  Redeem…      │  ← §4.1; "unknown" when the payload says null
 │   next → —   nobody with headroom (2 of 4 dead)          │  ← red
 │   Switch Codex to                                      ▸ │
@@ -223,22 +223,22 @@ click ⇄ →
 │ ACTIVE FOR GROK                                          │
 │   ● Grok        W 12 %   single account                  │
 │ ──────────────────────────────────────────────────────── │
-│ ⇄ switching Claude → dJormun…                            │  ← only while a switch is in flight (rows disabled)
+│ ⇄ switching Claude → Cedar…                              │  ← only while a switch is in flight (rows disabled)
 │ Auto-switch ON · 95 % / 99 %                Active & Auto-switch… │
 │ Accounts…                                   Dashboard…   │
 └──────────────────────────────────────────────────────────┘
 
 Switch Claude to ▸        (type-select works; rows scroll)
-   ● dJormun      S 12  W 70  F 99    ✓ probed 12 m
-   ● Memori       S 40  W 55  F 61    ? expiry only     queued #1
-   ● 2026         S  3  W 20  F 20    ? unverified      queued #2
-   ○ Hotmail      never measured      ?                  (eligible — the walk accepts unknown)
-   ◐ Stanford     S 93  W 20  F 20    excluded (free plan)      (disabled)
+   ● Cedar        S 12  W 70  F 99    ✓ probed 12 m
+   ● Fjord        S 40  W 55  F 61    ? expiry only     queued #1
+   ● Ridge        S  3  W 20  F 20    ? unverified      queued #2
+   ○ Pebble       never measured      ?                  (eligible — the walk accepts unknown)
+   ◐ Granite      S 93  W 20  F 20    excluded (free plan)      (disabled)
    ─────
-   ▲ Commits      weekly maxed · resets Mon 09:41                (disabled)
-   ▲ BBR          session exhausted · 3 h 10 m                   (disabled)
-   × Ai           login dead — Repair…                            (enabled → Accounts › Login)
-   ⧉ Google       same account as dRir · re-login needed         (disabled; #64's caption)
+   ▲ Harbor       weekly maxed · resets Mon 09:41                (disabled)
+   ▲ Iris         session exhausted · 3 h 10 m                   (disabled)
+   × Echo         login dead — Repair…                            (enabled → Accounts › Login)
+   ⧉ Beacon       same account as Atlas · re-login needed        (disabled; #64's caption)
 ```
 
 Dropped since v1: the "View <owner>" rows (Viewing belongs to the inspector /
@@ -250,10 +250,10 @@ Fable: the deliberate-switch ruling wants the cost visible on every manual switc
 v1's "don't ask again" and its key are dropped):
 
 ```
-Switch the Claude Code login to dJormun?
+Switch the Claude Code login to Cedar?
 Every running Claude Code session re-reads its context on the new account
-(≈10–15 % of dJormun's 5-hour window). dJormun: session 12 %, weekly 70 %,
-Fable 99 % — login verified 12 m ago (usage probe). dRir keeps 22 % of its
+(≈10–15 % of Cedar's 5-hour window). Cedar: session 12 %, weekly 70 %,
+Fable 99 % — login verified 12 m ago (usage probe). Atlas keeps 22 % of its
 session until 14:02.
                                           [Cancel]  [Switch now]
 ```
@@ -272,7 +272,7 @@ menu action; outcome alerts after the `await` re-activate the app first.
 
 Outcomes are shown in place: `.activated` → the menu re-reads on next open and the
 tile label moves; `.credentialsRefused` / `.focusedWithoutApplying` → "Not
-switched — dJormun's Claude login is dead. Repair it in Accounts › Login" with a
+switched — Cedar's Claude login is dead. Repair it in Accounts › Login" with a
 button that opens the inspector there; `.switchInFlight` → "Another switch is in
 progress; try again in a moment"; `.alreadyActive` cannot happen (the owner row is
 disabled). #63's `CodexActivationOffer` ("Make it the active Codex account now?"
@@ -388,24 +388,24 @@ the sidebar becomes the roster.** (recommended; all three reviews)
 ```
 ┌ Settings ──────────────────────────────────────────────────────────────── 820 × 750, resizable (min 760 × 600) ┐
 │ ● ● ●                                                                                                          │
-│ ┌ ACCOUNTS ─────────────── 250 ┐ ┌ Viewing  dJormun                                                 Claude ┐ │
-│ │ ⌕ filter                      │ │ not active · Active for Claude: dRir                                       │ │
+│ ┌ ACCOUNTS ─────────────── 250 ┐ ┌ Viewing  Cedar                                                   Claude ┐ │
+│ │ ⌕ filter                      │ │ not active · Active for Claude: Atlas                                      │ │
 │ │ CLAUDE 18 profiles · 17 accts │ │ [Make active for Claude…]  [Queue next]  [Open in dashboard]              │ │
 │ │   ●4 ◐2 ○1 ▲10 ×1 · ⧉2       │ │ ─ Overview ─ Login ─ Alerts ─ Monitoring ─                                 │ │
-│ │ ● dRir  a…@example   78  Cl   │ │ Session  ▓▓░░░░░░░░ 12 %   resets 4 h 02 m                                 │ │
-│ │ ● dJormun  jor…@…    12  ✓    │ │ Weekly   ▓▓▓▓▓▓▓░░░ 70 %   resets Mon 09:41                                │ │
-│ │ ● Memori   b…@example  40  Q1   │ │ Fable    ▓▓▓▓▓▓▓▓▓▓ 99 %   at the 99 % threshold                           │ │
-│ │ ● 2026     …          3  Q2   │ │ measured 3 m ago · own endpoint · not stale                                │ │
-│ │ ○ Hotmail  …         —        │ │ Readiness  ready · login verified 12 m (usage probe)                       │ │
-│ │ ◐ Stanford …         93  free │ │ Identity   jor…@… · account …0000 · org …00                                │ │
-│ │ ▲ Commits  …         W! Mon   │ │ Fetch      every sweep · no backoff                                        │ │
-│ │ ▲ BBR      …         S! 3h10m │ │ History    active 2×/24 h · last switch 2 h ago (auto, ← Memori)           │ │
-│ │ × Ai       …         dead     │ │                                                                            │ │
-│ │ ⧉ Google   a…@example = dRir  │ │                                                                            │ │
+│ │ ● Atlas a…@example   78  Cl   │ │ Session  ▓▓░░░░░░░░ 12 %   resets 4 h 02 m                                 │ │
+│ │ ● Cedar    jor…@…    12  ✓    │ │ Weekly   ▓▓▓▓▓▓▓░░░ 70 %   resets Mon 09:41                                │ │
+│ │ ● Fjord    b…@example  40  Q1   │ │ Fable    ▓▓▓▓▓▓▓▓▓▓ 99 %   at the 99 % threshold                           │ │
+│ │ ● Ridge    …          3  Q2   │ │ measured 3 m ago · own endpoint · not stale                                │ │
+│ │ ○ Pebble   …         —        │ │ Readiness  ready · login verified 12 m (usage probe)                       │ │
+│ │ ◐ Granite …          93  free │ │ Identity   jor…@… · account …0000 · org …00                                │ │
+│ │ ▲ Harbor   …         W! Mon   │ │ Fetch      every sweep · no backoff                                        │ │
+│ │ ▲ Iris     …         S! 3h10m │ │ History    active 2×/24 h · last switch 2 h ago (auto, ← Fjord)            │ │
+│ │ × Echo     …         dead     │ │                                                                            │ │
+│ │ ⧉ Beacon   a…@example = Atlas │ │                                                                            │ │
 │ │ …                             │ │                                                                            │ │
 │ │ CODEX 4 · ●1 ◐1 ×2            │ │                                                                            │ │
-│ │ ● xFernando(dev)     95  Cx   │ │                                                                            │ │
-│ │ × xFenrir(dev)       dead     │ │                                                                            │ │
+│ │ ● Marlin (dev)       95  Cx   │ │                                                                            │ │
+│ │ × Juniper (dev)      dead     │ │                                                                            │ │
 │ │ GROK 1 · ●1                   │ │                                                                            │ │
 │ │ ● Grok               12  Gk   │ │                                                                            │ │
 │ │ + Add account…                │ │                                                                            │ │
@@ -431,7 +431,7 @@ the sidebar becomes the roster.** (recommended; all three reviews)
   glyph, name, email (dimmed, truncated), keyed percentage (session for Claude,
   weekly for Codex/Grok; `W!`/`S!` when maxed, `—` when never measured), and ONE
   badge: `Cl/Cx/Gk` cyan = Active for that provider, `Q1` = queue position,
-  `✓/?/×` = candidate verdict when it is the next, `free`/`off` = excluded, `= dRir`
+  `✓/?/×` = candidate verdict when it is the next, `free`/`off` = excluded, `= Atlas`
   = duplicate (+ "re-login needed" when #64 flags it). Filter field (name, email,
   state words). Selecting a row = Viewing (`viewProfile`). Sorted like the bar
   (soonest weekly reset first) with a toggle for alphabetical. 40 rows scroll.
@@ -534,8 +534,8 @@ persisted account id, so its ⧉ is 0 and says so.
 
 Where it shows: inspector group headers (strip); selector menu (sentence, as a
 disabled row under the owner whenever anything is dead, duplicated or has no
-candidate); selector tooltip / accessibility label ("Active: Claude dRir 78 % ·
-Codex xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts, 3 dead, 2
+candidate); selector tooltip / accessibility label ("Active: Claude Atlas 78 % ·
+Codex Marlin 95 % · Grok 12 % — 23 profiles / 22 accounts, 3 dead, 2
 duplicates"); dashboard header (B2.1 consumes the same model); the bar unchanged.
 
 ---
@@ -766,7 +766,7 @@ ones for a few days.
 | chooses "Make active for Claude…" (selector, inspector header, dashboard row, Active page, post-login offer) | confirmation with cost + candidate evidence → `activateProfileDetailed(userInitiated: true)` → the outcome shown in place (app activated first); Viewing moves onto the new owner on success | a silent no-op; a switch onto a dead login; a switch between duplicates; a suppressed confirmation |
 | picks "Queue next" (menu or ⌥) | `autoSwitchQueue` head written | a switch |
 | the auto-switch fires | the owner changes; Viewing follows only if it was on the outgoing owner and no Settings window / sheet is up; the selector item re-reads; the existing notification | a switch on an inferred stamp; a switch into a suspect; a switch triggered by the VIEWED non-owner's usage; the inspector yanked off a repair |
-| runs `/login` in Claude Code (or a Codex login in an isolated home, then Import) | the sweep re-derives the owner; one banner *"Active for Claude changed outside the app: now dLeo"*; Viewing stays | the app rewriting the CLI login |
+| runs `/login` in Claude Code (or a Codex login in an isolated home, then Import) | the sweep re-derives the owner; one banner *"Active for Claude changed outside the app: now Lark"*; Viewing stays | the app rewriting the CLI login |
 | presses Import on the Login tab | a confirmation naming the CLI's current account and the viewed profile; the copy + pointer claim (R1) | a silent copy of the owner's login into a viewed non-owner |
 | logs a Codex account in through the inspector | device-code sheet (target frozen); afterwards the switch confirmation ("Make it active for Codex now?") | a second `codex login` in `~/.codex` |
 | leaves the switch confirmation open | the sweep keeps running (timers in `.common`); a later manual switch reports `.switchInFlight` if the auto-switch got there first | the auto-switch clock stopping |
@@ -942,8 +942,8 @@ login is dead) > **purple** (an active account is suspected / blind) > **amber**
 (cfprefsd degraded — the same fact the banner carries). When a badge is drawn the
 image is composed non-template with the glyph in the button's effective
 `labelColor`, and repainted on `statusBarAppearanceDidChange` like the tiles.
-Tooltip = accessibility label = one sentence: "Active: Claude dRir 78 % · Codex
-xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates".
+Tooltip = accessibility label = one sentence: "Active: Claude Atlas 78 % · Codex
+Marlin 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates".
 Hidden (`isVisible = false`) when the setting is off; never removed.
 
 **Menu typography.** Native `NSMenu` (13 pt system). Section headers are disabled
@@ -957,12 +957,12 @@ under 380 pt; nothing wraps. Dark/light: system colours only
 **Frame 1 — healthy.** Per provider: header; owner row (disabled; ● cyan-marked
 name, gauges, provenance + age "measured 28 s ago" / "via API headers · 3 m ago",
 "pinned by you" when manually activated); evidence row (disabled; "next →
-dJormun · ✓ proven 12 m ago · headroom 3 m ago" — verdict kind and quota age are
-two facts); "Switch Claude to next (dJormun)…"; submenu "Switch Claude to ▸"
+Cedar · ✓ proven 12 m ago · headroom 3 m ago" — verdict kind and quota age are
+two facts); "Switch Claude to next (Cedar)…"; submenu "Switch Claude to ▸"
 (eligible rows in rank order, a separator, then blocked / duplicate / excluded
 rows disabled with their reason; ⌥ turns an eligible row into "Queue X next");
 submenu "Queue next ▸" (eligible rows; explicit path, ⌥ is not the only one); a
-disabled queue row "Queue: Memori › 2026" when the queue has entries for this
+disabled queue row "Queue: Fjord › Ridge" when the queue has entries for this
 provider, with "Edit queue…" beside it. Footer: "Auto-switch on · 95 % session /
 99 % weekly" (disabled) + "Active & Auto-switch…"; "Accounts…", "Dashboard…",
 "Token usage…". Counts sentence appears as a disabled row under the owner only
@@ -991,25 +991,25 @@ preferences unavailable — values may be cached". Item badge amber (if nothing
 red or purple outranks it).
 
 **Frame 7 — switch in flight.** Every action row disabled; a row "⇄ switching
-Claude → dJormun…" under the provider being switched. Re-opening the menu after
+Claude → Cedar…" under the provider being switched. Re-opening the menu after
 the switch shows the new owner.
 
 **Frame 8 — changed outside the app.** A row under the owner, cyan: "Active for
-Claude changed outside the app: now dLeo", shown until the menu has been opened
+Claude changed outside the app: now Lark", shown until the menu has been opened
 once after the event (one per episode; `.providerOwnerChangedExternally`).
 
 **Frame 9 — confirmation.** `NSAlert`, app activated first, never suppressible:
-"Switch the Claude Code login to dJormun?" / "Every running Claude Code session
-re-reads its context on the new account (≈10–15 % of dJormun's 5-hour window).
-dJormun: session 12 %, weekly 70 %, Fable 99 % — login verified 12 m ago (usage
-probe). dRir keeps 22 % of its session until 14:02." Unverified candidate: adds
+"Switch the Claude Code login to Cedar?" / "Every running Claude Code session
+re-reads its context on the new account (≈10–15 % of Cedar's 5-hour window).
+Cedar: session 12 %, weekly 70 %, Fable 99 % — login verified 12 m ago (usage
+probe). Atlas keeps 22 % of its session until 14:02." Unverified candidate: adds
 "Its login has not been verified recently — the switch may be refused."
 Buttons: Cancel (default is Cancel — switching is the costly action), Switch now.
 
 **Frame 10 — outcomes.** Success: nothing modal — the tile label moves and the
 next menu open shows the new owner. Refused (dead login): alert "Not switched —
-dJormun's Claude login is dead. The CLI keeps dRir." with "Repair in Accounts"
-(views dJormun, opens the Login page) and OK. In flight: "Another switch is in
+Cedar's Claude login is dead. The CLI keeps Atlas." with "Repair in Accounts"
+(views Cedar, opens the Login page) and OK. In flight: "Another switch is in
 progress — try again in a moment." Already active: cannot happen (owner row is
 disabled). Every alert re-activates the app first (the click's grant has expired
 after the `await`).
@@ -1051,9 +1051,9 @@ excluded. A dead row's name is orange; a row flagged by #64 gets a small
 selected row is the accent-filled one. Type-ahead selects. 40 rows scroll; the
 section headers stay pinned.
 
-**Detail header (frame 2).** "Viewing dJormun" in 16 pt semibold with the
+**Detail header (frame 2).** "Viewing Cedar" in 16 pt semibold with the
 provider in secondary; under it the R3 caption "not active · Active for Claude:
-dRir" (or "Active for Claude" in cyan when this IS the owner, or "no active Claude
+Atlas" (or "Active for Claude" in cyan when this IS the owner, or "no active Claude
 login chosen"). Buttons: "Make active for Claude…" (primary; hidden for the
 owner; disabled with the reason as tooltip when the login is dead — "Repair it
 on the Login tab" — or when a switch is in flight), "Queue next" (hidden when
@@ -1101,7 +1101,7 @@ not fit, three reviews); showing empty tabs before their stage ships.
 each a mirror of the ⇄ menu's section: title "Active for Claude"; owner row
 (legend glyph in the active cyan, name, compact stats "S 78 · W 16 · F 16",
 provenance + age, "pinned by you"); the suspected caveat in purple when it
-applies; the next line ("next → dJormun · ✓ verified 12 m ago") with the
+applies; the next line ("next → Cedar · ✓ verified 12 m ago") with the
 "Make active for Claude…" button at the right, which runs the shared
 confirmation; "next: nobody with headroom" in blocking red; "single account" for
 a one-account provider; an amber note when the auto-switch is off. Then the
@@ -1185,13 +1185,13 @@ Popover, Shortcuts, App Settings, CLI Account, Codex Account pages and their
 **Frame 0 — the block.** Eight sections in the agreed order, each a 9-pt bold
 uppercase header over 10-pt rows with 9-pt secondary details (the dashboard's own
 scale). "Resets, next 7 days": a strip with day ticks, one dot per distinct
-account per window (green weekly, purple Fable) and a label "dRir W +84" — the
+account per window (green weekly, purple Fable) and a label "Atlas W +84" — the
 headroom that returns — alternating between two label rows so neighbours do not
 collide. "Blind spots": the active accounts, ● green when measured through their
 own endpoint inside the stale threshold, ○ amber otherwise, with the evidence in
 words (own measurement 4m ago · shown from the CLI cache · 2 header rescues ·
 backing off 2m). "Changed outside the app" only when it happened. "Switch log":
-a mini provider filter, then "Google → jskxkxjssh · 12m ago · auto-switch · 4 %
+a mini provider filter, then "Beacon → Delta · 12m ago · auto-switch · 4 %
 headroom left · session 96 %"; legacy rows in the informational gray with their
 caption. "Burn rate": a 40×12 sparkline of the last four samples, "+2.1 pp/min ·
 crosses the threshold in 8m", or "flat". "Rate-limit incidents, last 24 h":
@@ -1217,7 +1217,7 @@ stays in the label colour; R4 the dead banner's copy stops repeating what its
 button says, and the frame passes the repair action; R5 the innocent duplicate's
 "Same account" fact is in the caution tone with a "View <name>" link (the
 re-login banner stays reserved for the contaminated case the manager flags); R6
-"Make dJormun active…" names the candidate; R7 the pin is a badge with a tooltip
+"Make Cedar active…" names the candidate; R7 the pin is a badge with a tooltip
 and an Unpin (`MenuBarManager.clearManualPin`, one log line, nothing else); R8
 the diagnostics command filters on the app's subsystem (the process predicate
 also matched the test host). S1 was the facsimile's clamp (widened; the live menu
@@ -1249,9 +1249,9 @@ a header rescue stays in the incidents list as an informational ○, not a green
 ### 12.10 Owner findings at the real scale (19 Claude profiles)
 
 **V1 — reset strip.** Labels are laid out by a pure `InsightsTimelineLayout`:
-markers sharing a slot merge ("dRir · Commits W 100 %"), labels stagger into up
+markers sharing a slot merge ("Atlas · Harbor W 100 %"), labels stagger into up
 to three rows, and past that the strip keeps its dots and lists the resets under
-it ("in 9 h · dRir W 84 %", capped at eight with "+N more"). The block's height
+it ("in 9 h · Atlas W 84 %", capped at eight with "+N more"). The block's height
 is a function of the layout, so it always reserves its own space.
 
 **V2 — roster header.** The census line is one line with the sentence on hover
