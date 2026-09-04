@@ -787,6 +787,81 @@ class ClaudeCodeSyncService {
         }
     }
 
+    // MARK: - Background Identity Stamping
+
+    /// One profile's worth of the sweep-end identity pass, as plain values so
+    /// the selection rule can be tested without a Keychain or a network.
+    struct IdentityStampCandidate {
+        let id: UUID
+        /// False for anything the pass must not spend a request on: no stored
+        /// login of its own, already stamped, flagged dead, or an expired
+        /// access token (refreshing a background profile's token here would
+        /// rotate a refresh token the CLI may still be holding).
+        let isEligible: Bool
+        /// When this profile's login was last synced. Oldest first; never
+        /// synced (`nil`) sorts oldest of all, exactly like the background
+        /// usage scheduler treats a never-attempted candidate.
+        let syncedAt: Date?
+    }
+
+    /// The single profile this sweep will resolve an identity for: the oldest
+    /// eligible unstamped login. One per sweep, so the pass costs at most one
+    /// `api.anthropic.com` request per 30 s — well inside the per-IP budget the
+    /// usage sweep already lives under — and costs NOTHING in steady state,
+    /// because a stamped profile is never a candidate again.
+    nonisolated static func selectIdentityStampId(candidates: [IdentityStampCandidate]) -> UUID? {
+        candidates
+            .filter(\.isEligible)
+            .min { ($0.syncedAt ?? .distantPast) < ($1.syncedAt ?? .distantPast) }
+            .map(\.id)
+    }
+
+    /// Resolves and persists the account identity of ONE unstamped Claude login
+    /// per call, using that profile's OWN token.
+    ///
+    /// Why this exists: `stampAccountIdentity` only ever ran for the profile
+    /// being APPLIED to the CLI, so a profile that was synced once and never
+    /// activated carried no `claudeAccountUUID` at all — and every check built
+    /// on that stamp (adoption matching, duplicate detection, the auto-switch's
+    /// same-account skip) is blind on a nil. Two live profiles were found on
+    /// 2026-09-03 holding logins for ONE Anthropic account, invisible to all of
+    /// them because only one side was stamped.
+    ///
+    /// The identity endpoint is called with the PROFILE'S own stored token and
+    /// never with the system Keychain fallback — that item always holds the
+    /// ACTIVE account's login, so using it would stamp every unstamped profile
+    /// with the active account's uuid and manufacture the very duplicates this
+    /// pass is meant to find.
+    ///
+    /// Returns the profile stamped, or nil when there was nothing to do.
+    @discardableResult
+    func stampNextUnstampedIdentity() async -> UUID? {
+        let profiles = ProfileStore.shared.loadProfiles()
+        let candidates = profiles.map { profile in
+            IdentityStampCandidate(
+                id: profile.id,
+                isEligible: isIdentityStampEligible(profile),
+                syncedAt: profile.cliAccountSyncedAt
+            )
+        }
+        guard let target = Self.selectIdentityStampId(candidates: candidates) else { return nil }
+        await stampAccountIdentity(for: target)
+        return target
+    }
+
+    /// Whether the background pass may spend a request on this profile.
+    private func isIdentityStampEligible(_ profile: Profile) -> Bool {
+        guard profile.carriesClaudeAccount,
+              profile.claudeAccountUUID == nil,
+              let json = profile.cliCredentialsJSON else { return false }
+        guard !isLoginMarkedDead(profile.id) else { return false }
+        // Expired means the only way to get a usable token is a refresh, and a
+        // background refresh rotates the refresh token — the hazard the
+        // candidate preflight is careful about. Wait for a path that already
+        // refreshes this profile (activation, preflight, a manual sync).
+        return !isTokenExpired(json)
+    }
+
     /// Rewrites the CLI's cached account metadata (`oauthAccount` in ~/.claude.json)
     /// to match the login the app just applied. The CLI only updates this cache on
     /// a manual /login, so after an app-driven switch, /usage and /status would

@@ -296,6 +296,8 @@
 "notification.focus_without_login.message_no_owner" = "Showing '%1$@'. Its %2$@ login is dead and was not applied, so the CLI is unchanged — use %3$@ → Log in to repair it.";
 "notification.grok_relogin.title" = "Grok account needs re-login";
 "notification.grok_relogin.message" = "The saved Grok token for '%@' was revoked. Run `grok` and log in with that account, then re-sync it in Settings.";
+"notification.duplicate_claude_account.title" = "Two profiles, one Anthropic account";
+"notification.duplicate_claude_account.message" = "%@ hold logins for the SAME Anthropic account. Their usage is one quota shown twice, and auto-switch will not rotate between them. Remove one, or log it in to a different account.";
 "notification.preferences_degraded.title" = "Preferences service unavailable";
 "notification.preferences_degraded.message" = "Showing cached data; settings changes may not save until macOS's cfprefsd is restarted.";
 "codex.about_title" = "About Codex accounts";
@@ -499,6 +501,7 @@
 "profiles.about_notifications" = "Notification settings";
 "profiles.about_refresh" = "Refresh interval";
 "profiles.active_badge" = "Active";
+"profiles.same_account_as" = "Same Anthropic account as %@";
 "profiles.created" = "Created";
 "profiles.cli_synced" = "CLI Synced";
 "profiles.rename" = "Rename profile";

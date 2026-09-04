@@ -625,6 +625,16 @@ struct ProfileRow: View {
                 Text(profileInfo)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
+
+                // Two profiles holding ONE Anthropic account show that account's
+                // quota twice. The app never resolves that itself (removing a
+                // credential is the user's call), so the row says so instead.
+                let sameAccountAs = profileManager.duplicateClaudeAccountPartnerNames(for: profile.id)
+                if !sameAccountAs.isEmpty {
+                    Text("profiles.same_account_as".localized(with: ListFormatter.localizedString(byJoining: sameAccountAs)))
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
             }
 
             Spacer()
