@@ -117,10 +117,11 @@ extension MenuBarIconRenderer {
         let grid = FleetBlockGeometry.dotGrid(count: shown.count)
         var leftmostX = rightEdge
         for (i, member) in shown.enumerated() {
-            // j counts from the soonest (last) member: 0 = rightmost column, top.
+            // j counts from the soonest (last) member: 0 = top row, rightmost;
+            // row-major from the right (owner rule: right = closest to its
+            // weekly reset, left = farthest; no known reset = leftmost).
             let j = shown.count - 1 - i
-            let col = j / grid.rows
-            let row = j % grid.rows
+            let (col, row) = FleetBlockGeometry.dotPosition(index: j, count: shown.count)
             let x = rightEdge - d - CGFloat(col) * FleetBlockGeometry.dotPitch
             let y = top - d - CGFloat(row) * FleetBlockGeometry.rowPitch
             let rect = NSRect(x: x, y: y, width: d, height: d)
