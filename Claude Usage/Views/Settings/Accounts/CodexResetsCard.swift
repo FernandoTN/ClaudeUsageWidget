@@ -47,6 +47,12 @@ struct CodexResetsCard: View {
                     .disabled(busy || !CodexResetsFormatting.canRedeem(count: count, readiness: readiness, measurement: measurement))
                     .help(CodexResetsFormatting.redeemHelp(count: count, readiness: readiness, measurement: measurement))
             }
+            // F1: the unmet gate in plain sight, not only on hover.
+            if !CodexResetsFormatting.canRedeem(count: count, readiness: readiness, measurement: measurement) {
+                Text(CodexResetsFormatting.redeemHelp(count: count, readiness: readiness, measurement: measurement))
+                    .font(DesignTokens.Typography.caption).foregroundColor(DesignRole.caution.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let details {
                 ForEach(details.availableCreditsByExpiry) { credit in
                     Text(CodexResetsFormatting.creditLine(credit)).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
