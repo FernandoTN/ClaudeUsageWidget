@@ -1688,12 +1688,14 @@ final class StatusBarUIManager {
         guard !groupItems.isEmpty else { return }
         var verdicts: [Profile.ProviderKind: GroupExposure.Verdict] = [:]
         var snapshot: [String] = []
+        var minX: [Profile.ProviderKind: CGFloat] = [:]
         let onScreenWindows = Self.onScreenWindowNumbers()
         for provider in [Profile.ProviderKind.claude, .grok, .codex] {
             guard let item = groupItems[provider] else { continue }
             let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
             let verdict = GroupExposure.verdict(observation)
             verdicts[provider] = verdict
+            if let frame = observation.frame, frame.height >= 2 { minX[provider] = frame.minX }
             let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
             let hits = observation.hits.map { $0 ? "1" : "0" }.joined()
             let onScreen = observation.onScreen.map { $0 ? "1" : "0" } ?? "?"
@@ -1708,6 +1710,11 @@ final class StatusBarUIManager {
             snapshot.append(
                 "\(label)=\(GroupExposure.verdict(observation)) [\(frame) len=\(Int(item.length)) "
                     + "vis=\(observation.isVisible ? 1 : 0) occ=\(observation.occluded ? 1 : 0) on=\(onScreen)]")
+        }
+        if minX.count > 1 {
+            let order = GroupExposure.order(minX: minX)
+            let names = order.order.map { "\($0)" }.joined(separator: "<")
+            snapshot.append(order.ok ? "order=\(names) ok" : "ORDER MISMATCH \(names) (expected \(GroupExposure.intendedOrder.filter { minX[$0] != nil }.map { "\($0)" }.joined(separator: "<")))")
         }
         let confirmed = exposureTracker.record(verdicts)
         let changed = confirmed != hiddenProviders
