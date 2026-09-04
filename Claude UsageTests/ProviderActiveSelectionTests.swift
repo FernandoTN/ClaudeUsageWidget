@@ -118,8 +118,8 @@ final class ProviderActiveSelectionTests: XCTestCase {
         XCTAssertEqual(rows.map(\.name), ["dJormun", "Memori", "Commits", "BBR"],
                        "eligible in soonest-weekly-reset order, then the blocked rows in rank order")
         XCTAssertEqual(rows[0].status, .eligible)
-        XCTAssertEqual(rows[2].status, .blocked(.exhausted))
-        XCTAssertEqual(rows[3].status, .blocked(.exhausted))
+        XCTAssertEqual(rows[2].status, .blocked(.weeklyHitSoon), "weekly maxed, reset within a day")
+        XCTAssertEqual(rows[3].status, .blocked(.sessionHit), "session hit with more than half the week left")
     }
 
     func testQueuedCandidatesRankFirstAndCarryTheirPosition() {
@@ -216,13 +216,12 @@ final class ProviderActiveSelectionTests: XCTestCase {
 
         XCTAssertEqual(counts.profiles, 6)
         XCTAssertEqual(counts.byReadiness.values.reduce(0, +), 6, "the seven states partition the rows")
-        XCTAssertEqual(counts.count(.ready), 2)
-        XCTAssertEqual(counts.count(.low), 1)
-        XCTAssertEqual(counts.count(.exhausted), 1)
+        XCTAssertEqual(counts.count(.ready), 3, "session available with the week untouched is bright green, whatever the session reads")
+        XCTAssertEqual(counts.count(.weeklyHit), 1)
         XCTAssertEqual(counts.count(.unknown), 1)
         XCTAssertEqual(counts.count(.dead), 1)
         XCTAssertEqual(counts.duplicateProfiles, 2, "orthogonal — the twins are also two ready rows")
-        XCTAssertEqual(counts.strip, "6 · ●2 ◐1 ○1 ▲1 ×1 · ⧉2")
+        XCTAssertEqual(counts.strip, "6 · ●3 ▲1 ○1 ×1 · ⧉2")
     }
 
     func testDistinctAccountsLoginLiveAndCapacityCountEachAccountOnce() {

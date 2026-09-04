@@ -488,10 +488,11 @@ struct AccountOverviewTab: View {
     private func chip(for readiness: AccountReadiness) -> RowChip {
         switch readiness {
         case .ready: return .ready
-        case .low: return .nearLimit
+        case .readyLight: return .readyLight
         case .unknown: return .unmeasured
         case .suspected: return .suspected(lastMeasured: profile.claudeUsage?.sessionPercentage ?? 0, at: profile.claudeUsage?.lastUpdated ?? Date())
-        case .exhausted: return .weeklyMaxed
+        case .sessionHit, .sessionHitLight: return .sessionExhausted(resetAt: profile.claudeUsage?.sessionResetTime ?? Date())
+        case .weeklyHit, .weeklyHitSoon: return .weeklyMaxed
         case .excluded: return profile.isAutoSwitchEnabled ? .freePlan : .autoSwitchOff
         case .dead: return .deadLogin
         }

@@ -89,7 +89,7 @@ struct CodexResetsCard: View {
         alert.addButton(withTitle: "resets.confirm_button".localized)
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         busy = true; defer { busy = false }
-        let evidence = CodexResetActivationEvidence(measuredAtLimit: readiness == .exhausted, measuredAt: measurement.measuredAt,
+        let evidence = CodexResetActivationEvidence(measuredAtLimit: readiness.isAtLimit, measuredAt: measurement.measuredAt,
                                                     source: String(describing: measurement.provenance))
         do {
             let outcome = try await CodexUsageService.shared.activateReset(for: profile.id, evidence: evidence)
@@ -114,13 +114,13 @@ enum CodexResetsFormatting {
     /// Redeem is offered only with a grant in hand and a measurement that says
     /// the account is AT its limit — spending a grant on headroom is waste.
     static func canRedeem(count: Int?, readiness: AccountReadiness, measurement: UsageMeasurement?) -> Bool {
-        guard let count, count > 0, readiness == .exhausted, let measurement, measurement.isOwn else { return false }
+        guard let count, count > 0, readiness.isAtLimit, let measurement, measurement.isOwn else { return false }
         return true
     }
 
     static func redeemHelp(count: Int?, readiness: AccountReadiness, measurement: UsageMeasurement?) -> String {
         if (count ?? 0) == 0 { return "resets.help_none".localized }
-        if readiness != .exhausted { return "resets.help_headroom".localized }
+        if !readiness.isAtLimit { return "resets.help_headroom".localized }
         if measurement?.isOwn != true { return "resets.help_unmeasured".localized }
         return "resets.help_ready".localized
     }

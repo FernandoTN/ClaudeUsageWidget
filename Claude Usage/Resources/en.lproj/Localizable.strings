@@ -822,6 +822,11 @@
 "counts.profiles_accounts" = "%d %@ profiles, %d accounts";
 "counts.ready" = "%d ready";
 "counts.low" = "%d low";
+"counts.ready_light" = "%d ready, weekly under half";
+"counts.session_hit" = "%d session limit hit";
+"counts.session_hit_light" = "%d session hit, weekly under half";
+"counts.weekly_hit_soon" = "%d weekly limit hit, resets within a day";
+"counts.weekly_hit" = "%d weekly limit hit, reset more than a day away";
 "counts.unknown" = "%d unmeasured";
 "counts.suspected" = "%d suspected";
 "counts.exhausted" = "%d exhausted";

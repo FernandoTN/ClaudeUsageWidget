@@ -2190,12 +2190,8 @@ final class StatusBarUIManager {
             }
         }
         let counts = summary.counts
-        let order: [(AccountReadiness, String)] = [
-            (.ready, "ready"), (.low, "near limit"), (.exhausted, "exhausted"),
-            (.suspected, "suspected"), (.unknown, "unmeasured"), (.excluded, "excluded"), (.dead, "dead"),
-        ]
-        for (state, label) in order where counts[state, default: 0] > 0 {
-            parts.append("\(counts[state]!) \(label)")
+        for state in AccountReadiness.legendOrder where counts[state, default: 0] > 0 {
+            parts.append("\(counts[state]!) \(state.legendWord)")
         }
         // The words behind the glyphs (round 1, B4/G2): the tooltip is where
         // the bar spells out what a 22 pt strip can only encode.

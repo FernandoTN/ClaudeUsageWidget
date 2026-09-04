@@ -121,7 +121,7 @@ final class AccountsRosterModelTests: XCTestCase {
         let sections = Model.sections(selections: selections(profiles, active: [claudeOwner.id, codexOwner.id]), profiles: profiles, sort: .alphabetical, filter: "")
         let all = Dictionary(uniqueKeysWithValues: sections.flatMap(\.rows).map { ($0.name, $0.percentageText) })
         XCTAssertEqual(all["dRir"], "S 78", "the binding window with its letter (R2)")
-        XCTAssertEqual(all["BBR"]?.hasPrefix("▲ S "), true, "legend glyph + the maxed window + its value (round-3 R1)")
+        XCTAssertEqual(all["BBR"]?.hasPrefix("◐ S "), true, "the session glyph + the maxed window + its value (owner scheme: ◐ session, ▲ weekly)")
         XCTAssertEqual(all["Commits"]?.hasPrefix("▲ F "), true)
         XCTAssertEqual(all["Hotmail"], "—")
         XCTAssertEqual(all["xFernando"], "W 95", "weekly for a weekly-only provider")

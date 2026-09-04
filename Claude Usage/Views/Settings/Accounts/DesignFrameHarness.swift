@@ -88,9 +88,9 @@ enum DesignFrameHarness {
                 CodexResetCredit(id: "c1", resetType: nil, status: "available", grantedAt: nil, expiresAt: now.addingTimeInterval(3 * 86400), title: "Welcome reset", description: nil),
                 CodexResetCredit(id: "c2", resetType: nil, status: "available", grantedAt: nil, expiresAt: nil, title: nil, description: nil),
             ], totalEarnedCount: 3, immediateResetPurchaseEligible: nil, fetchedAt: now.addingTimeInterval(-120))
-            emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .exhausted, preloaded: credits).padding(16),
+            emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .weeklyHit, preloaded: credits).padding(16),
                  width: 560, name: "codex-resets-at-limit", to: dir, index: &index)
-            emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .low).padding(16),
+            emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .readyLight).padding(16),
                  width: 560, name: "codex-resets-headroom", to: dir, index: &index)
         }
         emit(DashboardInsightsView(insights: .fixture(now: now), now: now).padding(14), width: 400, name: "dashboard-insights", to: dir, index: &index)

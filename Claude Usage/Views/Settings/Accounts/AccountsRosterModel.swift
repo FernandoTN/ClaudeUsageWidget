@@ -153,11 +153,12 @@ enum AccountsRosterModel {
     /// "W!" / "F!"); never measured → "—".
     static func percentageText(_ gauges: [WindowGauge], readiness: AccountReadiness) -> String {
         guard !gauges.isEmpty else { return "—" }
-        if readiness == .exhausted {
-            // The legend's exhausted glyph + the window that is maxed (R2-2).
-            if let session = gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold { return "\(DesignGlyph.exhausted) S \(Int(session.percentage.rounded()))" }
-            if let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return "\(DesignGlyph.exhausted) F \(Int(fable.percentage.rounded()))" }
-            if let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return "\(DesignGlyph.exhausted) W \(Int(weekly.percentage.rounded()))" }
+        if readiness.isAtLimit {
+            // The legend's glyph for the hit window (R2-2): ◐ for the session,
+            // ▲ for a weekly window — the owner's colour scheme split.
+            if readiness.isSessionHit, let session = gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold { return "\(DesignGlyph.sessionHit) S \(Int(session.percentage.rounded()))" }
+            if readiness.isWeeklyHit, let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return "\(DesignGlyph.weeklyHit) F \(Int(fable.percentage.rounded()))" }
+            if readiness.isWeeklyHit, let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return "\(DesignGlyph.weeklyHit) W \(Int(weekly.percentage.rounded()))" }
         }
         guard let keyed = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly }) else { return "—" }
         return "\(keyed.kind == .session ? "S" : "W") \(Int(keyed.percentage.rounded()))"
@@ -176,10 +177,11 @@ enum AccountsRosterModel {
         var words: [String] = []
         switch readiness {
         case .ready: words.append("ready")
-        case .low: words.append("low")
+        case .readyLight: words += ["ready", "low"]
         case .unknown: words += ["unknown", "unmeasured"]
         case .suspected: words += ["suspected", "blind"]
-        case .exhausted: words += ["exhausted", "maxed"]
+        case .sessionHit, .sessionHitLight: words += ["exhausted", "session"]
+        case .weeklyHit, .weeklyHitSoon: words += ["exhausted", "maxed", "weekly"]
         case .excluded: words.append("excluded")
         case .dead: words.append("dead")
         }

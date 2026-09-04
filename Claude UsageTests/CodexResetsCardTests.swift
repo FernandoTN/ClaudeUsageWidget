@@ -21,11 +21,11 @@ final class CodexResetsCardTests: XCTestCase {
     func testRedeemNeedsAGrantAndAMeasuredLimit() {
         let own = UsageMeasurement(provenance: .ownEndpoint, measuredAt: now)
         let cache = UsageMeasurement(provenance: .cliCache, measuredAt: now)
-        XCTAssertTrue(CodexResetsFormatting.canRedeem(count: 1, readiness: .exhausted, measurement: own))
-        XCTAssertFalse(CodexResetsFormatting.canRedeem(count: 0, readiness: .exhausted, measurement: own), "no grant")
-        XCTAssertFalse(CodexResetsFormatting.canRedeem(count: nil, readiness: .exhausted, measurement: own), "unknown is not a grant")
+        XCTAssertTrue(CodexResetsFormatting.canRedeem(count: 1, readiness: .weeklyHit, measurement: own))
+        XCTAssertFalse(CodexResetsFormatting.canRedeem(count: 0, readiness: .weeklyHit, measurement: own), "no grant")
+        XCTAssertFalse(CodexResetsFormatting.canRedeem(count: nil, readiness: .weeklyHit, measurement: own), "unknown is not a grant")
         XCTAssertFalse(CodexResetsFormatting.canRedeem(count: 1, readiness: .ready, measurement: own), "headroom left — a reset would be wasted")
-        XCTAssertFalse(CodexResetsFormatting.canRedeem(count: 1, readiness: .exhausted, measurement: cache), "a cached number is not evidence")
+        XCTAssertFalse(CodexResetsFormatting.canRedeem(count: 1, readiness: .weeklyHit, measurement: cache), "a cached number is not evidence")
         XCTAssertEqual(CodexResetsFormatting.redeemHelp(count: 1, readiness: .ready, measurement: own), "The account still has headroom; a reset now would be wasted.")
     }
 

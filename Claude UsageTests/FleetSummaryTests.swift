@@ -51,7 +51,7 @@ final class FleetSummaryTests: XCTestCase {
         var u = usage(session: 40, weekly: 60, fable: 99)
         u.rateLimitedUntil = now.addingTimeInterval(300)
         u.rateLimitedInferred = true
-        XCTAssertEqual(classify(u), .exhausted)
+        XCTAssertEqual(classify(u), .weeklyHit, "Fable maxed with the reset days away: light red, blocked")
 
         var suspected = usage(session: 74, weekly: 60)
         suspected.rateLimitedUntil = now.addingTimeInterval(300)
@@ -62,9 +62,11 @@ final class FleetSummaryTests: XCTestCase {
     func testServerAffirmedStampSessionThresholdAndExpiredWindow() {
         var affirmed = usage(session: 10, weekly: 10)
         affirmed.rateLimitedUntil = now.addingTimeInterval(2000)
-        XCTAssertEqual(classify(affirmed), .exhausted)
-        XCTAssertEqual(classify(usage(session: 95)), .exhausted)
-        XCTAssertEqual(classify(usage(session: 94.9, weekly: 50)), .low, "≥ 80 % session is low, not ready")
+        XCTAssertEqual(classify(affirmed), .sessionHit, "a server-affirmed stamp is a session hit")
+        XCTAssertEqual(classify(usage(session: 95)), .sessionHit)
+        XCTAssertEqual(classify(usage(session: 95, weekly: 60)), .sessionHitLight, "session hit with the weekly half gone: faded orange")
+        XCTAssertEqual(classify(usage(session: 94.9, weekly: 50)), .readyLight, "session available, weekly at half: light green")
+        XCTAssertEqual(classify(usage(session: 94.9, weekly: 49)), .ready)
         var rolled = usage(session: 100, weekly: 10)
         rolled.sessionResetTime = now.addingTimeInterval(-60)
         XCTAssertEqual(classify(rolled), .ready, "an expired session window counts as zero")
@@ -72,8 +74,11 @@ final class FleetSummaryTests: XCTestCase {
 
     func testWeeklyOnlyProviderIgnoresSessionAndUsesWeeklyRules() {
         XCTAssertEqual(classify(usage(session: 100, weekly: 20, sessionWindow: false)), .ready)
-        XCTAssertEqual(classify(usage(weekly: 90, sessionWindow: false)), .low)
-        XCTAssertEqual(classify(usage(weekly: 99, sessionWindow: false)), .exhausted)
+        XCTAssertEqual(classify(usage(weekly: 90, sessionWindow: false)), .readyLight)
+        XCTAssertEqual(classify(usage(weekly: 99, sessionWindow: false)), .weeklyHit)
+        var soon = usage(weekly: 99, sessionWindow: false)
+        soon.weeklyResetTime = now.addingTimeInterval(3600)
+        XCTAssertEqual(classify(soon), .weeklyHitSoon, "the reset within a day: bright red")
     }
 
     func testNoCacheIsUnknownAndOldCacheIsStaleNotUnknown() {
@@ -122,11 +127,11 @@ final class FleetSummaryTests: XCTestCase {
 
     func testMembersExcludeTheActiveAccountAndKeepPaintOrder() {
         let a = UUID(), b = UUID(), c = UUID()
-        let s = build(members: [a, b, c], active: b, readiness: [a: .ready, b: .low, c: .dead],
+        let s = build(members: [a, b, c], active: b, readiness: [a: .ready, b: .readyLight, c: .dead],
                       keyed: 10, next: candidate(a), activeMeasured: now)
         XCTAssertEqual(s.members.map(\.id), [a, c])
         XCTAssertEqual(s.members.map(\.readiness), [.ready, .dead])
-        XCTAssertEqual(s.activeReadiness, .low)
+        XCTAssertEqual(s.activeReadiness, .readyLight)
         XCTAssertEqual(s.counts, [.ready: 1, .dead: 1])
         XCTAssertEqual(s.alert, .deadLogins)
     }
