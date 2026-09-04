@@ -58,6 +58,13 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
     let statusItem: NSStatusItem
     private let menu = NSMenu()
+    /// Hosted: drawn as a segment of the fleet status item instead of its
+    /// own item (`StatusBarUIManager.useSingleFleetItem`). The own item stays
+    /// hidden; the badge and visibility changes go to `onHostedChange`, and
+    /// the menu pops up from the segment (`hostedAnchor`).
+    let hosted: Bool
+    var onHostedChange: (() -> Void)?
+    var hostedAnchor: (() -> (view: NSView, rect: NSRect)?)?
     private let actions: Actions
     private var cancellables = Set<AnyCancellable>()
     private var observers: [NSObjectProtocol] = []
@@ -73,8 +80,9 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         set { statusItem.isVisible = newValue }
     }
 
-    init(actions: Actions) {
+    init(actions: Actions, hosted: Bool = false) {
         self.actions = actions
+        self.hosted = hosted
         // One STABLE role name pins the item's remembered slot (right of the
         // Claude group); the 2026-07-17 failure came from rotating per-tile
         // names, not from naming as such. The designed position is seeded only
@@ -86,13 +94,13 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
         menu.delegate = self
         menu.autoenablesItems = false
-        statusItem.menu = menu
+        if !hosted { statusItem.menu = menu }
         statusItem.behavior = []
         if let button = statusItem.button {
             button.imagePosition = .imageOnly
             button.setAccessibilityLabel("selector.accessibility".localized)
         }
-        isVisible = SharedDataStore.shared.loadActiveSelectorItemEnabled()
+        isVisible = !hosted && SharedDataStore.shared.loadActiveSelectorItemEnabled()
 
         observers.append(NotificationCenter.default.addObserver(
             forName: .activeSelectorRequested, object: nil, queue: .main
@@ -109,7 +117,14 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         observers.append(NotificationCenter.default.addObserver(
             forName: .activeSelectorVisibilityChanged, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.isVisible = SharedDataStore.shared.loadActiveSelectorItemEnabled() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.hosted {
+                    self.onHostedChange?()
+                } else {
+                    self.isVisible = SharedDataStore.shared.loadActiveSelectorItemEnabled()
+                }
+            }
         })
 
         // Badge + tooltip follow the roster and the owners; coalesced so a
@@ -153,9 +168,17 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
     }
 
     func repaint() {
-        guard let button = statusItem.button else { return }
         let selections = actions.selections()
         let badge = ActiveSelectorMenuModel.badge(selections: selections, preferencesDegraded: actions.preferencesDegraded())
+        if hosted {
+            let tooltip = ActiveSelectorMenuModel.tooltip(selections: selections, badge: badge)
+            guard badge != lastBadge || tooltip != lastTooltip else { return }
+            lastBadge = badge
+            lastTooltip = tooltip
+            onHostedChange?()
+            return
+        }
+        guard let button = statusItem.button else { return }
         if badge != lastBadge || button.image == nil {
             button.image = Self.image(badge: badge, appearance: button.effectiveAppearance)
             lastBadge = badge
@@ -168,14 +191,32 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         }
     }
 
-    /// The glyph as a template image at rest (the bar tints it); with a badge,
-    /// a composed non-template image: glyph in the bar's label colour plus a
-    /// 5 pt dot at the bottom-right in the badge's colour.
-    static func image(badge: ActiveSelectorMenuModel.Badge?, appearance: NSAppearance) -> NSImage {
+    /// The hosted segment: always composed (a template glyph drawn into the
+    /// fleet's non-template image would lose its tint), under the forced
+    /// dark appearance the fleet strips use, with the badge when there is
+    /// one; nil while the ⇄ is switched off in Settings. The key memoizes
+    /// the host redraw.
+    func hostedImage() -> (image: NSImage, key: String)? {
+        guard hosted, SharedDataStore.shared.loadActiveSelectorItemEnabled() else { return nil }
+        let appearance = NSAppearance(named: .darkAqua) ?? NSApp.effectiveAppearance
+        let badge = lastBadge
+        return (Self.image(badge: badge, appearance: appearance, composed: true),
+                "⇄|\(badge.map { "\($0)" } ?? "none")|\(appearance.name.rawValue)")
+    }
+
+    func hostedTooltip() -> String? {
+        hosted ? lastTooltip : nil
+    }
+
+    /// The glyph as a template image at rest (the bar tints it); with a badge
+    /// (or when `composed`), a composed non-template image: glyph in the
+    /// bar's label colour plus a 5 pt dot at the bottom-right in the badge's
+    /// colour.
+    static func image(badge: ActiveSelectorMenuModel.Badge?, appearance: NSAppearance, composed: Bool = false) -> NSImage {
         let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration) ?? NSImage(size: NSSize(width: 16, height: 16))
-        guard let badge else {
+        guard badge != nil || composed else {
             symbol.isTemplate = true
             return symbol
         }
@@ -189,8 +230,10 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
                 symbol.draw(in: glyphRect)
                 NSColor.labelColor.set()
                 glyphRect.fill(using: .sourceAtop)
-                badgeColor(badge).setFill()
-                NSBezierPath(ovalIn: NSRect(x: size.width - 6, y: 1, width: 5, height: 5)).fill()
+                if let badge {
+                    badgeColor(badge).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: size.width - 6, y: 1, width: 5, height: 5)).fill()
+                }
             }
             return true
         }
@@ -209,7 +252,21 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
     // MARK: - Menu
 
     func open() {
+        if hosted {
+            guard let anchor = hostedAnchor?() else {
+                LoggingService.shared.logWarning("⇄ selector: hosted segment has no anchor — nothing to open")
+                return
+            }
+            popUp(from: anchor.view, in: anchor.rect)
+            return
+        }
         statusItem.button?.performClick(nil)
+    }
+
+    /// Pops the menu up under a segment of a host view (the fleet item).
+    func popUp(from view: NSView, in rect: NSRect) {
+        LoggingService.shared.log("⇄ selector: menu from hosted segment x=\(Int(rect.minX)) w=\(Int(rect.width))")
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.minY), in: view)
     }
 
     private func noteExternalChange(provider: Profile.ProviderKind?, ownerName: String?) {

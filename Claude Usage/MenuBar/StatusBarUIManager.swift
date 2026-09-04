@@ -72,6 +72,83 @@ final class StatusBarUIManager {
     /// One status item per provider group (composite mode).
     private var groupItems: [Profile.ProviderKind: NSStatusItem] = [:]
 
+    /// Fleet-item mode: ONE status item hosts every provider composite (and
+    /// the ⇄ segment) side by side, so the bar host has nothing of ours to
+    /// order. Field 2026-09-04, the fifth launch on pinned per-role items:
+    /// the remembered positions held on four launches and not on the fifth
+    /// (codex < claude < grok, no repair line) — the host honours them only
+    /// sometimes, which is the trigger the placement ladder named for this
+    /// structural step. `groupItems` then maps every painted provider to
+    /// this one item. `CUW_SEPARATE_GROUPS=1` restores one item per provider
+    /// (lab switch).
+    static let useSingleFleetItem: Bool =
+        useCompositeTiles && ProcessInfo.processInfo.environment["CUW_SEPARATE_GROUPS"] != "1"
+    static let fleetAutosaveName = "cuw.fleet"
+    private var fleetItem: NSStatusItem?
+
+    /// The distinct status items behind `groupItems` (fleet-item mode maps
+    /// every provider to one item).
+    private var distinctGroupItems: [NSStatusItem] {
+        var seen = Set<ObjectIdentifier>()
+        return groupItems.values.filter { seen.insert(ObjectIdentifier($0)).inserted }
+    }
+
+    /// The host items with a label each: "fleet" for the single item, else
+    /// the provider name, in the probe's traditional order.
+    private var hostEntries: [(label: String, item: NSStatusItem)] {
+        if let fleetItem { return [("fleet", fleetItem)] }
+        return [Profile.ProviderKind.claude, .grok, .codex].compactMap { provider in
+            groupItems[provider].map { ("\(provider)", $0) }
+        }
+    }
+
+    /// Each provider's composite strip (in that provider's image space)
+    /// before host assembly. `hostOffsets` is where the strip starts inside
+    /// its host item's image (0 on a single-provider host), `hostRanges` the
+    /// x-range of the host image that resolves to the provider (half-gaps
+    /// included), `hostImageSizes` the image on each host button (click
+    /// mapping), keyed by button.
+    private var providerComposites: [Profile.ProviderKind: NSImage] = [:]
+    private var hostOffsets: [Profile.ProviderKind: CGFloat] = [:]
+    private var hostRanges: [Profile.ProviderKind: Range<CGFloat>] = [:]
+    private var hostImageSizes: [ObjectIdentifier: NSSize] = [:]
+    private var lastHostKey: [ObjectIdentifier: HostKey] = [:]
+    /// The ⇄ segment's x-range in the fleet image, when hosted and shown.
+    private var selectorRange: Range<CGFloat>?
+    /// Per-provider tooltip text collected at paint; a multi-provider host
+    /// serves them per hovered segment through `HostTooltipOwner`.
+    private var providerTooltips: [Profile.ProviderKind: String] = [:]
+    private var tooltipOwners: [ObjectIdentifier: HostTooltipOwner] = [:]
+
+    /// The ⇄ selector drawn INTO the fleet item (fleet-item mode): its image
+    /// under the bar's appearance with a memo key, its tooltip, and the menu
+    /// opener anchored at the segment. nil = the selector is its own item.
+    struct HostedSelector {
+        var image: () -> (image: NSImage, key: String)?
+        var tooltip: () -> String?
+        var open: (NSView, NSRect) -> Void
+    }
+    var hostedSelector: HostedSelector?
+
+    /// Inputs a host image is a pure function of — equal ⇒ skip the redraw.
+    private struct HostKey: Equatable {
+        var providers: [Profile.ProviderKind]
+        var keys: [CompositeKey]
+        var selectorKey: String?
+        var scaleQ: Int
+    }
+
+    private func clearHostState() {
+        providerComposites.removeAll()
+        hostOffsets.removeAll()
+        hostRanges.removeAll()
+        hostImageSizes.removeAll()
+        lastHostKey.removeAll()
+        selectorRange = nil
+        providerTooltips.removeAll()
+        tooltipOwners.removeAll()
+    }
+
     /// Latest rendered per-tile image (composite mode) — the per-tile render
     /// pipeline (render keys, TIFF guard) is unchanged; composites are
     /// re-assembled from these.
@@ -332,15 +409,18 @@ final class StatusBarUIManager {
         multiProfileOrder.removeAll()
 
         // Composite-mode state
-        for (_, statusItem) in groupItems {
+        for statusItem in distinctGroupItems {
             if let button = statusItem.button {
                 button.image = nil
                 button.action = nil
                 button.target = nil
+                button.removeAllToolTips()
             }
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         groupItems.removeAll()
+        fleetItem = nil
+        clearHostState()
         groupSegments.removeAll()
         groupCompositeSize.removeAll()
         tileImages.removeAll()
@@ -380,7 +460,7 @@ final class StatusBarUIManager {
     /// the cheapest candidate reset short of relaunching. Render caches are
     /// dropped so the re-shown tiles repaint fresh.
     func cycleTileVisibility() {
-        let items = Array(multiProfileStatusItems.values) + Array(groupItems.values)
+        let items = Array(multiProfileStatusItems.values) + distinctGroupItems
         guard !items.isEmpty else { return }
         LoggingService.shared.logWarning("StatusBar: cycling visibility of \(items.count) tiles (storm remediation)")
         for item in items { item.isVisible = false }
@@ -394,7 +474,7 @@ final class StatusBarUIManager {
             // reachable from StormWatchdog's manual remediate trigger. Items no
             // longer owned here are simply skipped; freshly created ones are
             // already visible, so re-asserting it is a no-op.
-            let liveItems = Array(self.multiProfileStatusItems.values) + Array(self.groupItems.values)
+            let liveItems = Array(self.multiProfileStatusItems.values) + self.distinctGroupItems
             for item in liveItems { item.isVisible = true }
             self.lastRenderKey.removeAll()
             self.lastImageData.removeAll()
@@ -403,6 +483,7 @@ final class StatusBarUIManager {
             // will re-render, but the memo would otherwise let a re-shown group
             // keep whatever image survived the visibility cycle.
             self.lastCompositeKey.removeAll()
+            self.lastHostKey.removeAll()
             self.lastSummaryKey.removeAll()
         }
     }
@@ -542,6 +623,54 @@ final class StatusBarUIManager {
         return (totalWidth, origins, ranges)
     }
 
+    /// Left-to-right placement of provider strips inside ONE host image, in
+    /// `GroupExposure.intendedOrder` (Codex, Grok, Claude) with the hosted ⇄
+    /// segment at the right end; `ranges` split every gap down the middle so
+    /// each x of the image resolves to exactly one segment. A single provider
+    /// without a selector lays out at origin 0 with no padding — the strip
+    /// IS the host image, exactly the per-provider item's image.
+    nonisolated struct HostLayout: Equatable {
+        var origins: [Profile.ProviderKind: CGFloat] = [:]
+        var ranges: [Profile.ProviderKind: Range<CGFloat>] = [:]
+        var selectorOrigin: CGFloat?
+        var selectorRange: Range<CGFloat>?
+        var totalWidth: CGFloat = 0
+        var order: [Profile.ProviderKind] = []
+    }
+
+    /// Gap between provider strips — wider than the 3 pt between tiles, so
+    /// the three blocks still read as three.
+    static let hostProviderGap: CGFloat = 6
+
+    nonisolated static func hostLayout(
+        widths: [Profile.ProviderKind: CGFloat],
+        selectorWidth: CGFloat?,
+        gap: CGFloat = hostProviderGap
+    ) -> HostLayout {
+        var layout = HostLayout()
+        layout.order = GroupExposure.intendedOrder.filter { widths[$0] != nil }
+        var blocks: [(provider: Profile.ProviderKind?, width: CGFloat)] =
+            layout.order.map { ($0, widths[$0]!.rounded()) }
+        if let selectorWidth { blocks.append((nil, selectorWidth.rounded())) }
+        guard !blocks.isEmpty else { return layout }
+        let total = blocks.reduce(0) { $0 + $1.width } + gap * CGFloat(blocks.count - 1)
+        var x: CGFloat = 0
+        for (i, block) in blocks.enumerated() {
+            let start = i == 0 ? 0 : x - gap / 2
+            let end = i == blocks.count - 1 ? total : x + block.width + gap / 2
+            if let provider = block.provider {
+                layout.origins[provider] = x
+                layout.ranges[provider] = start..<end
+            } else {
+                layout.selectorOrigin = x
+                layout.selectorRange = start..<end
+            }
+            x += block.width + gap
+        }
+        layout.totalWidth = total
+        return layout
+    }
+
     /// True when the live composite group items already match the providers
     /// `profiles` needs, so a "structural" setup call is really just a repaint.
     /// Selecting or deselecting an account is a MEMBERSHIP change, which a
@@ -575,7 +704,7 @@ final class StatusBarUIManager {
             multiProfileAction = action
             multiProfileOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
             LoggingService.shared.logUIEvent(
-                "Multi-profile: composite membership change — reused \(groupItems.count) group items (no window changes)")
+                "Multi-profile: composite membership change — reused \(distinctGroupItems.count) host item(s) for \(groupItems.count) provider(s) (no window changes)")
             return
         }
 
@@ -696,6 +825,19 @@ final class StatusBarUIManager {
         item.autosaveName = name
     }
 
+    /// The fleet item is named so a slot the owner drags it to survives
+    /// relaunches; nothing of ours is ordered against it, so no position is
+    /// seeded — only a stale hidden flag is cleared.
+    private static func pinFleetItem(_ item: NSStatusItem) {
+        guard pinGroupPositions else { return }
+        let visibleKey = "NSStatusItem Visible \(fleetAutosaveName)"
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: visibleKey) == nil || defaults.bool(forKey: visibleKey) == false {
+            defaults.set(true, forKey: visibleKey)
+        }
+        item.autosaveName = fleetAutosaveName
+    }
+
     /// Composite mode: create ONE status item per provider that has selected
     /// profiles. Creation order Claude → Grok → Codex (each new item lands
     /// LEFT of existing ones, so Claude ends up rightmost and Codex clips
@@ -721,6 +863,33 @@ final class StatusBarUIManager {
 
         let orderedProfiles = Self.multiProfileCreationOrder(for: profiles)
         multiProfileOrder = orderedProfiles.map(\.id)
+
+        if Self.useSingleFleetItem {
+            // ONE item for everything: the host cannot reorder what it does
+            // not own separately. Fixed initial length (see the per-provider
+            // path below); the first assembly pins the real width.
+            let statusItem = NSStatusBar.system.statusItem(withLength: Self.initialGroupLength)
+            Self.pinFleetItem(statusItem)
+            if let button = statusItem.button {
+                button.action = action
+                button.target = target
+                button.imageScaling = .scaleProportionallyDown
+            } else {
+                LoggingService.shared.logWarning("Fleet status bar button is nil - screens: \(NSScreen.screens.count)")
+            }
+            fleetItem = statusItem
+            for provider in GroupExposure.intendedOrder
+            where selectedProfiles.contains(where: { $0.providerKind == provider }) {
+                groupItems[provider] = statusItem
+            }
+            LoggingService.shared.logUIEvent(
+                "Multi-profile: fleet item — one status item hosting "
+                    + GroupExposure.intendedOrder.filter { groupItems[$0] != nil }.map { "\($0)" }.joined(separator: ",")
+                    + (hostedSelector == nil ? "" : "+⇄") + " for \(selectedProfiles.count) profiles")
+            observeExposureTriggers()
+            logPlacementAtCreation()
+            return
+        }
 
         for provider in [Profile.ProviderKind.claude, .grok, .codex]
         where selectedProfiles.contains(where: { $0.providerKind == provider }) {
@@ -762,13 +931,13 @@ final class StatusBarUIManager {
     /// unchanged by creation-order and placeholder-length changes, absent in
     /// a fresh process that never sets images).
     private func logPlacementAtCreation() {
-        let created = groupItems
+        let created = hostEntries
         let auxiliary = auxiliaryExposureItems
         DispatchQueue.main.async {
             var parts: [String] = []
-            for (provider, item) in created.sorted(by: { "\($0.key)" < "\($1.key)" }) {
+            for (label, item) in created {
                 let x = item.button?.window?.frame.minX
-                parts.append("\(provider)=\(x.map { "x=\(Int($0))" } ?? "no window") len=\(Int(item.length))")
+                parts.append("\(label)=\(x.map { "x=\(Int($0))" } ?? "no window") len=\(Int(item.length))")
             }
             for (label, item) in auxiliary().sorted(by: { $0.key < $1.key }) {
                 let x = item.button?.window?.frame.minX
@@ -1428,6 +1597,7 @@ final class StatusBarUIManager {
             groupSegments.removeValue(forKey: provider)
             groupCompositeSize.removeValue(forKey: provider)
             lastCompositeKey.removeValue(forKey: provider)
+            providerComposites.removeValue(forKey: provider)
         }
 
         // Rank order is soonest-reset-first; the composite is drawn
@@ -1456,6 +1626,7 @@ final class StatusBarUIManager {
                 groupSegments[provider] = []
                 groupCompositeSize.removeValue(forKey: provider)
                 lastCompositeKey.removeValue(forKey: provider)
+                providerComposites.removeValue(forKey: provider)
                 continue
             }
 
@@ -1475,11 +1646,11 @@ final class StatusBarUIManager {
                 scaleQ: Int((scale * 100).rounded())
             )
             // Steady state (no tile re-rendered, same membership and order):
-            // the composite already on the button IS this composite. Skipping
-            // is what keeps an idle 30s sweep from allocating three bitmaps,
-            // re-drawing ~14 tiles and TIFF-encoding the whole strip three
-            // times just to discover nothing changed.
-            if lastCompositeKey[provider] == key, button.image != nil { continue }
+            // the strip already assembled IS this strip. Skipping is what
+            // keeps an idle 30s sweep from allocating bitmaps, re-drawing
+            // ~14 tiles and TIFF-encoding the whole bar just to discover
+            // nothing changed.
+            if lastCompositeKey[provider] == key, providerComposites[provider] != nil { continue }
 
             let layout = Self.compositeLayout(tileWidths: members.map { $0.image.size.width })
             let height = members.map { $0.image.size.height }.max() ?? 24
@@ -1506,14 +1677,126 @@ final class StatusBarUIManager {
             }
             groupCompositeSize[provider] = NSSize(width: layout.totalWidth, height: height)
             lastCompositeKey[provider] = key
-
-            // Fixed length: assign BEFORE the image so the item never renders
-            // a partially-clipped composite, and only when it changed.
-            if abs(statusItem.length - layout.totalWidth) > 0.5 {
-                statusItem.length = layout.totalWidth
-            }
-            setButtonImage(button, image: composite)
+            providerComposites[provider] = composite
         }
+        assembleHosts()
+    }
+
+    /// Draws each host item's image from the strips: a single-provider host
+    /// shows the provider's strip unchanged; the fleet item shows every
+    /// provider strip side by side (Codex, Grok, Claude) plus the hosted ⇄
+    /// segment. Sets the item length, the click ranges and the tooltips.
+    /// Fixed length, assigned BEFORE the image so the item never renders a
+    /// partially-clipped composite, and only when it changed.
+    private func assembleHosts() {
+        for item in distinctGroupItems {
+            guard let button = item.button else { continue }
+            let buttonId = ObjectIdentifier(button)
+            let hosted = GroupExposure.intendedOrder.filter {
+                groupItems[$0] === item && providerComposites[$0] != nil
+            }
+            let selector = item === fleetItem ? hostedSelector?.image() : nil
+            guard !hosted.isEmpty || selector != nil else { continue }
+            applyHostTooltips(to: button, hosted: hosted, hasSelector: selector != nil)
+
+            let scale = button.window?.backingScaleFactor
+                ?? button.superview?.window?.backingScaleFactor
+                ?? NSScreen.main?.backingScaleFactor
+                ?? 2
+            let key = HostKey(
+                providers: hosted,
+                keys: hosted.compactMap { lastCompositeKey[$0] },
+                selectorKey: selector?.key,
+                scaleQ: Int((scale * 100).rounded())
+            )
+            if lastHostKey[buttonId] == key, button.image != nil { continue }
+
+            var widths: [Profile.ProviderKind: CGFloat] = [:]
+            for provider in hosted { widths[provider] = providerComposites[provider]?.size.width }
+            let layout = Self.hostLayout(widths: widths, selectorWidth: selector?.image.size.width)
+            let image: NSImage
+            if hosted.count == 1, selector == nil, let only = hosted.first, let strip = providerComposites[only] {
+                image = strip
+            } else {
+                var members: [(id: UUID, image: NSImage)] = []
+                var origins: [CGFloat] = []
+                for provider in hosted {
+                    guard let strip = providerComposites[provider], let x = layout.origins[provider] else { continue }
+                    members.append((UUID(), strip))
+                    origins.append(x)
+                }
+                if let selector, let x = layout.selectorOrigin {
+                    members.append((UUID(), selector.image))
+                    origins.append(x)
+                }
+                let height = members.map { $0.image.size.height }.max() ?? 24
+                guard let host = compositeImage(
+                    members: members, origins: origins, totalWidth: layout.totalWidth, height: height, scale: scale
+                ) else {
+                    LoggingService.shared.logWarning(
+                        "Fleet host assembly failed — keeping previous image, retrying next sweep")
+                    continue
+                }
+                host.isTemplate = members.allSatisfy { $0.image.isTemplate }
+                image = host
+            }
+            for provider in hosted {
+                hostOffsets[provider] = layout.origins[provider] ?? 0
+                hostRanges[provider] = layout.ranges[provider] ?? 0..<image.size.width
+            }
+            if item === fleetItem { selectorRange = layout.selectorRange }
+            hostImageSizes[buttonId] = image.size
+            lastHostKey[buttonId] = key
+            if abs(item.length - image.size.width) > 0.5 {
+                item.length = image.size.width
+            }
+            setButtonImage(button, image: image)
+        }
+    }
+
+    /// Re-draws the host images from the strips already assembled — the
+    /// hosted ⇄ badge or its visibility changed, nothing of the providers did.
+    func reassembleHosts() {
+        guard fleetItem != nil else { return }
+        assembleHosts()
+    }
+
+    /// A single-provider host keeps the button's own tooltip (as before); a
+    /// multi-provider host answers per hovered segment, and its accessibility
+    /// label carries every provider's summary.
+    private func applyHostTooltips(to button: NSStatusBarButton, hosted: [Profile.ProviderKind], hasSelector: Bool) {
+        let buttonId = ObjectIdentifier(button)
+        let texts = hosted.compactMap { providerTooltips[$0] }
+        guard !texts.isEmpty || hasSelector else { return }
+        if hosted.count == 1, !hasSelector {
+            if tooltipOwners[buttonId] != nil {
+                button.removeAllToolTips()
+                tooltipOwners[buttonId] = nil
+            }
+            let text = texts.first
+            if button.toolTip != text { button.toolTip = text }
+            if let text { button.setAccessibilityLabel(text) }
+            return
+        }
+        if tooltipOwners[buttonId] == nil {
+            button.toolTip = nil
+            button.removeAllToolTips()
+            let owner = HostTooltipOwner { [weak self, weak button] point in
+                guard let self, let button else { return "" }
+                switch self.hostedHit(in: button, rawX: point.x) {
+                case .selector: return self.hostedSelector?.tooltip() ?? ""
+                case .provider(let provider, _): return self.providerTooltips[provider] ?? ""
+                case nil: return ""
+                }
+            }
+            tooltipOwners[buttonId] = owner
+            // One rect for the whole button: its bounds may still be the
+            // pre-layout size here, and a rect beyond them is clipped.
+            button.addToolTip(NSRect(x: 0, y: 0, width: 4096, height: 64), owner: owner, userData: nil)
+        }
+        var label = texts.joined(separator: "\n")
+        if hasSelector, let selectorTooltip = hostedSelector?.tooltip() { label += "\n" + selectorTooltip }
+        button.setAccessibilityLabel(label)
     }
 
     /// Draw a group's tiles side-by-side into ONE image.
@@ -1607,18 +1890,49 @@ final class StatusBarUIManager {
         )
     }
 
-    /// Scale + origin mapping between a group button's coordinates and its
-    /// composite image's coordinates.
-    private func compositeMapping(
-        for provider: Profile.ProviderKind,
-        in button: NSStatusBarButton,
-        totalWidth: CGFloat
-    ) -> (originX: CGFloat, scale: CGFloat) {
-        let size = groupCompositeSize[provider]
-            ?? NSSize(width: totalWidth, height: button.bounds.height)
+    /// Scale + origin mapping between a host button's coordinates and its
+    /// image's coordinates.
+    private func hostMapping(in button: NSStatusBarButton) -> (originX: CGFloat, scale: CGFloat) {
+        let size = hostImageSizes[ObjectIdentifier(button)] ?? button.bounds.size
         let drawn = compositeDrawnRect(in: button, imageSize: size)
         guard size.width > 0, drawn.width > 0 else { return (0, 1) }
         return (drawn.minX, drawn.width / size.width)
+    }
+
+    /// Providers hosted by `button`, left to right.
+    private func hostedProviders(of button: NSStatusBarButton) -> [Profile.ProviderKind] {
+        GroupExposure.intendedOrder.filter { groupItems[$0]?.button === button }
+    }
+
+    /// What a button-local x on a host button lands on: a provider (with x
+    /// translated into that provider's strip coordinates) or the hosted ⇄.
+    enum HostHit: Equatable {
+        case provider(Profile.ProviderKind, localX: CGFloat?)
+        case selector
+    }
+
+    func hostedHit(in button: NSStatusBarButton, rawX: CGFloat?) -> HostHit? {
+        let hosted = hostedProviders(of: button)
+        let hasSelector = button === fleetItem?.button && selectorRange != nil
+        guard !hosted.isEmpty || hasSelector else { return nil }
+        guard let rawX else {
+            // No click coordinate: the focused profile's provider when it is
+            // hosted here, else the rightmost provider.
+            let focused = ProfileManager.shared.activeProfile?.providerKind
+            let provider = focused.flatMap { hosted.contains($0) ? $0 : nil } ?? hosted.last
+            return provider.map { .provider($0, localX: nil) }
+        }
+        let map = hostMapping(in: button)
+        let x = map.scale > 0 ? (rawX - map.originX) / map.scale : rawX
+        if hasSelector, let range = selectorRange, range.contains(x) { return .selector }
+        if let provider = hosted.first(where: { hostRanges[$0]?.contains(x) == true }) {
+            return .provider(provider, localX: x - (hostOffsets[provider] ?? 0))
+        }
+        // Off the ends: the nearest provider, x clamped into its strip.
+        guard let first = hosted.first, let last = hosted.last else { return hasSelector ? .selector : nil }
+        let provider = x < (hostRanges[first]?.lowerBound ?? 0) ? first : last
+        let width = groupCompositeSize[provider]?.width ?? 0
+        return .provider(provider, localX: min(max(x - (hostOffsets[provider] ?? 0), 0), width))
     }
 
     /// A provider group's button (composite mode; lab probes + tests).
@@ -1648,35 +1962,54 @@ final class StatusBarUIManager {
     }
 
     /// Resolve which profile a click at `locationInButton` (button-local x)
-    /// landed on. Composite mode only; nil when unresolvable.
+    /// landed on. Composite mode only; nil when unresolvable (or on the ⇄).
     func profileId(for sender: NSStatusBarButton?, atX locationInButton: CGFloat?) -> UUID? {
         guard let sender else { return nil }
         guard Self.useCompositeTiles else { return profileId(for: sender) }
-        for (provider, statusItem) in groupItems where statusItem.button === sender {
-            guard let segments = groupSegments[provider], !segments.isEmpty else { return nil }
-            // Ambiguous resolution (no click coordinate) opens the group's
-            // ACTIVE account — the account the user is operating on — not a
-            // positional fallback. `segments.last` here is the soonest-reset
-            // tile, and every ambiguous open landed on that same account
-            // ("always opens Commits", owner report 2026-07-30).
-            guard let rawX = locationInButton else {
-                return groupActiveIds[provider] ?? segments.last?.profileId
-            }
-            let totalWidth = segments[segments.count - 1].range.upperBound
-            let map = compositeMapping(for: provider, in: sender, totalWidth: totalWidth)
-            let x = map.scale > 0 ? (rawX - map.originX) / map.scale : rawX
-            if let hit = segments.first(where: { $0.range.contains(x) }) {
-                LoggingService.shared.log(
-                    "Composite click: rawX=\(Int(rawX)) mapped=\(Int(x)) → segment hit")
-                return hit.profileId
-            }
-            // Off the ends: the ACTIVE account, else clamp to nearest.
-            LoggingService.shared.log(
-                "Composite click: rawX=\(Int(rawX)) mapped=\(Int(x)) OFF-SEGMENTS (0..\(Int(totalWidth))) → active/clamp fallback")
-            if let active = groupActiveIds[provider] { return active }
-            return x < segments[0].range.lowerBound ? segments[0].profileId : segments.last?.profileId
+        guard case .provider(let provider, let localX)? = hostedHit(in: sender, rawX: locationInButton) else {
+            return nil
         }
-        return nil
+        guard let segments = groupSegments[provider], !segments.isEmpty else { return nil }
+        // Ambiguous resolution (no click coordinate) opens the group's
+        // ACTIVE account — the account the user is operating on — not a
+        // positional fallback. `segments.last` here is the soonest-reset
+        // tile, and every ambiguous open landed on that same account
+        // ("always opens Commits", owner report 2026-07-30).
+        guard let x = localX else {
+            return groupActiveIds[provider] ?? segments.last?.profileId
+        }
+        let rawText = locationInButton.map { "rawX=\(Int($0))" } ?? "rawX=?"
+        let totalWidth = segments[segments.count - 1].range.upperBound
+        if let hit = segments.first(where: { $0.range.contains(x) }) {
+            LoggingService.shared.log(
+                "Composite click: \(provider) \(rawText) mapped=\(Int(x)) → segment hit")
+            return hit.profileId
+        }
+        // Off the ends: the ACTIVE account, else clamp to nearest.
+        LoggingService.shared.log(
+            "Composite click: \(provider) \(rawText) mapped=\(Int(x)) OFF-SEGMENTS (0..\(Int(totalWidth))) → active/clamp fallback")
+        if let active = groupActiveIds[provider] { return active }
+        return x < segments[0].range.lowerBound ? segments[0].profileId : segments.last?.profileId
+    }
+
+    /// The hosted ⇄ segment's rect in `sender`'s coordinates when a click at
+    /// button-local `x` landed on it (fleet-item mode only).
+    func hostedSelectorRect(for sender: NSStatusBarButton, atX x: CGFloat?) -> NSRect? {
+        guard let x, hostedHit(in: sender, rawX: x) == .selector else { return nil }
+        return hostedSelectorAnchor()?.rect
+    }
+
+    /// The fleet button and the ⇄ segment's rect in its coordinates, when
+    /// hosted and shown — the selector menu's anchor.
+    func hostedSelectorAnchor() -> (view: NSView, rect: NSRect)? {
+        guard let button = fleetItem?.button, let range = selectorRange else { return nil }
+        let map = hostMapping(in: button)
+        return (button, NSRect(
+            x: map.originX + range.lowerBound * map.scale,
+            y: 0,
+            width: (range.upperBound - range.lowerBound) * map.scale,
+            height: button.bounds.height
+        ))
     }
 
     /// The active account of each provider group, captured during the last
@@ -1684,20 +2017,17 @@ final class StatusBarUIManager {
     /// shortcut resolution defaults here.
     private var groupActiveIds: [Profile.ProviderKind: UUID] = [:]
 
-    /// The sub-rect of the group button occupied by a profile's tile —
+    /// The sub-rect of the host button occupied by a profile's tile —
     /// popover anchoring. Falls back to nil when unknown.
     func anchorRect(for profileId: UUID, in sender: NSStatusBarButton) -> NSRect? {
         guard Self.useCompositeTiles else { return nil }
-        for (provider, statusItem) in groupItems where statusItem.button === sender {
-            guard let segments = groupSegments[provider], !segments.isEmpty,
-                  let seg = segments.first(where: { $0.profileId == profileId }) else { return nil }
-            let map = compositeMapping(
-                for: provider,
-                in: sender,
-                totalWidth: segments[segments.count - 1].range.upperBound
-            )
+        for provider in hostedProviders(of: sender) {
+            guard let segments = groupSegments[provider],
+                  let seg = segments.first(where: { $0.profileId == profileId }) else { continue }
+            let map = hostMapping(in: sender)
+            let offset = hostOffsets[provider] ?? 0
             return NSRect(
-                x: map.originX + seg.range.lowerBound * map.scale,
+                x: map.originX + (offset + seg.range.lowerBound) * map.scale,
                 y: 0,
                 width: (seg.range.upperBound - seg.range.lowerBound) * map.scale,
                 height: sender.bounds.height
@@ -1733,11 +2063,14 @@ final class StatusBarUIManager {
     /// provider item's button — exactly what the bar shows, at the display's
     /// pixel scale — with the layout family it was painted for.
     func debugGroupImages() -> [(provider: String, layout: String, image: NSImage)] {
-        groupItems.compactMap { provider, item in
-            item.button?.image.map {
-                ("\(provider)", summaryImages[provider] == nil ? "every" : "fleet", $0)
-            }
-        }.sorted { $0.0 < $1.0 }
+        var out: [(provider: String, layout: String, image: NSImage)] = providerComposites.map { provider, image in
+            ("\(provider)", summaryImages[provider] == nil ? "every" : "fleet", image)
+        }
+        // The whole fleet item, exactly as the bar shows it.
+        if let image = fleetItem?.button?.image {
+            out.append(("all", summaryImages.isEmpty ? "every" : "fleet", image))
+        }
+        return out.sorted { $0.0 < $1.0 }
     }
 #endif
 
@@ -1759,7 +2092,7 @@ final class StatusBarUIManager {
     /// from ever becoming a loop, and the probe after it says whether the
     /// host took the designed order.
     private func repairGroupOrderIfNeeded(actual: [Profile.ProviderKind]) {
-        guard Self.useCompositeTiles, groupOrderRepairs < Self.maxGroupOrderRepairs,
+        guard Self.useCompositeTiles, !Self.useSingleFleetItem, groupOrderRepairs < Self.maxGroupOrderRepairs,
               let target = multiProfileTarget, let action = multiProfileAction else { return }
         groupOrderRepairs += 1
         struct Snapshot { var image: NSImage; var length: CGFloat; var toolTip: String?; var label: String? }
@@ -1882,12 +2215,16 @@ final class StatusBarUIManager {
         var snapshot: [String] = []
         var minX: [Profile.ProviderKind: CGFloat] = [:]
         let onScreenWindows = Self.onScreenWindowNumbers()
-        for provider in [Profile.ProviderKind.claude, .grok, .codex] {
-            guard let item = groupItems[provider] else { continue }
+        for (label, item) in hostEntries {
             let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
             let verdict = GroupExposure.verdict(observation)
-            verdicts[provider] = verdict
-            if let frame = observation.frame, frame.height >= 2 { minX[provider] = frame.minX }
+            // One host, one verdict for every provider it carries; the order
+            // check only has something to compare with separate items.
+            let providers = GroupExposure.intendedOrder.filter { groupItems[$0] === item }
+            for provider in providers {
+                verdicts[provider] = verdict
+                if item !== fleetItem, let frame = observation.frame, frame.height >= 2 { minX[provider] = frame.minX }
+            }
             let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
             let hits = observation.hits.map { $0 ? "1" : "0" }.joined()
             let onScreen = observation.onScreen.map { $0 ? "1" : "0" } ?? "?"
@@ -1899,7 +2236,10 @@ final class StatusBarUIManager {
             let vis = observation.isVisible ? 1 : 0
             let occ = observation.occluded ? 1 : 0
             let length = Int(item.length)
-            snapshot.append("\(provider)=\(verdict) [\(frame) len=\(length) vis=\(vis) occ=\(occ) on=\(onScreen) hits=\(hits) \(imgText)]")
+            let hosts = item === fleetItem
+                ? " hosts=" + providers.map { "\($0)" }.joined(separator: ",") + (selectorRange == nil ? "" : "+⇄")
+                : ""
+            snapshot.append("\(label)=\(verdict) [\(frame) len=\(length) vis=\(vis) occ=\(occ) on=\(onScreen) hits=\(hits) \(imgText)\(hosts)]")
         }
         for (label, item) in auxiliaryExposureItems().sorted(by: { $0.key < $1.key }) {
             let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
@@ -2009,6 +2349,7 @@ final class StatusBarUIManager {
         summaryMemberOrder.removeAll()
         summarySeq.removeAll()
         lastSummaryKey.removeAll()
+        providerTooltips.removeAll()
         fleetDotMemory = FleetDotMemory()
     }
 
@@ -2155,9 +2496,8 @@ final class StatusBarUIManager {
             // Per-item tooltip + accessibility title: the one place the bar
             // can spell the summary out (per-dot tooltips are not possible on
             // a status item; the dashboard is the lookup).
-            let tooltip = Self.summaryTooltip(summary, activeName: activeProfile?.name, byId: byId)
-            if button.toolTip != tooltip { button.toolTip = tooltip }
-            button.setAccessibilityLabel(tooltip)
+            // The host item applies it (per hovered segment on the fleet item).
+            providerTooltips[provider] = Self.summaryTooltip(summary, activeName: activeProfile?.name, byId: byId)
 
             if lastSummaryKey[provider] == key, summaryImages[provider] != nil { continue }
 
@@ -2328,10 +2668,10 @@ final class StatusBarUIManager {
         guard let sender = sender else { return nil }
 
         if Self.useCompositeTiles {
-            for (provider, statusItem) in groupItems where statusItem.button === sender {
-                return groupSegments[provider]?.last?.profileId
-            }
-            return nil
+            // A multi-provider host resolves to its RIGHTMOST provider's
+            // rightmost tile.
+            guard let provider = hostedProviders(of: sender).last else { return nil }
+            return groupSegments[provider]?.last?.profileId
         }
 
         for (profileId, statusItem) in multiProfileStatusItems {
@@ -2497,6 +2837,21 @@ final class StatusBarUIManager {
         button.image = image
     }
 
+}
+
+/// Serves a host button's per-segment tooltip from the hovered point.
+final class HostTooltipOwner: NSObject, NSViewToolTipOwner {
+    private let text: @MainActor (NSPoint) -> String
+
+    init(text: @escaping @MainActor (NSPoint) -> String) {
+        self.text = text
+    }
+
+    nonisolated func view(
+        _ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?
+    ) -> String {
+        MainActor.assumeIsolated { text(point) }
+    }
 }
 
 // MARK: - Delegate Protocol
