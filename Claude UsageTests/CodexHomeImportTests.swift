@@ -208,6 +208,167 @@ final class CodexHomeImportTests: XCTestCase {
         XCTAssertEqual(guidance(true, "", "acct-cod"), .unknown)
     }
 
+    // MARK: - CLI parity
+
+    /// The refresh grant must be byte-identical to the CLI's. The widget used
+    /// to add `scope: "openid profile email"`, but the live access token's
+    /// `scp` is wider (`… offline_access api.connectors.read
+    /// api.connectors.invoke`) and RFC 6749 §6 lets a supplied scope NARROW the
+    /// grant while an omitted one keeps it — so that field could cost an
+    /// account `offline_access`, i.e. its ability to refresh at all. The CLI
+    /// sends exactly three fields (codex-rs/login/src/auth/manager.rs,
+    /// `RefreshRequest`).
+    func testRefreshBodyMatchesTheCLIRequestExactly() throws {
+        let body = CodexUsageService.refreshRequestBody(refreshToken: "rt-1")
+
+        XCTAssertEqual(Set(body.keys), ["client_id", "grant_type", "refresh_token"])
+        XCTAssertNil(body["scope"], "a supplied scope can downscope the grant away from offline_access")
+        XCTAssertEqual(body["grant_type"], "refresh_token")
+        XCTAssertEqual(body["refresh_token"], "rt-1")
+        XCTAssertEqual(body["client_id"], "app_EMoamEEZ73f0CkXaXp7hrann", "the CLI's public client id")
+
+        // And it survives JSON encoding as a flat string map — the shape the
+        // token endpoint is posted.
+        let encoded = try JSONSerialization.jsonObject(
+            with: try JSONSerialization.data(withJSONObject: body)
+        ) as? [String: String]
+        XCTAssertEqual(encoded, body)
+    }
+
+    /// The widget rewrites the CLI's auth.json on every profile switch, so both
+    /// sides have to agree on WHICH home that is. The path was hard-coded to
+    /// `~/.codex` while the CLI honours `$CODEX_HOME` (audit M11).
+    func testDefaultHomeFollowsCodexHomeWhenItIsSet() {
+        let userHome = URL(fileURLWithPath: "/Users/someone")
+        let resolve = CodexUsageService.resolvedDefaultCodexHome
+
+        XCTAssertEqual(resolve([:], userHome).path, "/Users/someone/.codex")
+        XCTAssertEqual(resolve(["CODEX_HOME": "/opt/codex-home"], userHome).path, "/opt/codex-home")
+        XCTAssertEqual(resolve(["CODEX_HOME": "~/alt-codex"], userHome).path,
+                       (("~/alt-codex" as NSString).expandingTildeInPath))
+        // An exported-but-empty variable is not a home.
+        XCTAssertEqual(resolve(["CODEX_HOME": ""], userHome).path, "/Users/someone/.codex")
+        XCTAssertEqual(resolve(["CODEX_HOME": "   "], userHome).path, "/Users/someone/.codex")
+
+        // The auth file always hangs off whichever home won.
+        XCTAssertEqual(
+            CodexUsageService.authFileURL(inHome: resolve(["CODEX_HOME": "/opt/codex-home"], userHome)).path,
+            "/opt/codex-home/auth.json"
+        )
+    }
+
+    // MARK: - In-app login under an isolated home
+
+    /// The label names a directory, so it must not be able to escape
+    /// `~/.codex-accounts` or produce an unusable name.
+    func testLoginSlugIsFolderSafe() {
+        let slug = CodexLoginService.slug
+
+        XCTAssertEqual(slug("work"), "work")
+        XCTAssertEqual(slug("  Work Account  "), "work-account")
+        XCTAssertEqual(slug("Cod/Dex"), "cod-dex")
+        XCTAssertEqual(slug("a.b"), "a-b")
+        // Traversal cannot survive: `/` and `.` are separators, not characters.
+        XCTAssertEqual(slug("../../etc"), "etc")
+        XCTAssertNil(slug(".."))
+        XCTAssertNil(slug("/"))
+        XCTAssertNil(slug("   "))
+        XCTAssertNil(slug(""))
+        XCTAssertEqual(slug(String(repeating: "x", count: 80))?.count, 32, "capped")
+
+        // Every accepted slug stays a single component directly under the root.
+        for label in ["work", "Cod/Dex", "../../etc", "a b c"] {
+            let name = try! XCTUnwrap(slug(label))
+            let home = CodexLoginService.home(forSlug: name)
+            XCTAssertEqual(home.deletingLastPathComponent().path,
+                           CodexUsageService.isolatedHomesRoot.path,
+                           label)
+        }
+    }
+
+    /// A GUI app inherits launchd's PATH, not the user's, so the well-known
+    /// install paths are tried before paying for a login shell — and a shell
+    /// answer is only trusted when it is an absolute path that exists.
+    func testCodexBinaryDiscoveryOrder() {
+        var shellCalls = 0
+        func discover(existing: Set<String>, shell: String?) -> String? {
+            CodexLoginService.codexBinaryPath(
+                wellKnown: ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"],
+                isExecutable: { existing.contains($0) },
+                loginShellLookup: { shellCalls += 1; return shell }
+            )
+        }
+
+        XCTAssertEqual(
+            discover(existing: ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"], shell: nil),
+            "/opt/homebrew/bin/codex",
+            "Apple silicon Homebrew wins"
+        )
+        XCTAssertEqual(shellCalls, 0, "a well-known hit must not spawn a shell")
+
+        XCTAssertEqual(discover(existing: ["/usr/local/bin/codex"], shell: nil), "/usr/local/bin/codex")
+        XCTAssertEqual(
+            discover(existing: ["/Users/someone/.bun/bin/codex"], shell: "/Users/someone/.bun/bin/codex\n"),
+            "/Users/someone/.bun/bin/codex",
+            "the login shell answers for everyone else"
+        )
+
+        // Refusals: nothing found, a relative/alias answer, and a path the
+        // shell names but that is not executable.
+        XCTAssertNil(discover(existing: [], shell: nil))
+        XCTAssertNil(discover(existing: [], shell: "codex: aliased to codex --yolo"))
+        XCTAssertNil(discover(existing: [], shell: "/opt/gone/codex"))
+    }
+
+    /// The child gets our whole environment plus a CODEX_HOME override, and the
+    /// verdict refuses anything that did not actually produce a login.
+    func testLoginEnvironmentOverridesCodexHomeAndVerdictNeedsAnAuthFile() throws {
+        let home = URL(fileURLWithPath: "/Users/someone/.codex-accounts/work")
+        let inherited = ["PATH": "/usr/bin:/bin", "HOME": "/Users/someone", "CODEX_HOME": "/Users/someone/.codex"]
+
+        let environment = CodexLoginService.loginEnvironment(home: home, inherited: inherited)
+        XCTAssertEqual(environment["CODEX_HOME"], home.path, "an inherited CODEX_HOME must not win")
+        XCTAssertEqual(environment["PATH"], "/usr/bin:/bin", "the rest is inherited")
+        XCTAssertEqual(environment["HOME"], "/Users/someone")
+        XCTAssertNotEqual(environment["CODEX_HOME"], CodexUsageService.defaultCodexHome.path)
+
+        let verdict = CodexLoginService.loginVerdict
+        XCTAssertNil(verdict(0, false, false, true), "exit 0 with a login written")
+        XCTAssertEqual(verdict(0, false, false, false), .noCredentialsAfterLogin,
+                       "exit 0 alone is not success")
+        XCTAssertEqual(verdict(1, false, false, false), .failed(status: 1))
+        XCTAssertEqual(verdict(15, true, false, false), .cancelled, "cancel outranks the signal status")
+        XCTAssertEqual(verdict(15, false, true, false), .timedOut)
+    }
+
+    /// The post-login path is the import path: whatever the CLI wrote into the
+    /// isolated home goes through the same parser, the same duplicate guard and
+    /// the same stamps.
+    func testPostLoginImportUsesTheSameStoreAndStamps() throws {
+        let home = try makeHome(accountId: "acct-new", email: "new@example.com")
+        XCTAssertNil(CodexLoginService.loginVerdict(
+            status: 0,
+            cancelled: false,
+            timedOut: false,
+            authFileExists: FileManager.default.fileExists(atPath: home.appendingPathComponent("auth.json").path)
+        ))
+
+        let created = Profile(name: "cod")
+        let roster = try service.importedRoster(
+            from: try XCTUnwrap(service.readAuthFile(inHome: home)),
+            homePath: home.path,
+            into: created.id,
+            profiles: [created]
+        )
+
+        let imported = try XCTUnwrap(roster.first { $0.id == created.id })
+        XCTAssertEqual(imported.codexAccountId, "acct-new")
+        XCTAssertEqual(imported.codexEmail, "new@example.com")
+        XCTAssertEqual(imported.codexHomePath, home.path)
+        XCTAssertNotEqual(imported.codexHomePath, CodexUsageService.defaultCodexHome.path,
+                          "the login never touches the default home")
+    }
+
     // MARK: - Fixtures
 
     /// A temporary CODEX_HOME holding a minimal but real auth.json.

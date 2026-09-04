@@ -269,12 +269,25 @@ in before it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt
 second login in the default home kills the account the widget applied there —
 three died that way on 2026-09-03. The CLI honours `$CODEX_HOME`, so each extra
 account is logged in under its own home (`CODEX_HOME=~/.codex-accounts/<name>
-codex login`, nothing there to revoke) and brought in with **Import from another
-Codex home** (`importFromCodexHome` — same parser, same duplicate-account guard
-as Sync, stamps the non-secret `Profile.codexHomePath`). Import never writes
-`~/.codex/auth.json` and never claims the Codex owner pointer: the widget stays
-the single writer of the default auth.json, and activating the profile is what
-switches the CLI. When a dead login's owner no longer matches the account in the
+codex login`, nothing there to revoke). Two entry points, both landing in
+`importFromCodexHome` (same parser, same duplicate-account guard as Sync, stamps
+the non-secret `Profile.codexHomePath`): **Import from another Codex home** for a
+login the user ran themselves, and **Log in a new Codex account** —
+`CodexLoginService` spawns the CLI with `CODEX_HOME` set to a fresh
+`~/.codex-accounts/<slug>` (binary resolved from the Homebrew paths then
+`zsh -lc 'command -v codex'`, because a GUI app inherits launchd's PATH; 5-minute
+timeout; Cancel terminates it; exit 0 with no auth.json is a failure, not a
+success). Neither path writes `~/.codex/auth.json` nor claims the Codex owner
+pointer: the widget stays the single writer of the default auth.json, and
+activating the profile is what switches the CLI. The default home itself is
+`$CODEX_HOME` when set, else `~/.codex` (`resolvedDefaultCodexHome`, audit M11) —
+the CLI honours that variable and a hard-coded path would make the two sides
+disagree about which file a switch rewrites. The refresh grant sends the CLI's
+exact body — `{client_id, grant_type, refresh_token}`, NO `scope`
+(`refreshRequestBody`, matching `codex-rs/login/src/auth/manager.rs`
+`request_chatgpt_token_refresh`) — because a supplied scope can only narrow the
+grant (RFC 6749 §6) and the widget's old `openid profile email` dropped the
+`offline_access` the refresh itself depends on. When a dead login's owner no longer matches the account in the
 default home, `reloginGuidance` switches the re-login notification to the
 isolated-home instruction rather than telling the user to repeat the login that
 caused it.

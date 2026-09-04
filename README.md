@@ -96,18 +96,34 @@ There is no wizard step for Codex (yet):
 
 **Never run `codex login` or `codex logout` in the default `~/.codex` once an account is stored there.** `codex login` revokes, server-side, whatever credentials already sit in the home it runs in *before* it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt` → `clear_existing_auth_before_login` → `logout_with_revoke`). The account the widget applied there dies with it — the widget's stored copy starts answering 401 and cannot be repaired app-side. Three accounts were lost this way on 2026-09-03.
 
-The CLI honours `$CODEX_HOME` for its config directory, so give every extra account its own home, where there is nothing to revoke:
+The CLI honours `$CODEX_HOME` for its config directory, so every extra account gets its own home, where there is nothing to revoke. Two ways to do that:
+
+**From the widget (easiest).** **Settings → Codex Account → Log in a new Codex account…**. Type a short label ("work"), and the widget runs `codex login` with `CODEX_HOME` pointed at `~/.codex-accounts/work`. Your browser opens; when the sign-in finishes, the account is imported into a new profile named after the label. Cancel, or a five-minute timeout, leaves every account untouched. This never runs against the default home.
+
+**From a terminal.** Log in under the isolated home yourself, then import:
 
 ```bash
 mkdir -p ~/.codex-accounts/work
 CODEX_HOME=~/.codex-accounts/work codex login
 ```
 
-Then in the widget: **Settings → Codex Account**, create or select the profile for that account, and click **Import from another Codex home…**. Pick `~/.codex-accounts/work`. The sheet shows the account's email and the last characters of its account id before you commit, and refuses the import if another profile already holds the same account.
+Then **Settings → Codex Account**, select the profile for that account, and click **Import from another Codex home…**. Pick `~/.codex-accounts/work`. The sheet shows the account's email and the last characters of its account id before you commit, and refuses the import if another profile already holds the same account.
+
+A shell function makes the terminal path a one-liner:
+
+```bash
+# ~/.zshrc — then: codex-add work
+codex-add() {
+  [ -n "$1" ] || { echo "usage: codex-add <name>" >&2; return 2; }
+  mkdir -p "$HOME/.codex-accounts/$1" && CODEX_HOME="$HOME/.codex-accounts/$1" codex login
+}
+```
+
+It has to be a function, not an alias — an alias cannot take an argument.
 
 How the pieces fit:
 
-- The widget is the **single writer** of `~/.codex/auth.json`. Activating a profile writes that profile's stored login there, which is how the CLI follows your account switches.
+- The widget is the **single writer** of `~/.codex/auth.json`. The in-app login writes only to the isolated home it creates. Activating a profile writes that profile's stored login there, which is how the CLI follows your account switches.
 - **Import never writes `~/.codex`** and never claims the Codex owner pointer. It only copies the login into the profile; activate the profile to switch the CLI.
 - Run `codex` itself against the **default** home, not an isolated one. The isolated home exists for `codex login` only — a session run under it rotates tokens the widget will not see.
 - The imported home path is shown in the profile's account details, so you know where to re-login for that account later.

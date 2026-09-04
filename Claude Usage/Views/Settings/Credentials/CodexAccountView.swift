@@ -17,6 +17,7 @@ struct CodexAccountView: View {
     @State private var isSyncing = false
     @State private var syncError: String?
     @State private var showingImportSheet = false
+    @State private var showingLoginSheet = false
 
     /// Provider exclusivity: a profile that already holds a Claude account can never
     /// be given a Codex one (the sidebar hides this page for such profiles; this is
@@ -179,10 +180,25 @@ struct CodexAccountView: View {
                                 }
 
                                 if !isProviderLocked {
-                                    // The multi-account path: `codex login` in the
-                                    // default ~/.codex revokes whatever is already
-                                    // there, so extra accounts are logged in under
-                                    // their own CODEX_HOME and imported from it.
+                                    // The safe way to ADD an account: the CLI is
+                                    // run with CODEX_HOME pointed at a fresh
+                                    // folder, so its login has nothing to revoke.
+                                    Button { showingLoginSheet = true } label: {
+                                        HStack(spacing: DesignTokens.Spacing.extraSmall) {
+                                            Image(systemName: "person.badge.plus")
+                                                .font(.system(size: DesignTokens.Icons.small))
+                                            Text("codex.login_new_account".localized)
+                                                .font(DesignTokens.Typography.body)
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.regular)
+                                    .disabled(isSyncing)
+                                }
+
+                                if !isProviderLocked {
+                                    // The same account brought in from a home the
+                                    // user logged into themselves.
                                     Button { showingImportSheet = true } label: {
                                         HStack(spacing: DesignTokens.Spacing.extraSmall) {
                                             Image(systemName: "folder.badge.plus")
@@ -211,6 +227,13 @@ struct CodexAccountView: View {
                                 }
 
                                 Spacer()
+                            }
+
+                            if !isProviderLocked {
+                                Text("codex.cli_hazard".localized)
+                                    .font(DesignTokens.Typography.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -248,6 +271,18 @@ struct CodexAccountView: View {
         }
         .onChange(of: profileManager.activeProfile?.id) { _, _ in
             syncError = nil
+        }
+        .sheet(isPresented: $showingLoginSheet) {
+            CodexLoginSheet(
+                viewedProfile: isProviderLocked ? nil : profileManager.activeProfile,
+                onFinished: {
+                    profileManager.loadProfiles()
+                    // Like Import, the login writes nothing to ~/.codex, so the
+                    // Codex owner pointer is left where it is.
+                    NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+                    LoggingService.shared.log("CodexAccountView: isolated-home login complete")
+                }
+            )
         }
         .sheet(isPresented: $showingImportSheet) {
             if let profileId = profileManager.activeProfile?.id {
@@ -307,198 +342,5 @@ struct CodexAccountView: View {
     private func maskCredential(_ credential: String) -> String {
         guard credential.count > 20 else { return "•••••••••" }
         return "\(credential.prefix(12))•••••\(credential.suffix(4))"
-    }
-}
-
-/// Picks a CODEX_HOME, shows the account it holds (email + account-id suffix —
-/// no token is ever rendered), and imports it into the viewed profile.
-///
-/// Why this exists: `codex login` revokes whatever credentials already sit in
-/// the home it runs in, so a second `codex login` in the default `~/.codex`
-/// kills the account the widget applied there. Each extra account is logged in
-/// under its own home and brought here instead.
-private struct CodexHomeImportSheet: View {
-    let profileId: UUID
-    let onImported: () -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var path: String = ""
-    @State private var detected: CodexUsageService.CodexHomeAccount?
-    @State private var duplicateHolder: String?
-    @State private var problem: String?
-    @State private var isImporting = false
-    /// Serial number of the latest inspect, so a slow read for an
-    /// already-replaced path cannot overwrite a newer result. A reference box
-    /// because the completion closure must see the CURRENT value, not the copy
-    /// captured when it was created.
-    @State private var inspectGeneration = Generation()
-
-    private final class Generation { var value = 0 }
-
-    private var canImport: Bool {
-        detected != nil && duplicateHolder == nil && !isImporting
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
-            Text("codex.import_title".localized)
-                .font(DesignTokens.Typography.sectionTitle)
-            Text("codex.import_subtitle".localized)
-                .font(DesignTokens.Typography.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: DesignTokens.Spacing.iconText) {
-                TextField("~/.codex-accounts/work", text: $path)
-                    .textFieldStyle(.roundedBorder)
-                    .font(DesignTokens.Typography.monospaced)
-                    .onSubmit(inspect)
-                Button("codex.import_choose".localized, action: chooseFolder)
-                    .controlSize(.regular)
-            }
-            .onChange(of: path) { _, _ in inspect() }
-
-            if let detected {
-                VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
-                    HStack(spacing: DesignTokens.Spacing.small) {
-                        Image(systemName: "checkmark.seal.fill")
-                            .foregroundColor(.green)
-                        Text(detected.email ?? "codex.import_detected".localized)
-                            .font(DesignTokens.Typography.body)
-                    }
-                    if let suffix = detected.accountIdSuffix {
-                        Text("codex.import_account_suffix".localized(with: suffix))
-                            .font(DesignTokens.Typography.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("codex.import_no_account_id".localized)
-                            .font(DesignTokens.Typography.caption)
-                            .foregroundColor(.orange)
-                    }
-                }
-            }
-
-            if let duplicateHolder {
-                warning(CodexError.accountAlreadySynced(profileName: duplicateHolder).localizedDescription)
-            } else if let problem {
-                warning(problem)
-            }
-
-            Text("codex.import_hint".localized)
-                .font(DesignTokens.Typography.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button("common.cancel".localized) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("codex.import_action".localized, action: performImport)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canImport)
-            }
-        }
-        .padding()
-        .frame(width: 520)
-        .onAppear {
-            let root = CodexUsageService.isolatedHomesRoot
-            if FileManager.default.fileExists(atPath: root.path) {
-                path = root.path
-            }
-        }
-    }
-
-    private func warning(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: DesignTokens.Spacing.small) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
-            Text(message)
-                .font(DesignTokens.Typography.caption)
-                .foregroundColor(.red)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(DesignTokens.Spacing.iconText)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.08))
-        .cornerRadius(DesignTokens.Radius.small)
-    }
-
-    private func homeURL() -> URL? {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        // The homes are dot-directories; without this the user cannot see them.
-        panel.showsHiddenFiles = true
-        panel.prompt = "codex.import_panel_prompt".localized
-        let root = CodexUsageService.isolatedHomesRoot
-        panel.directoryURL = FileManager.default.fileExists(atPath: root.path)
-            ? root
-            : FileManager.default.homeDirectoryForCurrentUser
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        path = url.path  // onChange runs inspect()
-    }
-
-    /// Reads the chosen home and resolves the duplicate guard, so the refusal
-    /// is on screen before the Import button is clickable.
-    private func inspect() {
-        detected = nil
-        duplicateHolder = nil
-        problem = nil
-        guard let home = homeURL() else { return }
-
-        let target = profileId
-        let generation = inspectGeneration
-        generation.value += 1
-        let mine = generation.value
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try CodexUsageService.shared.inspectCodexHome(home) }
-            let holder = CodexUsageService.shared.duplicateHolderName(forHome: home, target: target)
-
-            DispatchQueue.main.async {
-                // The path may have moved on while this read was in flight.
-                guard generation.value == mine else { return }
-                switch result {
-                case .success(let account):
-                    detected = account
-                    duplicateHolder = holder
-                case .failure(let error):
-                    problem = error.localizedDescription
-                }
-            }
-        }
-    }
-
-    private func performImport() {
-        guard canImport, let home = homeURL() else { return }
-        isImporting = true
-        problem = nil
-
-        let target = profileId
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try CodexUsageService.shared.importFromCodexHome(home, into: target) }
-
-            DispatchQueue.main.async {
-                isImporting = false
-                switch result {
-                case .success:
-                    onImported()
-                    dismiss()
-                case .failure(let error):
-                    problem = error.localizedDescription
-                    LoggingService.shared.logError("CodexAccountView: import failed - \(error.localizedDescription)")
-                }
-            }
-        }
     }
 }

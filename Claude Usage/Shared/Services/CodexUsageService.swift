@@ -23,30 +23,46 @@ import Foundation
 ///            Response: rate_limit.primary_window (5h: used_percent, reset_at) and
 ///                      rate_limit.secondary_window (weekly), plus email/plan_type.
 /// - Refresh: POST https://auth.openai.com/oauth/token
-///            JSON {client_id, grant_type: refresh_token, refresh_token, scope}
+///            JSON {client_id, grant_type: refresh_token, refresh_token} — the
+///            CLI's exact body, with NO `scope` (see `refreshRequestBody`).
 ///            client_id is the Codex CLI's public app id (not a secret).
 class CodexUsageService {
     static let shared = CodexUsageService()
 
-    private static let oauthClientId = "app_EMoamEEZ73f0CkXaXp7hrann"
+    nonisolated private static let oauthClientId = "app_EMoamEEZ73f0CkXaXp7hrann"
     private static let oauthTokenEndpoint = "https://auth.openai.com/oauth/token"
     private static let usageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
 
-    /// The CODEX_HOME the `codex` CLI uses when `$CODEX_HOME` is unset. This is
-    /// the ONE Codex file the widget writes: switching profiles rewrites
-    /// `auth.json` here so the CLI follows the active account.
-    static var defaultCodexHome: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    /// The CODEX_HOME the `codex` CLI is using — `$CODEX_HOME` when it is set,
+    /// else `~/.codex`. This is the ONE Codex file the widget writes: switching
+    /// profiles rewrites `auth.json` here so the CLI follows the active account,
+    /// which only works if both sides agree on which home that is (audit M11).
+    nonisolated static var defaultCodexHome: URL {
+        resolvedDefaultCodexHome(
+            environment: ProcessInfo.processInfo.environment,
+            userHome: FileManager.default.homeDirectoryForCurrentUser
+        )
+    }
+
+    /// Pure resolver for the above, so the precedence is testable. A blank or
+    /// whitespace-only `CODEX_HOME` is treated as unset, matching a shell that
+    /// exports an empty variable.
+    nonisolated static func resolvedDefaultCodexHome(environment: [String: String], userHome: URL) -> URL {
+        if let raw = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        }
+        return userHome.appendingPathComponent(".codex")
     }
 
     /// Conventional parent for the per-account isolated homes (README §"Codex
     /// accounts: adding more than one"). Offered as the Import panel's starting
     /// directory when it exists; nothing depends on the location.
-    static var isolatedHomesRoot: URL {
+    nonisolated static var isolatedHomesRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex-accounts")
     }
 
-    static func authFileURL(inHome home: URL) -> URL {
+    nonisolated static func authFileURL(inHome home: URL) -> URL {
         home.appendingPathComponent("auth.json")
     }
 
@@ -441,6 +457,25 @@ class CodexUsageService {
 
     // MARK: - OAuth Token Refresh
 
+    /// The refresh-grant body, matching the CLI's field for field:
+    /// `codex-rs/login/src/auth/manager.rs` builds `RefreshRequest { client_id,
+    /// grant_type, refresh_token }` in `request_chatgpt_token_refresh` and
+    /// sends it as JSON to the same endpoint. There is NO `scope` field.
+    ///
+    /// The widget used to add `scope: "openid profile email"`, which is a
+    /// downscope: the live access token's `scp` is `openid profile email
+    /// offline_access api.connectors.read api.connectors.invoke`, and RFC 6749
+    /// §6 lets a supplied scope narrow the grant (an omitted one keeps it). A
+    /// refresh that drops `offline_access` can cost the account its own ability
+    /// to refresh — the failure mode this whole area exists to prevent.
+    nonisolated static func refreshRequestBody(refreshToken: String) -> [String: String] {
+        [
+            "client_id": oauthClientId,
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken
+        ]
+    }
+
     /// Exchanges the refresh token for new tokens, like the CLI's silent refresh.
     /// Returns the full credentials JSON with the rotated tokens merged in.
     /// NOTE: OpenAI rotates the refresh token — the caller must persist the result
@@ -458,12 +493,7 @@ class CodexUsageService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "client_id": Self.oauthClientId,
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken,
-            "scope": "openid profile email"
-        ])
+        request.httpBody = try JSONSerialization.data(withJSONObject: Self.refreshRequestBody(refreshToken: refreshToken))
 
         let (responseData, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
