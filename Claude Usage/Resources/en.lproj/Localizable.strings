@@ -248,8 +248,11 @@
 "codex.login.title" = "Log in a new Codex account";
 "codex.login.subtitle" = "Runs `codex login` with CODEX_HOME pointed at a new folder for this account, so the account currently applied to ~/.codex is never logged out.";
 "codex.login.label_field" = "Account label";
-"codex.login.label_hint" = "Names the folder under ~/.codex-accounts and the new profile, e.g. \"work\".";
-"codex.login.use_this_profile" = "Add to this profile instead of creating a new one";
+"codex.login.label_hint" = "This profile already holds a working Codex account, so the new login gets a profile of its own. The label names it and its folder under ~/.codex-accounts.";
+"codex.login.fills_empty" = "This login will be added to the profile “%@”.";
+"codex.login.replaces_dead" = "This login will replace the dead Codex tokens on “%@”.";
+"codex.login.home_path" = "Signing in under %@";
+"codex.login.activate_after" = "Activate this profile afterwards to hand the new login to the codex CLI.";
 "codex.login.start" = "Log in";
 "codex.login.waiting" = "Waiting for browser sign-in…";
 "codex.login.waiting_detail" = "Finish signing in from your browser. Cancel leaves every account untouched.";

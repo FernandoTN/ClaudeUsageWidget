@@ -15,23 +15,47 @@ import SwiftUI
 /// `~/.codex` is never logged out. The default home is neither read nor written
 /// anywhere in this flow.
 struct CodexLoginSheet: View {
-    /// Offered as a destination only when it holds no Codex account yet.
+    /// The profile whose Codex page the button was pressed on. It is the
+    /// DESTINATION whenever it has no Codex account or its login is dead —
+    /// which is the common case, because that is exactly when a user goes
+    /// looking for this button.
     let viewedProfile: Profile?
     let onFinished: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var label = ""
-    @State private var useViewedProfile = false
     @State private var isRunning = false
     @State private var problem: String?
     @State private var run: CodexLoginRun?
 
-    /// A profile with no Codex account is a legitimate destination; one that
-    /// already has an account is not (a profile holds exactly one).
-    private var reusableProfile: Profile? {
-        guard let viewedProfile, !viewedProfile.carriesCodexAccount else { return nil }
-        return viewedProfile
+    /// True when the viewed profile's stored Codex login has been flagged dead.
+    private var viewedLoginIsDead: Bool {
+        guard let viewedProfile else { return false }
+        return CodexUsageService.shared.isLoginMarkedDead(viewedProfile.id)
+    }
+
+    /// The viewed profile, when this login belongs to it.
+    private var destinationProfile: Profile? {
+        guard let viewedProfile else { return nil }
+        let target = CodexLoginService.loginTarget(
+            carriesCodexAccount: viewedProfile.carriesCodexAccount,
+            loginIsDead: viewedLoginIsDead
+        )
+        return target == .viewedProfile ? viewedProfile : nil
+    }
+
+    /// The isolated home this login will run in. For the viewed profile it is
+    /// the one the profile already remembers, else one named after the profile;
+    /// for a new profile it comes from the typed label.
+    private var loginHome: URL? {
+        if let destinationProfile {
+            return CodexLoginService.loginHome(
+                existingHomePath: destinationProfile.codexHomePath,
+                profileName: destinationProfile.name
+            )
+        }
+        return CodexLoginService.slug(for: label).map(CodexLoginService.home(forSlug:))
     }
 
     var body: some View {
@@ -54,7 +78,33 @@ struct CodexLoginSheet: View {
                             .foregroundColor(.secondary)
                     }
                 }
+            } else if let destinationProfile {
+                // No label to type: the destination is decided, and the folder
+                // is named after it.
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
+                    HStack(spacing: DesignTokens.Spacing.small) {
+                        Image(systemName: viewedLoginIsDead ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
+                            .foregroundColor(.accentColor)
+                        Text((viewedLoginIsDead ? "codex.login.replaces_dead" : "codex.login.fills_empty")
+                            .localized(with: destinationProfile.name))
+                            .font(DesignTokens.Typography.body)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let loginHome {
+                        Text("codex.login.home_path".localized(with: loginHome.path))
+                            .font(DesignTokens.Typography.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    if viewedLoginIsDead {
+                        Text("codex.login.activate_after".localized)
+                            .font(DesignTokens.Typography.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             } else {
+                // The viewed profile holds a working account, so this login
+                // needs a profile of its own.
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
                     Text("codex.login.label_field".localized)
                         .font(DesignTokens.Typography.caption)
@@ -65,15 +115,7 @@ struct CodexLoginSheet: View {
                     Text("codex.login.label_hint".localized)
                         .font(DesignTokens.Typography.caption)
                         .foregroundColor(.secondary)
-                }
-
-                if let reusableProfile {
-                    Toggle(isOn: $useViewedProfile) {
-                        Text("codex.login.use_this_profile".localized)
-                            .font(DesignTokens.Typography.caption)
-                    }
-                    .toggleStyle(.checkbox)
-                    .help(reusableProfile.name)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -105,7 +147,7 @@ struct CodexLoginSheet: View {
                     Button("codex.login.start".localized, action: startLogin)
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
-                        .disabled(CodexLoginService.slug(for: label) == nil)
+                        .disabled(loginHome == nil)
                 }
             }
         }
@@ -115,7 +157,7 @@ struct CodexLoginSheet: View {
 
     private func startLogin() {
         guard !isRunning else { return }
-        guard let slug = CodexLoginService.slug(for: label) else {
+        guard let home = loginHome else {
             problem = CodexLoginError.invalidLabel.localizedDescription
             return
         }
@@ -126,7 +168,7 @@ struct CodexLoginSheet: View {
         // shell to find the binary); the completion arrives on the main queue.
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let started = try CodexLoginService.shared.startLogin(slug: slug) { result, logTail in
+                let started = try CodexLoginService.shared.startLogin(home: home) { result, logTail in
                     finishLogin(result, logTail: logTail)
                 }
                 DispatchQueue.main.async { run = started }
@@ -152,19 +194,20 @@ struct CodexLoginSheet: View {
 
         case .success(let home):
             // Resolve the duplicate guard BEFORE creating anything, so a login
-            // for an account we already track cannot leave an empty profile
-            // behind. `UUID()` excludes nothing, so any holder matches.
-            if let holder = CodexUsageService.shared.duplicateHolderName(forHome: home, target: UUID()) {
+            // for an account another profile already holds cannot leave an
+            // empty profile behind. The destination is excluded from the check:
+            // re-logging the SAME account into the profile that holds it is the
+            // repair, not a duplicate.
+            let destinationId = destinationProfile?.id
+            if let holder = CodexUsageService.shared.duplicateHolderName(
+                forHome: home,
+                target: destinationId ?? UUID()
+            ) {
                 problem = CodexError.accountAlreadySynced(profileName: holder).localizedDescription
                 return
             }
 
-            let destination: UUID
-            if useViewedProfile, let reusableProfile {
-                destination = reusableProfile.id
-            } else {
-                destination = ProfileManager.shared.createProfile(name: label).id
-            }
+            let destination = destinationId ?? ProfileManager.shared.createProfile(name: label).id
 
             do {
                 try CodexUsageService.shared.importFromCodexHome(home, into: destination)

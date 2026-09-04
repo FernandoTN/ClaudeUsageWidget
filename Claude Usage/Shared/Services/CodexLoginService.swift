@@ -64,6 +64,49 @@ final class CodexLoginService {
         CodexUsageService.isolatedHomesRoot.appendingPathComponent(slug)
     }
 
+    // MARK: - Where a login lands
+
+    /// Where a fresh login should be stored, decided from the profile whose
+    /// page the button was pressed on.
+    enum Target: Equatable {
+        /// The viewed profile takes it. Either it has no Codex account, or the
+        /// one it has is dead — in both cases this login is what that profile
+        /// was missing, and creating a second profile beside it would leave the
+        /// user with an empty or broken one to clean up.
+        case viewedProfile
+        /// The viewed profile holds a WORKING account. A profile holds exactly
+        /// one, so a new login needs a profile of its own.
+        case newProfile
+    }
+
+    /// A profile whose stored Codex login is flagged dead is a destination, not
+    /// an obstacle: replacing those tokens in place is the repair. Only a live
+    /// account makes the viewed profile off-limits.
+    nonisolated static func loginTarget(carriesCodexAccount: Bool, loginIsDead: Bool) -> Target {
+        (!carriesCodexAccount || loginIsDead) ? .viewedProfile : .newProfile
+    }
+
+    /// The isolated home a profile's login should use: the one it already knows,
+    /// so a RE-login reuses it, else one named after the profile.
+    ///
+    /// Reuse is deliberate. `codex login` revokes what it finds in the home it
+    /// runs in — and what is in a profile's own home is that profile's own dead
+    /// grant, which is already worthless. Revoking it costs nothing, while
+    /// minting a new directory per attempt would litter `~/.codex-accounts`.
+    /// A remembered path pointing at the DEFAULT home is refused rather than
+    /// reused: a login there is the one that kills a live account.
+    nonisolated static func loginHome(existingHomePath: String?, profileName: String) -> URL? {
+        if let existingHomePath, !existingHomePath.isEmpty {
+            let remembered = URL(fileURLWithPath: existingHomePath)
+            guard remembered.standardizedFileURL != CodexUsageService.defaultCodexHome.standardizedFileURL else {
+                return nil
+            }
+            return remembered
+        }
+        guard let slug = slug(for: profileName) else { return nil }
+        return home(forSlug: slug)
+    }
+
     // MARK: - Finding the CLI
 
     /// Resolves the `codex` binary: the well-known install paths first, then a
@@ -144,11 +187,9 @@ final class CodexLoginService {
     /// caller's thread, so call this off the main thread; `completion` is
     /// delivered on the main queue exactly once.
     func startLogin(
-        slug: String,
+        home: URL,
         completion: @escaping (Result<URL, CodexLoginError>, String) -> Void
     ) throws -> CodexLoginRun {
-        let home = Self.home(forSlug: slug)
-
         // Belt and braces: this flow must never point the CLI at the default
         // home, because that is the one login that revokes a live account.
         guard home.standardizedFileURL != CodexUsageService.defaultCodexHome.standardizedFileURL else {
@@ -180,7 +221,7 @@ final class CodexLoginService {
 
         let run = CodexLoginRun(home: home, logURL: logURL, process: process, completion: completion)
         try run.start(timeout: Self.loginTimeout)
-        LoggingService.shared.log("Codex: started `codex login` under an isolated home (\(slug))")
+        LoggingService.shared.log("Codex: started `codex login` under an isolated home (\(home.lastPathComponent))")
         return run
     }
 }

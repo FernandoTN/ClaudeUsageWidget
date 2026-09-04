@@ -277,7 +277,17 @@ login the user ran themselves, and **Log in a new Codex account** —
 `~/.codex-accounts/<slug>` (binary resolved from the Homebrew paths then
 `zsh -lc 'command -v codex'`, because a GUI app inherits launchd's PATH; 5-minute
 timeout; Cancel terminates it; exit 0 with no auth.json is a failure, not a
-success). Neither path writes `~/.codex/auth.json` nor claims the Codex owner
+success). **The login TARGETS THE VIEWED PROFILE** (`loginTarget`) whenever that
+profile has no Codex account or its login is flagged dead — replacing dead
+tokens in place is the repair, and creating a second profile beside it would
+leave an empty or broken one to clean up; only a profile holding a WORKING
+account sends the login to a new profile named by a typed label. The isolated
+home is the profile's remembered `codexHomePath` when it has one, else one named
+after the profile (`loginHome` — `xFenrir(dev)` → `~/.codex-accounts/xfenrir-dev`);
+reusing it revokes only that profile's own dead grant, and a remembered path
+equal to the default home is refused rather than reused. The duplicate guard runs
+BEFORE any profile is created and excludes the destination, so re-logging the
+same account into the profile that holds it is a repair, not a duplicate. Neither path writes `~/.codex/auth.json` nor claims the Codex owner
 pointer: the widget stays the single writer of the default auth.json, and
 activating the profile is what switches the CLI. The default home itself is
 `$CODEX_HOME` when set, else `~/.codex` (`resolvedDefaultCodexHome`, audit M11) —

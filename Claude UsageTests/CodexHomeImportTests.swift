@@ -341,6 +341,43 @@ final class CodexHomeImportTests: XCTestCase {
         XCTAssertEqual(verdict(15, false, true, false), .timedOut)
     }
 
+    /// Where a login lands. A profile the user opened *because* its Codex
+    /// account is missing or dead must receive the login itself — creating a
+    /// second profile beside it leaves an empty or broken one to clean up. Only
+    /// a profile holding a WORKING account sends the login elsewhere.
+    func testLoginTargetsTheViewedProfileUnlessItHoldsALiveAccount() {
+        let target = CodexLoginService.loginTarget
+
+        // No Codex account yet (the `xFenrir(dev)` case).
+        XCTAssertEqual(target(false, false), .viewedProfile)
+        // Account present but flagged dead (the `Cod` / `Dex` case) — replacing
+        // those tokens in place IS the repair.
+        XCTAssertEqual(target(true, true), .viewedProfile)
+        // A working account: a profile holds exactly one, so this login needs
+        // its own.
+        XCTAssertEqual(target(true, false), .newProfile)
+
+        // The folder is named after the profile, and a remembered home is
+        // reused so a re-login does not mint a directory per attempt — the only
+        // grant it revokes is that profile's own dead one.
+        let fresh = try? XCTUnwrap(CodexLoginService.loginHome(existingHomePath: nil, profileName: "xFenrir(dev)"))
+        XCTAssertEqual(fresh?.lastPathComponent, "xfenrir-dev")
+        XCTAssertEqual(fresh?.deletingLastPathComponent().path, CodexUsageService.isolatedHomesRoot.path)
+
+        XCTAssertEqual(
+            CodexLoginService.loginHome(existingHomePath: "/Users/someone/.codex-accounts/cod", profileName: "Cod")?.path,
+            "/Users/someone/.codex-accounts/cod",
+            "a re-login reuses the home the profile already knows"
+        )
+        // A remembered path is not a licence to log into the default home.
+        XCTAssertNil(CodexLoginService.loginHome(
+            existingHomePath: CodexUsageService.defaultCodexHome.path,
+            profileName: "Cod"
+        ))
+        // A name with nothing usable in it cannot name a folder.
+        XCTAssertNil(CodexLoginService.loginHome(existingHomePath: nil, profileName: "///"))
+    }
+
     /// The post-login path is the import path: whatever the CLI wrote into the
     /// isolated home goes through the same parser, the same duplicate guard and
     /// the same stamps.

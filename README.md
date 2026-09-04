@@ -98,7 +98,17 @@ There is no wizard step for Codex (yet):
 
 The CLI honours `$CODEX_HOME` for its config directory, so every extra account gets its own home, where there is nothing to revoke. Two ways to do that:
 
-**From the widget (easiest).** **Settings → Codex Account → Log in a new Codex account…**. Type a short label ("work"), and the widget runs `codex login` with `CODEX_HOME` pointed at `~/.codex-accounts/work`. Your browser opens; when the sign-in finishes, the account is imported into a new profile named after the label. Cancel, or a five-minute timeout, leaves every account untouched. This never runs against the default home.
+**From the widget (easiest).** Go to the profile that should hold the account, then **Settings → Codex Account → Log in a new Codex account…**. The widget runs `codex login` with `CODEX_HOME` pointed at a folder of its own under `~/.codex-accounts`; your browser opens, and the finished login is imported. Cancel, or a five-minute timeout, leaves every account untouched. This never runs against the default home.
+
+Where the login lands follows the profile you are looking at:
+
+| The viewed profile | Result |
+| --- | --- |
+| Has no Codex account | The login goes into that profile. The folder is named after it, e.g. `~/.codex-accounts/xfenrir-dev`. |
+| Has a Codex account whose login is dead | The login replaces those dead tokens in place, reusing the same folder. Activate the profile afterwards to hand the new login to the CLI. |
+| Has a working Codex account | You type a label, and the login goes into a new profile of that name. A profile holds exactly one Codex account. |
+
+In every case, a login whose account another profile already holds is refused by name rather than duplicated. To add an account for a profile that does not exist yet, create it in Manage Profiles first, then use the button on its Codex page.
 
 **From a terminal.** Log in under the isolated home yourself, then import:
 
