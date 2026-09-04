@@ -333,6 +333,18 @@ shared CLI login bricks every running session ("login expired. Please run /login
 in Claude Code — a real incident). A gated switch keeps the outgoing login and the
 provider-active pointer in place, notifies once, and returns false so the
 auto-switch tries the next ranked candidate instead of no-op'ing.
+**The FOCUS is a separate question from the login, and the two answers differ by
+who asked.** An AUTOMATIC gated switch moves nothing — pointing the UI at an
+account the CLI was never switched to, once per retry, is exactly the confusion
+the gate exists to avoid. A USER-initiated one moves the focus and only the focus
+(`ActivationOutcome.focusedWithoutApplying`; the Bool wrapper still returns false,
+and the candidate walk maps it onto `.credentialsRefused`): the in-app re-login
+screens operate on `activeProfile`, so refusing to focus a dead profile made the
+one profile that needed repairing the one profile the user could not open —
+reported live 2026-09-03, three clicks, three refusals. The user gets one notice
+per profile per hour naming which CLI stayed put and where to repair it, and the
+generic re-login alert is no longer force-redelivered on that click (the focus
+moving is itself the feedback the `force` flag existed to provide).
 
 **Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
 exhausted account 429s its OWN `oauth/usage` endpoint — the widget cannot read

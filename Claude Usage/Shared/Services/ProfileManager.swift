@@ -296,9 +296,24 @@ class ProfileManager: ObservableObject {
         /// The switch ran but a provider login the profile carries is dead
         /// (expired and unrefreshable), so it was deliberately NOT applied.
         case credentialsRefused
+        /// A USER-initiated switch onto a profile whose provider login is dead:
+        /// the dead login was NOT applied and the provider-active pointer stayed
+        /// with its current owner, but the FOCUS moved so the profile can be
+        /// viewed — and repaired — in Settings. The in-app re-login screens
+        /// operate on the focused profile, so refusing to move the focus made a
+        /// dead profile unreachable: the one click that could fix it was the one
+        /// click the gate rejected (reported live 2026-09-03).
+        ///
+        /// This is NOT a landed switch. The auto-switch walk must treat it
+        /// exactly like `.credentialsRefused` — but it can only be produced by a
+        /// user-initiated activation, which the walk never performs.
+        case focusedWithoutApplying
 
         /// Back-compat with the `Bool`-returning API: true only when the
         /// profile is active as a result of the call.
+        ///
+        /// `focusedWithoutApplying` is deliberately false: the CLI login did not
+        /// change hands, and every Bool caller means "did the switch land".
         var didActivate: Bool {
             self == .activated || self == .alreadyActive
         }
@@ -408,9 +423,11 @@ class ProfileManager: ObservableObject {
             return .profileNotFound
         }
 
-        // Set when a provider login the profile carries could NOT be handed to the
-        // CLI because the stored credentials are dead (expired + unrefreshable).
-        var deadLoginSkipped = false
+        // The providers whose login could NOT be handed to the CLI because the
+        // stored credentials are dead (expired + unrefreshable). Kept per
+        // provider, not as one flag, so the user-facing notice can name which
+        // CLI stayed put and who still owns it.
+        var refusedProviders: [RefusedProvider] = []
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
@@ -444,8 +461,14 @@ class ProfileManager: ObservableObject {
             // clears on any successful refresh, adoption or re-sync, so a
             // revived account is not held out.
             if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) {
-                deadLoginSkipped = true
-                cliSyncService.notifyReloginNeeded(for: id, force: userInitiated)
+                refusedProviders.append(.claude)
+                // `force` is only needed when the click would otherwise be a
+                // silent no-op. A user-initiated switch now MOVES THE FOCUS and
+                // sends its own notice naming the repair, so re-delivering the
+                // generic re-login alert on every click would just double-banner
+                // the same fact. The auto path keeps its once-per-dead-login
+                // dedup exactly as before.
+                cliSyncService.notifyReloginNeeded(for: id, force: false)
                 LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
             } else {
                 let targetProfileId = updatedProfile.id
@@ -501,8 +524,9 @@ class ProfileManager: ObservableObject {
             // → refuse, no answer → trust the dead flag (audit C2).
             if updatedProfile.codexCredentialsJSON != nil,
                !(await CodexUsageService.shared.isSafeToApplyLogin(for: id)) {
-                deadLoginSkipped = true
-                CodexUsageService.shared.notifyReloginNeeded(for: id, force: userInitiated)
+                refusedProviders.append(.codex)
+                // Same reasoning as the Claude gate above.
+                CodexUsageService.shared.notifyReloginNeeded(for: id, force: false)
                 LoggingService.shared.log("⛔️ '\(updatedProfile.name)' Codex login failed its liveness check (expired, revoked, or refused by the account) — NOT applied, outgoing login kept")
             } else {
                 let targetProfileId = updatedProfile.id
@@ -522,17 +546,27 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        // A gated switch must leave the FOCUS unchanged too, not just the shared
-        // login: callers (auto-switch walking ranked candidates, retry sweeps)
-        // treat false as "nothing happened" — flipping activeProfile onto a dead
+        // An AUTOMATIC gated switch must leave the FOCUS unchanged too, not just
+        // the shared login: the auto-switch walk and the retry sweeps treat a
+        // refusal as "nothing happened", and flipping activeProfile onto a dead
         // account would point the UI (and single-profile mode's whole display) at
         // an account the CLI was never switched to, once per retry.
-        if deadLoginSkipped {
+        //
+        // A USER-initiated switch is the opposite case and falls through to the
+        // focus-only path below: the user asked to LOOK at that profile, and the
+        // in-app repair (Settings → Codex Account / CLI Account, which read
+        // `activeProfile`) is reachable only once the focus is on it. Refusing to
+        // move it made every dead profile permanently unrepairable in-app.
+        if !refusedProviders.isEmpty && !userInitiated {
             switchingSemaphore = false
             isSwitchingProfile = false
             LoggingService.shared.log("⛔️ Activation of '\(updatedProfile.name)' aborted (dead provider login NOT applied) — focus stays on the current profile")
             return .credentialsRefused
         }
+
+        // True when the focus is about to move WITHOUT the login being applied.
+        // Implies `userInitiated` (the auto path returned above).
+        let focusOnly = !refusedProviders.isEmpty
 
         // Update last used timestamp
         var updated = updatedProfile
@@ -569,11 +603,86 @@ class ProfileManager: ObservableObject {
             from: outgoingNameForHistory ?? "none",
             to: updatedProfile.name,
             trigger: userInitiated ? .manual : .auto,
-            reason: nil
+            reason: focusOnly
+                ? "focus only — \(RefusedProvider.summary(refusedProviders)) login NOT applied, CLI unchanged"
+                : nil
         ))
+
+        if focusOnly {
+            LoggingService.shared.log("👁 Focus moved to '\(updatedProfile.name)' WITHOUT applying its dead \(RefusedProvider.summary(refusedProviders)) login — the CLI keeps its current account")
+            notifyFocusedWithoutApplying(profile: updatedProfile, refused: refusedProviders)
+            return .focusedWithoutApplying
+        }
 
         LoggingService.shared.log("Successfully activated profile: \(updatedProfile.name)")
         return .activated
+    }
+
+    // MARK: - Focus-Only Switch (dead provider login)
+
+    /// A provider whose stored login the activation gate refused to apply.
+    enum RefusedProvider: String {
+        case claude
+        case codex
+
+        /// How the provider is named to the user.
+        var displayName: String {
+            switch self {
+            case .claude: return "Claude Code"
+            case .codex: return "Codex"
+            }
+        }
+
+        /// Where the in-app repair lives, for the notice's instruction.
+        var repairLocation: String {
+            switch self {
+            case .claude: return "Settings → CLI Account"
+            case .codex: return "Settings → Codex Account"
+            }
+        }
+
+        static func summary(_ providers: [RefusedProvider]) -> String {
+            providers.map(\.displayName).joined(separator: " + ")
+        }
+    }
+
+    /// Last time the focus-only notice was sent for a profile. The user can
+    /// click the same dead profile repeatedly (that is exactly what happens
+    /// while they are repairing it), and one banner per click would be noise.
+    private var focusOnlyNoticeSentAt: [UUID: Date] = [:]
+
+    /// At most one focus-only notice per profile per hour.
+    private static let focusOnlyNoticeInterval: TimeInterval = 3600
+
+    /// Tells the user what just happened: the popover and Settings now SHOW this
+    /// profile, but its dead login was not handed to the CLI, so the CLI is still
+    /// signed in as somebody else — and here is where to repair it.
+    private func notifyFocusedWithoutApplying(profile: Profile, refused: [RefusedProvider]) {
+        let now = Date()
+        if let last = focusOnlyNoticeSentAt[profile.id],
+           now.timeIntervalSince(last) < Self.focusOnlyNoticeInterval {
+            return
+        }
+        focusOnlyNoticeSentAt[profile.id] = now
+
+        // Name the account the CLI is actually still logged into, per refused
+        // provider — "the CLI stays on X" is the part that stops the user
+        // believing the switch landed.
+        let ownerNames = refused.compactMap { provider -> String? in
+            let ownerId: UUID?
+            switch provider {
+            case .claude: ownerId = activeClaudeProfileId
+            case .codex: ownerId = activeCodexProfileId
+            }
+            return ownerId.flatMap { id in profiles.first(where: { $0.id == id })?.name }
+        }
+
+        NotificationManager.shared.sendFocusedWithoutLoginNotification(
+            profileName: profile.name,
+            providerName: RefusedProvider.summary(refused),
+            currentOwnerName: ownerNames.first,
+            repairLocation: refused.first?.repairLocation ?? "Settings"
+        )
     }
 
     // MARK: - Provider Ownership

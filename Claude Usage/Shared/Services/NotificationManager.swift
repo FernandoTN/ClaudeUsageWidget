@@ -456,6 +456,45 @@ class NotificationManager {
         }
     }
 
+    /// Explains a focus-only switch: the user picked a profile whose provider
+    /// login is dead, so the app now SHOWS that profile (which is what makes the
+    /// in-app re-login reachable) while the CLI stays signed in as the account
+    /// that still owns the shared login. Without this, moving the focus reads as
+    /// a completed switch and the user believes the CLI followed.
+    /// `ProfileManager` rate-limits it to one per profile per hour.
+    func sendFocusedWithoutLoginNotification(
+        profileName: String,
+        providerName: String,
+        currentOwnerName: String?,
+        repairLocation: String
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.focus_without_login.title".localized
+        if let currentOwnerName {
+            content.body = "notification.focus_without_login.message".localized(
+                with: profileName, providerName, currentOwnerName, repairLocation
+            )
+        } else {
+            content.body = "notification.focus_without_login.message_no_owner".localized(
+                with: profileName, providerName, repairLocation
+            )
+        }
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "focus_without_login_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send focus-without-login notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Grok refresh token was revoked and the account
     /// needs a fresh `grok` CLI login + re-sync (the app cannot repair it itself).
     func sendGrokReloginNotification(profileName: String) {
