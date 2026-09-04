@@ -449,8 +449,11 @@ struct AccountOverviewTab: View {
                         }
                         .help("accounts.fact.same_account_help".localized)
                     }
-                    if profile.providerKind == .codex, let resets = profile.claudeUsage?.codexResetCreditsAvailable {
-                        fact("accounts.fact.resets".localized, "selector.resets_available".localized(with: resets))
+                    if profile.providerKind == .codex {
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("accounts.fact.resets".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary).frame(width: 84, alignment: .trailing)
+                            CodexResetsCard(profile: profile, measurement: measurement, readiness: readiness)
+                        }
                     }
                     fact("accounts.fact.history".localized, historyText)
                 }

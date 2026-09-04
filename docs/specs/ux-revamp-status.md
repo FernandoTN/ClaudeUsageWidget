@@ -31,6 +31,8 @@ messaged to it. Never `/Applications` or the running process.
 | 21:30 | #68 squash-merged (`80949d2`). Stage 1a built on the merged tree: Release build OK, 393 tests / 0 failures; draft PR opened |
 | 21:40 | Stage 1a #72 squash-merged (`a8f3a60`), deployed by the fixes session at 20:39 PDT (24 profiles / 23 tiles, healthy). Redesign session's B2.1 (#75, `0d762a8`) consumes the 1a models: dashboard header vocabulary, counts strip, view-only name menu, ⇄ link, "Token usage…" entries |
 | 22:00 | Stage 1b #77 merged (`6b83180`), deployed 20:56 PDT. Bar order came up claude < grok < codex < ⇄; a fresh-process probe showed fixed-length items place textbook (X G C S) while the zero-width variable-length groups tie behind the anchor — the redesign session removes the tie (fixed 24 pt initial group length) in its next PR; fallback = selector after the groups |
+| 2026-09-04 11:10 | Stage 4.1 #116 merged (`6af5bab`): CodexResetsCard + the I1–I5 insights copy items. The staged plan is complete except the deletion PR #104, which stays a draft on the owner gate. ActivePill adopted by the telemetry window (#115) |
+| 2026-09-04 10:40 | Seams landed on main (1326db1, #111: the incident ring fed at six sites, SwitchEvent fields populated); redesign embedded the Insights block (dd1633f, #112). Round 3 merged (`f887cdf`, #114). 4.1 + the I1–I5 copy items rebased on top; one deploy after 4.1 |
 | 2026-09-04 09:50 | Stage 4b #110 merged (`ec3f474`), redesign embedding it. Round-3 review from the fixes session (R1–R8, S1–S3) folded into a design-pass PR that waits for their feat/insights-seams sha |
 | 2026-09-04 09:10 | 3d additive half #103 merged (`b43807a`), deletion PR #104 parked as a draft on the owner gate. Stage 4a #107 merged (`b02b49f`) — seam agreed in writing with the redesign session (insights inside `DashboardSnapshot` #109, filter theirs #106, Recent switches disclosure retired when the log lands); 4b view built with its fixture |
 | 2026-09-04 07:50 | Stage 3c #102 merged (`0b827af`); the registry alarm named `cuwSlotPinsVersion` on the owner's Mac — the redesign session confirmed it is the never-merged 2026-07-17 slot-pinning experiment's flag (no branch has it), so 3d registers it legacy-unread. 3d split: the additive move first, the deletion PR only after an owner OK |
@@ -92,8 +94,8 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 3d-delete: remove the eight legacy pages and their sections | — | — | **gated on the owner's OK** (asked via the orchestrator 2026-09-04) |
 | 4a `FleetInsights` (timeline, blindness, drift, switch log, burn, incidents ring, capacity, why-not), `IncidentRing` + `DriftLog`, `MenuBarManager.makeFleetInsights()`, `SwitchEvent.fromHeadroom/providerRaw` | `feat/ux-revamp-4a-insights-model` | #107 | **merged** `b02b49f`; incident call sites + `SwitchEvent` field population requested from the fixes session |
 | 4b `DashboardInsightsView` (eight sections, timeline strip, sparkline, `InsightsFormatting`, `FleetInsights.fixture`) — the redesign embeds it under the last section | `feat/ux-revamp-4b-insights-view` | #110 | **merged** `ec3f474` |
-| Round-3 design pass (R1–R8, S1; `ActivePill`, `clearManualPin`) | `feat/ux-revamp-r3-design-pass` | draft | spec §12.8; lands after the fixes session's seams PR |
-| 4.1 usage-limit resets surface | — | — | after 4b |
+| Round-3 design pass (R1–R8, S1; `ActivePill`, `clearManualPin`) | `feat/ux-revamp-r3-only` | #114 | **merged** `f887cdf` (on the seams 1326db1) |
+| 4.1 `CodexResetsCard` in the Overview (count never claims zero, on-demand details by expiry, Redeem gated on a measured limit with confirmation and outcome) | `feat/ux-revamp-r3-design-pass` | #116 | **merged** `6af5bab` — the deploy point (round 3 + 4.1, one restart) |
 
 ## Open items
 
