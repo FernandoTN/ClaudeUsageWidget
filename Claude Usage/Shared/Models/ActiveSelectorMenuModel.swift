@@ -79,7 +79,7 @@ enum ActiveSelectorMenuModel {
             rows.append(Row(kind: .header, title: ActiveVocabulary.activeFor(provider).uppercased(), enabled: false))
 
             if let owner = selection.owner {
-                rows.append(ownerRow(owner, provider: provider, now: now))
+                rows.append(ownerRow(owner, provider: provider, hasCandidates: !selection.candidates.isEmpty, now: now))
             } else {
                 rows.append(Row(kind: .info, title: "selector.no_owner_chosen".localized(with: ActiveVocabulary.providerName(provider)),
                                 glyph: "○", glyphTint: .secondary, titleTint: .secondary, enabled: false))
@@ -157,7 +157,7 @@ enum ActiveSelectorMenuModel {
         return rows
     }
 
-    private static func ownerRow(_ owner: OwnerRow, provider: Profile.ProviderKind, now: Date) -> Row {
+    private static func ownerRow(_ owner: OwnerRow, provider: Profile.ProviderKind, hasCandidates: Bool, now: Date) -> Row {
         var details: [String] = []
         var tint: Tint? = nil
         if let caveat = owner.suspected {
@@ -169,7 +169,10 @@ enum ActiveSelectorMenuModel {
             tint = .purple
         } else {
             details.append(gaugeText(owner.gauges))
-            if let weekly = owner.gauges.first(where: { $0.kind == .weekly }), !owner.gauges.contains(where: { $0.kind == .session }) {
+            // "fires at 99 %" names the switch trigger — meaningless for a
+            // provider with nobody to switch to.
+            if hasCandidates, let weekly = owner.gauges.first(where: { $0.kind == .weekly }),
+               !owner.gauges.contains(where: { $0.kind == .session }) {
                 details.append("selector.fires_at".localized(with: Int(weekly.threshold)))
             }
         }

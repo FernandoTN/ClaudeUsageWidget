@@ -114,7 +114,10 @@ enum Constants {
 
     // Window Sizes
     enum WindowSizes {
-        static let settingsWindow = NSSize(width: 720, height: 750)
+        /// 820 wide since the Accounts inspector (roster 250 + detail); the
+        /// window is resizable down to `settingsMinimum` (docs/specs/ux-revamp.md §2.2).
+        static let settingsWindow = NSSize(width: 820, height: 750)
+        static let settingsMinimum = NSSize(width: 760, height: 600)
         /// The classic single-account popover. The fleet dashboard has its
         /// own size (`DashboardSurface.dashboardSize`).
         static let popoverSize = NSSize(width: 320, height: 600)

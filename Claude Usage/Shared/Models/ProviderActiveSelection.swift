@@ -190,6 +190,10 @@ struct ProviderActiveSelection: Hashable {
     /// rank order, then blocked, then duplicates and excluded — the menu draws
     /// a separator between the two halves.
     var candidates: [CandidateRow]
+    /// Every OTHER account in the walk's plain rank order (soonest weekly reset
+    /// first, queue entries first) — the roster sorts by this; `candidates`
+    /// is the same set re-grouped eligible-first for the menu.
+    var rankedIds: [UUID] = []
     /// This provider's slice of the hand-off queue.
     var queue: [QueueEntry]
     var counts: FleetCounts.Provider
@@ -354,6 +358,7 @@ struct ProviderActiveSelection: Hashable {
                 viewing: inputs.focusedId.flatMap { id in members.contains { $0.id == id } ? id : nil },
                 next: next,
                 candidates: ordered,
+                rankedIds: ranked.filter { $0 != ownerId },
                 queue: queue,
                 counts: providerCounts,
                 autoSwitch: policy,

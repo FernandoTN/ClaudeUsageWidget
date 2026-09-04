@@ -1009,3 +1009,74 @@ no extra labels. Disabled rows carry their reason in the title, not in a tooltip
 show the active account); a menu section per account (25 rows in the top level —
 the submenu keeps the top level under 22 rows); a "View X" row (Viewing belongs to
 the inspector); a suppressible confirmation (owner ruling; two of three reviews).
+
+### 12.2 The Accounts inspector (stages 2a–2c)
+
+**Shell (frame 0).** The Settings window grows from a fixed 720 to **820 × 750,
+resizable** (minimum 760 × 600); `.resizable` joins the style mask. Choosing
+"Accounts" turns the window's sidebar INTO the roster (250 pt) with a "‹ All
+settings" row at the bottom that returns to the classic sidebar; every other
+section keeps today's sidebar untouched (additive rollout, D12) until stage 3d
+deletes the old pages and the roster becomes permanent with the new sections as
+text rows under it. Default section when the window opens with no route:
+Accounts.
+
+**Roster (frame 1).** Filter field at the top (matches name, email and state
+words: "dead", "maxed", "queued", "unmeasured", "duplicate", "free", "off",
+"pinned"); a sort toggle (bar order = soonest weekly reset first, the walk's
+rank / alphabetical). One section per provider: title "CLAUDE", subtitle "18
+profiles · 17 accounts" (stated so nobody sums the glyphs), the counts strip in
+the bar's glyphs. Rows, 22 pt: readiness glyph in its colour (dimmed 50 % when
+stale), name in 12 pt medium, email in 10.5 pt secondary truncated to ~18
+characters, the keyed percentage right-aligned in monospaced digits ("78";
+"W!" / "S!" / "F!" when maxed; "—" never measured), and ONE mark at the right
+edge: `Cl`/`Cx`/`Gk` cyan = Active for that provider, `Q1` = queue position,
+`✓ ? ×` = the next candidate's verdict, `⧉` = duplicate, `free`/`off` =
+excluded. A dead row's name is orange; a row flagged by #64 gets a small
+"re-login" caption under the name. Selecting a row = Viewing (free); the
+selected row is the accent-filled one. Type-ahead selects. 40 rows scroll; the
+section headers stay pinned.
+
+**Detail header (frame 2).** "Viewing dJormun" in 16 pt semibold with the
+provider in secondary; under it the R3 caption "not active · Active for Claude:
+dRir" (or "Active for Claude" in cyan when this IS the owner, or "no active Claude
+login chosen"). Buttons: "Make active for Claude…" (primary; hidden for the
+owner; disabled with the reason as tooltip when the login is dead — "Repair it
+on the Login tab" — or when a switch is in flight), "Queue next" (hidden when
+queued or when it is the owner), "Open in dashboard" (stage 2b). Tabs: Overview
+· Login · Alerts · Monitoring (2a ships Overview; the others land in 2b/2c and
+are hidden until then, never shown empty).
+
+**Overview (frame 3).** Gauges as rows: label (Session / Weekly / Fable), a 6 pt
+bar with a threshold tick, the percentage in monospaced digits, the reset
+("resets in 4 h 02 m" / "resets Mon 09:41"); Fable row only when the account has
+one; weekly-only providers show one bar with "fires at 99 %". ONE provenance
+line under the gauges: "measured 3 m ago · own endpoint" / "via API headers · 3 m
+ago" / "CLI cache · 5 m ago" / "not measured yet"; "stale" appended when older
+than the staleness threshold. Then a two-column fact list: Readiness (state +
+login verdict kind and age, e.g. "ready · login probed 12 m ago"), Identity
+(email · account …9f3a · org …c2; Codex: home path), Fetch ("every sweep" /
+"backing off until …" is stage 2b — MenuBarManager keeps it private; 2a shows
+the refresh interval), History (the last three switch events naming this
+account, from the ring buffer), Same account as (when duplicated), Usage limit
+resets (Codex, when the count is known). States: never measured → gauges
+replaced by "not measured yet — the next sweep measures it" in secondary;
+suspected → the session row shows the last measured value in purple with its
+age and "(projection 81 %)"; dead → a red banner at the top "Login dead — the
+CLI cannot use this account. Repair it on the Login tab." with the tab link;
+duplicate → the caption names the twin and, when #64 flags it, "re-login
+needed"; degraded → the existing amber banner wording at the top.
+
+**Keyboard / accessibility.** ↑/↓ moves the selection (Viewing) row by row,
+type-ahead selects, ⌘F focuses the filter, Tab moves through the header buttons
+and tabs; every glyph has an accessibility label spelled out (the mark "Cl"
+reads "Active for Claude"); the percentage cell reads "78 percent session".
+
+**Light / dark.** System colours only (`adaptiveGreen`, `.orange`, `.red`,
+`.purple`, `.secondary`, accent for the selection); the sidebar keeps the
+existing vibrancy material.
+
+**Rejected in this pass.** Per-row bars in the roster (22 pt rows, 40 of them —
+the percentage digit is the scan target; bars live in the detail); an "Active"
+badge without its provider; a 720 pt window (the roster + a readable detail do
+not fit, three reviews); showing empty tabs before their stage ships.

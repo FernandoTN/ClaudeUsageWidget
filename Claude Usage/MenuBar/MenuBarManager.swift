@@ -39,6 +39,12 @@ class MenuBarManager: NSObject, ObservableObject {
     /// torn down (`cleanup()` leaves it; the setting toggles `isVisible`).
     private var activeSelector: ActiveSelectorItem?
 
+    /// The live manager, for Settings views that need the paint-time context
+    /// (`buildActiveSelections`) — AppDelegate owns the instance; set in
+    /// `setup()`. nil under XCTest / previews, where the inspector falls back
+    /// to a context without candidate predictions.
+    private(set) static weak var current: MenuBarManager?
+
     /// Read-only handle for the exposure probe (redesign stage C), so a hidden
     /// selector shows up in the same `Menu bar exposure` log line.
     var activeSelectorStatusItem: NSStatusItem? { activeSelector?.statusItem }
@@ -206,6 +212,8 @@ class MenuBarManager: NSObject, ObservableObject {
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
+        Self.current = self
+
         // The ⇄ selector item goes first: each later status item lands LEFT
         // of the existing ones, so creating it before the provider groups
         // keeps it rightmost across every group rebuild (spec §2.1).
@@ -340,6 +348,12 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Setup global keyboard shortcuts
         setupShortcuts()
+
+        #if DEBUG
+        // Design-pass frame renders (docs/specs/ux-revamp.md §12): a Debug build
+        // launched with CUW_RENDER_FRAMES=<dir> writes every surface as PNG.
+        DesignFrameHarness.runIfRequested()
+        #endif
 
         // Idle-burn guardrail: alarms (log + per-episode notification, re-posted
         // on a 6h backoff while the storm persists) when the app burns CPU with
