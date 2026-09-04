@@ -9,6 +9,11 @@ class NotificationManager {
     // Track previous session percentage per profile to detect resets
     private var previousSessionPercentages: [String: Double] = [:]
 
+    // Track the last-seen WEEKLY boundary per profile. Weekly-only providers
+    // have no >0%→0% transition to detect a new window with, so the boundary
+    // moving is what re-arms their alerts (see checkWeeklyRollover).
+    private var previousWeeklyBoundaries: [String: Date] = [:]
+
     // Track which notifications have been sent to prevent duplicates
     // Persisted to UserDefaults to survive app restarts
     private var sentNotifications: Set<String> {
@@ -121,15 +126,97 @@ class NotificationManager {
         }
     }
 
-    /// Checks usage and sends appropriate alerts (profile-aware)
+    /// The single threshold alert a usage reading earns, or nil when it has
+    /// crossed none. PURE — no state, no delivery — so the routing that
+    /// decides *which* window and *which* severity is testable on its own.
+    ///
+    /// The window is chosen by the provider, not by the number: a weekly-only
+    /// provider (Codex since OpenAI collapsed its 5h/weekly pair into one
+    /// 7-day window, Grok always) reports `sessionPercentage` 0 forever, so
+    /// reading the session window alone meant a Codex account could never
+    /// cross a threshold at all. Providers that DO have a session window keep
+    /// their existing session-only behaviour — Claude users must not start
+    /// getting a second, weekly alert stream they never opted into.
+    struct ThresholdAlert: Equatable {
+        let type: AlertType
+        let level: Int
+        let percentage: Double
+        let resetTime: Date
+    }
+
+    static func thresholdAlert(usage: ClaudeUsage, settings: NotificationSettings) -> ThresholdAlert? {
+        guard settings.enabled else { return nil }
+        let weeklyOnly = !usage.providesSessionWindow
+        // Display seam: a SUSPECTED (inferred) rate limit must not fire the
+        // "100% reached" usage alerts on an unverified signal.
+        let percentage = weeklyOnly ? usage.weeklyPercentage : usage.displaySessionPercentage
+        let resetTime = weeklyOnly ? usage.weeklyResetTime : usage.sessionResetTime
+
+        // Highest crossed threshold wins — one alert per reading.
+        guard let threshold = settings.sortedThresholds.reversed().first(where: {
+            percentage >= Double($0)
+        }) else { return nil }
+
+        let type: AlertType
+        if weeklyOnly {
+            // Only two weekly types exist; cut at the same 95 the session
+            // ladder calls critical.
+            type = threshold >= 95 ? .weeklyCritical : .weeklyWarning
+        } else {
+            switch threshold {
+            case 95...:
+                type = .sessionCritical
+            case 90..<95:
+                type = .sessionWarning
+            default:
+                type = .sessionInfo
+            }
+        }
+        return ThresholdAlert(type: type, level: threshold, percentage: percentage, resetTime: resetTime)
+    }
+
+    /// True when `current` is a DIFFERENT quota window than `previous`. Same
+    /// ±2min tolerance the auto-switch preflight uses: the API reports one
+    /// boundary with ±1s jitter, so only a real rollover moves it.
+    static func windowRolledOver(previousBoundary: Date?, current: Date) -> Bool {
+        guard let previous = previousBoundary else { return false }
+        return abs(current.timeIntervalSince(previous)) > 120
+    }
+
+    /// Checks usage and sends appropriate alerts (profile-aware).
+    ///
+    /// Called once per profile per sweep — in multi-profile mode the sweep is
+    /// the ONLY caller, and before 2026-09-03 it did not call this at all, so
+    /// the per-profile toggles in Settings → General were a no-op for every
+    /// account. Repeat calls are idempotent: `sentNotifications` records one
+    /// identifier per (profile, type, threshold) and only a window rollover
+    /// clears it, so a 30s sweep does not re-notify.
     func checkAndNotify(usage: ClaudeUsage, profileName: String, settings: NotificationSettings) {
         // Check if notifications are enabled for this profile
         guard settings.enabled else {
             return
         }
 
-        // Display seam: a SUSPECTED (inferred) rate limit must not fire the
-        // "100% reached" usage alerts on an unverified signal.
+        if usage.providesSessionWindow {
+            checkSessionReset(usage: usage, profileName: profileName, settings: settings)
+        } else {
+            checkWeeklyRollover(usage: usage, profileName: profileName)
+        }
+
+        guard let alert = Self.thresholdAlert(usage: usage, settings: settings) else { return }
+        sendProfileAlert(
+            profileName: profileName,
+            type: alert.type,
+            percentage: alert.percentage,
+            thresholdLevel: alert.level,
+            resetTime: alert.resetTime,
+            soundName: settings.soundName
+        )
+    }
+
+    /// Session-window providers: a reset (>0% → 0%) re-arms every alert for
+    /// this profile and announces itself.
+    private func checkSessionReset(usage: ClaudeUsage, profileName: String, settings: NotificationSettings) {
         let sessionPercentage = usage.displaySessionPercentage
         let previousPercentage = previousSessionPercentages[profileName] ?? 0.0
 
@@ -148,36 +235,23 @@ class NotificationManager {
                 resetTime: usage.sessionResetTime,
                 soundName: settings.soundName
             )
-
         }
 
         // Update previous percentage for this specific profile
         previousSessionPercentages[profileName] = sessionPercentage
+    }
 
-        // Check thresholds (highest first) - includes both built-in and custom
-        let thresholds = settings.sortedThresholds
-        for threshold in thresholds.reversed() {
-            if sessionPercentage >= Double(threshold) {
-                let alertType: AlertType
-                switch threshold {
-                case 95...:
-                    alertType = .sessionCritical
-                case 90..<95:
-                    alertType = .sessionWarning
-                default:
-                    alertType = .sessionInfo
-                }
-                sendProfileAlert(
-                    profileName: profileName,
-                    type: alertType,
-                    percentage: sessionPercentage,
-                    thresholdLevel: threshold,
-                    resetTime: usage.sessionResetTime,
-                    soundName: settings.soundName
-                )
-                break
-            }
+    /// Weekly-only providers: there is no >0→0 transition to watch (a fresh
+    /// week reports the new boundary while the percentage may already be
+    /// non-zero), so the ROLLOVER of the weekly boundary is what re-arms the
+    /// alerts — one notification per threshold per window, not per sweep.
+    /// No "reset" notification: `sessionReset`'s copy is about a 5h window.
+    private func checkWeeklyRollover(usage: ClaudeUsage, profileName: String) {
+        let boundary = usage.weeklyResetTime
+        if Self.windowRolledOver(previousBoundary: previousWeeklyBoundaries[profileName], current: boundary) {
+            sentNotifications = sentNotifications.filter { !$0.hasPrefix("\(profileName)_weekly_") }
         }
+        previousWeeklyBoundaries[profileName] = boundary
     }
 
     /// Checks usage and sends appropriate alerts (legacy, for backwards compatibility)

@@ -1476,6 +1476,22 @@ private func observeCredentialChanges() {
                         self.authBackoffs.removeValue(forKey: profile.id)
                         self.recordClaudeUsageSuccess(profile, usage: newUsage)
 
+                        // Threshold notifications for EVERY swept profile,
+                        // honouring that profile's own toggles. Until
+                        // 2026-09-03 they were fired only from the
+                        // single-profile refresh path, so in multi-profile
+                        // mode (with more than one account selected) no
+                        // account of any provider ever got one and the
+                        // per-profile switches in Settings → General did
+                        // nothing. NotificationManager de-dupes per
+                        // (profile, type, threshold) until the window rolls
+                        // over, so the 30s cadence does not spam.
+                        NotificationManager.shared.checkAndNotify(
+                            usage: newUsage,
+                            profileName: profile.name,
+                            settings: profile.notificationSettings
+                        )
+
                         // Check auto-switch NOW for the accounts actually in use
                         // instead of waiting for the end of the sweep: rate-limit
                         // spacing makes a full sweep take ~2s per profile, and near
@@ -3133,16 +3149,37 @@ private func observeCredentialChanges() {
 
     // MARK: - Candidate Preflight (seamless auto-switch)
 
-    /// Session-usage milestones at which the NEXT auto-switch candidate's stored
+    /// Usage milestones at which the NEXT auto-switch candidate's stored
     /// login is validated ahead of the threshold switch.
     private static let preflightMilestones: [Double] = [25, 50, 75, 90]
 
+    /// The percentage the milestones are keyed off. A weekly-only provider
+    /// (Codex since OpenAI collapsed its two windows into one 7-day window,
+    /// Grok always) reports `sessionPercentage` 0 forever, so keying on the
+    /// session window alone meant preflight NEVER armed for that provider's
+    /// owner — the whole "re-login while you still have headroom" feature was
+    /// dead for Codex accounts. Take the window that is actually filling up:
+    /// weekly alone when there is no session window, else the higher of the
+    /// two (a Claude account can exhaust its week at low session usage).
+    nonisolated static func preflightMilestonePercentage(_ usage: ClaudeUsage) -> Double {
+        guard usage.providesSessionWindow else { return usage.weeklyPercentage }
+        return max(usage.effectiveSessionPercentage, usage.weeklyPercentage)
+    }
+
+    /// The window boundary the milestone re-arm anchors on — the session
+    /// window when the provider has one, else the weekly boundary. Anchoring
+    /// a weekly-only provider on `sessionResetTime` happens to work today
+    /// (both services report the weekly boundary there) but is not a contract.
+    nonisolated static func preflightMilestoneBoundary(_ usage: ClaudeUsage) -> Date {
+        usage.providesSessionWindow ? usage.sessionResetTime : usage.weeklyResetTime
+    }
+
     /// Milestones already preflighted per current profile — cleared when its
-    /// session usage drops back below the first milestone or when the session
-    /// window itself rolls over (a busy account can be above 25% again by the
+    /// usage drops back below the first milestone or when the keyed window
+    /// itself rolls over (a busy account can be above 25% again by the
     /// first post-reset sweep and would otherwise never re-arm all window).
     private var preflightedMilestones: [UUID: Set<Double>] = [:]
-    /// Anchored session-window boundary per profile; compared with a ±2min
+    /// Anchored milestone-window boundary per profile; compared with a ±2min
     /// tolerance (the API reports the same boundary with ±1s jitter).
     private var preflightSessionBoundary: [UUID: Date] = [:]
     private var preflightRunning: Set<UUID> = []
@@ -3156,22 +3193,23 @@ private func observeCredentialChanges() {
     private var preflightInFlightCandidates: Set<UUID> = []
 
     /// Fires once per crossed milestone (25/50/75/90% of the current account's
-    /// session window) and validates the auto-switch's predicted target in the
+    /// keyed window — session where one exists, weekly for a weekly-only
+    /// provider) and validates the auto-switch's predicted target in the
     /// background. Validation = the same refresh the switch itself would perform,
     /// done EARLY: a live-but-stale token is refreshed now (proving the refresh
     /// token works and banking a fresh access token), and a dead one triggers the
     /// re-login notification while the current account still has headroom — so the
     /// eventual switch lands on a login that is known to work.
     private func preflightNextCandidateIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
-        let percentage = usage.effectiveSessionPercentage
+        let percentage = Self.preflightMilestonePercentage(usage)
         // Tolerance comparison, not minute-quantization: a boundary reported
         // near :30s alternates between adjacent rounded minutes under the
         // API's ±1s jitter (Codex review). Anything within 2 minutes is the
         // SAME window; the stored anchor only moves on a real rollover.
-        let boundary = usage.sessionResetTime
+        let boundary = Self.preflightMilestoneBoundary(usage)
         if let anchored = preflightSessionBoundary[currentProfile.id] {
             if abs(anchored.timeIntervalSince(boundary)) > 120 {
-                preflightedMilestones[currentProfile.id] = nil  // new session window — re-arm
+                preflightedMilestones[currentProfile.id] = nil  // new window — re-arm
                 preflightSessionBoundary[currentProfile.id] = boundary
             }
         } else {
