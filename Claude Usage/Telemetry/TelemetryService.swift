@@ -31,9 +31,6 @@ final class TelemetryService {
     }
 
     static let steadyInterval: TimeInterval = 300
-    /// The pointer-claim seam's notification (fixes session, in flight).
-    /// Referenced by name so this module compiles before that branch lands.
-    static let providerOwnerClaimed = Notification.Name("providerOwnerClaimed")
 
     private let queue = DispatchQueue(label: "com.claudeusagewidget.telemetry", qos: .utility)
     private let engine = TelemetryEngine()
@@ -64,8 +61,9 @@ final class TelemetryService {
         .sink { [weak self] _ in self?.publishSnapshot(from: profileManager) }
         .store(in: &cancellables)
 
+        // The pointer-claim seam (#89): posted only when a pointer's value changes.
         NotificationCenter.default.addObserver(self, selector: #selector(ownerClaimed(_:)),
-                                               name: Self.providerOwnerClaimed, object: nil)
+                                               name: .providerOwnerClaimed, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(ownerChangedExternally(_:)),
                                                name: .providerOwnerChangedExternally, object: nil)
 
