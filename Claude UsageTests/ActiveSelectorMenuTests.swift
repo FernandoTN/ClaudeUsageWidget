@@ -95,29 +95,29 @@ final class ActiveSelectorMenuTests: XCTestCase {
         let ownerRow = out[1]
         XCTAssertEqual(ownerRow.title, "dRir")
         XCTAssertEqual(ownerRow.glyphTint, .cyan)
-        XCTAssertTrue(ownerRow.detail?.contains("S 78 % · W 16 % · F 16 %") == true, ownerRow.detail ?? "")
+        XCTAssertTrue(ownerRow.detail?.contains("S 78 · W 16 · F 16") == true, ownerRow.detail ?? "")
         XCTAssertTrue(ownerRow.detail?.contains("measured 28 s ago") == true, "provenance + age on the owner row")
         XCTAssertFalse(ownerRow.enabled)
 
         let evidence = out[2]
         XCTAssertEqual(evidence.title, "next → dJormun")
-        XCTAssertTrue(evidence.detail?.contains("ranked · ✓ probed 12 m ago · headroom 3 m ago") == true, evidence.detail ?? "")
+        XCTAssertTrue(evidence.detail?.contains("ranked · ✓ verified 12 m ago · headroom 3 m ago") == true, evidence.detail ?? "")
+        XCTAssertEqual(out[3].kind, .separator, "status above, actions below (S3)")
 
-        let switchNext = out[3]
-        XCTAssertEqual(switchNext.title, "Switch Claude to next (dJormun)…")
+        let switchNext = out.first { $0.title == "Switch Claude to next (dJormun)…" }!
         XCTAssertEqual(switchNext.action, .switchTo(next.id, .claude))
         XCTAssertTrue(switchNext.enabled)
+        XCTAssertTrue(switchNext.isPrimary, "the one action a user reaches for first is bold")
 
-        let submenu = out[4]
-        XCTAssertEqual(submenu.title, "Switch Claude to")
+        let submenu = out.first { $0.title == "Switch Claude to" }!
         XCTAssertEqual(titles(submenu.submenu), ["dJormun", "Memori", "", "Commits"], "eligible, separator, blocked")
         if let blocked = submenu.submenu.last {
             XCTAssertFalse(blocked.enabled)
             XCTAssertTrue(blocked.detail?.hasPrefix("weekly maxed") == true, blocked.detail ?? "")
         }
 
-        XCTAssertEqual(out[5].title, "Queue next")
-        XCTAssertEqual(titles(out[5].submenu), ["dJormun", "Memori"])
+        let queue = out.first { $0.title == "Queue next" }!
+        XCTAssertEqual(titles(queue.submenu), ["dJormun", "Memori"])
     }
 
     func testFooterOrderAndNoCountsSentenceWhenHealthy() {
@@ -125,8 +125,11 @@ final class ActiveSelectorMenuTests: XCTestCase {
         let other = claude("dJormun", usage(session: 12))
         let out = rows(selections([owner, other], active: [owner.id], next: predicted(other)))
         XCTAssertEqual(Array(titles(out).suffix(6)),
-                       ["", "Auto-switch on · 95 % session / 99 % weekly", "Active & Auto-switch…", "Accounts…", "Dashboard…", "Token usage…"])
-        XCTAssertFalse(titles(out).contains { $0.contains("profiles,") }, "a healthy group is not told it is healthy")
+                       ["", "Auto-switch · 95 % session / 99 % weekly", "Active & Auto-switch…", "Accounts…", "Dashboard…", "Token usage…"])
+        let toggle = out.first { $0.title.hasPrefix("Auto-switch ·") }!
+        XCTAssertTrue(toggle.checked, "a state item the user can act on (S5)")
+        XCTAssertEqual(toggle.action, .toggleAutoSwitch(enabled: false))
+        XCTAssertFalse(titles(out).contains { $0.contains(" accounts · ") }, "a healthy group is not told it is healthy")
     }
 
     func testEligibleRowCarriesAnOptionAlternateThatQueues() {
@@ -150,10 +153,10 @@ final class ActiveSelectorMenuTests: XCTestCase {
         let sel = selections([owner, dead1, dead2, maxed], active: [owner.id], dead: [dead1.id, dead2.id])
         let out = rows(sel)
         let owners = out.first { $0.title == "xFernando" }!
-        XCTAssertTrue(owners.detail?.contains("W 95 % · fires at 99 %") == true, owners.detail ?? "")
-        XCTAssertTrue(titles(out).contains { $0.hasPrefix("4 Codex profiles, 4 accounts") }, titles(out).joined(separator: " | "))
+        XCTAssertTrue(owners.detail?.contains("W 95 · fires at 99 %") == true, owners.detail ?? "")
+        XCTAssertTrue(titles(out).contains("4 accounts · 1 eligible · 2 dead"), "one line (S2): " + titles(out).joined(separator: " | "))
         let evidence = out.first { $0.glyph == "→" }!
-        XCTAssertEqual(evidence.title, "next → — nobody with headroom (2 of 4 dead)")
+        XCTAssertEqual(evidence.title, "next: nobody with headroom (2 of 4 dead)")
         XCTAssertEqual(evidence.titleTint, .red)
         XCTAssertFalse(titles(out).contains { $0.hasPrefix("Switch Codex to next") })
         let repair = out.first { $0.title == "Repair 2 dead Codex logins…" }!
@@ -258,11 +261,25 @@ final class ActiveSelectorMenuTests: XCTestCase {
         let candidate = sel.candidates[0]
         let c = Model.confirmation(provider: .claude, candidate: candidate, owner: sel.owner, now: now)
         XCTAssertEqual(c.title, "Switch the Claude Code login to dJormun?")
+        XCTAssertTrue(c.body.hasPrefix("From dRir (78 % session · resets in"), "both sides named first: " + c.body)
+        XCTAssertTrue(c.body.contains(") to dJormun (12 % session · resets in"), c.body)
         XCTAssertTrue(c.body.contains("Every running Claude Code session re-reads its context on the new account (≈10–15 % of dJormun's window)."), c.body)
-        XCTAssertTrue(c.body.contains("dJormun: S 12 % · W 70 % · F 99 % — login verified (probed 12 m ago)."), c.body)
+        XCTAssertTrue(c.body.contains("dJormun: S 12 % · W 70 % · F 99 % — login verified 12 m ago."), c.body)
         XCTAssertTrue(c.body.contains("dRir keeps 22 % of its session for another"), c.body)
         XCTAssertFalse(c.risky)
+        XCTAssertTrue(c.switchAllowed)
         XCTAssertEqual(c.confirmButton, "Switch now")
+    }
+
+    func testConfirmationForADeadCandidateDisablesTheSwitch() {
+        let owner = claude("dRir", usage(session: 78))
+        let dead = claude("Ai", usage(session: 20))
+        let sel = selections([owner, dead], active: [owner.id], dead: [dead.id])[0]
+        let c = Model.confirmation(provider: .claude, candidate: sel.candidates[0], owner: sel.owner, now: now)
+        XCTAssertFalse(c.switchAllowed, "a dead login never gets an enabled Switch button")
+        XCTAssertEqual(c.confirmButton, "Log in first")
+        XCTAssertTrue(c.risky)
+        XCTAssertTrue(c.body.contains("its login is dead — log in again first"), c.body)
     }
 
     func testConfirmationForAnUnverifiedCandidateIsRisky() {

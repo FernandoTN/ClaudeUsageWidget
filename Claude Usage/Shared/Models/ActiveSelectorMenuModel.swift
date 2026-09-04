@@ -33,6 +33,8 @@ enum ActiveSelectorMenuModel {
         case openAccounts
         case openDashboard
         case openTelemetry
+        /// Flip the fleet-wide auto-switch (the checkmark footer item, S5).
+        case toggleAutoSwitch(enabled: Bool)
     }
 
     struct Row: Hashable {
@@ -46,6 +48,10 @@ enum ActiveSelectorMenuModel {
         var titleTint: Tint? = nil
         var enabled: Bool = true
         var action: Action? = nil
+        /// The one action per provider a user reaches for first — drawn bold.
+        var isPrimary: Bool = false
+        /// A state item (checkmark) rather than a command.
+        var checked: Bool = false
         /// Rows of a submenu (the "Switch X to ▸" and "Queue next ▸" lists).
         var submenu: [Row] = []
         /// The ⌥ alternate of this row, shown in its place while Option is held.
@@ -95,7 +101,8 @@ enum ActiveSelectorMenuModel {
             let deadCount = selection.counts.count(.dead)
             let needsSentence = deadCount > 0 || selection.counts.duplicateProfiles > 0 || selection.alert == .noCandidate
             if needsSentence, selection.candidates.count + (selection.owner == nil ? 0 : 1) > 1 {
-                rows.append(Row(kind: .info, title: ActiveVocabulary.countsSentence(selection.counts), titleTint: .secondary, enabled: false))
+                // One line (S2); the full breakdown lives in the tooltip and the inspector.
+                rows.append(Row(kind: .info, title: ActiveVocabulary.countsShort(selection.counts), titleTint: .secondary, enabled: false))
             }
 
             if let switching, switching.provider == provider {
@@ -110,12 +117,14 @@ enum ActiveSelectorMenuModel {
 
             // Evidence row: the next candidate and what is known about it.
             rows.append(evidenceRow(selection, now: now))
+            // Status above, actions below (S3).
+            rows.append(.separator)
 
             let eligible = selection.eligibleCandidates
             if let next = selection.next, let nextRow = selection.candidates.first(where: { $0.id == next.id }), nextRow.status == .eligible {
                 rows.append(Row(kind: .action,
                                 title: "selector.switch_to_next".localized(with: ActiveVocabulary.providerName(provider), nextRow.name),
-                                enabled: !anySwitching, action: .switchTo(nextRow.id, provider)))
+                                enabled: !anySwitching, action: .switchTo(nextRow.id, provider), isPrimary: true))
             }
             rows.append(Row(kind: .action, title: "selector.switch_to".localized(with: ActiveVocabulary.providerName(provider)),
                             enabled: !anySwitching,
@@ -144,11 +153,11 @@ enum ActiveSelectorMenuModel {
 
         rows.append(.separator)
         if let policy = selections.first?.autoSwitch {
-            rows.append(Row(kind: .info,
-                            title: policy.enabled
-                                ? "selector.policy_on".localized(with: Int(policy.sessionThreshold), Int(policy.weeklyThreshold))
-                                : "selector.policy_off".localized,
-                            titleTint: .secondary, enabled: false))
+            // A state the user can act on (S5): a checkmark item that toggles
+            // the fleet-wide auto-switch; the thresholds stay in Settings.
+            rows.append(Row(kind: .action,
+                            title: "selector.policy_toggle".localized(with: Int(policy.sessionThreshold), Int(policy.weeklyThreshold)),
+                            action: .toggleAutoSwitch(enabled: !policy.enabled), checked: policy.enabled))
         }
         rows.append(Row(kind: .action, title: "selector.open_active_settings".localized, action: .openActiveSettings))
         rows.append(Row(kind: .action, title: "selector.open_accounts".localized, action: .openAccounts))
@@ -168,7 +177,7 @@ enum ActiveSelectorMenuModel {
             details.append(text)
             tint = .purple
         } else {
-            details.append(gaugeText(owner.gauges))
+            details.append(compactGaugeText(owner.gauges))
             // "fires at 99 %" names the switch trigger — meaningless for a
             // provider with nobody to switch to.
             if hasCandidates, let weekly = owner.gauges.first(where: { $0.kind == .weekly }),
@@ -198,14 +207,7 @@ enum ActiveSelectorMenuModel {
         }
         var parts: [String] = []
         parts.append(next.queued ? "selector.queued".localized : (next.queueHeadBlocked ? "selector.ranked_blocked_head".localized : "selector.ranked".localized))
-        switch next.verdict {
-        case .verified:
-            parts.append("✓ " + verdictKindText(row.verdictKind) + (row.verdictAt.map { " " + DashboardFormatting.age($0, now: now) } ?? ""))
-        case .unverified:
-            parts.append("? " + verdictKindText(row.verdictKind))
-        case .dead:
-            parts.append("× " + "selector.verdict_dead".localized)
-        }
+        parts.append(verdictText(row.verdict, kind: row.verdictKind, at: row.verdictAt, now: now))
         if let measurement = row.measurement {
             parts.append("selector.headroom_age".localized(with: DashboardFormatting.age(measurement.measuredAt, now: now)))
         }
@@ -217,12 +219,8 @@ enum ActiveSelectorMenuModel {
         var out: [Row] = []
         let provider = selection.provider
         for candidate in selection.eligibleCandidates {
-            var detail = gaugeText(candidate.gauges)
-            switch candidate.verdict {
-            case .verified: detail += " · ✓ " + verdictKindText(candidate.verdictKind) + (candidate.verdictAt.map { " " + DashboardFormatting.age($0, now: now) } ?? "")
-            case .unverified: detail += " · ? " + verdictKindText(candidate.verdictKind)
-            case .dead: detail += " · × " + "selector.verdict_dead".localized
-            }
+            var detail = compactGaugeText(candidate.gauges)
+            detail += " · " + verdictText(candidate.verdict, kind: candidate.verdictKind, at: candidate.verdictAt, now: now)
             if let position = candidate.queuePosition { detail += " · " + "selector.queued_position".localized(with: position) }
             out.append(Row(kind: .action, title: candidate.name, detail: detail,
                            glyph: glyph(for: candidate.readiness), glyphTint: tint(for: candidate.readiness),
@@ -293,6 +291,32 @@ enum ActiveSelectorMenuModel {
         }.joined(separator: " · ")
     }
 
+    /// "S 78 · W 16 · F 16" — the menu's stats without the percent signs (S1).
+    static func compactGaugeText(_ gauges: [WindowGauge]) -> String {
+        gauges.map { gauge in
+            let letter: String
+            switch gauge.kind {
+            case .session: letter = "S"
+            case .weekly: letter = "W"
+            case .fable: letter = "F"
+            }
+            return "\(letter) \(Int(gauge.percentage.rounded()))"
+        }.joined(separator: " · ")
+    }
+
+    /// "✓ verified 12 m ago" / "? unverified (expiry only)" / "× login dead" —
+    /// plain words (S4); the kind survives only where it changes the meaning.
+    static func verdictText(_ verdict: NextCandidate.Verdict, kind: PreflightVerdict.Kind?, at: Date?, now: Date) -> String {
+        switch verdict {
+        case .verified:
+            return "✓ " + "selector.verified".localized + (at.map { " " + DashboardFormatting.age($0, now: now) } ?? "")
+        case .unverified:
+            return "? " + (kind == .expiryOnly ? "selector.unverified_expiry_only".localized : "selector.verdict_unverified".localized)
+        case .dead:
+            return "× " + "selector.verdict_dead".localized
+        }
+    }
+
     static func glyph(for readiness: AccountReadiness) -> String {
         FleetCounts.stripGlyphs.first { $0.0 == readiness }?.1 ?? "○"
     }
@@ -337,8 +361,20 @@ enum ActiveSelectorMenuModel {
         return nil
     }
 
-    /// "Active: Claude dRir 78 % · Codex xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates"
-    static func tooltip(selections: [ProviderActiveSelection]) -> String {
+    /// "Active: Claude dRir 78 % · Codex xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates",
+    /// prefixed with the badge's meaning when one is shown (I2).
+    static func tooltip(selections: [ProviderActiveSelection], badge: Badge? = nil) -> String {
+        let prefix: String
+        switch badge {
+        case .red: prefix = "selector.badge_red".localized + " — "
+        case .purple: prefix = "selector.badge_purple".localized + " — "
+        case .amber: prefix = "selector.badge_amber".localized + " — "
+        case nil: prefix = ""
+        }
+        return prefix + summaryTooltip(selections: selections)
+    }
+
+    private static func summaryTooltip(selections: [ProviderActiveSelection]) -> String {
         let owners = selections.map { selection -> String in
             let name = ActiveVocabulary.providerName(selection.provider)
             guard let owner = selection.owner else { return "\(name) —" }
@@ -362,20 +398,29 @@ enum ActiveSelectorMenuModel {
         var body: String
         /// True when the candidate's login is unverified / the switch may be refused.
         var risky: Bool
-        var confirmButton: String { "selector.confirm_switch".localized }
+        /// False for a dead login: the switch button is disabled and reads
+        /// "Log in first"; Cancel stays the default either way.
+        var switchAllowed: Bool
+        var confirmButton: String { switchAllowed ? "selector.confirm_switch".localized : "selector.confirm_login_first".localized }
         var cancelButton: String { "common.cancel".localized }
     }
 
+    /// "From dRir (78 % session) to dJormun (12 % session · resets in 4 h)." then
+    /// the cost sentence, then the candidate's evidence — both sides named.
     static func confirmation(provider: Profile.ProviderKind, candidate: CandidateRow, owner: OwnerRow?, now: Date) -> Confirmation {
         let cli = ActiveVocabulary.cliName(provider)
-        var body = "selector.confirm_cost".localized(with: cli, candidate.name)
+        var body = "selector.confirm_from_to".localized(
+            with: owner?.name ?? "selector.nobody".localized, owner.map { sideText($0.gauges, now: now) } ?? "—",
+            candidate.name, sideText(candidate.gauges, now: now))
+        body += "\n" + "selector.confirm_cost".localized(with: cli, candidate.name)
         var facts = gaugeText(candidate.gauges)
         switch candidate.verdict {
         case .verified:
-            facts += " — " + "selector.confirm_verified".localized(with: verdictKindText(candidate.verdictKind),
-                                                                   candidate.verdictAt.map { DashboardFormatting.age($0, now: now) } ?? "")
-        case .unverified, .dead:
+            facts += " — " + "selector.confirm_verified".localized(with: candidate.verdictAt.map { DashboardFormatting.age($0, now: now) } ?? "")
+        case .unverified:
             facts += " — " + "selector.confirm_unverified".localized
+        case .dead:
+            facts += " — " + "selector.confirm_dead".localized
         }
         body += "\n" + candidate.name + ": " + facts + "."
         if let owner {
@@ -389,7 +434,19 @@ enum ActiveSelectorMenuModel {
         return Confirmation(
             title: "selector.confirm_title".localized(with: cli, candidate.name),
             body: body,
-            risky: candidate.verdict != .verified
+            risky: candidate.verdict != .verified,
+            switchAllowed: candidate.readiness != .dead
         )
+    }
+
+    /// "78 % session" / "12 % session · resets in 4 h" / "95 % weekly".
+    private static func sideText(_ gauges: [WindowGauge], now: Date) -> String {
+        guard let keyed = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly }) else {
+            return "selector.not_measured".localized
+        }
+        let window = keyed.kind == .session ? "selector.window_session".localized : "selector.window_weekly".localized
+        var text = "\(Int(keyed.percentage.rounded())) % \(window)"
+        if let reset = keyed.resetAt, reset > now { text += " · " + "accounts.resets_in".localized(with: reset.timeRemainingString(from: now)) }
+        return text
     }
 }

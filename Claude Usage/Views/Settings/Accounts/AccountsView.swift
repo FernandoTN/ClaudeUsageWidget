@@ -189,16 +189,16 @@ struct AccountsRosterRow: View {
         HStack(spacing: 6) {
             Text(ActiveSelectorMenuModel.glyph(for: row.readiness))
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(row.readiness.dashboardColor.opacity(row.isStale ? 0.5 : 1))
+                .foregroundColor((row.isDead ? Color.red : row.readiness.dashboardColor).opacity(row.isStale ? 0.5 : 1))
                 .frame(width: 10)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
                 Text(row.name)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(row.isDead ? .orange : .primary)
+                    .foregroundColor(row.isDead ? .red : .primary)
                     .lineLimit(1)
                 if row.needsRelogin {
-                    Text("accounts.relogin_needed".localized).font(.system(size: 9)).foregroundColor(.orange)
+                    Text("accounts.relogin_needed".localized).font(.system(size: 9)).foregroundColor(.red)
                 } else if let email = row.email {
                     Text(email).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
                 }
@@ -209,12 +209,19 @@ struct AccountsRosterRow: View {
                 .foregroundColor(row.percentageText.hasSuffix("!") ? .red : (row.readiness == .suspected ? .purple : .primary))
                 .help(row.readiness == .suspected ? "accounts.suspected_help".localized : "")
             if let mark = row.badge.mark {
-                Text(mark)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(markColor)
-                    .frame(minWidth: 18, alignment: .trailing)
-            } else {
-                Spacer().frame(width: 18)
+                if row.badge.isActive {
+                    // The provider's own word in a cyan pill = Active for that provider (R1).
+                    Text(mark)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.cyan))
+                } else {
+                    Text(mark)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(markColor)
+                        .lineLimit(1)
+                }
             }
         }
         .frame(height: row.email == nil && !row.needsRelogin ? 22 : 30)
@@ -256,9 +263,17 @@ struct AccountsDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
                     header(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate)
-                    if profile.providerKind != .grok || selection.owner != nil {
-                        AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate)
+                    switch tab {
+                    case .overview, .login:
+                        AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate,
+                                           onRepair: { tab = AccountTab.available.contains(.login) ? .login : .overview })
+                    case .alerts:
+                        AccountAlertsTab(profile: profile)
+                    case .monitoring:
+                        AccountMonitoringTab(profile: profile)
                     }
+                    Divider().padding(.top, 8)
+                    AccountFooter(profile: profile)
                 }
                 .padding(DesignTokens.Spacing.settingsCardPadding)
             }
@@ -302,16 +317,18 @@ struct AccountsDetailView: View {
                         }
                     }
                 }
+                Button("accounts.open_dashboard".localized) { MenuBarManager.current?.openDashboard() }
+                    .disabled(MenuBarManager.current == nil)
                 if let switchNote {
                     Text(switchNote).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
                 }
             }
             Picker("", selection: $tab) {
-                Text(AccountTab.overview.title).tag(AccountTab.overview)
+                ForEach(AccountTab.available, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 220)
+            .frame(maxWidth: 360)
             .padding(.top, 4)
         }
     }
@@ -334,6 +351,8 @@ struct AccountOverviewTab: View {
     let selection: ProviderActiveSelection
     let isOwner: Bool
     let candidate: CandidateRow?
+    /// Opens the Login tab from the dead banner (O4).
+    var onRepair: (() -> Void)? = nil
 
     private var gauges: [WindowGauge] { isOwner ? (selection.owner?.gauges ?? []) : (candidate?.gauges ?? []) }
     private var measurement: UsageMeasurement? { isOwner ? selection.owner?.measurement : candidate?.measurement }
@@ -350,7 +369,14 @@ struct AccountOverviewTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             if readiness == .dead {
-                banner("accounts.dead_banner".localized, color: .red, icon: "xmark.octagon.fill")
+                HStack(spacing: 8) {
+                    Image(systemName: "xmark.octagon.fill").foregroundColor(.red)
+                    Text("accounts.dead_banner".localized).font(DesignTokens.Typography.body)
+                    Spacer()
+                    if let onRepair { Button("accounts.dead_banner_action".localized, action: onRepair).buttonStyle(.link) }
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
             }
             SettingsContentCard {
                 VStack(alignment: .leading, spacing: 8) {
@@ -371,7 +397,8 @@ struct AccountOverviewTab: View {
                 VStack(alignment: .leading, spacing: 6) {
                     fact("accounts.fact.readiness".localized, readinessText)
                     fact("accounts.fact.identity".localized, identityText)
-                    fact("accounts.fact.fetch".localized, "accounts.fact.fetch_interval".localized(with: Int(profile.refreshInterval)))
+                    fact("accounts.fact.fetch".localized, "accounts.fact.fetch_interval".localized(with: Int(profile.refreshInterval)),
+                         help: "accounts.fact.fetch_help".localized)
                     if !sameAccountAs.isEmpty {
                         fact("accounts.fact.same_account".localized, sameAccountAs.joined(separator: ", "))
                     }
@@ -398,13 +425,8 @@ struct AccountOverviewTab: View {
         var text = DashboardFormatting.chip(chip(for: readiness))
         if readiness == .dead { return text }
         if let candidate {
-            switch candidate.verdict {
-            case .verified:
-                text += " · " + "accounts.login_verified".localized(with: ActiveSelectorMenuModel.verdictKindText(candidate.verdictKind),
-                                                                    candidate.verdictAt.map { DashboardFormatting.age($0) } ?? "")
-            case .unverified: text += " · " + "accounts.login_unverified".localized
-            case .dead: text += " · " + "selector.verdict_dead".localized
-            }
+            text += " · " + ActiveSelectorMenuModel.verdictText(candidate.verdict, kind: candidate.verdictKind, at: candidate.verdictAt, now: Date())
+                .replacingOccurrences(of: "✓ ", with: "").replacingOccurrences(of: "? ", with: "").replacingOccurrences(of: "× ", with: "")
         } else if isOwner {
             text += " · " + "selector.verdict_owns_login".localized
         }
@@ -458,22 +480,12 @@ struct AccountOverviewTab: View {
         }.joined(separator: "\n")
     }
 
-    private func fact(_ label: String, _ value: String) -> some View {
+    private func fact(_ label: String, _ value: String, help: String? = nil) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text(label).font(DesignTokens.Typography.caption).foregroundColor(.secondary).frame(width: 84, alignment: .trailing)
-            Text(value).font(DesignTokens.Typography.body).textSelection(.enabled)
+            Text(value).font(DesignTokens.Typography.body).textSelection(.enabled).help(help ?? "")
             Spacer(minLength: 0)
         }
-    }
-
-    private func banner(_ text: String, color: Color, icon: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon).foregroundColor(color)
-            Text(text).font(DesignTokens.Typography.body)
-            Spacer()
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.12)))
     }
 }
 
@@ -494,6 +506,7 @@ struct GaugeRow: View {
                 }
             }
             .frame(height: 6)
+            .help("accounts.tick_help".localized(with: Int(gauge.threshold)))
             Text(percentageText)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundColor(suspected == nil ? .primary : .purple)
@@ -546,8 +559,9 @@ enum SwitchConfirmation {
         alert.informativeText = confirmation.body
         alert.alertStyle = confirmation.risky ? .warning : .informational
         alert.addButton(withTitle: confirmation.cancelButton)  // Cancel is the default: switching is the costly action
-        alert.addButton(withTitle: confirmation.confirmButton)
-        guard alert.runModal() == .alertSecondButtonReturn else { return nil }
+        let switchButton = alert.addButton(withTitle: confirmation.confirmButton)
+        switchButton.isEnabled = confirmation.switchAllowed  // a dead login reads "Log in first", disabled
+        guard alert.runModal() == .alertSecondButtonReturn, confirmation.switchAllowed else { return nil }
         return await makeActive(candidate.id)
     }
 }

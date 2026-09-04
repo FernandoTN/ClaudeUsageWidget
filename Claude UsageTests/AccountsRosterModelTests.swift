@@ -75,7 +75,7 @@ final class AccountsRosterModelTests: XCTestCase {
         XCTAssertEqual(rows(sections, .claude).map(\.name), ["dRir", "dJormun", "Commits", "Memori"],
                        "owner first, then soonest weekly reset first — blocked rows keep their rank, unlike the selector's eligible-first menu")
         XCTAssertEqual(rows(sections, .claude)[0].badge, .activeFor(.claude))
-        XCTAssertEqual(rows(sections, .claude)[0].badge.mark, "Cl")
+        XCTAssertEqual(rows(sections, .claude)[0].badge.mark, "Claude", "the provider's own word, drawn as a cyan pill (R1)")
     }
 
     func testAlphabeticalSortAndSectionHeaderText() {
@@ -101,12 +101,12 @@ final class AccountsRosterModelTests: XCTestCase {
                              verdicts: [next.id: PreflightVerdict(isLive: true, at: now, kind: .probed)])
         let byName = Dictionary(uniqueKeysWithValues: rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: ""), .claude).map { ($0.name, $0) })
         XCTAssertEqual(byName["Memori"]?.badge, .queued(position: 1))
-        XCTAssertEqual(byName["Memori"]?.badge.mark, "Q1")
+        XCTAssertEqual(byName["Memori"]?.badge.mark, "queued 1")
         XCTAssertEqual(byName["dJormun"]?.badge, .next(.verified))
         XCTAssertEqual(byName["dJormun"]?.badge.mark, "✓")
         XCTAssertEqual(byName["Google"]?.badge, .duplicate(of: "dRir"))
         XCTAssertEqual(byName["Ass"]?.badge, .excluded(.autoSwitchOff))
-        XCTAssertEqual(byName["Ass"]?.badge.mark, "off")
+        XCTAssertEqual(byName["Ass"]?.badge.mark, "excluded")
     }
 
     func testPercentageTextIsKeyedPerProviderAndMarksTheMaxedWindow() {
@@ -119,11 +119,11 @@ final class AccountsRosterModelTests: XCTestCase {
         let profiles = [claudeOwner, sessionMaxed, fableMaxed, never, codexOwner, codexMaxed]
         let sections = Model.sections(selections: selections(profiles, active: [claudeOwner.id, codexOwner.id]), profiles: profiles, sort: .alphabetical, filter: "")
         let all = Dictionary(uniqueKeysWithValues: sections.flatMap(\.rows).map { ($0.name, $0.percentageText) })
-        XCTAssertEqual(all["dRir"], "78")
+        XCTAssertEqual(all["dRir"], "S 78", "the binding window with its letter (R2)")
         XCTAssertEqual(all["BBR"], "S!")
         XCTAssertEqual(all["Commits"], "F!")
         XCTAssertEqual(all["Hotmail"], "—")
-        XCTAssertEqual(all["xFernando"], "95", "weekly for a weekly-only provider")
+        XCTAssertEqual(all["xFernando"], "W 95", "weekly for a weekly-only provider")
         XCTAssertEqual(all["xFme"], "W!")
     }
 

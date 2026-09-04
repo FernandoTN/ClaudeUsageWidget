@@ -77,6 +77,15 @@ enum ActiveVocabulary {
         "active.changed_outside".localized(with: providerName(provider), newOwner)
     }
 
+    /// The one-line summary for a menu (S2): "9 accounts · 5 eligible · 1 dead · 2 duplicates".
+    static func countsShort(_ counts: FleetCounts.Provider) -> String {
+        var parts = ["counts.accounts".localized(with: counts.distinctAccounts),
+                     "counts.eligible_short".localized(with: counts.autoSwitchEligible)]
+        if counts.count(.dead) > 0 { parts.append("counts.dead".localized(with: counts.count(.dead))) }
+        if counts.duplicateProfiles > 0 { parts.append("counts.duplicates_short".localized(with: counts.duplicateProfiles)) }
+        return parts.joined(separator: " · ")
+    }
+
     /// The counts sentence for a provider (docs/specs/ux-revamp.md §3):
     /// "18 Claude profiles, 17 accounts: 4 ready, 2 low, 1 unmeasured,
     /// 10 exhausted, 1 dead · 2 duplicate rows · 7 eligible now".

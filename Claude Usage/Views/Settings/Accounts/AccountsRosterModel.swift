@@ -141,8 +141,9 @@ enum AccountsRosterModel {
         }
     }
 
-    /// Session for Claude, weekly for weekly-only providers; the maxed window
-    /// wins with its "!" mark; never measured → "—".
+    /// The BINDING window with its letter (R2): "S 78" for Claude, "W 95" for a
+    /// weekly-only provider; the maxed window wins with its "!" mark ("S!" /
+    /// "W!" / "F!"); never measured → "—".
     static func percentageText(_ gauges: [WindowGauge], readiness: AccountReadiness) -> String {
         guard !gauges.isEmpty else { return "—" }
         if readiness == .exhausted {
@@ -150,8 +151,17 @@ enum AccountsRosterModel {
             if let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return "F!" }
             if let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return "W!" }
         }
-        let keyed = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly })
-        return keyed.map { "\(Int($0.percentage.rounded()))" } ?? "—"
+        guard let keyed = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly }) else { return "—" }
+        return "\(keyed.kind == .session ? "S" : "W") \(Int(keyed.percentage.rounded()))"
+    }
+
+    /// Keeps the domain readable (R3): "fernando@mymemori.app" → "f…@mymemori.app"
+    /// when the local part is long; short addresses pass through.
+    static func shortEmail(_ email: String) -> String {
+        guard let at = email.firstIndex(of: "@") else { return email }
+        let local = email[..<at], domain = email[at...]
+        guard local.count > 4 else { return email }
+        return String(local.prefix(1)) + "…" + domain
     }
 
     static func stateWords(readiness: AccountReadiness, badge: Badge, pinned: Bool) -> [String] {
@@ -178,11 +188,13 @@ enum AccountsRosterModel {
     }
 
     static func email(of profile: Profile) -> String? {
+        let raw: String?
         switch profile.providerKind {
-        case .claude: return profile.claudeAccountEmail
-        case .codex: return profile.codexEmail
-        case .grok: return profile.grokEmail
+        case .claude: raw = profile.claudeAccountEmail
+        case .codex: raw = profile.codexEmail
+        case .grok: raw = profile.grokEmail
         }
+        return raw.map(shortEmail)
     }
 }
 
@@ -192,19 +204,17 @@ extension AccountsRosterModel.Badge {
         return false
     }
 
-    /// The short mark drawn at the row's right edge.
+    /// The mark drawn at the row's right edge — words, not codes (R1): the
+    /// provider's own name for the active account (drawn as a cyan pill),
+    /// "queued 1", "free plan" / "excluded"; the shared glyphs for next and
+    /// duplicate.
     var mark: String? {
         switch self {
-        case .activeFor(let provider):
-            switch provider {
-            case .claude: return "Cl"
-            case .codex: return "Cx"
-            case .grok: return "Gk"
-            }
-        case .queued(let position): return "Q\(position)"
+        case .activeFor(let provider): return ActiveVocabulary.providerName(provider)
+        case .queued(let position): return "accounts.badge.queued".localized(with: position)
         case .next(let verdict): return verdict.glyph
         case .duplicate: return "⧉"
-        case .excluded(let reason): return reason == .freePlan ? "free" : "off"
+        case .excluded(let reason): return reason == .freePlan ? "accounts.badge.free_plan".localized : "accounts.badge.excluded".localized
         case .none: return nil
         }
     }
