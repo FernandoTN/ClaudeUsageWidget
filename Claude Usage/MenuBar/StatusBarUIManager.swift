@@ -1685,6 +1685,57 @@ final class StatusBarUIManager {
     }
 #endif
 
+    // MARK: - Group order repair (once per launch)
+
+    private var groupOrderRepairs = 0
+    static let maxGroupOrderRepairs = 1
+
+    /// Field 2026-09-04, the first launch on the fleet layout: the Codex group
+    /// came up RIGHT of Grok at the first layout (x 1331 vs 1302, both freshly
+    /// sized 94 / 29 pt from the 24 pt placeholder) and the in-place repaint
+    /// then holds whatever the host decided. Under the per-account layout the
+    /// same build placed codex < grok < claude every launch. So, once per
+    /// launch and only when the probe reads a mismatch: recreate the group
+    /// items in the designed order at their FINAL widths with their images
+    /// already attached, so the host lays them out once, fully sized, with
+    /// no length or image change following. Three status items recreated
+    /// once is the CAContext cost of one small rebuild; the cap keeps it
+    /// from ever becoming a loop, and the probe after it says whether the
+    /// host took the designed order.
+    private func repairGroupOrderIfNeeded(actual: [Profile.ProviderKind]) {
+        guard Self.useCompositeTiles, groupOrderRepairs < Self.maxGroupOrderRepairs,
+              let target = multiProfileTarget, let action = multiProfileAction else { return }
+        groupOrderRepairs += 1
+        struct Snapshot { var image: NSImage; var length: CGFloat; var toolTip: String?; var label: String? }
+        var snapshots: [Profile.ProviderKind: Snapshot] = [:]
+        for (provider, item) in groupItems {
+            guard let button = item.button, let image = button.image else { continue }
+            snapshots[provider] = Snapshot(image: image, length: item.length, toolTip: button.toolTip,
+                                           label: button.accessibilityLabel())
+        }
+        for (_, item) in groupItems { NSStatusBar.system.removeStatusItem(item) }
+        groupItems.removeAll()
+        for provider in [Profile.ProviderKind.claude, .grok, .codex] {
+            guard let snap = snapshots[provider] else { continue }
+            let item = NSStatusBar.system.statusItem(withLength: snap.length)
+            if let button = item.button {
+                button.action = action
+                button.target = target
+                button.imageScaling = .scaleProportionallyDown
+                button.image = snap.image
+                button.toolTip = snap.toolTip
+                if let label = snap.label { button.setAccessibilityLabel(label) }
+                lastImageData[ObjectIdentifier(button)] = snap.image.tiffRepresentation
+                imageAssignments[ObjectIdentifier(button)] = 1
+            }
+            groupItems[provider] = item
+        }
+        LoggingService.shared.log(
+            "Multi-profile: group order repaired once — recreated \(groupItems.count) items in designed order at final widths (was \(actual.map { "\($0)" }.joined(separator: "<")))")
+        logPlacementAtCreation()
+        scheduleExposureProbe(reason: "order repair")
+    }
+
     // MARK: - Provider-group exposure (menu-bar overflow, stage C0)
 
     /// Provider groups CONFIRMED hidden by the menu bar (two consecutive
@@ -1773,6 +1824,7 @@ final class StatusBarUIManager {
             let order = GroupExposure.order(minX: minX)
             let names = order.order.map { "\($0)" }.joined(separator: "<")
             snapshot.append(order.ok ? "order=\(names) ok" : "ORDER MISMATCH \(names) (expected \(GroupExposure.intendedOrder.filter { minX[$0] != nil }.map { "\($0)" }.joined(separator: "<")))")
+            if !order.ok { repairGroupOrderIfNeeded(actual: order.order) }
         }
         let confirmed = exposureTracker.record(verdicts)
         let changed = confirmed != hiddenProviders
