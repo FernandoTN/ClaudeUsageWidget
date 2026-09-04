@@ -21,7 +21,22 @@ enum TelemetryChartMode: String, CaseIterable {
     case stacked, split
 }
 
+/// "1 rate-limit stop" / "3 rate-limit stops".
+func rateLimitLabel(_ count: Int) -> String {
+    count == 1 ? "telemetry.rate_limit_one".localized : "telemetry.rate_limits".localized(with: count)
+}
+
 nonisolated enum TelemetryChartMath {
+    /// Whether bucket `index` gets a regular axis label: every `every`-th
+    /// bucket, except that on a SPARSE axis (`every` > 1) a label right
+    /// beside a month boundary yields to it. A dense axis labels every
+    /// bucket — "31" and "2" stay either side of "Sep 1" (T26).
+    static func isRegularLabel(_ index: Int, every: Int, boundaries: Set<Int>) -> Bool {
+        guard index % max(1, every) == 0 else { return false }
+        guard every > 1 else { return true }
+        return !boundaries.contains(index - 1) && !boundaries.contains(index + 1)
+    }
+
     /// The largest value rounded up to 1 / 1.2 / 1.5 / 2 / 2.5 / 3 / 4 / 5 / 6 / 8 / 10 × 10ⁿ.
     static func niceCeiling(_ value: Int) -> Int {
         guard value > 0 else { return 1 }
@@ -62,6 +77,9 @@ struct TelemetryChartView: View {
     /// Every bucket scaled to 100 % (By kind's share view: the 3 % of
     /// uncached input that matters is invisible at a linear scale).
     var normalized = false
+    /// Opt-in: a status triangle above a column for every bucket in which
+    /// the scope hit a rate limit (the tooltip always says so).
+    var showRateLimits = false
 
     private let axisWidth: CGFloat = 48
     private let axisHeight: CGFloat = 22
@@ -206,7 +224,12 @@ struct TelemetryChartView: View {
                 let segments: [(SeriesKey, Int)] = row.key.map { [($0, value(bucket.series[$0]))] }
                     ?? series.map { ($0, value(bucket.series[$0])) }
                 let total = segments.reduce(0) { $0 + $1.1 }
-                guard total > 0 else { continue }
+                let stops = showRateLimits ? rateLimitStops(bucket, row: row) : 0
+                guard total > 0 else {
+                    // A stop on a bucket with nothing consumed is still a stop.
+                    if stops > 0 { rateLimitMark(&context, x: x + columnWidth / 2, top: row.top + row.height, count: stops) }
+                    continue
+                }
                 let clipped = row.key == nil && !normalized && (report.outliers?.indices.contains(index) ?? false)
                 let scale = row.height / CGFloat(row.ceiling)
                 let columnHeight = normalized ? row.height : min(row.height, CGFloat(total) * scale)
@@ -230,6 +253,11 @@ struct TelemetryChartView: View {
                     if bucket.isPartial { hatch(&context, rect: rect, surface: surface) }
                     y -= height
                     drawn += 1
+                }
+                if stops > 0 {
+                    // Beside the cap when the break mark and value own the top.
+                    rateLimitMark(&context, x: clipped ? x + columnWidth + 7 : x + columnWidth / 2,
+                                  top: clipped ? row.top + 18 : y, count: stops)
                 }
                 if clipped {
                     // A break mark and the true value above the clipped column.
@@ -278,7 +306,10 @@ struct TelemetryChartView: View {
         })
         for (index, bucket) in buckets.enumerated() {
             let centerX = CGFloat(index) * pitch + pitch / 2
-            let regular = index % labelEvery == 0 && !boundary.contains(index - 1) && !boundary.contains(index + 1)
+            // The yield-to-boundary rule is for sparse axes only: on a 7-day
+            // axis every bucket is labelled and "31" / "2" must not vanish
+            // beside "Sep 1" (T26 — the ⇄ beneath looked like a replacement).
+            let regular = TelemetryChartMath.isRegularLabel(index, every: labelEvery, boundaries: boundary)
             if regular || boundary.contains(index) {
                 let label = TelemetryFormatting.bucketLabel(bucket.start, granularity: report.range.granularity,
                                                             calendar: report.query.calendar, first: index == 0)
@@ -290,6 +321,32 @@ struct TelemetryChartView: View {
                 context.draw(Text(mark).font(.system(size: 8)).foregroundColor(secondary),
                              at: CGPoint(x: centerX, y: size.height - 1), anchor: .bottom)
             }
+        }
+    }
+
+    /// A Split row shows only its own stops — by provider or account when the
+    /// stack places them; otherwise a stop belongs to the provider, not a
+    /// model, and the first row carries the plot-level count.
+    private func rateLimitStops(_ bucket: TelemetryBucket, row: Row) -> Int {
+        guard let key = row.key else { return bucket.rateLimitCount }
+        if !bucket.rateLimitsBySeries.isEmpty { return bucket.rateLimitsBySeries[key] ?? 0 }
+        return row.index == 0 ? bucket.rateLimitCount : 0
+    }
+
+    /// A rate-limit stop: a small status triangle just above `top`, with the
+    /// count beside it when there were several. Status colour, never a
+    /// series colour; the legend and the tooltip carry the words.
+    private func rateLimitMark(_ context: inout GraphicsContext, x: CGFloat, top: CGFloat, count: Int) {
+        let baseY = top - 3
+        var triangle = Path()
+        triangle.move(to: CGPoint(x: x, y: baseY - 7))
+        triangle.addLine(to: CGPoint(x: x - 4.5, y: baseY))
+        triangle.addLine(to: CGPoint(x: x + 4.5, y: baseY))
+        triangle.closeSubpath()
+        context.fill(triangle, with: .color(.orange))
+        if count > 1 {
+            context.draw(Text("\(count)").font(.system(size: 7.5, weight: .semibold)).foregroundColor(.orange),
+                         at: CGPoint(x: x + 6.5, y: baseY - 3.5), anchor: .leading)
         }
     }
 
@@ -343,6 +400,9 @@ struct TelemetryChartView: View {
             if bucket.switchCount > 0 {
                 Text("telemetry.switches".localized(with: bucket.switchCount)).font(.system(size: 8.5)).foregroundStyle(.secondary)
             }
+            if bucket.rateLimitCount > 0 {
+                Text(rateLimitLabel(bucket.rateLimitCount)).font(.system(size: 8.5)).foregroundStyle(.orange)
+            }
             Text(interactive ? "click for the breakdown" : "")
                 .font(.system(size: 8)).foregroundStyle(.tertiary)
         }
@@ -393,6 +453,9 @@ struct TelemetryBucketBreakdown: View {
             }
             if bucket.switchCount > 0 {
                 Text("telemetry.switches".localized(with: bucket.switchCount)).font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            if bucket.rateLimitCount > 0 {
+                Text(rateLimitLabel(bucket.rateLimitCount)).font(.system(size: 9)).foregroundStyle(.orange)
             }
         }
         .padding(12)

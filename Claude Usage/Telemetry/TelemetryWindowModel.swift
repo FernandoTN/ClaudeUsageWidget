@@ -13,6 +13,7 @@
 import AppKit
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 
 nonisolated struct IndexingStatus: Sendable, Equatable {
     var ledgerAvailable = false
@@ -75,6 +76,11 @@ final class TelemetryWindowModel: ObservableObject {
         chartMode ?? (scope == .fleet ? .split : .stacked)
     }
     /// "About these numbers" disclosure, remembered in the ledger's meta.
+    /// The rate-limit overlay is opt-in (owner ruling: markers default to
+    /// switches only); remembered in the ledger's meta table like the notes.
+    @Published var showRateLimits = false {
+        didSet { if showRateLimits != oldValue { service.setMeta("showRateLimits", showRateLimits ? "1" : "0") } }
+    }
     @Published var caveatsExpanded = false {
         didSet { if caveatsExpanded != oldValue { service.setMeta("caveatsExpanded", caveatsExpanded ? "1" : "0") } }
     }
@@ -110,6 +116,10 @@ final class TelemetryWindowModel: ObservableObject {
             guard let self, value == "1", !self.caveatsExpanded else { return }
             self.caveatsExpanded = true
         }
+        service.meta("showRateLimits") { [weak self] value in
+            guard let self, value == "1", !self.showRateLimits else { return }
+            self.showRateLimits = true
+        }
     }
 
     deinit { observers.forEach(NotificationCenter.default.removeObserver) }
@@ -138,6 +148,27 @@ final class TelemetryWindowModel: ObservableObject {
         lines.append("API list-price equivalent, not billed: \(TelemetryFormatting.usd(nanoUSD: report.totals.costNanoUSD)) (rates as of \(TelemetryFormatting.mediumDate(report.priceTable.asOf)))")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+    }
+
+    /// "Export CSV…": the current scope and window, one row per bucket ×
+    /// (provider, model, account, source, sidechain) with provenance columns.
+    /// The panel runs here; the rows are built and written on the service queue.
+    func exportCSV() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        let now = Date()
+        panel.nameFieldStringValue = TelemetryExport.suggestedFileName(scopeTitle: scopeTitle, window: window, now: now, calendar: .current)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let query = TelemetryQuery(scope: scope, window: window, metric: metric, now: now, calendar: .current)
+        service.exportCSV(query: query, roster: TelemetryService.roster(from: profileManager.profiles), scopeTitle: scopeTitle, to: url) { error in
+            guard let error else { return }
+            let alert = NSAlert()
+            alert.messageText = "telemetry.export.failed".localized(with: error.localizedDescription)
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
     }
 
     // MARK: - Loading

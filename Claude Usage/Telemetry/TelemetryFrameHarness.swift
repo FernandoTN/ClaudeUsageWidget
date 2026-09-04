@@ -34,12 +34,13 @@ enum TelemetryFrameHarness {
         func frame(_ name: String, scope: TelemetryScope, window: TelemetryWindow = .days7, metric: TelemetryMetric = .inputClass,
                    report: TelemetryReport?, status: IndexingStatus = status, paused: Bool = false, title: String? = nil,
                    mode: TelemetryChartMode? = nil, hover: Int? = nil, isolated: SeriesKey? = nil, notes: Bool = false, share: Bool = false,
-                   height: CGFloat = size.height) {
+                   rateLimits: Bool = false, height: CGFloat = size.height) {
             let view = TelemetryFrameView(
                 sections: sections, selection: .constant(scope), report: report, status: status, isLoading: false, isPaused: paused,
                 // (bindings are constant: the harness renders one state per frame)
                 scopeTitle: title ?? scopeTitle(scope), window: .constant(window), metric: .constant(metric),
                 chartMode: .constant(mode ?? (scope == .fleet ? .split : .stacked)), caveatsExpanded: .constant(notes),
+                showRateLimits: .constant(rateLimits),
                 owners: Set(Fixture.sidebarProfiles.filter(\.isOwner).map(\.id)), actions: TelemetryActions(),
                 initialHover: hover, initialIsolated: isolated, initialShare: share, interactive: false)
             emit(view, name: "telemetry-\(name)", to: dir, index: &index, height: height)
@@ -50,6 +51,8 @@ enum TelemetryFrameHarness {
         // its scrolling layout, which `ImageRenderer` cannot draw.
         frame("fleet-7d-notes", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), notes: true, height: 760)
         frame("fleet-by-kind-share", scope: .fleet, metric: .inputByKind, report: report(.fleet, .days7, metric: .inputByKind, input: input, now: now), share: true)
+        frame("fleet-7d-ratelimits", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), rateLimits: true)
+        frame("provider-claude-ratelimits", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now), rateLimits: true)
         frame("fleet-7d-stacked", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), mode: .stacked)
         frame("fleet-7d-hover", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), hover: 5)
         frame("provider-claude-isolated", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now),
@@ -178,6 +181,12 @@ enum TelemetryFrameHarness {
                 }
             }
             aggregates = aggregates.filter { $0.minute <= now }
+            // Two Claude stops yesterday (one bucket), one Codex quota rejection.
+            let markers = [
+                TelemetryMarker(markerId: "m1", provider: .claude, kind: .rateLimit, at: day(1, 14, now: now), session: "s1", detail: nil),
+                TelemetryMarker(markerId: "m2", provider: .claude, kind: .rateLimit, at: day(1, 16, now: now), session: "s2", detail: nil),
+                TelemetryMarker(markerId: "m3", provider: .codex, kind: .quotaRejected, at: day(3, 10, now: now), session: "s3", detail: nil),
+            ].filter { $0.at <= now }
             let previous = aggregates.map { a in
                 var copy = a; copy.minute = calendar.date(byAdding: .day, value: -days, to: a.minute)!
                 copy.totals.input = a.totals.input * 2 / 3; copy.totals.cacheRead = a.totals.cacheRead * 2 / 3
@@ -189,7 +198,7 @@ enum TelemetryFrameHarness {
                 health: [ProviderHealth(provider: .claude, scannedAt: now.addingTimeInterval(-12), dataThrough: now.addingTimeInterval(-40), filesSeen: 12_565),
                          ProviderHealth(provider: .codex, scannedAt: now.addingTimeInterval(-12), dataThrough: now.addingTimeInterval(-400), filesSeen: 1_243),
                          ProviderHealth(provider: .grok, scannedAt: now.addingTimeInterval(-12), dataThrough: now.addingTimeInterval(-3_000), filesSeen: 1_542)],
-                codexSessions: 148, firstIndexedAt: day(1, 0, now: now))
+                codexSessions: 148, firstIndexedAt: day(1, 0, now: now), markers: markers)
         }
 
         static func inputWithOutlier(now: Date) -> TelemetryReportBuilder.Input {

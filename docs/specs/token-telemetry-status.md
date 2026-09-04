@@ -212,12 +212,34 @@ fleet-7d-notes (760 pt tall), fleet-by-kind-share; degraded now carries
 the path. Tests: delta / mean label / comparison caption, model colour
 steps, ownership spans. Design passes 32–43.
 
+Stage 3c merged as `d3c9866` (#115; the orchestrator gated and squashed it
+after this session's merge was blocked by its permission classifier) and
+deployed 23:12:51 PDT (pid 62272): first incremental slice 9 files /
++95 events / backlog 0, ledger 288 MB, WAL 0, RSS 160 MB. Orchestrator's
+3c review: every item resolved; one leftover, T26 (Split-axis ⇄ replacing
+the date), carried into 4a. The duplicate-key finding from the 3c merge
+(four setup-wizard keys defined twice on main) was fixed by the
+orchestrator in `6e81128`.
+
+## Stage 4a — attribution polish, part 1
+
+T26 (the month-boundary yield rule applied to dense axes — a rule, not a
+marker; now sparse axes only, tested); the rate-limit overlay as an opt-in
+legend checkbox with per-bucket status triangles, placed by attribution
+like units and per-series in Split; switch detail on the ownership spans
+("first claim (activate) · handed to dJormun (activate)"); Export CSV…
+with four provenance comment lines and provider / source / attribution /
+cost_basis columns on every row, built from the report's own input.
+`TelemetryExport` is pure; `TelemetryEngine.reportInput` is the one read
+path for report and export. Frames added: fleet-7d-ratelimits,
+provider-claude-ratelimits. Tests: `TelemetryExportTests` (6). Design
+passes 44–48.
+
 ## Next
 
-Stage 4 (attribution polish: Switches table in the account scope,
-rate-limit overlay opt-in, by-originator / main-vs-subagent stacks, export
-CSV; minute-compaction of raw events older than 90 days — lossless for the
-report), then the fixes session's punch
+Stage 4b (by-originator / main-vs-subagent stacks; minute compaction of
+raw events older than 90 days — lossless for the report), then the fixes
+session's punch
 list on the shell (typography, sidebar density, footer actions) once its
 pixel pass lands.
 

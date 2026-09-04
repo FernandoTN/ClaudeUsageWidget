@@ -109,6 +109,18 @@ final class TelemetryService {
 
     /// Builds a report on the telemetry queue and delivers it on the main queue
     /// with the indexer's status. `roster` is captured on the main actor.
+    /// Writes the CSV on the engine queue; `completion` runs on main with nil
+    /// on success or the error.
+    func exportCSV(query: TelemetryQuery, roster: [ProfileSummary], scopeTitle: String, to url: URL,
+                   completion: @escaping (Error?) -> Void) {
+        let engine = self.engine
+        queue.async {
+            let failure: Error?
+            do { try engine.exportCSV(query: query, roster: roster, scopeTitle: scopeTitle, to: url); failure = nil } catch { failure = error }
+            DispatchQueue.main.async { completion(failure) }
+        }
+    }
+
     func loadReport(query: TelemetryQuery, roster: [ProfileSummary],
                     completion: @escaping (TelemetryReport?, IndexingStatus) -> Void) {
         let engine = self.engine
@@ -252,34 +264,54 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
     }
 
     /// The report for one query, built entirely on the telemetry queue.
+    struct LedgerUnavailable: Error {}
+
+    /// Everything a report — or its CSV — needs, read from the ledger in one
+    /// pass. The query comes back with `earliestIndexed` filled for "All".
+    func reportInput(query: TelemetryQuery, roster: [ProfileSummary]) throws -> (TelemetryQuery, TelemetryReportBuilder.Input) {
+        guard let ledger else { throw LedgerUnavailable() }
+        var query = query
+        if query.window == .allIndexed, query.earliestIndexed == nil {
+            query.earliestIndexed = try ledger.eventTimeSpan()?.from
+        }
+        let range = query.range()
+        let aggregates = try ledger.aggregateMinutes(from: range.start, to: range.end)
+        let previous = try ledger.aggregateMinutes(from: range.previousStart, to: range.previousEnd)
+        let ownership = try ledger.ownership()
+        let markers = try ledger.markers(from: range.start, to: range.end)
+        let health = try TelemetryProvider.allCases.map { try ledger.health(provider: $0) }
+        let codexSessions: Int?
+        switch query.scope {
+        case .fleet, .provider(.codex), .unattributed(.codex):
+            codexSessions = try ledger.distinctSessions(provider: .codex, from: range.start, to: range.end)
+        default:
+            codexSessions = nil
+        }
+        let firstIndexed = ledger.meta("firstIndexedAt").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+        let input = TelemetryReportBuilder.Input(aggregates: aggregates, previousAggregates: previous, ownership: ownership,
+                                                 roster: roster, health: health, codexSessions: codexSessions,
+                                                 prices: .shipped, firstIndexedAt: firstIndexed, markers: markers)
+        return (query, input)
+    }
+
     func buildReport(query: TelemetryQuery, roster: [ProfileSummary]) -> TelemetryReport? {
-        guard let ledger else { return nil }
+        guard ledger != nil else { return nil }
         do {
-            var query = query
-            if query.window == .allIndexed, query.earliestIndexed == nil {
-                query.earliestIndexed = try ledger.eventTimeSpan()?.from
-            }
-            let range = query.range()
-            let aggregates = try ledger.aggregateMinutes(from: range.start, to: range.end)
-            let previous = try ledger.aggregateMinutes(from: range.previousStart, to: range.previousEnd)
-            let ownership = try ledger.ownership()
-            let health = try TelemetryProvider.allCases.map { try ledger.health(provider: $0) }
-            let codexSessions: Int?
-            switch query.scope {
-            case .fleet, .provider(.codex), .unattributed(.codex):
-                codexSessions = try ledger.distinctSessions(provider: .codex, from: range.start, to: range.end)
-            default:
-                codexSessions = nil
-            }
-            let firstIndexed = ledger.meta("firstIndexedAt").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
-            let input = TelemetryReportBuilder.Input(aggregates: aggregates, previousAggregates: previous, ownership: ownership,
-                                                     roster: roster, health: health, codexSessions: codexSessions,
-                                                     prices: .shipped, firstIndexedAt: firstIndexed)
+            let (query, input) = try reportInput(query: query, roster: roster)
             return TelemetryReportBuilder.build(query: query, input: input)
         } catch {
             telemetryLog.error("report failed — \(String(describing: error))")
             return nil
         }
+    }
+
+    /// The CSV for `query`, written atomically to `url`. Same input as the
+    /// report, so the file and the window agree to the row.
+    func exportCSV(query: TelemetryQuery, roster: [ProfileSummary], scopeTitle: String, to url: URL) throws {
+        let (query, input) = try reportInput(query: query, roster: roster)
+        let csv = TelemetryExport.csv(query: query, input: input, scopeTitle: scopeTitle)
+        try csv.data(using: .utf8)?.write(to: url, options: .atomic)
+        telemetryLog.info("exported CSV: \(url.lastPathComponent, privacy: .public), \(csv.utf8.count) bytes")
     }
 
     func indexingStatus() -> IndexingStatus {

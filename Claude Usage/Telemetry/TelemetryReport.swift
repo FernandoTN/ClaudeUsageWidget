@@ -71,6 +71,13 @@ nonisolated struct TelemetryBucket: Sendable, Equatable {
     var total: TokenTotals
     /// Ownership changes of the scope's provider(s) inside the bucket (heartbeats excluded).
     var switchCount: Int
+    /// Rate-limit stops the scope's provider(s) — or the account — hit inside
+    /// the bucket. Shown only when the overlay is on; always in the tooltip.
+    var rateLimitCount: Int = 0
+    /// The same stops per series when the stack can place them (provider,
+    /// account); empty for model / kind / originator stacks, where a stop
+    /// belongs to the provider, not a series.
+    var rateLimitsBySeries: [SeriesKey: Int] = [:]
     /// The bucket's own breakdown, whatever the chart stacks by — for the
     /// click-a-bucket popover ("what was 16 July?").
     var byModel: [SeriesKey: TokenTotals] = [:]
@@ -122,6 +129,10 @@ nonisolated struct OwnershipSpan: Sendable, Equatable {
     var basis: OwnershipRecord.Basis
     /// True when `start` was clipped to the range (the span began earlier).
     var startsBeforeRange: Bool
+    /// "from dJormun · activate" — who held the login before and why it moved.
+    var openedBy: String? = nil
+    /// "to dJormun · auto-switch" — who took it and why; nil while open.
+    var closedBy: String? = nil
 }
 
 nonisolated struct TelemetryReport: Sendable, Equatable {
@@ -155,6 +166,8 @@ nonisolated enum TelemetryReportBuilder {
         var codexSessions: Int?
         var prices: TokenPriceTable = .shipped
         var firstIndexedAt: Date?
+        /// Rate-limit / quota-rejected markers inside the window (stage 4a overlay).
+        var markers: [TelemetryMarker] = []
     }
 
     static let outlierMinimumBuckets = 14
@@ -227,6 +240,19 @@ nonisolated enum TelemetryReportBuilder {
         for record in input.ownership where record.basis != .heartbeat && scopeProviders.contains(record.provider) {
             if let index = TelemetryQuery.bucketIndex(for: record.at, in: range.buckets) { buckets[index].switchCount += 1 }
         }
+        for marker in input.markers where scopeProviders.contains(marker.provider) {
+            let attribution = resolver.attribute(provider: marker.provider, at: marker.at, source: nil)
+            guard markerInScope(marker, scope: query.scope, attribution: attribution),
+                  let index = TelemetryQuery.bucketIndex(for: marker.at, in: range.buckets) else { continue }
+            buckets[index].rateLimitCount += 1
+            let key: SeriesKey?
+            switch stack {
+            case .provider: key = providerKey(marker.provider)
+            case .account: key = accountKey(for: attribution, provider: marker.provider, roster: names)
+            case .model, .kind, .originator: key = nil
+            }
+            if let key { buckets[index].rateLimitsBySeries[keptSet.contains(key) ? key : .other, default: 0] += 1 }
+        }
 
         // Moving average over complete buckets only.
         let values = buckets.map { $0.total.value(for: query.metric) }
@@ -262,7 +288,7 @@ nonisolated enum TelemetryReportBuilder {
 
         var spans: [OwnershipSpan] = []
         if case .account(let id) = query.scope {
-            spans = ownershipSpans(for: id, ownership: input.ownership, from: range.start, to: range.end)
+            spans = ownershipSpans(for: id, ownership: input.ownership, from: range.start, to: range.end, names: names.mapValues(\.name))
         }
 
         return TelemetryReport(
@@ -279,21 +305,34 @@ nonisolated enum TelemetryReportBuilder {
     /// closes at the next record naming someone else (heartbeats and repeat
     /// sightings of the same owner keep it open). A nil `end` means the
     /// profile still held the login when the window ended — "→ now".
-    static func ownershipSpans(for profileId: UUID, ownership: [OwnershipRecord], from: Date, to: Date) -> [OwnershipSpan] {
+    static func ownershipSpans(for profileId: UUID, ownership: [OwnershipRecord], from: Date, to: Date,
+                               names: [UUID: String] = [:]) -> [OwnershipSpan] {
+        // "took over from Alpha (activate)" / "first claim (activate)" /
+        // "handed to Beta (auto-switch)": the switch in words, cause in brackets.
+        func edge(_ verb: String, _ id: UUID?, _ name: String?, _ cause: String?, orElse: String) -> String {
+            let who = id.flatMap { names[$0] } ?? name
+            let head = who.map { "\(verb) \($0)" } ?? orElse
+            return cause.map { "\(head) (\($0))" } ?? head
+        }
         var spans: [OwnershipSpan] = []
         for provider in TelemetryProvider.allCases {
             let records = ownership.filter { $0.provider == provider }.sorted { ($0.at, $0.seq ?? 0) < ($1.at, $1.seq ?? 0) }
-            var open: (start: Date, basis: OwnershipRecord.Basis)?
+            var open: (start: Date, basis: OwnershipRecord.Basis, openedBy: String?)?
             for record in records {
                 if record.profileId == profileId {
-                    if open == nil { open = (record.at, record.basis) }
+                    if open == nil {
+                        open = (record.at, record.basis, edge("took over from", record.previousProfileId, nil, record.cause, orElse: "first claim"))
+                    }
                 } else if let current = open {
-                    spans.append(OwnershipSpan(provider: provider, start: current.start, end: record.at, basis: current.basis, startsBeforeRange: false))
+                    spans.append(OwnershipSpan(provider: provider, start: current.start, end: record.at, basis: current.basis, startsBeforeRange: false,
+                                               openedBy: current.openedBy,
+                                               closedBy: edge("handed to", record.profileId, record.name, record.cause, orElse: "released")))
                     open = nil
                 }
             }
             if let current = open {
-                spans.append(OwnershipSpan(provider: provider, start: current.start, end: nil, basis: current.basis, startsBeforeRange: false))
+                spans.append(OwnershipSpan(provider: provider, start: current.start, end: nil, basis: current.basis, startsBeforeRange: false,
+                                           openedBy: current.openedBy))
             }
         }
         return spans.compactMap { span in
@@ -334,6 +373,17 @@ nonisolated enum TelemetryReportBuilder {
         }
     }
 
+    /// A marker carries a session, never an account: in the account and
+    /// unattributed scopes it is attributed by time exactly like a unit.
+    static func markerInScope(_ marker: TelemetryMarker, scope: TelemetryScope, attribution: Attribution) -> Bool {
+        switch scope {
+        case .fleet: return true
+        case .provider(let p): return marker.provider == p
+        case .account(let id): return attribution.profileId == id
+        case .unattributed(let p): return marker.provider == p && attribution.profileId == nil
+        }
+    }
+
     static func inScope(_ row: AttributedRow, _ scope: TelemetryScope) -> Bool {
         switch scope {
         case .fleet: return true
@@ -367,11 +417,15 @@ nonisolated enum TelemetryReportBuilder {
     }
 
     static func accountKey(for row: AttributedRow, roster: [UUID: ProfileSummary]) -> SeriesKey {
-        switch row.attribution {
+        accountKey(for: row.attribution, provider: row.aggregate.provider, roster: roster)
+    }
+
+    static func accountKey(for attribution: Attribution, provider: TelemetryProvider, roster: [UUID: ProfileSummary]) -> SeriesKey {
+        switch attribution {
         case .profile(let id, _):
-            return SeriesKey(id: id.uuidString, label: roster[id]?.name ?? String(id.uuidString.prefix(8)), provider: row.aggregate.provider)
+            return SeriesKey(id: id.uuidString, label: roster[id]?.name ?? String(id.uuidString.prefix(8)), provider: provider)
         case .unattributed:
-            return SeriesKey(id: "unattributed:\(row.aggregate.provider.rawValue)", label: "Unattributed", provider: row.aggregate.provider)
+            return SeriesKey(id: "unattributed:\(provider.rawValue)", label: "Unattributed", provider: provider)
         }
     }
 
