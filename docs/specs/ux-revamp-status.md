@@ -30,6 +30,8 @@ messaged to it. Never `/Applications` or the running process.
 | 21:20 | Reset seams merged (#69, `9d86552`); focus-authority merged (#70, `96c9aa5`: `providerOwnerId(for:among:)`, owner guard in `checkAutoSwitchIfNeeded`, R7 pinned-view veto, `.providerOwnerChangedExternally`, delete → view, `.common` timers); popover survives focus change (#71, `cee4c07`) |
 | 21:30 | #68 squash-merged (`80949d2`). Stage 1a built on the merged tree: Release build OK, 393 tests / 0 failures; draft PR opened |
 | 21:40 | Stage 1a #72 squash-merged (`a8f3a60`), deployed by the fixes session at 20:39 PDT (24 profiles / 23 tiles, healthy). Redesign session's B2.1 (#75, `0d762a8`) consumes the 1a models: dashboard header vocabulary, counts strip, view-only name menu, ⇄ link, "Token usage…" entries |
+| 22:00 | Stage 1b #77 merged (`6b83180`), deployed 20:56 PDT. Bar order came up claude < grok < codex < ⇄; a fresh-process probe showed fixed-length items place textbook (X G C S) while the zero-width variable-length groups tie behind the anchor — the redesign session removes the tie (fixed 24 pt initial group length) in its next PR; fallback = selector after the groups |
+| 22:20 | Stage 2a: design pass §12.2 recorded; `SettingsRoute` (typed, decodes the legacy strings), `SettingsSection.accounts`, the roster sidebar replaces the window sidebar in Accounts mode, `AccountsRosterModel` (pure), Overview tab, window 820 × 750 resizable (min 760 × 600), `MenuBarManager.current`; the DEBUG frame harness (`CUW_RENDER_FRAMES=<dir>`, also `TEST_RUNNER_CUW_RENDER_FRAMES` through the test host) rendered 32 frames — the pass caught overlapping two-line roster rows, an unmarked projected value on a suspected row, "1 profiles", "fires at" on a single-account provider and a doubled "dead login · login dead"; all fixed before the PR |
 | 21:50 | Stage 1b: frame-by-frame design pass recorded (spec §12.1); `ActiveSelectorMenuModel` (pure rows / badge / tooltip / confirmation), `ActiveSelectorItem` (fixed 24 pt item created once in `setup()` before the groups, `NSMenu` built in `menuNeedsUpdate`, never-suppressible `NSAlert`, outcomes in place, app activated before every alert), `activeSelectorItem_v1` setting + toggle in Manage Profiles, `buildActiveSelections()` / `activeSelectorStatusItem` / `manuallyPinnedProfileIds` on `MenuBarManager`, `makeFleetSummaryContext` internal, wizard identity stamp after its claim; 14 tests |
 
 ## Ownership (agreed in writing)
@@ -70,8 +72,9 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 0 spec | `feat/ux-revamp-spec` | #68 | **merged** `80949d2` |
 | F (fixes session) | `fix/focus-is-never-authority`, reset seams | #70, #69 | **merged** `96c9aa5`, `9d86552` |
 | 1a models + picker/hotkey rewire + wizard ownership claim (#28) | `feat/ux-revamp-1a-models` | #72 | **merged** `a8f3a60`, deployed 20:39 |
-| 1b ⇄ selector item + menu + confirmation + setting | `feat/ux-revamp-1b-selector` | draft | built on `0d762a8` (B2.1); design pass spec §12.1 |
-| 2a / 2b / 2c inspector | — | — | after F |
+| 1b ⇄ selector item + menu + confirmation + setting | `feat/ux-revamp-1b-selector` | #77 | **merged** `6b83180`, deployed 20:56 |
+| 2a Accounts shell: typed `SettingsRoute`, window 820 resizable, roster sidebar + Overview tab, Debug frame harness | `feat/ux-revamp-2a-shell` | draft | frames rendered and reviewed (§12.2) |
+| 2b / 2c inspector tabs, login components | — | — | after 2a |
 | 3a / 3b / 3c / 3d Settings | — | — | after 2 |
 | 4a / 4b insights, 4.1 resets | — | — | after 3 / the reset seams |
 
