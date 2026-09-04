@@ -207,7 +207,17 @@ enum TelemetryPalette {
         case .provider: return key.provider.map(color(for:)) ?? other
         case .model: return color(forModel: key.id)
         case .kind: return kindSteps[min(index, kindSteps.count - 1)]
-        case .account, .originator: return slots[index % slots.count]
+        case .account: return slots[index % slots.count]
+        // Sources and the main/subagent split are parts of ONE provider:
+        // its hue, stepped by rank, never another provider's slot.
+        case .originator, .sidechain:
+            guard let provider = key.provider else { return slots[index % slots.count] }
+            return color(for: provider).opacity(rankSteps[min(index, rankSteps.count - 1)])
         }
     }
+
+    /// Lightness ladder for ranked parts of one hue (≤ 6 series + Other). The
+    /// first gap is the widest: a two-series stack (main vs subagents) must
+    /// read at a glance, and the tail is rarely reached.
+    static let rankSteps: [Double] = [1.0, 0.6, 0.42, 0.32, 0.25, 0.2]
 }

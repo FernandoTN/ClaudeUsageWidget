@@ -37,6 +37,8 @@ struct TelemetryView: View {
             chartMode: Binding(get: { model.effectiveChartMode }, set: { model.chartMode = $0 }),
             caveatsExpanded: Binding(get: { model.caveatsExpanded }, set: { model.caveatsExpanded = $0 }),
             showRateLimits: Binding(get: { model.showRateLimits }, set: { model.showRateLimits = $0 }),
+            stack: Binding(get: { model.stack }, set: { model.stack = $0 }),
+            stackOptions: model.stackOptions, scopeProvider: model.scopeProvider,
             owners: Set(model.sidebar.flatMap(\.rows).filter(\.isOwner).compactMap { UUID(uuidString: $0.id) }),
             actions: TelemetryActions(refresh: model.refreshNow, togglePause: model.togglePaused, copyNumbers: model.copyNumbers,
                                       exportCSV: model.exportCSV))
@@ -56,6 +58,9 @@ struct TelemetryFrameView: View {
     @Binding var chartMode: TelemetryChartMode
     @Binding var caveatsExpanded: Bool
     @Binding var showRateLimits: Bool
+    @Binding var stack: TelemetryStack?
+    var stackOptions: [TelemetryStack]
+    var scopeProvider: TelemetryProvider?
     var owners: Set<UUID>
     var actions: TelemetryActions
     /// Harness-only: a fixed pointer position, an isolated series, share mode.
@@ -72,7 +77,7 @@ struct TelemetryFrameView: View {
             Divider()
             TelemetryReportPane(report: report, status: status, isLoading: isLoading, isPaused: isPaused, scopeTitle: scopeTitle,
                                 window: $window, metric: $metric, chartMode: $chartMode, caveatsExpanded: $caveatsExpanded,
-                                showRateLimits: $showRateLimits,
+                                showRateLimits: $showRateLimits, stack: $stack, stackOptions: stackOptions, scopeProvider: scopeProvider,
                                 owners: owners, actions: actions, initialHover: initialHover, initialIsolated: initialIsolated,
                                 initialShare: initialShare, interactive: interactive)
         }
@@ -251,6 +256,9 @@ struct TelemetryReportPane: View {
     @Binding var chartMode: TelemetryChartMode
     @Binding var caveatsExpanded: Bool
     @Binding var showRateLimits: Bool
+    @Binding var stack: TelemetryStack?
+    var stackOptions: [TelemetryStack]
+    var scopeProvider: TelemetryProvider?
     var owners: Set<UUID>
     var actions: TelemetryActions
     var interactive = true
@@ -259,14 +267,16 @@ struct TelemetryReportPane: View {
     @State private var hoverIndex: Int?
     @State private var breakdownIndex: Int?
     @State private var shareMode = false
+    @State private var stackMenuShown = false
 
     init(report: TelemetryReport?, status: IndexingStatus, isLoading: Bool, isPaused: Bool, scopeTitle: String,
          window: Binding<TelemetryWindow>, metric: Binding<TelemetryMetric>, chartMode: Binding<TelemetryChartMode>,
-         caveatsExpanded: Binding<Bool>, showRateLimits: Binding<Bool>, owners: Set<UUID>, actions: TelemetryActions,
+         caveatsExpanded: Binding<Bool>, showRateLimits: Binding<Bool>, stack: Binding<TelemetryStack?>,
+         stackOptions: [TelemetryStack], scopeProvider: TelemetryProvider?, owners: Set<UUID>, actions: TelemetryActions,
          initialHover: Int? = nil, initialIsolated: SeriesKey? = nil, initialShare: Bool = false, interactive: Bool = true) {
         self.report = report; self.status = status; self.isLoading = isLoading; self.isPaused = isPaused
         self.scopeTitle = scopeTitle; _window = window; _metric = metric; _chartMode = chartMode; _caveatsExpanded = caveatsExpanded
-        _showRateLimits = showRateLimits
+        _showRateLimits = showRateLimits; _stack = stack; self.stackOptions = stackOptions; self.scopeProvider = scopeProvider
         self.owners = owners; self.actions = actions; self.interactive = interactive
         _hoverIndex = State(initialValue: initialHover)
         _isolated = State(initialValue: initialIsolated)
@@ -429,6 +439,9 @@ struct TelemetryReportPane: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
                 Text(chartTitle).font(.system(size: 12, weight: .bold))
+                if metric != .inputByKind, let report, stackOptions.count > 1 {
+                    stackPill(report.query.effectiveStack)
+                }
                 Spacer()
                 if metric == .inputByKind {
                     TelemetrySegmentedPicker(options: [(false, "telemetry.chart.tokens".localized), (true, "telemetry.chart.share".localized)],
@@ -463,6 +476,47 @@ struct TelemetryReportPane: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+    }
+
+    /// "by model ▾": the stack switch (spec §3.2 frame 4 — by originator /
+    /// project, main vs subagents). A pill, not a segmented control: the row
+    /// is full, and the choice is rarer than the metric. Pure SwiftUI so the
+    /// harness renders the pill; the menu is a popover of plain buttons.
+    private func stackPill(_ current: TelemetryStack) -> some View {
+        Button {
+            stackMenuShown.toggle()
+        } label: {
+            Text("telemetry.stack.by".localized(with: current.title(provider: scopeProvider).lowercased()))
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor).opacity(0.35)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Stack by \(current.title(provider: scopeProvider))")
+        .popover(isPresented: $stackMenuShown, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(stackOptions, id: \.self) { option in
+                    Button {
+                        stack = option
+                        stackMenuShown = false
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold))
+                                .opacity(option == current ? 1 : 0)
+                            Text(option.title(provider: scopeProvider)).font(.system(size: 11))
+                            Spacer(minLength: 8)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(6)
+            .frame(minWidth: 160)
         }
     }
 

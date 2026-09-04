@@ -400,7 +400,8 @@ one footer line, the window keeps working from memory. Nothing for a scope →
 | **3a — window shell** | `TelemetryWindowController`, observer at launch, sidebar, header, KPI row, tables, states, footer controls, DEBUG frame harness | view-model tests; the harness's PNGs reviewed by the fixes session's pixel pass |
 | **3b — chart** | `StackedColumnChart` (Canvas), split rows, hover layer, bucket click breakdown, legend isolate, collapsed markers, light/dark, accessibility summary | geometry tests (gaps, rounding, hatching, outlier break); render smoke in both appearances |
 | **4a — attribution polish, part 1** | T26 dense-axis labels, rate-limit overlay (opt-in, per-series in Split), switch detail on the ownership spans, export CSV with provenance columns | export provenance and scoping, marker counts by scope and by series, span edges, axis label rule |
-| **4b — attribution polish, part 2** | by-originator / main-vs-subagent stacks, minute compaction of raw events older than 90 days (lossless for the report) | originator fixtures; compaction equivalence on a synthetic ledger |
+| **4b — stacks** | the stack switch: by project / originator (source), main vs subagents (Claude's sidechain), account; a pill beside the chart title, options by scope | series keys per stack, option lists per scope, titles per provider |
+| **4c — compaction** | minute compaction of raw events older than 90 days (lossless for the report: same aggregation, session counts, spans) | compaction equivalence on a synthetic ledger; replay after compaction is dropped; in-flight rows untouched |
 
 Each stage: Release build + full suite green on the merged tree
 (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, dedicated
@@ -601,6 +602,21 @@ overlay, switch detail, CSV export):
     the query's zone; a suggested name like
     `token-usage-fleet-7-days-2026-09-04.csv`. Written atomically on the
     service queue; the save panel is the only UI.
+
+Stage 4b (the stack switch, spec §3.2 frame 4):
+
+49. A pill beside the chart title — "by model ▾" — opens the stacks the
+    scope can show: Fleet offers Provider / Account / Source; a Claude
+    provider or account adds Project (the transcript's cwd) and Main vs
+    subagents (the sidechain flag); Codex offers Originator (exec / vscode /
+    cli / guardian). A pill, not a fourth segmented control: the header row
+    is full and the choice is rarer than the metric. By kind is the metric's
+    own stack and never a choice here; the pill hides while it is selected.
+    The choice resets with the scope.
+50. Parts of one provider wear that provider's hue at a ranked lightness
+    step (1.0 · 0.6 · 0.42 …) — a Claude project is never Codex-orange, and
+    "Main" vs "Subagents" reads at a glance. The first gap is the widest
+    because two-series stacks are the common case.
 
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 

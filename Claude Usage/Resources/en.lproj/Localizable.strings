@@ -1226,6 +1226,7 @@
 "telemetry.rate_limits" = "%d rate-limit stops";
 "telemetry.export_csv" = "Export CSV…";
 "telemetry.export.failed" = "The CSV could not be written: %@";
+"telemetry.stack.by" = "by %@ ▾";
 "telemetry.chart.tokens" = "Tokens";
 "telemetry.paused_short" = "paused";
 "telemetry.last_known" = "last known";

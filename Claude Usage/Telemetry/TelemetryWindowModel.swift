@@ -64,8 +64,18 @@ struct TelemetrySidebarProfile: Equatable {
 
 final class TelemetryWindowModel: ObservableObject {
     @Published var scope: TelemetryScope = .fleet {
-        didSet { if scope != oldValue { chartMode = nil; reload() } }
+        didSet { if scope != oldValue { chartMode = nil; stack = nil; reload() } }
     }
+    /// nil = the scope's default stack (Fleet by provider, everything else by
+    /// model). Chosen from the pill beside the chart title; resets with the scope.
+    @Published var stack: TelemetryStack? { didSet { if stack != oldValue { reload() } } }
+
+    /// The provider an account scope belongs to, from the sidebar row.
+    var scopeProvider: TelemetryProvider? {
+        scope.provider ?? sidebar.flatMap(\.rows).first { $0.scope == scope }?.provider
+    }
+
+    var stackOptions: [TelemetryStack] { TelemetryStack.options(for: scope, provider: scopeProvider) }
     @Published var window: TelemetryWindow = .days7 { didSet { if window != oldValue { reload() } } }
     @Published var metric: TelemetryMetric = .inputClass { didSet { if metric != oldValue { reload() } } }
     /// nil = the scope's default: Fleet splits (Codex and Grok are slivers
@@ -161,7 +171,7 @@ final class TelemetryWindowModel: ObservableObject {
         let now = Date()
         panel.nameFieldStringValue = TelemetryExport.suggestedFileName(scopeTitle: scopeTitle, window: window, now: now, calendar: .current)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let query = TelemetryQuery(scope: scope, window: window, metric: metric, now: now, calendar: .current)
+        let query = TelemetryQuery(scope: scope, window: window, metric: metric, stack: stack, now: now, calendar: .current)
         service.exportCSV(query: query, roster: TelemetryService.roster(from: profileManager.profiles), scopeTitle: scopeTitle, to: url) { error in
             guard let error else { return }
             let alert = NSAlert()
@@ -194,7 +204,7 @@ final class TelemetryWindowModel: ObservableObject {
             TelemetrySidebarProfile(id: $0.id, name: $0.name, provider: TelemetryProvider($0.providerKind), isOwner: owners.contains($0.id))
         }
         let fleetQuery = TelemetryQuery(scope: .fleet, window: window, metric: metric, now: Date(), calendar: .current)
-        let scopedQuery = TelemetryQuery(scope: scope, window: window, metric: metric, now: fleetQuery.now, calendar: .current)
+        let scopedQuery = TelemetryQuery(scope: scope, window: window, metric: metric, stack: stack, now: fleetQuery.now, calendar: .current)
         service.loadReport(query: fleetQuery, roster: roster) { [weak self] fleet, status in
             guard let self, thisGeneration == self.generation else { return }
             self.fleetReport = fleet
