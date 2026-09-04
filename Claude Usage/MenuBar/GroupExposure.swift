@@ -10,23 +10,25 @@
 //  The legacy per-tile detector never ran for composite items (audit
 //  2026-09-03 H7), so an overflowed provider vanished silently.
 //
-//  Evidence, in order of trust (field data 2026-09-03, macOS 27, build
-//  ead8c54): the WindowServer's answers first — `NSWindow.occlusionState`
-//  (`.visible` = some pixel of the window is on screen) and the on-screen
-//  window list (`CGWindowListCopyWindowInfo(.optionOnScreenOnly)`; an
-//  ordered-out window is absent). Frame-shape rules second: parked items
+//  Evidence, in order of trust (field data 2026-09-03, macOS 27, builds
+//  ead8c54 and 96c9aa5): `NSWindow.occlusionState` first — `.visible` means
+//  the WindowServer composites some pixel of the window, and it read
+//  visible for every painted tile. Frame-shape rules second: parked items
 //  were measured at y = −33, and a stub narrower than half the item length
-//  is the legacy parking signature. A SCREEN-POINT HIT TEST
-//  (`NSWindow.windowNumber(at:)`) is advisory only: a hit on the item's own
-//  window is proof, but a miss proves nothing — on macOS 27 the menu-bar
-//  host owns the event surface above third-party items, and every probe of
-//  every visibly-painted tile missed (`hits=000` for all three groups while
-//  the owner was clicking them). A frame with no height has not been laid
-//  out yet (the first paint after launch), which is unknown, not hidden.
-//  Absent windows are unknown, never hidden. Verdicts are pure; the tracker
-//  applies hysteresis so one odd sample (a menu open over the bar, a
-//  display mid-change) cannot flip the state. Observe-only: this stage logs
-//  and feeds the dashboard banner.
+//  is the legacy parking signature. Two legs are ADVISORY only, each after a
+//  false positive on every group while the owner was clicking the tiles:
+//  a SCREEN-POINT HIT TEST (`NSWindow.windowNumber(at:)`) — a hit on the
+//  item's own window is proof, a miss proves nothing, because the menu-bar
+//  host owns the event surface above third-party items (`hits=000`); and
+//  the on-screen window list (`CGWindowListCopyWindowInfo(.optionOnScreenOnly)`)
+//  — status-item windows are hosted out of process on macOS 27 and never
+//  appear in it for this app (`on=0` with `occ=0`), so absence proves
+//  nothing and presence is merely supporting. A frame with no height has
+//  not been laid out yet (the first paint after launch), which is unknown,
+//  not hidden. Absent windows are unknown, never hidden. Verdicts are pure;
+//  the tracker applies hysteresis so one odd sample (a menu open over the
+//  bar, a display mid-change) cannot flip the state. Observe-only: this
+//  stage logs and feeds the dashboard banner.
 //
 
 import CoreGraphics
@@ -43,7 +45,8 @@ enum GroupExposure {
         /// pixel of the window is on screen.
         var occluded: Bool
         /// Whether the window number is in the WindowServer's on-screen
-        /// list; nil when the list was not sampled.
+        /// list; nil when the list was not sampled. Telemetry: on macOS 27
+        /// the list never carries this app's status-item windows.
         var onScreen: Bool?
         /// `NSStatusItem.length` (the composite's fixed width).
         var length: CGFloat
@@ -87,14 +90,13 @@ enum GroupExposure {
         // A stub: the window is far narrower than the item's fixed length.
         if o.length > 0, frame.width + 1 < o.length * 0.5 { return .hidden }
         if !o.isVisible { return .hidden }
-        // Ordered out: the WindowServer does not list the window on screen.
-        if o.onScreen == false { return .hidden }
-        // The WindowServer sees some pixel of it: exposed.
+        // The WindowServer composites some pixel of it: exposed. (The
+        // on-screen list is not consulted here — see the header.)
         if !o.occluded { return .exposed }
-        // A plausible, ordered-in frame that the WindowServer reports fully
-        // occluded (a full-screen app hiding the bar, a covering window, or
-        // an overflow that keeps the frame): not confirmed either way until
-        // the field data says occlusion is trustworthy for status windows.
+        // A plausible frame that the WindowServer reports fully occluded (a
+        // full-screen app hiding the bar, a covering window, or an overflow
+        // that keeps the frame): not confirmed either way until a real
+        // overflow sample says occlusion flips for a parked status window.
         return .unknown
     }
 }

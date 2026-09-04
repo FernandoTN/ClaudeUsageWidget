@@ -28,6 +28,7 @@ Spec: `docs/specs/menubar-redesign.md`. Check-in brief (self-contained HTML):
 | 20:15–20:45 | Stage B2: dashboard view + wiring; rendered from the test harness and inspected at full height (no overlaps; Codex "nowhere with headroom", single-account Grok, collapsed switches all correct). UX-revamp sibling (`fe2aabe1`) agreed a file split: it owns the selection vocabulary model, per-provider selectors, the inspector, Settings restructure, counts; I keep the bar, dashboard view/model, popover lifecycle, overflow. |
 | 21:05 | B2 merged (#62, `8da0c3d`). Fixes session deployed main `46bc36a` (B2 + #63), then `98aff7b` (+ #64) at 19:51 PDT: 23 profiles / 22 tiles, default layout, no composite rebuild at launch. |
 | 22:07 | Fixes session deployed `ead8c54` (C0 + #66): the probe's first field sample was a false positive on every group (hit-test leg structurally blind on macOS 27). C0.1 fix-forward: WindowServer evidence, advisory hit test. |
+| 22:40 | Second probe sample on `96c9aa5`: `on=0` for every group (status-item windows are not in this app's on-screen list on macOS 27). C0.2: the on-screen list is telemetry only; occlusion alone says exposed. |
 | 22:25 | Popover lifecycle (row 25 of `docs/specs/ux-revamp-focus-authority.md`, my half): a focus change no longer drops the open popover — `refocusOpenSurface(on:)` rebuilds the dashboard snapshot or re-points the classic popover through `viewProfile`. Found by reading: the dashboard's own Make active… closed the dashboard one runloop after confirming. |
 | 21:10–21:55 | Stage C0: observe-only exposure telemetry. Pure `MenuBar/GroupExposure.swift` (verdict over one observation + hysteresis tracker), the probe in `StatusBarUIManager` (next runloop after every composite assembly, and on `NSWorkspace.didActivateApplicationNotification`), `hiddenProviders` fed to the dashboard's overflow banner, `GroupExposureTests` (5). Full suite 350 / 0. |
 
@@ -92,6 +93,15 @@ exposure, a miss proves nothing), the `h = 0` first-paint frame is unknown
 rather than hidden, and the log line carries `vis= occ= on=`. A plausible,
 ordered-in, fully-occluded frame stays `unknown` until the field says
 occlusion is trustworthy for status windows.
+
+Second field sample (build `96c9aa5`, 20:36 PDT): `vis=1 occ=0 on=0` on
+every group, again CONFIRMED HIDDEN while the tiles were on the bar — the
+on-screen window list never carries this app's status-item windows on
+macOS 27 (they are hosted out of process), so absence from it proves
+nothing. C0.2: the list is telemetry only; `occlusionState` is the one
+WindowServer answer that has read correctly in the field, and it alone now
+says "exposed". Still unknown, by design, until a real overflow is logged:
+whether occlusion flips for a parked status window.
 
 What C0 deliberately does not do: no notification, no ladder, no rebuild.
 The next stage reads the log lines this one produces on the owner's machine

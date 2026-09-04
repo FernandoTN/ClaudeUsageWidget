@@ -4,8 +4,8 @@
 //
 //  Stage C0: is a provider's composite status item visible on the menu bar?
 //  The verdict is pure over one observation (the WindowServer's occlusion
-//  and on-screen answers, frame-shape rules, an advisory hit test whose
-//  misses prove nothing, absent windows unknown); the tracker applies
+//  answer, frame-shape rules, an advisory hit test and an advisory on-screen
+//  list whose misses prove nothing, absent windows unknown); the tracker applies
 //  hysteresis so a single odd sample cannot flip the confirmed state.
 //
 
@@ -33,10 +33,12 @@ final class GroupExposureTests: XCTestCase {
         // A hit on the item's own window is proof even for a stub frame.
         XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1701, y: 1080, width: 27, height: 37),
                                                          hits: [false, true, false], occluded: true)), .exposed)
-        // Ordered out: absent from the on-screen list.
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, onScreen: false)), .hidden)
-        // Ordered in but fully occluded, no hit: not confirmed either way.
+        // The second field shape (build 96c9aa5): visible, not occluded, absent from the
+        // on-screen list — status-item windows are hosted out of process on macOS 27.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, onScreen: false)), .exposed)
+        // Fully occluded, no hit: not confirmed either way, whatever the list says.
         XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, occluded: true)), .unknown)
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, occluded: true, onScreen: false)), .unknown)
         XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, occluded: true, onScreen: nil)), .unknown)
     }
 
