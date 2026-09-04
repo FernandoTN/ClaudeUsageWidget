@@ -40,7 +40,8 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         var description: String { "SQLite \(code): \(message)" }
     }
 
-    static let schemaVersion = 2
+    /// 3 adds the `minutes` and `compacted` tables (stage 4c); no data moves.
+    static let schemaVersion = 3
     /// WAL cap; a checkpoint after every catch-up run truncates it.
     static let journalSizeLimit = 64 << 20
 
@@ -48,6 +49,10 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
     private var db: OpaquePointer?
     private var transactionDepth = 0
     private var internCache: [String: Int64] = [:]
+    /// Per file, the newest event time already folded into `minutes`: a
+    /// replay of older units (a lost cursor, a moved file) is dropped rather
+    /// than counted twice. Loaded at open, refreshed after every compaction.
+    private var compactedThrough: [Int64: Double] = [:]
 
     /// Opens (creating the directory `0700` and the files `0600`) and migrates.
     init(url: URL) throws {
@@ -72,6 +77,7 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         try exec("PRAGMA synchronous=NORMAL")
         try exec("PRAGMA journal_size_limit=\(Self.journalSizeLimit)")
         try createSchema()
+        try reloadCompactionWatermarks()
         for suffix in ["", "-wal", "-shm"] where fm.fileExists(atPath: url.path + suffix) {
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path + suffix)
         }
@@ -95,6 +101,23 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
     CREATE INDEX IF NOT EXISTS events_provider_at ON events(provider, at);
     CREATE INDEX IF NOT EXISTS events_at ON events(at);
     CREATE INDEX IF NOT EXISTS events_file ON events(file_ref);
+    """
+
+    /// Stage 4c: raw events older than the compaction age fold into one row
+    /// per (provider, UTC minute, model, source, sidechain, session) — every
+    /// key the report, the Codex session count and the time span read —
+    /// and `compacted` remembers per file how far that has gone.
+    private static let minutesDDL = """
+    CREATE TABLE IF NOT EXISTS minutes (
+        provider TEXT NOT NULL, minute INTEGER NOT NULL, model TEXT NOT NULL, source_ref INTEGER NOT NULL,
+        sidechain INTEGER NOT NULL, session_ref INTEGER NOT NULL,
+        units INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
+        cache_write_1h INTEGER NOT NULL, output INTEGER NOT NULL, reasoning INTEGER NOT NULL,
+        cost_nano INTEGER NOT NULL, unpriced INTEGER NOT NULL, first_at REAL NOT NULL, last_at REAL NOT NULL,
+        PRIMARY KEY (provider, minute, model, source_ref, sidechain, session_ref)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS minutes_minute ON minutes(minute);
+    CREATE TABLE IF NOT EXISTS compacted (file_ref INTEGER PRIMARY KEY, through REAL NOT NULL);
     """
 
     private func createSchema() throws {
@@ -131,7 +154,9 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
             backlog_files INTEGER NOT NULL, backlog_bytes INTEGER NOT NULL
         );
         """)
-        if version == nil {
+        try exec(Self.minutesDDL)
+        if version != String(Self.schemaVersion) {
+            // v2 → v3 is additive (the two tables above); nothing to move.
             try setMeta("schemaVersion", String(Self.schemaVersion))
         }
         if let migrationStart {
@@ -250,9 +275,11 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         let statement = try prepare(sql)
         try transaction {
             for event in events {
+                let fileRef = try intern(event.fileId)
+                // Already folded into `minutes` for this file: a replay, not news.
+                if let through = compactedThrough[fileRef], event.at.timeIntervalSince1970 <= through { continue }
                 let sessionRef = try intern(event.session)
                 let sourceRef = try event.source.map { try intern($0) }
-                let fileRef = try intern(event.fileId)
                 statement.bind(1, event.unitId); statement.bind(2, event.provider.rawValue)
                 statement.bind(3, event.at.timeIntervalSince1970); statement.bind(4, event.model)
                 statement.bind(5, event.input); statement.bind(6, event.cacheRead)
@@ -338,11 +365,104 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
     /// Codex rollouts can log token snapshots before their first `turn_context`;
     /// once the model is known, the file's earlier "unknown" units take it
     /// (a rollout rarely changes model — 3 of 1,209 on disk).
+    /// Raw rows only: a compacted minute keeps the model it was folded with
+    /// (the pre-first-turn_context units of a rollout that is still being
+    /// written are never older than the compaction age).
     func reassignUnknownModel(fileId: String, to model: String) throws {
         guard let fileRef = try internedId(fileId) else { return }
         let statement = try prepare("UPDATE events SET model = ?1 WHERE file_ref = ?2 AND model = 'unknown'")
         statement.bind(1, model); statement.bind(2, fileRef)
         _ = try statement.step()
+    }
+
+    // MARK: - Compaction (stage 4c)
+
+    struct CompactionReport: Sendable, Equatable {
+        var eventsRemoved = 0
+        var daysProcessed = 0
+        /// The budget ran out before the cutoff was reached; call again.
+        var remaining = false
+    }
+
+    /// Folds raw events older than `cutoff` — in-flight rows excepted — into
+    /// `minutes`, one UTC day per transaction, until the cutoff is reached or
+    /// `maxSeconds` is spent. Lossless for the report: the minute aggregation,
+    /// the distinct-session count and the time span read the union of both
+    /// tables. Freed pages are reused by new events; the file is never
+    /// vacuumed here (a VACUUM of a 288 MB ledger doubles it on disk for
+    /// seconds and is the migration path's business).
+    @discardableResult
+    func compact(before cutoff: Date, maxSeconds: TimeInterval = 2) throws -> CompactionReport {
+        var report = CompactionReport()
+        let started = Date()
+        let cutoffSeconds = cutoff.timeIntervalSince1970
+        let fold = try prepare("""
+        INSERT INTO minutes (provider, minute, model, source_ref, sidechain, session_ref, units, input, cache_read, cache_write,
+            cache_write_1h, output, reasoning, cost_nano, unpriced, first_at, last_at)
+        SELECT provider, CAST(at / 60 AS INTEGER), model, COALESCE(source_ref, 0), sidechain, session_ref, COUNT(*), SUM(input),
+            SUM(cache_read), SUM(cache_write), SUM(cache_write_1h), SUM(output), SUM(reasoning), COALESCE(SUM(cost_nano), 0),
+            SUM(CASE WHEN cost_nano IS NULL THEN 1 ELSE 0 END), MIN(at), MAX(at)
+        FROM events WHERE at >= ?1 AND at < ?2 AND in_flight = 0
+        GROUP BY provider, CAST(at / 60 AS INTEGER), model, COALESCE(source_ref, 0), sidechain, session_ref
+        ON CONFLICT(provider, minute, model, source_ref, sidechain, session_ref) DO UPDATE SET
+            units = units + excluded.units, input = input + excluded.input, cache_read = cache_read + excluded.cache_read,
+            cache_write = cache_write + excluded.cache_write, cache_write_1h = cache_write_1h + excluded.cache_write_1h,
+            output = output + excluded.output, reasoning = reasoning + excluded.reasoning,
+            cost_nano = cost_nano + excluded.cost_nano, unpriced = unpriced + excluded.unpriced,
+            first_at = MIN(first_at, excluded.first_at), last_at = MAX(last_at, excluded.last_at)
+        """)
+        let watermark = try prepare("""
+        INSERT INTO compacted (file_ref, through)
+        SELECT file_ref, MAX(at) FROM events WHERE at >= ?1 AND at < ?2 AND in_flight = 0 GROUP BY file_ref
+        ON CONFLICT(file_ref) DO UPDATE SET through = MAX(through, excluded.through)
+        """)
+        let remove = try prepare("DELETE FROM events WHERE at >= ?1 AND at < ?2 AND in_flight = 0")
+        let oldest = try prepare("SELECT MIN(at) FROM events WHERE at < ?1 AND in_flight = 0")
+        func oldestRaw() throws -> Double? {
+            oldest.reset(); oldest.bind(1, cutoffSeconds)
+            guard try oldest.step(), !oldest.isNull(0) else { return nil }
+            return oldest.double(0)
+        }
+        while let first = try oldestRaw() {
+            let dayStart = (first / 86_400).rounded(.down) * 86_400
+            let dayEnd = min(dayStart + 86_400, cutoffSeconds)
+            try transaction {
+                for statement in [fold, watermark, remove] {
+                    statement.reset(); statement.bind(1, dayStart); statement.bind(2, dayEnd)
+                    _ = try statement.step()
+                }
+                report.eventsRemoved += changes
+            }
+            report.daysProcessed += 1
+            if Date().timeIntervalSince(started) > maxSeconds {
+                report.remaining = try oldestRaw() != nil
+                break
+            }
+        }
+        if report.daysProcessed > 0 { try reloadCompactionWatermarks() }
+        return report
+    }
+
+    private func reloadCompactionWatermarks() throws {
+        let statement = try prepare("SELECT file_ref, through FROM compacted")
+        var loaded: [Int64: Double] = [:]
+        while try statement.step() { loaded[statement.int64(0)] = statement.double(1) }
+        compactedThrough = loaded
+    }
+
+    /// Rows changed by the last statement.
+    private var changes: Int { db.map { Int(sqlite3_changes($0)) } ?? 0 }
+
+    /// Rows in the `minutes` table — a test seam and a log figure.
+    func compactedMinuteRows() throws -> Int {
+        let statement = try prepare("SELECT COUNT(*) FROM minutes")
+        return try statement.step() ? statement.int(0) : 0
+    }
+
+    /// Raw rows still in `events` — a test seam.
+    func rawEventCount() throws -> Int {
+        let statement = try prepare("SELECT COUNT(*) FROM events")
+        return try statement.step() ? statement.int(0) : 0
     }
 
     /// Minute-level sums for the report builder: one row per (provider, model,
@@ -358,41 +478,67 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         WHERE e.at >= ?1 AND e.at < ?2
         """
         if provider != nil { sql += " AND e.provider = ?3" }
-        sql += " GROUP BY e.provider, e.model, e.source_ref, e.sidechain, minute ORDER BY minute"
-        let statement = try prepare(sql)
-        statement.bind(1, from.timeIntervalSince1970); statement.bind(2, to.timeIntervalSince1970)
-        if let provider { statement.bind(3, provider.rawValue) }
-        var result: [MinuteAggregate] = []
-        while try statement.step() {
-            guard let providerName = statement.string(0), let provider = TelemetryProvider(rawValue: providerName) else { continue }
-            let sidechain = statement.int(3) != 0
-            var totals = TokenTotals()
-            totals.units = statement.int(5); totals.input = statement.int(6); totals.cacheRead = statement.int(7)
-            totals.cacheWrite = statement.int(8); totals.cacheWrite1h = statement.int(9); totals.output = statement.int(10)
-            totals.reasoning = statement.int(11); totals.costNanoUSD = statement.int(12); totals.unpricedUnits = statement.int(13)
-            totals.sidechainUnits = sidechain ? totals.units : 0
-            result.append(MinuteAggregate(provider: provider, model: statement.string(1) ?? "unknown", source: statement.string(2),
-                                          sidechain: sidechain, minute: Date(timeIntervalSince1970: statement.double(4) * 60),
-                                          totals: totals))
+        sql += " GROUP BY e.provider, e.model, e.source_ref, e.sidechain, minute"
+        // Compacted minutes (stage 4c) carry one row per session; the same
+        // columns in the same order, summed into the raw rows below.
+        var compactedSQL = """
+        SELECT m.provider, m.model, src.value, m.sidechain, m.minute, m.units, m.input, m.cache_read, m.cache_write,
+            m.cache_write_1h, m.output, m.reasoning, m.cost_nano, m.unpriced
+        FROM minutes m LEFT JOIN strings src ON src.id = m.source_ref
+        WHERE m.minute * 60 >= ?1 AND m.minute * 60 < ?2
+        """
+        if provider != nil { compactedSQL += " AND m.provider = ?3" }
+        struct Key: Hashable { var provider: TelemetryProvider; var model: String; var source: String?; var sidechain: Bool; var minute: Double }
+        var merged: [Key: TokenTotals] = [:]
+        for text in [sql, compactedSQL] {
+            let statement = try prepare(text)
+            statement.bind(1, from.timeIntervalSince1970); statement.bind(2, to.timeIntervalSince1970)
+            if let provider { statement.bind(3, provider.rawValue) }
+            while try statement.step() {
+                guard let providerName = statement.string(0), let provider = TelemetryProvider(rawValue: providerName) else { continue }
+                let sidechain = statement.int(3) != 0
+                var totals = TokenTotals()
+                totals.units = statement.int(5); totals.input = statement.int(6); totals.cacheRead = statement.int(7)
+                totals.cacheWrite = statement.int(8); totals.cacheWrite1h = statement.int(9); totals.output = statement.int(10)
+                totals.reasoning = statement.int(11); totals.costNanoUSD = statement.int(12); totals.unpricedUnits = statement.int(13)
+                totals.sidechainUnits = sidechain ? totals.units : 0
+                let key = Key(provider: provider, model: statement.string(1) ?? "unknown", source: statement.string(2),
+                              sidechain: sidechain, minute: statement.double(4))
+                merged[key, default: TokenTotals()].add(totals)
+            }
         }
-        return result
+        return merged.map { key, totals in
+            MinuteAggregate(provider: key.provider, model: key.model, source: key.source, sidechain: key.sidechain,
+                            minute: Date(timeIntervalSince1970: key.minute * 60), totals: totals)
+        }.sorted { ($0.minute, $0.provider.rawValue, $0.model, $0.source ?? "", $0.sidechain ? 1 : 0)
+                 < ($1.minute, $1.provider.rawValue, $1.model, $1.source ?? "", $1.sidechain ? 1 : 0) }
     }
 
+    /// Raw and compacted rows alike — a compacted minute keeps its session.
     func distinctSessions(provider: TelemetryProvider, from: Date, to: Date) throws -> Int {
-        let statement = try prepare("SELECT COUNT(DISTINCT session_ref) FROM events WHERE provider = ?1 AND at >= ?2 AND at < ?3")
+        let statement = try prepare("""
+        SELECT COUNT(*) FROM (
+            SELECT session_ref FROM events WHERE provider = ?1 AND at >= ?2 AND at < ?3
+            UNION SELECT session_ref FROM minutes WHERE provider = ?1 AND minute * 60 >= ?2 AND minute * 60 < ?3)
+        """)
         statement.bind(1, provider.rawValue); statement.bind(2, from.timeIntervalSince1970); statement.bind(3, to.timeIntervalSince1970)
         return try statement.step() ? statement.int(0) : 0
     }
 
+    /// Units ever indexed: raw rows plus the units folded into `minutes`.
     func eventCount() throws -> Int {
-        let statement = try prepare("SELECT COUNT(*) FROM events")
+        let statement = try prepare("SELECT (SELECT COUNT(*) FROM events) + (SELECT COALESCE(SUM(units), 0) FROM minutes)")
         return try statement.step() ? statement.int(0) : 0
     }
 
-    /// The oldest and newest event times, or nil when the ledger is empty.
+    /// The oldest and newest event times, or nil when the ledger is empty. A
+    /// compacted minute remembers its exact first and last event time.
     func eventTimeSpan(provider: TelemetryProvider? = nil) throws -> (from: Date, to: Date)? {
-        let statement = try prepare(provider == nil ? "SELECT MIN(at), MAX(at) FROM events"
-                                                    : "SELECT MIN(at), MAX(at) FROM events WHERE provider = ?1")
+        let filter = provider == nil ? "" : " WHERE provider = ?1"
+        let statement = try prepare("""
+        SELECT MIN(lo), MAX(hi) FROM (SELECT at AS lo, at AS hi FROM events\(filter)
+            UNION ALL SELECT first_at AS lo, last_at AS hi FROM minutes\(filter))
+        """)
         if let provider { statement.bind(1, provider.rawValue) }
         guard try statement.step(), !statement.isNull(0) else { return nil }
         return (Date(timeIntervalSince1970: statement.double(0)), Date(timeIntervalSince1970: statement.double(1)))

@@ -366,9 +366,32 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
                 telemetryLog.info("catch-up complete; ledger \(self.ledger?.storageBytes() ?? 0) B on disk")
             }
             if report.filesScanned > 0 { ledger?.checkpoint() }
+            maybeCompact()
         }
     }
     private var catchingUp = false
+
+    /// Raw events older than this fold into minute rows (stage 4c).
+    static let compactionAge: TimeInterval = 90 * 86_400
+    /// At most one completed pass a day; an unfinished one resumes next tick.
+    static let compactionInterval: TimeInterval = 24 * 3_600
+
+    private func maybeCompact() {
+        guard let ledger, !paused else { return }
+        let last = ledger.meta("lastCompactionAt").flatMap(Double.init) ?? 0
+        guard Date().timeIntervalSince1970 - last >= Self.compactionInterval else { return }
+        do {
+            let report = try ledger.compact(before: Date().addingTimeInterval(-Self.compactionAge), maxSeconds: 2)
+            if report.daysProcessed > 0 {
+                ledger.checkpoint()
+                let minuteRows = (try? ledger.compactedMinuteRows()) ?? 0
+                telemetryLog.info("compacted \(report.eventsRemoved) events over \(report.daysProcessed) day(s) into \(minuteRows) minute rows\(report.remaining ? ", more next tick" : ""); ledger \(ledger.storageBytes()) B")
+            }
+            if !report.remaining { try ledger.setMeta("lastCompactionAt", String(Date().timeIntervalSince1970)) }
+        } catch {
+            telemetryLog.error("compaction failed — \(String(describing: error))")
+        }
+    }
 
     func recordClaim(provider: TelemetryProvider, newOwner: UUID?, previousOwner: UUID?,
                      accountStamp: String?, name: String?, cause: String?, at: Date) {
