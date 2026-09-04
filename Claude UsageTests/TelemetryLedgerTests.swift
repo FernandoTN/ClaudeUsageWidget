@@ -44,7 +44,7 @@ final class TelemetryLedgerTests: XCTestCase {
         sqlite3_close(raw)
 
         let migrated = try TelemetryLedger(url: url)
-        XCTAssertEqual(migrated.meta("schemaVersion"), "2")
+        XCTAssertEqual(migrated.meta("schemaVersion"), String(TelemetryLedger.schemaVersion))
         let events = try migrated.events(from: .distantPast, to: .distantFuture)
         XCTAssertEqual(events.map(\.unitId), ["msg_1", "codex:r.jsonl#1", "e1"])
         XCTAssertEqual(events[0].fileId, "claude:proj/S1.jsonl")
@@ -214,7 +214,7 @@ final class TelemetryLedgerTests: XCTestCase {
         health.backlogFiles = 6; health.backlogBytes = 7_000
         try ledger.save(health)
         XCTAssertEqual(try ledger.health(provider: .grok), health)
-        XCTAssertEqual(ledger.meta("schemaVersion"), "2")
+        XCTAssertEqual(ledger.meta("schemaVersion"), String(TelemetryLedger.schemaVersion))
         try ledger.setMeta("lastScope", "fleet")
         try ledger.setMeta("lastScope", "codex")
         XCTAssertEqual(ledger.meta("lastScope"), "codex")
@@ -238,7 +238,7 @@ final class TelemetryLedgerTests: XCTestCase {
         ledger = nil
         let reopened = try TelemetryLedger(url: url)
         XCTAssertEqual(try reopened.eventCount(), 1)
-        XCTAssertEqual(reopened.meta("schemaVersion"), "2")
+        XCTAssertEqual(reopened.meta("schemaVersion"), String(TelemetryLedger.schemaVersion))
     }
 
     func testLedgerWorksOffTheMainThread() throws {

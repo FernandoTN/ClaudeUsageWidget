@@ -253,13 +253,37 @@ wear its hue at lightness steps. Frames added: provider-claude-sidechain,
 provider-codex-originator. Tests in `TelemetryExportTests` (+1). Design
 passes 49–50.
 
+Stage 4b merged as `5a2b12e` (#122; approved from the frames) and deployed
+23:36:53 PDT (pid 56402): catch-up complete at 23:36:59, ledger 303 MB,
+WAL 0, RSS 165 MB.
+
+## Stage 4c — compaction
+
+Schema v3 (additive): `minutes` keyed by provider / UTC minute / model /
+source / sidechain / session with exact first and last times, and
+`compacted` (per-file watermark). `TelemetryLedger.compact(before:
+maxSeconds:)` folds raw events older than the cutoff one UTC day per
+transaction; `aggregateMinutes`, `distinctSessions`, `eventCount` and
+`eventTimeSpan` read the union of both tables; `upsert` drops a replay at
+or before a file's watermark. `TelemetryEngine.maybeCompact` runs at the
+end of a non-catch-up tick, 90-day age, 2 s budget, one completed pass a
+day, checkpoint after, one log line. Tests: `TelemetryCompactionTests`
+(4: equivalence on 200 synthetic days, in-flight rows stay raw, replay
+dropped / new file lands / watermarks survive reopen, budget stops after a
+day and resumes). Design pass 51.
+
 ## Next
 
-Stage 4c (minute compaction of raw events older than 90 days — lossless
-for the report: a `minutes` table keyed by provider / minute / model /
-source / sidechain / session, a per-file watermark so a replay after
-compaction is dropped, in-flight rows untouched, one day per transaction
-under a 2 s budget, at most one pass a day), then the fixes session's punch
+Stage 4d — the T27 defect: isolated-home Codex rollouts never attribute by
+path in production because the reader stores the originator as `source`
+and the indexer hands the home only to the Grok parser. Fix: composite
+source "<home>/<originator>" for isolated homes (default home stays plain),
+resolver matches the prefix, the Originator stack labels the suffix, the
+CSV shows the composite; a one-time per-file re-index of isolated-home
+rollouts that REPLACES that file's rows in the same transaction (unit
+counts asserted unchanged), flagged per file as each completes so a crash
+never loops, with an "About these numbers" line while pending. Then the
+fixes session's punch
 list on the shell (typography, sidebar density, footer actions) once its
 pixel pass lands.
 

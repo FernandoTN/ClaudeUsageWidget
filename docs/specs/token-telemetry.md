@@ -618,6 +618,27 @@ Stage 4b (the stack switch, spec §3.2 frame 4):
     "Main" vs "Subagents" reads at a glance. The first gap is the widest
     because two-series stacks are the common case.
 
+Stage 4c (compaction — no visible change; the invariant is that there is
+none):
+
+51. Raw events older than 90 days fold into `minutes` rows keyed by
+    provider / UTC minute / model / source / sidechain / session — every
+    key the report, the Codex session count and the time span read — with
+    the exact first and last event time kept, so `aggregateMinutes`,
+    `distinctSessions`, `eventCount` and `eventTimeSpan` return the same
+    answers before and after (tested on a 200-day synthetic ledger). One UTC
+    day per transaction under a 2 s budget at the end of a tick, at most
+    one completed pass a day (`lastCompactionAt` in meta), an unfinished
+    pass resumes next tick, checkpoint after. In-flight rows stay raw (a
+    finalize may still replace them). Per file, `compacted` remembers the
+    newest folded time and `upsert` drops any replay at or before it — a
+    lost cursor or a moved file can never count a folded unit twice; a
+    never-seen file's old units still land. `reassignUnknownModel` touches
+    raw rows only. Freed pages are reused, never vacuumed here. Schema v3
+    is additive (two tables); nothing moves at open. Nothing on the live
+    ledger is that old yet — the archive began 2026-08-04 — so the first
+    real pass is months away.
+
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 
 1. Layout **B** vs A. 2. Default **7 days** vs 30. 3. Cost **shown, labelled**
