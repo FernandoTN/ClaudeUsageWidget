@@ -74,6 +74,7 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 1a models + picker/hotkey rewire + wizard ownership claim (#28) | `feat/ux-revamp-1a-models` | #72 | **merged** `a8f3a60`, deployed 20:39 |
 | 1b ⇄ selector item + menu + confirmation + setting | `feat/ux-revamp-1b-selector` | #77 | **merged** `6b83180`, deployed 20:56 |
 | 2a Accounts shell: typed `SettingsRoute`, window 820 resizable, roster sidebar + Overview tab, Debug frame harness | `feat/ux-revamp-2a-shell` | draft | frames rendered and reviewed (§12.2) |
+| 2a fix: selector created after the groups (order fallback) | `fix/ux-revamp-selector-after-groups` | draft | — |
 | 2b / 2c inspector tabs, login components | — | — | after 2a |
 | 3a / 3b / 3c / 3d Settings | — | — | after 2 |
 | 4a / 4b insights, 4.1 resets | — | — | after 3 / the reset seams |

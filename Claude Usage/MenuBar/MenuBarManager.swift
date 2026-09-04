@@ -214,11 +214,6 @@ class MenuBarManager: NSObject, ObservableObject {
 
         Self.current = self
 
-        // The ⇄ selector item goes first: each later status item lands LEFT
-        // of the existing ones, so creating it before the provider groups
-        // keeps it rightmost across every group rebuild (spec §2.1).
-        installActiveSelectorIfNeeded()
-
         // Initialize status bar UI manager
         statusBarUIManager = StatusBarUIManager()
         statusBarUIManager?.delegate = self
@@ -260,6 +255,20 @@ class MenuBarManager: NSObject, ObservableObject {
 #if DEBUG
         startFrameRenderingIfRequested()
 #endif
+
+        // The ⇄ selector item is created AFTER the provider groups. Measured on
+        // the deployed bar (2026-09-03, exposure probe): with the selector
+        // created FIRST, the groups came up claude < grok < codex < ⇄ — the
+        // opposite of the designed codex < grok < claude — and neither a
+        // ≥ 2-minute quit nor fixed-length group items (#83) changed it, while
+        // a fresh process with fixed-length items placed textbook. Creating it
+        // last keeps the groups' order intact; the selector then sits at the
+        // LEFT edge of the app's cluster and clips first on overflow — a
+        // documented trade-off (spec §2.1). A later GROUP rebuild (a provider
+        // appearing or disappearing — membership changes reuse the items) may
+        // land new groups left of the selector; the probe's order= field is
+        // the truth. Created once; setup() re-entry reuses it.
+        installActiveSelectorIfNeeded()
 
         // The popover is created lazily on first click (ensurePopover) and
         // DESTROYED on close: a closed NSPopover keeps its borderless
