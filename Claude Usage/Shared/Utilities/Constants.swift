@@ -115,6 +115,8 @@ enum Constants {
     // Window Sizes
     enum WindowSizes {
         static let settingsWindow = NSSize(width: 720, height: 750)
+        /// The classic single-account popover. The fleet dashboard has its
+        /// own size (`DashboardSurface.dashboardSize`).
         static let popoverSize = NSSize(width: 320, height: 600)
     }
 

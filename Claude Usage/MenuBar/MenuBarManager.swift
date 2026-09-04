@@ -31,6 +31,15 @@ class MenuBarManager: NSObject, ObservableObject {
     /// and the dashboard read it (docs/specs/menubar-redesign.md §4).
     @Published private(set) var preflightVerdicts: [UUID: PreflightVerdict] = [:]
 
+    /// What the fleet dashboard observes: its snapshot — rebuilt ONCE per
+    /// paint while a dashboard is showing (`rebuildDashboardSnapshot`), never
+    /// row by row — and the provider group whose tile was clicked (the
+    /// dashboard opens scrolled to it; independent of `clickedProfileId`,
+    /// since a fleet tile has no per-account click target).
+    let dashboardStore = DashboardStore()
+
+
+
     // Track when refresh was last triggered (for distinguishing user vs auto refresh)
     private var lastRefreshTriggerTime: Date = .distantPast
 
@@ -568,10 +577,23 @@ class MenuBarManager: NSObject, ObservableObject {
 
     /// Returns the live popover, creating it if needed. Created WITHOUT content;
     /// every show-path installs a fresh contentViewController first.
+    /// True when a click opens the fleet dashboard rather than the classic
+    /// single-account popover: multi-profile mode with the dashboard surface
+    /// chosen (or implied by a fleet layout).
+    private var usesDashboardSurface: Bool {
+        profileManager.displayMode == .multi
+            && profileManager.multiProfileConfig.effectiveClickSurface == .dashboard
+    }
+
+    /// The popover / detached panel size for the surface in use.
+    private var surfaceSize: NSSize {
+        DashboardSurface.size(for: usesDashboardSurface ? .dashboard : .classic)
+    }
+
     private func ensurePopover() -> NSPopover {
         if let popover { return popover }
         let popover = NSPopover()
-        popover.contentSize = Constants.WindowSizes.popoverSize
+        popover.contentSize = surfaceSize
         popover.behavior = .semitransient  // Allows detaching
         // NO show/close fade: the fade is a CA transaction against the anchor
         // tile's scene that outlives the user's action — both 2026-08-06
@@ -590,7 +612,40 @@ class MenuBarManager: NSObject, ObservableObject {
         return popover
     }
 
-    private func createContentViewController() -> NSHostingController<PopoverContentView> {
+    /// The content behind a click: the fleet dashboard or the classic
+    /// single-account popover, by `MultiProfileDisplayConfig.clickSurface`.
+    /// Type-erased so the popover and the detached panel share one factory.
+    private func createContentViewController() -> NSViewController {
+        if usesDashboardSurface {
+            rebuildDashboardSnapshot()
+            let actions = DashboardActions(
+                refresh: { [weak self] in self?.refreshFromPopover() },
+                openSettings: { [weak self] raw in
+                    self?.closePopoverOrWindow()
+                    self?.preferencesClicked(section: raw.flatMap(SettingsSection.init(rawValue:)))
+                },
+                makeActive: { [weak self] id in
+                    guard let self else { return .profileNotFound }
+                    // The one activation seam: dead-login gate, adoption,
+                    // switch record, notifications — never a second path.
+                    let outcome = await self.profileManager.activateProfileDetailed(id, userInitiated: true)
+                    self.rebuildDashboardSnapshot()
+                    return outcome
+                },
+                queueNext: { [weak self] id in
+                    let rest = SharedDataStore.shared.loadAutoSwitchQueue().filter { $0 != id }
+                    SharedDataStore.shared.saveAutoSwitchQueue([id] + rest)
+                    self?.rebuildDashboardSnapshot()
+                },
+                removeFromQueue: { [weak self] id in
+                    SharedDataStore.shared.saveAutoSwitchQueue(
+                        SharedDataStore.shared.loadAutoSwitchQueue().filter { $0 != id })
+                    self?.rebuildDashboardSnapshot()
+                }
+            )
+            return NSHostingController(rootView: DashboardView(store: dashboardStore, actions: actions))
+        }
+
         // Create SwiftUI content view
         let contentView = PopoverContentView(
             manager: self,
@@ -652,6 +707,9 @@ class MenuBarManager: NSObject, ObservableObject {
         // closed popover (a switch sweep's publishes are what made Settings
         // feel frozen once before).
         guard popover?.isShown == true || detachedWindow != nil else { return }
+        // The dashboard reads ONE snapshot per paint, rebuilt here from the
+        // same fresh data the tiles are painted from.
+        if usesDashboardSurface { rebuildDashboardSnapshot() }
         guard clickedProfileUsage != nil, let id = clickedProfileId,
               let usage = profileManager.profiles.first(where: { $0.id == id })?.claudeUsage,
               usage != clickedProfileUsage else { return }
@@ -768,11 +826,13 @@ class MenuBarManager: NSObject, ObservableObject {
             // Set the clicked profile data
             clickedProfileId = profileId
             clickedProfileUsage = profile.claudeUsage ?? .empty
+            dashboardStore.clickedProvider = profile.providerKind
             LoggingService.shared.log("Multi-profile popover: showing data for '\(profile.name)'")
         } else {
             // Single profile mode - use active profile
             clickedProfileId = profileManager.activeProfile?.id
             clickedProfileUsage = nil  // Will use manager.usage
+            dashboardStore.clickedProvider = profileManager.activeProfile?.providerKind
         }
 
         // Popover anchor: the clicked tile's segment within a composite group
@@ -820,6 +880,7 @@ class MenuBarManager: NSObject, ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     let fresh = self.ensurePopover()
+                    fresh.contentSize = self.surfaceSize
                     fresh.contentViewController = self.createContentViewController()
                     // Re-resolve the anchor NOW: a repaint between the two
                     // runloop turns can re-lay out the composite, and a stale
@@ -847,6 +908,7 @@ class MenuBarManager: NSObject, ObservableObject {
             // Stop any existing monitor first
             stopMonitoringForOutsideClicks()
             let popover = ensurePopover()
+            popover.contentSize = surfaceSize
             popover.contentViewController = createContentViewController()
             popover.show(relativeTo: anchorRect, of: button, preferredEdge: .minY)
             currentPopoverButton = button
@@ -3562,6 +3624,37 @@ private func observeCredentialChanges() {
     /// Nil for the per-account layout so none of this work happens for it.
     private func fleetSummaryContext(for config: MultiProfileDisplayConfig) -> FleetSummaryContext? {
         guard config.barLayout.isFleetSummary else { return nil }
+        return makeFleetSummaryContext()
+    }
+
+    /// Rebuilds the dashboard's snapshot from the current profiles, provider
+    /// owners, painted order, switch queue and history. Called on open and
+    /// once per paint while a dashboard is showing.
+    func rebuildDashboardSnapshot() {
+        let profiles = profileManager.profiles
+        var painted: [Profile.ProviderKind: [UUID]] = [:]
+        for provider in Profile.ProviderKind.allCases {
+            let order = statusBarUIManager?.paintedGroupMembers(for: provider, among: profiles) ?? []
+            if !order.isEmpty { painted[provider] = order }
+        }
+        dashboardStore.snapshot = DashboardSnapshot.build(DashboardSnapshot.Inputs(
+            profiles: profiles,
+            activeIds: profileManager.activeAccountIds(among: profiles),
+            focusedId: profileManager.activeProfile?.id,
+            paintedOrder: painted,
+            context: makeFleetSummaryContext(),
+            queue: SharedDataStore.shared.loadAutoSwitchQueue(),
+            history: SharedDataStore.shared.loadSwitchHistory(),
+            hiddenProviders: [],
+            // Same Anthropic account behind several profiles (#60): the
+            // dashboard shows them as one quota with the member names.
+            duplicateGroups: profileManager.duplicateClaudeAccountGroups
+        ))
+    }
+
+    /// The readiness / candidate / verdict context both the fleet tiles and
+    /// the dashboard read.
+    private func makeFleetSummaryContext() -> FleetSummaryContext {
         var next: [Profile.ProviderKind: PredictedCandidate] = [:]
         for provider in Profile.ProviderKind.allCases {
             if let candidate = predictedNextCandidate(for: provider) {
@@ -3857,8 +3950,9 @@ extension MenuBarManager: NSPopoverDelegate {
         // This prevents the popover from losing its content
         let newContentViewController = createContentViewController()
 
+        let size = surfaceSize
         let window = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: size.width, height: size.height),
             styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel, .hudWindow],
             backing: .buffered,
             defer: false
@@ -3868,7 +3962,7 @@ extension MenuBarManager: NSPopoverDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 320, height: 600))
+        window.setContentSize(size)
         window.isReleasedWhenClosed = false
         window.level = .floating
         window.isRestorable = false

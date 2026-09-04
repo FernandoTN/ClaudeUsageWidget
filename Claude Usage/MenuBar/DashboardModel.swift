@@ -28,7 +28,7 @@ struct WindowGauge: Hashable {
 }
 
 /// Provenance + age of the value behind a row or card.
-struct Measurement: Hashable {
+struct UsageMeasurement: Hashable {
     var provenance: MeasurementProvenance
     var measuredAt: Date
     /// True when the value was measured with the account's own credentials.
@@ -82,7 +82,7 @@ struct ActiveCard: Hashable {
     var isFocused: Bool
     var readiness: AccountReadiness
     var gauges: [WindowGauge]
-    var measurement: Measurement?
+    var measurement: UsageMeasurement?
     var suspected: SuspectedCaveat?
     /// Seconds until the firing window reaches its threshold at the current
     /// pace; nil when it will not before the window resets (or no pace yet).
@@ -117,7 +117,7 @@ struct RosterRow: Hashable {
     var readiness: AccountReadiness
     var isStale: Bool
     var gauges: [WindowGauge]
-    var measurement: Measurement?
+    var measurement: UsageMeasurement?
     var chip: RowChip
     var queuePosition: Int?
     var repair: RepairAction?
@@ -347,8 +347,8 @@ struct DashboardSnapshot: Hashable {
         return out
     }
 
-    static func measurement(for usage: ClaudeUsage?) -> Measurement? {
-        usage.map { Measurement(provenance: $0.provenance ?? .ownEndpoint, measuredAt: $0.lastUpdated) }
+    static func measurement(for usage: ClaudeUsage?) -> UsageMeasurement? {
+        usage.map { UsageMeasurement(provenance: $0.provenance ?? .ownEndpoint, measuredAt: $0.lastUpdated) }
     }
 
     /// Seconds until `gauge` reaches its threshold at the pace observed so far

@@ -24,6 +24,8 @@ Spec: `docs/specs/menubar-redesign.md`. Check-in brief (self-contained HTML):
 | 19:08–19:15 | Owner: push, open the draft PRs, merge. #55 and #57 squash-merged to main. |
 | 19:20–19:35 | Coordinated with the fixes session (`*********CLAUDECODE-USAGE**********`): it deployed main `50e6d71`, owns the deploy from here, and listed its file areas; provenance contract agreed. |
 | 19:40–20:05 | Stage B1 built on main: provenance, click surface, dashboard snapshot model, 15 tests; PR #59. |
+| 20:10 | B1 merged (`ee0e5ff`). Fixes session merged #60 (duplicate accounts) and #61. |
+| 20:15–20:45 | Stage B2: dashboard view + wiring; rendered from the test harness and inspected at full height (no overlaps; Codex "nowhere with headroom", single-account Grok, collapsed switches all correct). UX-revamp sibling (`fe2aabe1`) agreed a file split: it owns the selection vocabulary model, per-provider selectors, the inspector, Settings restructure, counts; I keep the bar, dashboard view/model, popover lifecycle, overflow. |
 
 ## Stage A — fleet summary layout (MERGED)
 
@@ -44,12 +46,12 @@ Display → Menu bar layout.
 Rollback: pick "Every account" (the default; an absent config key decodes
 to it).
 
-## Stage B — dashboard (B1 in review, B2 next)
+## Stage B — dashboard (B1 merged, B2 in review)
 
 | PR | Branch | Contents | State |
 |---|---|---|---|
-| B1 #59 | `feat/menubar-dashboard-b1` | `ClaudeUsage.provenance` (`ownEndpoint` / `headerRescue` / `cliCache`, stamped by the header rescue and the CLI-cache adoption), `MultiProfileDisplayConfig.clickSurface`, `MenuBar/DashboardModel.swift` (`DashboardSnapshot.build`), `DashboardModelTests` (15) | draft, full suite green |
-| B2 | — | `DashboardView` (stacked provider sections, two-line rows, inline two-step "Make active…" through `activateProfileDetailed`, repair deep links, snapshot rebuilt once per paint), `AccountDetailView` extracted from the classic popover, type-erased popover factory, per-surface popover/panel sizes, Settings picker for the click surface, `duplicateClaudeAccountGroups` fed into the snapshot | not started |
+| B1 #59 `ee0e5ff` | merged 2026-09-04 02:5x UTC | `ClaudeUsage.provenance` (`ownEndpoint` / `headerRescue` / `cliCache`, stamped by the header rescue and the CLI-cache adoption), `MultiProfileDisplayConfig.clickSurface`, `MenuBar/DashboardModel.swift` (`DashboardSnapshot.build`), `DashboardModelTests` (15) | merged |
+| B2 | `feat/menubar-dashboard-b2` | `MenuBar/DashboardView.swift` (stacked provider sections; active card with the threshold each window fires at, provenance + age, suspected caveat, ETA; Next line with verdict age + headroom age; queue slice; two-line roster rows with state chips, queue position, same-account captions, provenance; row tap → account detail reusing the classic usage rows; context menu with an inline two-step "Make active…" through `activateProfileDetailed`, Queue next / Remove, repair deep links; recent switches collapsed), `DashboardStore` (the view observes one snapshot per paint, not the manager), `MenuBarManager` wiring (snapshot rebuilt once per paint while showing, `clickedProvider`, type-erased content factory, per-surface popover/panel sizes 320×600 / 380×640, `duplicateClaudeAccountGroups` fed in), the "Click opens" picker, `DashboardViewTests` (6) + an opt-in preview render test (`TEST_RUNNER_CUW_DASHBOARD_PREVIEW=<png>` [+ `_HEIGHT`]) used to inspect the layout frame by frame without launching the app | draft PR, full suite green |
 
 Coordination with the fixes session (2026-09-03 evening): it owns
 `ProfileManager` (activation outcome, identity stamping, duplicate-account

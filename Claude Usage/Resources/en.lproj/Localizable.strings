@@ -540,6 +540,11 @@
 "multiprofile.layout_every" = "Every account";
 "multiprofile.layout_dots" = "Active + dots";
 "multiprofile.layout_counts" = "Active + counts";
+"multiprofile.click_surface" = "Click Opens";
+"multiprofile.click_surface_auto" = "Follow layout";
+"multiprofile.click_surface_dashboard" = "Fleet dashboard";
+"multiprofile.click_surface_classic" = "Account popover";
+"multiprofile.click_surface_description" = "The fleet dashboard shows every provider: the active account with the window that fires the switch, the next candidate and whether its login was proven live, the switch queue, and every account with its provenance and age. Follow layout = dashboard for the fleet layouts, the account popover for Every account.";
 "multiprofile.layout_description" = "Fleet layouts show one tile per provider: the active account's tile plus a readiness dot (or count) per other account. Green = ready, orange = near a limit, red = exhausted, purple = suspected throttle, orange × = dead login, grey dash = excluded from auto-switch, hollow ring = never measured, dimmed = stale reading. The next auto-switch candidate appears under the dots once the active account passes 75% or a hand-off is queued.";
 
 /* ==================== */
