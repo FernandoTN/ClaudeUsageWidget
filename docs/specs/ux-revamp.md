@@ -691,6 +691,7 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | `claudeUsageData`, `notificationsEnabled`, `refreshInterval` (app-level; only the unused `UserDefaults.refreshInterval` KVO extension reads it), `apiUsageData`, `apiTrackingEnabled`, `apiSessionKey`, `apiOrganizationId`, `showIconNames`, `showNextSessionTime`, `sessionIconEnabled/Style/Order`, `weekIconEnabled/Style/Order`, `weekDisplayMode`, `apiIconEnabled/Style/Order`, `apiDisplayMode` | `Constants.UserDefaultsKeys` | yes | registered as **legacy, unread** (tombstoned, never deleted) | — |
 | `debugTileLayout`, **`debugGroupExposure`** (#65), `NSQuitAlwaysKeepsWindows` | misc | yes | untouched | — |
 | `autoSwitchCustomOrder`, `autoSwitchCustomOrderEnabled` | on disk only (no code) | left alone | — | — |
+| `cuwSlotPinsVersion` | on disk only (2026-07-17 slot-pinning experiment, never merged) | left alone, registered legacy-unread (3d) | — | — |
 | **`fleetAlertDefaults_v1`** | SharedDataStore | **new**, journaled + shadowed | `NotificationSettings` JSON; seeded from `NotificationSettings()` — or, when every profile's settings are identical, promoted from them; never from whichever row is viewed | Alerts |
 | **`activeSelectorItem_v1`** | SharedDataStore | **new**, journaled | `{ enabled: Bool }`; default enabled; toggles `isVisible` | Display |
 
@@ -1156,3 +1157,20 @@ disclosure listing every key with its on-disk mark and where it is edited).
 **Rejected.** Duplicating the shortcut rows (extracted instead); a "reset all
 settings" button (nothing in the spec asks for it, and the empty-overwrite
 guard exists for a reason); deleting unregistered keys from the Advanced page.
+
+### 12.6 Stage 3d, additive half — the move
+
+`SingleAccountBarCards` (the Appearance page's two cards, verbatim) now renders on
+Display under a one-line caption; the Appearance page is a thin host for the same
+struct until the deletion PR. The three marker toggles Manage Profiles had in
+multi mode (time marker, pace marker, pace colouring) are on Display's menu-bar
+card — the parity gap the frame pass found. The roster gets its (+) "Add
+account…" (the one thing only Manage Profiles did). Components that the new
+pages share with the legacy ones moved into `Components/` and `Accounts/`
+(`NotificationSettingsComponents`, `ThresholdField`, `ShortcutRowsCard`,
+`ProfileCredentialStatus`, `CreateProfileSheet`), so the deletion PR is
+deletions only. `.appearance` now aliases to Display.
+
+**Deletion PR (gated on the owner's OK):** Appearance, General, Manage Profiles,
+Popover, Shortcuts, App Settings, CLI Account, Codex Account pages and their
+`SettingsSection` cases (the raw values stay decodable through the aliases).

@@ -111,5 +111,8 @@ enum SettingsKeyRegistry {
         // On disk from an abandoned feature; no code reads or writes them.
         RegisteredKey("autoSwitchCustomOrder", .misc, .legacyUnread),
         RegisteredKey("autoSwitchCustomOrderEnabled", .misc, .legacyUnread),
+        // Left on this Mac by the 2026-07-17 status-item slot-pinning experiment
+        // (autosaveName pins), which was never merged; no build reads it.
+        RegisteredKey("cuwSlotPinsVersion", .misc, .legacyUnread),
     ]
 }

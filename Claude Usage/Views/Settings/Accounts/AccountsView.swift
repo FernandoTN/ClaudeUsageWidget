@@ -90,6 +90,8 @@ struct AccountsSidebar: View {
     @StateObject private var profileManager = ProfileManager.shared
     @State private var filter = ""
     @State private var sort: AccountsRosterModel.Sort = .bar
+    @State private var showingCreate = false
+    @State private var newName = ""
     let onBack: () -> Void
 
     private var sections: [AccountsRosterModel.Section] {
@@ -124,6 +126,17 @@ struct AccountsSidebar: View {
                 .menuStyle(.borderlessButton)
                 .frame(width: 18)
                 .help("accounts.sort_help".localized)
+                Button { showingCreate = true } label: { Image(systemName: "plus").font(.system(size: 10)) }
+                    .buttonStyle(.plain)
+                    .help("accounts.add".localized)
+                    .sheet(isPresented: $showingCreate) {
+                        CreateProfileSheet(profileName: $newName, onSave: {
+                            let created = profileManager.createProfile(name: newName.isEmpty ? nil : newName)
+                            profileManager.viewProfile(created.id)
+                            newName = ""
+                            showingCreate = false
+                        }, onCancel: { showingCreate = false })
+                    }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -379,9 +392,25 @@ struct AccountOverviewTab: View {
                     Text("accounts.dead_banner".localized).font(DesignTokens.Typography.body)
                     Spacer()
                     if let onRepair { Button("accounts.dead_banner_action".localized, action: onRepair).buttonStyle(.link) }
+                    Button("advanced.dead_forget".localized) {
+                        DeadLoginFlags.forget(DeadLoginFlagRow(id: profile.id, name: profile.name, provider: profile.providerKind))
+                    }
+                    .controlSize(.small)
+                    .help("advanced.dead_note".localized)
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))
+            }
+            if ProfileManager.shared.profilesNeedingAccountRelogin.contains(profile.id) {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.badge.exclamationmark").foregroundColor(DesignRole.blocking.color)
+                    Text("accounts.relogin_banner".localized).font(DesignTokens.Typography.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if let onRepair { Button("accounts.dead_banner_action".localized, action: onRepair).buttonStyle(.link) }
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(DesignRole.blocking.color.opacity(0.12)))
             }
             SettingsContentCard {
                 VStack(alignment: .leading, spacing: 8) {
