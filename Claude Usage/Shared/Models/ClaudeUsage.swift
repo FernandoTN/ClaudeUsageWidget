@@ -43,6 +43,17 @@ struct ClaudeUsage: Codable, Equatable {
     /// with nil default so previously cached usage JSON still decodes.
     var rateLimitedInferred: Bool? = nil
 
+    /// How this value was obtained. nil = measured through the account's OWN
+    /// usage endpoint with its own credentials (the legacy default, so
+    /// previously cached JSON decodes unchanged). The dashboard prints the
+    /// provenance beside every number and never lets a value whose provenance
+    /// is not the account's own credentials pose as a measurement — a manual
+    /// refresh once stored the ACTIVE account's numbers into another profile
+    /// through the system-Keychain fallback, and two accounts showed identical
+    /// figures with nothing to say so. Stamped by the header rescue
+    /// (`mergingHeaderMeasurement`) and the CLI-cache adoption.
+    var provenance: MeasurementProvenance? = nil
+
     /// True while an INFERRED (unverified) throttle stamp is live: the account
     /// is SUSPECTED to be rate-limited from behavioral evidence, but the server
     /// never affirmed it. Display surfaces render this as a distinct state
@@ -206,6 +217,9 @@ struct ClaudeUsage: Codable, Equatable {
         merged.rateLimitedInferred = headerUsage.rateLimitedInferred
         merged.projectedSessionPercentage = nil
         merged.lastUpdated = headerUsage.lastUpdated
+        // Still the account's own credentials, but a different bucket and no
+        // per-model windows — the dashboard says so beside the number.
+        merged.provenance = .headerRescue
         return merged
     }
 
@@ -259,6 +273,29 @@ struct ClaudeUsage: Codable, Equatable {
         return boundary
     }
 
+}
+
+/// Where a `ClaudeUsage` value came from — the audit trail behind every
+/// number the dashboard shows. Only the first two are measurements of THIS
+/// account made with THIS account's credentials.
+enum MeasurementProvenance: String, Codable, Hashable {
+    /// The account's own usage endpoint, its own token.
+    case ownEndpoint
+    /// The Messages API's rate-limit headers, its own token (the blind-active-
+    /// account rescue, #41). Session/weekly only — per-model windows are
+    /// carried forward from the previous value.
+    case headerRescue
+    /// The CLI's own cached usage or transcript event, ATTRIBUTED to this
+    /// account by the switch history — not read with its credentials.
+    case cliCache
+
+    /// True when the value was measured with the account's own credentials.
+    var isOwnMeasurement: Bool {
+        switch self {
+        case .ownEndpoint, .headerRescue: return true
+        case .cliCache: return false
+        }
+    }
 }
 
 /// Usage status level for color coding

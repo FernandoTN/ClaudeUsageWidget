@@ -361,6 +361,31 @@ enum MenuBarLayout: String, Codable, CaseIterable, Hashable {
     }
 }
 
+/// What a click on a menu-bar tile opens.
+///
+/// The classic popover shows ONE account; the dashboard shows every provider
+/// with its active account, roster, next candidate and recent switches
+/// (docs/specs/menubar-redesign.md §3). Absent in saved JSON → follows the
+/// bar layout: the per-account layout keeps the classic popover it always
+/// had, a fleet layout opens the dashboard (its tiles have no per-account
+/// click target to land the classic view on).
+enum ClickSurface: String, Codable, CaseIterable, Hashable {
+    case classic
+    case dashboard
+
+    var displayName: String {
+        switch self {
+        case .classic: return "Account popover"
+        case .dashboard: return "Fleet dashboard"
+        }
+    }
+
+    /// The surface a layout implies when the user has not chosen one.
+    nonisolated static func implied(by layout: MenuBarLayout) -> ClickSurface {
+        layout.isFleetSummary ? .dashboard : .classic
+    }
+}
+
 /// Configuration for multi-profile display mode
 struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
     var iconStyle: MultiProfileIconStyle
@@ -371,6 +396,13 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
     var showPaceMarker: Bool  // If true, color time marker by projected usage pace (6-tier)
     var usePaceColoring: Bool // If true, color indicators based on projected usage pace
     var barLayout: MenuBarLayout // Per-provider tile layout (every account vs fleet summary)
+    /// nil = not chosen; resolve with `effectiveClickSurface`.
+    var clickSurface: ClickSurface?
+
+    /// The chosen click surface, else the one the bar layout implies.
+    var effectiveClickSurface: ClickSurface {
+        clickSurface ?? ClickSurface.implied(by: barLayout)
+    }
 
     init(
         iconStyle: MultiProfileIconStyle = .concentric,
@@ -380,7 +412,8 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         showTimeMarker: Bool = true,
         showPaceMarker: Bool = true,
         usePaceColoring: Bool = true,
-        barLayout: MenuBarLayout = .everyAccount
+        barLayout: MenuBarLayout = .everyAccount,
+        clickSurface: ClickSurface? = nil
     ) {
         self.iconStyle = iconStyle
         self.showWeek = showWeek
@@ -390,6 +423,7 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         self.showPaceMarker = showPaceMarker
         self.usePaceColoring = usePaceColoring
         self.barLayout = barLayout
+        self.clickSurface = clickSurface
     }
 
     // MARK: - Codable (Custom decoder for backwards compatibility)
@@ -403,6 +437,7 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         case showPaceMarker
         case usePaceColoring
         case barLayout
+        case clickSurface
     }
 
     init(from decoder: Decoder) throws {
@@ -419,6 +454,9 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         // Absent (pre-redesign JSON) or unrecognised (a newer build's value)
         // → the original per-account layout; never fail the whole decode.
         barLayout = (try? container.decodeIfPresent(MenuBarLayout.self, forKey: .barLayout)) ?? .everyAccount
+        // Absent or unrecognised → nil, i.e. "follow the layout" — never fail
+        // the whole decode.
+        clickSurface = try? container.decodeIfPresent(ClickSurface.self, forKey: .clickSurface)
     }
 
     static var `default`: MultiProfileDisplayConfig {
