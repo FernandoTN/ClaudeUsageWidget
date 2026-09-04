@@ -47,9 +47,23 @@ enum DesignFrameHarness {
                  width: 560, name: "accounts-overview-\(state)", to: dir, index: &index)
         }
         if let profile = Fixture.profiles.first {
-            emit(AccountAlertsTab(profile: profile).padding(16), width: 560, name: "accounts-alerts", to: dir, index: &index)
+            emit(AccountAlertsTab(profile: profile).padding(16), width: 560, name: "accounts-alerts-following", to: dir, index: &index)
+            var own = profile
+            own.usesFleetAlertDefaults = false
+            own.notificationSettings = NotificationSettings(threshold75Enabled: false, soundName: "none", customThresholds: [50])
+            emit(AccountAlertsTab(profile: own).padding(16), width: 560, name: "accounts-alerts-override", to: dir, index: &index)
             emit(AccountMonitoringTab(profile: profile).padding(16), width: 560, name: "accounts-monitoring", to: dir, index: &index)
         }
+        emit(FleetAlertDefaultsCard(settings: .constant(NotificationSettings()), followers: 12, total: 14).padding(16),
+             width: 560, name: "alerts-fleet-card", to: dir, index: &index)
+        let overrideRows = [
+            FleetAlerts.OverrideRow(id: UUID(), name: "Memori", summary: "50 · 90 % · no sound", differsFromFleet: true),
+            FleetAlerts.OverrideRow(id: UUID(), name: "xFho", summary: "75 · 90 · 95 % · default sound", differsFromFleet: false),
+        ]
+        emit(AlertOverridesCard(rows: overrideRows, onOpen: { _ in }, onFollow: { _ in }, onFollowAll: {}).padding(16),
+             width: 560, name: "alerts-overrides", to: dir, index: &index)
+        emit(AlertOverridesCard(rows: [], onOpen: { _ in }, onFollow: { _ in }, onFollowAll: {}).padding(16),
+             width: 560, name: "alerts-overrides-empty", to: dir, index: &index)
         for selection in sel {
             emit(ActiveProviderCard(selection: selection, isEnabled: true) { _ in }.padding(16), width: 560,
                  name: "active-card-\(ActiveVocabulary.providerName(selection.provider).lowercased())", to: dir, index: &index)

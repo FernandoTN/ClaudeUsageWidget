@@ -1110,3 +1110,25 @@ pill — the ONE place the toggle lives (the account's Monitoring tab links here
 
 **Rejected.** Per-provider thresholds (spec §11: a later override); editing the
 queue from the cards (one editor, below); a fourth card for "all providers".
+
+### 12.4 Settings › Alerts (stage 3b)
+
+**Frame 0 — page.** Header "Alerts". Card "Fleet defaults": the ONE
+`NotificationSettingsEditor` (enable, the three built-in thresholds with their
+colour chips, custom thresholds, sound), then "Followed by 12 of 14 accounts."
+Card "Accounts with their own settings": one row per override — name, a one-line
+summary ("50 · 90 % · no sound"; "… — same as the fleet today" when the override
+equals the fleet), "Open" (link → that account's Alerts tab) and "Follow fleet";
+a footer with the bulk "Follow the fleet for all N" and the note that their own
+settings are kept. Empty state: "Every account follows the fleet defaults." The
+rules as one caption at the bottom.
+
+**Account › Alerts tab.** A "Use the fleet defaults" toggle first. Following:
+one line "Fleet defaults: 75 · 90 · 95 % · default sound" + "Edit fleet
+defaults" link. Own: the same editor bound to the profile. Leaving the fleet
+copies the fleet's values in when the account never had its own, so the editor
+opens on what was in force rather than on stale type defaults.
+
+**Rejected.** A second editor implementation for the fleet card (one component,
+two bindings); deleting an account's settings when it follows the fleet (kept,
+so "own" is reversible); seeding the fleet key from the viewed row.

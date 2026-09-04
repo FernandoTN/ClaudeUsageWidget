@@ -969,7 +969,7 @@
 "accounts.fact.fetch_help" = "One sweep timer for the whole fleet; the interval of the account being viewed drives it.";
 "accounts.tick_help" = "Auto-switch fires at %d %%";
 "accounts.alerts.enable_desc" = "Notify about %@'s usage milestones";
-"accounts.alerts.fleet_note" = "Fleet-wide alert defaults with a per-account override arrive with the Alerts page (stage 3b); until then each account keeps its own settings, as before.";
+"accounts.alerts.fleet_note" = "Alerts fire once per account, threshold and window; a session reset or weekly rollover re-arms them.";
 "accounts.monitoring.refresh" = "Refreshed every %d s";
 "accounts.monitoring.refresh_note" = "One sweep timer serves the whole fleet; the interval of the account being viewed drives it.";
 "accounts.monitoring.show_on_bar" = "Show on the menu bar";
@@ -1020,3 +1020,34 @@
 "active.disabled_note" = "Auto-switch is off — this provider only changes account when you switch it.";
 "selector.switching_short" = "switching…";
 "counts.none_measured" = "nothing measured yet";
+
+// MARK: - Settings › Alerts (stage 3b, spec §5.2 D11, §12.4)
+"section.alerts_title" = "Alerts";
+"section.alerts_desc" = "Fleet-wide alert defaults and the accounts that override them";
+"alerts.title" = "Alerts";
+"alerts.subtitle" = "One set of defaults for the fleet; any account can keep its own";
+"alerts.fleet_title" = "Fleet defaults";
+"alerts.fleet_subtitle" = "Used by every account that follows the fleet";
+"alerts.fleet_enable_desc" = "Notify about usage milestones on every following account";
+"alerts.followed_by" = "Followed by %d of %d accounts.";
+"alerts.followed_by_all" = "Followed by all %d accounts.";
+"alerts.overrides_title" = "Accounts with their own settings";
+"alerts.overrides_subtitle" = "These ignore the fleet defaults";
+"alerts.no_overrides" = "Every account follows the fleet defaults.";
+"alerts.same_as_fleet" = "%@ — same as the fleet today";
+"alerts.open_account" = "Open";
+"alerts.follow_fleet" = "Follow fleet";
+"alerts.follow_all_hint" = "Their own settings are kept, so any account can go back to them.";
+"alerts.follow_all" = "Follow the fleet for all %d";
+"alerts.rules" = "Alerts fire once per account, threshold and window; a session reset or weekly rollover re-arms them. They fire on measured values only — a suspected throttle notifies the active account once per episode, and the auto-switch has its own thresholds.";
+"alerts.summary" = "%@ %% · %@";
+"alerts.summary_no_thresholds" = "no thresholds · %@";
+"alerts.summary_off" = "off";
+"alerts.summary_default_sound" = "default sound";
+"alerts.summary_no_sound" = "no sound";
+"accounts.alerts.follow_title" = "Use the fleet defaults";
+"accounts.alerts.follow_desc" = "Alerts for %@ follow Settings › Alerts";
+"accounts.alerts.following" = "Fleet defaults: %@";
+"accounts.alerts.edit_fleet" = "Edit fleet defaults";
+"accounts.alerts.own_desc" = "Notify about %@'s usage milestones";
+"accounts.alerts.own_state_desc" = "%@ keeps its own alert settings";
