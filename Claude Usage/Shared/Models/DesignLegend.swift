@@ -38,13 +38,17 @@ enum DesignRole: Hashable {
     case action
 
     var nsColor: NSColor {
+        // The light shade of a hue keeps the hue SATURATED and drops the
+        // lightness (owner, 2026-09-04: grey-washed tints of red and green
+        // looked alike). `DesignLegendTests` measures the pairs in CIE Lab,
+        // also under protan / deutan simulation.
         switch self {
         case .ready: return .adaptiveGreen
-        case .readyLight: return NSColor(calibratedRed: 0.60, green: 0.86, blue: 0.60, alpha: 1.0)
+        case .readyLight: return NSColor(calibratedHue: 0.39, saturation: 0.82, brightness: 0.62, alpha: 1.0)
         case .caution: return .systemOrange
-        case .cautionLight: return NSColor(calibratedRed: 1.0, green: 0.76, blue: 0.48, alpha: 1.0)
+        case .cautionLight: return NSColor(calibratedHue: 0.08, saturation: 0.92, brightness: 0.66, alpha: 1.0)
         case .blocking: return .systemRed
-        case .blockingLight: return NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.45, alpha: 1.0)
+        case .blockingLight: return NSColor(calibratedHue: 0.0, saturation: 0.88, brightness: 0.55, alpha: 1.0)
         case .suspected: return .systemPurple
         case .informational: return .secondaryLabelColor
         case .active: return .systemCyan

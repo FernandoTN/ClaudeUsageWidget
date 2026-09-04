@@ -242,6 +242,15 @@ final class FleetSummaryTests: XCTestCase {
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 17).columns, 9, "two balanced rows past ten")
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 17).rows, 2)
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 10).rows, 2, "two rows from four accounts")
+        // Row-major from the right edge (owner rule): with 4 dots in 2 × 2,
+        // index 0 (soonest) is top-right, 1 top-left, 2 bottom-right, 3 bottom-left.
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 0, count: 4).column, 0)
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 0, count: 4).row, 0)
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 1, count: 4).column, 1)
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 2, count: 4).row, 1)
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 2, count: 4).column, 0)
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 17, count: 18).row, 1, "18 dots: the farthest sits bottom-left")
+        XCTAssertEqual(FleetBlockGeometry.dotPosition(index: 17, count: 18).column, 8)
         // Two rows from four accounts (owner round B1): 10 → 5 × 2, 17 → 9 × 2.
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 3).rows, 1)
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 4).rows, 2)

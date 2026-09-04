@@ -577,6 +577,17 @@ enum FleetBlockGeometry {
         return ((count + rows - 1) / rows, rows)
     }
 
+    /// Where dot `index` of `count` sits: ROW-major from the RIGHT edge
+    /// (owner, 2026-09-04): index 0 is the soonest weekly reset, top row,
+    /// rightmost; the top row runs right→left, then the bottom row. Column-
+    /// major put the second-soonest UNDER the soonest, so a row read left→
+    /// right skipped every other account.
+    nonisolated static func dotPosition(index: Int, count: Int) -> (column: Int, row: Int) {
+        let grid = dotGrid(count: count)
+        guard grid.columns > 0 else { return (0, 0) }
+        return (index % grid.columns, index / grid.columns)
+    }
+
     /// Dots actually drawn for a roster of `memberCount` other accounts.
     nonisolated static func shownDotCount(memberCount: Int) -> Int {
         memberCount > ProviderSummary.maxDotMembers
