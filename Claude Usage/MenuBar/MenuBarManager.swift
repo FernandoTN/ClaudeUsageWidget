@@ -218,6 +218,11 @@ class MenuBarManager: NSObject, ObservableObject {
             return NSApp.keyWindow?.attachedSheet != nil
         }
 
+        // Owner decision 2026-09-04: an untouched config moves to the
+        // redesigned default layout once, BEFORE the bar is set up so the
+        // first paint already uses it.
+        applyDefaultBarLayoutOnce()
+
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
@@ -833,6 +838,37 @@ class MenuBarManager: NSObject, ObservableObject {
         return (try? png.write(to: url)) != nil
     }
 #endif
+
+    // MARK: - Default bar layout (owner decision 2026-09-04)
+
+    /// The flag under which the one-time move to the redesigned default is
+    /// remembered (registered in `SettingsKeyRegistry.miscKeys`).
+    static let defaultLayoutMigrationKey = "menuBarLayoutDefault_v1"
+
+    /// The redesigned default applied to a config the user never touched:
+    /// still on the legacy per-account layout AND with no explicit click
+    /// surface. nil when nothing should change — an explicit click surface
+    /// means the user has been in the pickers, and any fleet layout is
+    /// already the redesign.
+    nonisolated static func migratedDefaultLayout(_ config: MultiProfileDisplayConfig) -> MultiProfileDisplayConfig? {
+        guard config.barLayout == .everyAccount, config.clickSurface == nil else { return nil }
+        var moved = config
+        moved.barLayout = .fleetDots
+        return moved
+    }
+
+    /// Once per install: move an untouched config to "Active + dots" (the
+    /// click then opens the fleet dashboard). The flag is set whether or not
+    /// anything moved, so a user who later picks "Every account" keeps it.
+    private func applyDefaultBarLayoutOnce() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.defaultLayoutMigrationKey) else { return }
+        if let moved = Self.migratedDefaultLayout(profileManager.multiProfileConfig) {
+            profileManager.updateMultiProfileConfig(moved)
+            LoggingService.shared.log("MenuBarManager: default bar layout applied once — Active + dots, click opens the dashboard")
+        }
+        defaults.set(true, forKey: Self.defaultLayoutMigrationKey)
+    }
 
     private static func requestTokenUsageWindow(profileId: UUID?, provider: Profile.ProviderKind?) {
         NotificationCenter.default.post(

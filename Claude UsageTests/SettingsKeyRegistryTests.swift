@@ -32,7 +32,7 @@ final class SettingsKeyRegistryTests: XCTestCase {
         "sessionIconEnabled", "sessionIconStyle", "sessionIconOrder",
         "weekIconEnabled", "weekIconStyle", "weekIconOrder", "weekDisplayMode",
         "apiIconEnabled", "apiIconStyle", "apiIconOrder", "apiDisplayMode",
-        "debugTileLayout", "debugGroupExposure", "NSQuitAlwaysKeepsWindows",
+        "menuBarLayoutDefault_v1", "debugTileLayout", "debugGroupExposure", "NSQuitAlwaysKeepsWindows",
         "autoSwitchCustomOrder", "autoSwitchCustomOrderEnabled", "cuwSlotPinsVersion",
         "fleetAlertDefaults_v1", "activeSelectorItem_v1",
     ]

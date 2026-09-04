@@ -687,6 +687,7 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | `sentNotifications` | NotificationManager | yes | unchanged (name-keyed; §11) | — |
 | `codexAutoImported_v1`, `grokAutoImported_v1`, `grokDisplayBackfill_v1` | ProfileManager | yes | untouched | — |
 | `legacyBundleDefaultsMigrated_v1` | MigrationService | yes | untouched | — |
+| `menuBarLayoutDefault_v1` | MenuBarManager | yes (new 2026-09-04) | one-time flag: an untouched `multiProfileDisplayConfig` (legacy layout, no click surface) is moved to `barLayout = fleetDots` once — the owner's decision-card pick; the pickers stay the user's afterwards | — |
 | `menuBarIconConfiguration`, `menuBarIconStyle`, `monochromeMode` (legacy single-mode) | MenuBarIconConfiguration | yes | untouched (`load()` is live) | Display › Single-account bar |
 | `claudeUsageData`, `notificationsEnabled`, `refreshInterval` (app-level; only the unused `UserDefaults.refreshInterval` KVO extension reads it), `apiUsageData`, `apiTrackingEnabled`, `apiSessionKey`, `apiOrganizationId`, `showIconNames`, `showNextSessionTime`, `sessionIconEnabled/Style/Order`, `weekIconEnabled/Style/Order`, `weekDisplayMode`, `apiIconEnabled/Style/Order`, `apiDisplayMode` | `Constants.UserDefaultsKeys` | yes | registered as **legacy, unread** (tombstoned, never deleted) | — |
 | `debugTileLayout`, **`debugGroupExposure`** (#65), `NSQuitAlwaysKeepsWindows` | misc | yes | untouched | — |

@@ -298,7 +298,17 @@ final class FleetSummaryTests: XCTestCase {
         """.utf8)
         XCTAssertEqual(try JSONDecoder().decode(MultiProfileDisplayConfig.self, from: future).barLayout, .everyAccount)
 
-        XCTAssertEqual(MultiProfileDisplayConfig.default.barLayout, .everyAccount)
+        // The redesigned default (owner decision 2026-09-04) is Active + dots
+        // with the click following the layout (= the fleet dashboard); a
+        // legacy config decodes unchanged and is moved over exactly once.
+        XCTAssertEqual(MultiProfileDisplayConfig.default.barLayout, .fleetDots)
+        XCTAssertEqual(MultiProfileDisplayConfig.default.effectiveClickSurface, .dashboard)
+        XCTAssertEqual(MenuBarManager.migratedDefaultLayout(decoded)?.barLayout, .fleetDots, "an untouched legacy config moves")
+        var touched = decoded
+        touched.clickSurface = .classic
+        XCTAssertNil(MenuBarManager.migratedDefaultLayout(touched), "a config the user has been in stays")
+        XCTAssertNil(MenuBarManager.migratedDefaultLayout(MultiProfileDisplayConfig(iconStyle: .concentric, barLayout: .fleetCounts)),
+                     "a fleet layout is already the redesign")
         let config = MultiProfileDisplayConfig(iconStyle: .concentric, barLayout: .fleetDots)
         let data = try JSONEncoder().encode(config)
         XCTAssertEqual(try JSONDecoder().decode(MultiProfileDisplayConfig.self, from: data), config)
