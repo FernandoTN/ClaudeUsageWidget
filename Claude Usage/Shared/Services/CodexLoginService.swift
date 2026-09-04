@@ -14,7 +14,10 @@ import Foundation
 /// `login_with_chatgpt` → `clear_existing_auth_before_login` →
 /// `logout_with_revoke(codex_home, …)`). Running it in a terminal therefore
 /// kills the account the widget has applied to `~/.codex` — which is exactly
-/// what happened three times on 2026-09-03.
+/// what happened three times on 2026-09-03. The device-code path revokes the
+/// same way (`run_login_with_device_code` calls
+/// `clear_existing_auth_before_login` too), which costs nothing in a fresh
+/// isolated home and is the profile's own dead grant in a reused one.
 ///
 /// The CLI honours `$CODEX_HOME`, so this service runs the same command with
 /// that variable pointed at a fresh per-account directory, where there is no
@@ -23,10 +26,51 @@ import Foundation
 final class CodexLoginService {
     static let shared = CodexLoginService()
 
+    // MARK: - How the CLI is asked to authorize
+
+    /// The two sign-in flows the CLI offers.
+    enum Mode: Equatable {
+        /// `codex login --device-auth` — the OAuth DEVICE-CODE flow. It opens
+        /// NO browser: it prints a verification URL and a one-time code, and
+        /// the user enters them wherever they like. That is the default here
+        /// because the browser flow hijacks the DEFAULT browser
+        /// (`ServerOptions.open_browser` is hard-coded `true` in the CLI), and
+        /// a default browser already signed in to another account signs the
+        /// WRONG account in — the whole problem when adding a second one.
+        case deviceCode
+        /// `codex login` — the localhost-callback flow. Always opens the
+        /// default browser; the URL it prints is shown anyway, so it can be
+        /// pasted into a different browser or session.
+        case browser
+    }
+
+    /// The CLI's argument vector for a mode. `--device-auth` is the flag
+    /// `codex-rs/cli/src/main.rs` binds to `LoginCommand.use_device_code`.
+    nonisolated static func arguments(for mode: Mode) -> [String] {
+        switch mode {
+        case .deviceCode: return ["login", "--device-auth"]
+        case .browser: return ["login"]
+        }
+    }
+
     /// The browser round-trip has to finish inside this window. The CLI itself
     /// waits indefinitely on its localhost callback, so without a cap an
     /// abandoned login leaves a `codex` process running forever.
-    nonisolated static let loginTimeout: TimeInterval = 5 * 60
+    nonisolated static let browserLoginTimeout: TimeInterval = 5 * 60
+
+    /// The device-code ceiling. The CLI polls for at most fifteen minutes
+    /// (`codex-rs/login/src/device_code_auth.rs`, `poll_for_token`:
+    /// `max_wait = Duration::from_secs(15 * 60)`) and the code it prints
+    /// "expires in 15 minutes", so the CLI gives up first; the extra minute
+    /// only catches a CLI that outlives its own deadline.
+    nonisolated static let deviceLoginTimeout: TimeInterval = 16 * 60
+
+    nonisolated static func timeout(for mode: Mode) -> TimeInterval {
+        switch mode {
+        case .deviceCode: return deviceLoginTimeout
+        case .browser: return browserLoginTimeout
+        }
+    }
 
     /// Where Homebrew puts the CLI on Apple silicon and Intel. Tried in order
     /// before falling back to a login shell, because a GUI app inherits
@@ -107,6 +151,118 @@ final class CodexLoginService {
         return home(forSlug: slug)
     }
 
+    // MARK: - Reading the CLI's sign-in prompt
+
+    /// What the CLI has told the user to do, harvested from its own output.
+    ///
+    /// Both fields belong on screen and NOWHERE else: the code authorizes a
+    /// sign-in for the fifteen minutes it lives, and the URL is the door it
+    /// opens. Neither is logged above debug and neither reaches an error
+    /// message — `redactingInstructions(in:)` strips them from the failure tail.
+    struct LoginInstructions: Equatable {
+        var verificationURL: String?
+        var userCode: String?
+
+        var isEmpty: Bool { verificationURL == nil && userCode == nil }
+    }
+
+    /// One field of the sign-in prompt, recognised on one line of CLI output.
+    enum PromptField: Equatable {
+        case verificationURL(String)
+        case userCode(String)
+    }
+
+    /// Drops ANSI escape sequences. The device-code prompt colours both fields
+    /// (`\u{1B}[94m…\u{1B}[0m`, `device_code_auth.rs`), so the bytes on the pipe
+    /// are not the text.
+    nonisolated static func strippingANSI(_ line: String) -> String {
+        var result = ""
+        var inEscape = false
+        var inControlSequence = false
+
+        for character in line {
+            if inEscape {
+                if inControlSequence {
+                    // A CSI sequence ends at its final byte, anything in @…~.
+                    if let scalar = character.unicodeScalars.first, (0x40...0x7E).contains(scalar.value) {
+                        inEscape = false
+                        inControlSequence = false
+                    }
+                } else if character == "[" {
+                    inControlSequence = true
+                } else {
+                    inEscape = false
+                }
+                continue
+            }
+            if character == "\u{1B}" {
+                inEscape = true
+                continue
+            }
+            result.append(character)
+        }
+        return result
+    }
+
+    /// Extracts one field of the sign-in prompt from one line of CLI output.
+    ///
+    /// Deliberately tolerant. Both flows print through `format!` with colour
+    /// codes and leading spaces, one prints to stdout and the other to stderr,
+    /// and the wording has already changed once. What is matched is the SHAPE —
+    /// an `https` token, or a line that is nothing but a code-shaped token —
+    /// never the prose around it.
+    nonisolated static func promptField(in rawLine: String) -> PromptField? {
+        let line = strippingANSI(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return nil }
+
+        if let url = httpsToken(in: line) { return .verificationURL(url) }
+        if isUserCode(line) { return .userCode(line) }
+        return nil
+    }
+
+    /// The first `https://` token on the line, minus trailing sentence
+    /// punctuation. `http://localhost:<port>` is deliberately NOT matched: the
+    /// browser flow announces its callback server there, and that address is
+    /// worthless to paste into another machine's browser.
+    private nonisolated static func httpsToken(in line: String) -> String? {
+        guard let start = line.range(of: "https://") else { return nil }
+        let token = line[start.lowerBound...].prefix { !$0.isWhitespace }
+        let trimmed = String(token).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:)]}>\"'"))
+        return trimmed.count > "https://".count ? trimmed : nil
+    }
+
+    /// Whether a line is NOTHING BUT a one-time code. The observed shape is
+    /// `ABCD-EFGH` (`device_code_auth_tests.rs`), but the grouping and the
+    /// length are the server's to choose, so any single upper-case alphanumeric
+    /// token counts — hyphenated, or eight to ten characters long.
+    ///
+    /// A line like `ERROR-500` would match too. That costs nothing: the field
+    /// is only ever displayed, and the real code arrives in the same `println!`
+    /// as the rest of the prompt.
+    private nonisolated static func isUserCode(_ line: String) -> Bool {
+        guard line.count <= 16 else { return false }
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+        guard line.allSatisfy({ allowed.contains($0) }) else { return false }
+        let body = line.filter { $0 != "-" }
+        guard body.count >= 6, body.contains(where: { $0.isLetter || $0.isNumber }) else { return false }
+        return line.contains("-") || (8...10).contains(body.count)
+    }
+
+    /// The CLI's own output with every sign-in link and one-time code removed.
+    /// The tail travels into failure messages, and those must not carry a live
+    /// credential out of the sheet.
+    nonisolated static func redactingInstructions(in text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                switch promptField(in: String(line)) {
+                case .verificationURL: return "[sign-in link hidden]"
+                case .userCode: return "[one-time code hidden]"
+                case nil: return String(line)
+                }
+            }
+            .joined(separator: "\n")
+    }
+
     // MARK: - Finding the CLI
 
     /// Resolves the `codex` binary: the well-known install paths first, then a
@@ -181,13 +337,16 @@ final class CodexLoginService {
 
     // MARK: - Running the login
 
-    /// Prepares the isolated home and starts `codex login` in it.
+    /// Prepares the isolated home and starts the CLI in it.
     ///
     /// Blocking preparation (directory creation, binary lookup) happens on the
-    /// caller's thread, so call this off the main thread; `completion` is
-    /// delivered on the main queue exactly once.
+    /// caller's thread, so call this off the main thread; `onInstructions` and
+    /// `completion` are both delivered on the main queue, `completion` exactly
+    /// once.
     func startLogin(
         home: URL,
+        mode: Mode = .deviceCode,
+        onInstructions: @escaping (LoginInstructions) -> Void = { _ in },
         completion: @escaping (Result<URL, CodexLoginError>, String) -> Void
     ) throws -> CodexLoginRun {
         // Belt and braces: this flow must never point the CLI at the default
@@ -211,18 +370,65 @@ final class CodexLoginService {
             throw CodexLoginError.launchFailed("could not open \(logURL.path)")
         }
 
+        // One pipe for both streams: the device-code prompt goes to stdout
+        // (`println!`) and every status line to stderr (`eprintln!`), and the
+        // sheet needs whichever arrives.
+        let output = Pipe()
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = ["login"]
+        process.arguments = Self.arguments(for: mode)
         process.environment = Self.loginEnvironment(home: home, inherited: ProcessInfo.processInfo.environment)
-        process.standardOutput = logHandle
-        process.standardError = logHandle
+        process.standardOutput = output
+        process.standardError = output
         process.standardInput = FileHandle.nullDevice
 
-        let run = CodexLoginRun(home: home, logURL: logURL, process: process, completion: completion)
-        try run.start(timeout: Self.loginTimeout)
-        LoggingService.shared.log("Codex: started `codex login` under an isolated home (\(home.lastPathComponent))")
+        let run = CodexLoginRun(
+            home: home,
+            logURL: logURL,
+            mode: mode,
+            process: process,
+            output: output,
+            logHandle: logHandle,
+            onInstructions: onInstructions,
+            completion: completion
+        )
+        try run.start(timeout: Self.timeout(for: mode))
+        LoggingService.shared.log(
+            "Codex: started `codex \(Self.arguments(for: mode).joined(separator: " "))`"
+                + " under an isolated home (\(home.lastPathComponent))"
+        )
         return run
+    }
+}
+
+/// Splits the CLI's byte stream into whole lines. A pipe read can land
+/// mid-line, and the one line that matters is the one holding the code.
+final class CodexLoginLineBuffer {
+    private var pending = ""
+    private let lock = NSLock()
+
+    func take(_ data: Data) -> [String] {
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        pending += text
+
+        var lines: [String] = []
+        while let newline = pending.firstIndex(of: "\n") {
+            lines.append(String(pending[pending.startIndex..<newline]))
+            pending = String(pending[pending.index(after: newline)...])
+        }
+        return lines
+    }
+
+    /// Whatever never got its newline. The CLI's last write need not end in one.
+    func flush() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        let rest = pending
+        pending = ""
+        return rest.isEmpty ? [] : [rest]
     }
 }
 
@@ -231,8 +437,14 @@ final class CodexLoginService {
 final class CodexLoginRun {
     let home: URL
     let logURL: URL
+    let mode: CodexLoginService.Mode
 
     private let process: Process
+    private let output: Pipe
+    private let logHandle: FileHandle
+    private let lines = CodexLoginLineBuffer()
+    /// Called on the main queue whenever the CLI reveals more of its prompt.
+    private let onInstructions: (CodexLoginService.LoginInstructions) -> Void
     /// Delivered with the tail of the CLI's own output, so a caller that
     /// never saw the run object still has something to show the user.
     private let completion: (Result<URL, CodexLoginError>, String) -> Void
@@ -241,26 +453,48 @@ final class CodexLoginRun {
     private var cancelled = false
     private var timedOut = false
     private var timeoutItem: DispatchWorkItem?
+    /// Main-queue only.
+    private var instructions = CodexLoginService.LoginInstructions()
 
     init(
         home: URL,
         logURL: URL,
+        mode: CodexLoginService.Mode,
         process: Process,
+        output: Pipe,
+        logHandle: FileHandle,
+        onInstructions: @escaping (CodexLoginService.LoginInstructions) -> Void,
         completion: @escaping (Result<URL, CodexLoginError>, String) -> Void
     ) {
         self.home = home
         self.logURL = logURL
+        self.mode = mode
         self.process = process
+        self.output = output
+        self.logHandle = logHandle
+        self.onInstructions = onInstructions
         self.completion = completion
     }
 
     func start(timeout: TimeInterval) throws {
+        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                self?.endOfOutput()
+                return
+            }
+            self?.consume(data)
+        }
+
         process.terminationHandler = { [weak self] finished in
             self?.settle(status: finished.terminationStatus)
         }
         do {
             try process.run()
         } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            try? logHandle.close()
             throw CodexLoginError.launchFailed(error.localizedDescription)
         }
 
@@ -285,15 +519,56 @@ final class CodexLoginRun {
         if process.isRunning { process.terminate() }
     }
 
-    /// The tail of the CLI's own output, for a failure message. The CLI prints
-    /// a URL and status lines here, never a token, but the caller shows it to
-    /// the user, so it is trimmed to the last few lines rather than dumped.
-    func logTail(lines: Int = 6) -> String {
+    /// The tail of the CLI's own output, for a failure message — with the
+    /// sign-in link and the one-time code taken out. They belong on the sheet's
+    /// own live fields and nowhere else.
+    func logTail(lines count: Int = 6) -> String {
         guard let text = try? String(contentsOf: logURL, encoding: .utf8) else { return "" }
-        return text
+        let tail = text
             .split(separator: "\n", omittingEmptySubsequences: true)
-            .suffix(lines)
+            .suffix(count)
             .joined(separator: "\n")
+        return CodexLoginService.redactingInstructions(in: tail)
+    }
+
+    // MARK: - Reading the CLI
+
+    private func consume(_ data: Data) {
+        // The log file stays the CLI's verbatim output; `logTail` is what
+        // redacts, because that is the copy the user's error message quotes.
+        try? logHandle.write(contentsOf: data)
+
+        let fields = lines.take(data).compactMap(CodexLoginService.promptField(in:))
+        guard !fields.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in self?.apply(fields) }
+    }
+
+    private func endOfOutput() {
+        let fields = lines.flush().compactMap(CodexLoginService.promptField(in:))
+        guard !fields.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in self?.apply(fields) }
+    }
+
+    private func apply(_ fields: [CodexLoginService.PromptField]) {
+        var changed = false
+        for field in fields {
+            switch field {
+            case .verificationURL(let url):
+                if instructions.verificationURL != url {
+                    instructions.verificationURL = url
+                    changed = true
+                }
+            case .userCode(let code):
+                if instructions.userCode != code {
+                    instructions.userCode = code
+                    changed = true
+                }
+            }
+        }
+        guard changed else { return }
+        // Never the values themselves: the code is a live credential.
+        LoggingService.shared.logDebug("Codex: sign-in prompt read from the CLI")
+        onInstructions(instructions)
     }
 
     private func settle(status: Int32) {
@@ -308,6 +583,13 @@ final class CodexLoginRun {
         lock.unlock()
 
         timeoutItem?.cancel()
+        output.fileHandleForReading.readabilityHandler = nil
+        // Drain whatever the child wrote between the last read and its exit.
+        if let rest = try? output.fileHandleForReading.readToEnd(), !rest.isEmpty {
+            consume(rest)
+        }
+        endOfOutput()
+        try? logHandle.close()
 
         let authFile = CodexUsageService.authFileURL(inHome: home)
         let verdict = CodexLoginService.loginVerdict(
