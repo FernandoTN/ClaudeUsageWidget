@@ -77,6 +77,34 @@ enum ActiveVocabulary {
         "active.changed_outside".localized(with: providerName(provider), newOwner)
     }
 
+    /// The one-line summary for a menu (S2): "9 accounts · 5 eligible · 1 dead · 2 duplicates".
+    static func countsShort(_ counts: FleetCounts.Provider) -> String {
+        var parts = ["counts.accounts".localized(with: counts.distinctAccounts),
+                     "counts.eligible_short".localized(with: counts.autoSwitchEligible)]
+        if counts.count(.dead) > 0 { parts.append("counts.dead".localized(with: counts.count(.dead))) }
+        if counts.duplicateProfiles > 0 { parts.append("counts.duplicates_short".localized(with: counts.duplicateProfiles)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The roster header's words (owner ruling 2026-09-04, replacing the glyph
+    /// strip): "4 ready · 2 low · 10 exhausted · 1 dead · 2 duplicates". States
+    /// in readiness order, zero counts omitted; the glyph legend moves to hover.
+    static func countsWords(_ counts: FleetCounts.Provider) -> String {
+        var parts: [String] = []
+        let keys: [(AccountReadiness, String)] = [
+            (.ready, "counts.ready"), (.low, "counts.low"), (.unknown, "counts.unknown"),
+            (.suspected, "counts.suspected"), (.exhausted, "counts.exhausted"),
+            (.excluded, "counts.excluded"), (.dead, "counts.dead"),
+        ]
+        for (readiness, key) in keys where counts.count(readiness) > 0 {
+            parts.append(key.localized(with: counts.count(readiness)))
+        }
+        if counts.duplicateProfiles > 0 { parts.append("counts.duplicates_short".localized(with: counts.duplicateProfiles)) }
+        // A count never wraps away from its word; the line breaks only at the separators.
+        let glued = parts.map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }
+        return glued.isEmpty ? "counts.none_measured".localized : glued.joined(separator: " · ")
+    }
+
     /// The counts sentence for a provider (docs/specs/ux-revamp.md §3):
     /// "18 Claude profiles, 17 accounts: 4 ready, 2 low, 1 unmeasured,
     /// 10 exhausted, 1 dead · 2 duplicate rows · 7 eligible now".
@@ -190,6 +218,10 @@ struct ProviderActiveSelection: Hashable {
     /// rank order, then blocked, then duplicates and excluded — the menu draws
     /// a separator between the two halves.
     var candidates: [CandidateRow]
+    /// Every OTHER account in the walk's plain rank order (soonest weekly reset
+    /// first, queue entries first) — the roster sorts by this; `candidates`
+    /// is the same set re-grouped eligible-first for the menu.
+    var rankedIds: [UUID] = []
     /// This provider's slice of the hand-off queue.
     var queue: [QueueEntry]
     var counts: FleetCounts.Provider
@@ -354,6 +386,7 @@ struct ProviderActiveSelection: Hashable {
                 viewing: inputs.focusedId.flatMap { id in members.contains { $0.id == id } ? id : nil },
                 next: next,
                 candidates: ordered,
+                rankedIds: ranked.filter { $0 != ownerId },
                 queue: queue,
                 counts: providerCounts,
                 autoSwitch: policy,

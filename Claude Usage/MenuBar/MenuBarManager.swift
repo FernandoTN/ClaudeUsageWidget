@@ -39,6 +39,12 @@ class MenuBarManager: NSObject, ObservableObject {
     /// torn down (`cleanup()` leaves it; the setting toggles `isVisible`).
     private var activeSelector: ActiveSelectorItem?
 
+    /// The live manager, for Settings views that need the paint-time context
+    /// (`buildActiveSelections`) — AppDelegate owns the instance; set in
+    /// `setup()`. nil under XCTest / previews, where the inspector falls back
+    /// to a context without candidate predictions.
+    private(set) static weak var current: MenuBarManager?
+
     /// Read-only handle for the exposure probe (redesign stage C), so a hidden
     /// selector shows up in the same `Menu bar exposure` log line.
     var activeSelectorStatusItem: NSStatusItem? { activeSelector?.statusItem }
@@ -206,10 +212,7 @@ class MenuBarManager: NSObject, ObservableObject {
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
-        // The ⇄ selector item goes first: each later status item lands LEFT
-        // of the existing ones, so creating it before the provider groups
-        // keeps it rightmost across every group rebuild (spec §2.1).
-        installActiveSelectorIfNeeded()
+        Self.current = self
 
         // Initialize status bar UI manager
         statusBarUIManager = StatusBarUIManager()
@@ -248,6 +251,24 @@ class MenuBarManager: NSObject, ObservableObject {
 
             statusBarUIManager?.setup(target: self, action: #selector(togglePopover), config: displayConfig)
         }
+
+#if DEBUG
+        startFrameRenderingIfRequested()
+#endif
+
+        // The ⇄ selector item is created AFTER the provider groups. Measured on
+        // the deployed bar (2026-09-03, exposure probe): with the selector
+        // created FIRST, the groups came up claude < grok < codex < ⇄ — the
+        // opposite of the designed codex < grok < claude — and neither a
+        // ≥ 2-minute quit nor fixed-length group items (#83) changed it, while
+        // a fresh process with fixed-length items placed textbook. Creating it
+        // last keeps the groups' order intact; the selector then sits at the
+        // LEFT edge of the app's cluster and clips first on overflow — a
+        // documented trade-off (spec §2.1). A later GROUP rebuild (a provider
+        // appearing or disappearing — membership changes reuse the items) may
+        // land new groups left of the selector; the probe's order= field is
+        // the truth. Created once; setup() re-entry reuses it.
+        installActiveSelectorIfNeeded()
 
         // The popover is created lazily on first click (ensurePopover) and
         // DESTROYED on close: a closed NSPopover keeps its borderless
@@ -336,6 +357,12 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Setup global keyboard shortcuts
         setupShortcuts()
+
+        #if DEBUG
+        // Design-pass frame renders (docs/specs/ux-revamp.md §12): a Debug build
+        // launched with CUW_RENDER_FRAMES=<dir> writes every surface as PNG.
+        DesignFrameHarness.runIfRequested()
+        #endif
 
         // Idle-burn guardrail: alarms (log + per-episode notification, re-posted
         // on a 6h backoff while the storm persists) when the app burns CPU with
@@ -729,6 +756,75 @@ class MenuBarManager: NSObject, ObservableObject {
     /// Ask the token-usage window (owned under `Telemetry/`) to open for one
     /// account, or the fleet when `profileId` is nil. Contract:
     /// object = the profile id, userInfo["provider"] = the provider kind.
+#if DEBUG
+    // MARK: - Frame harness (DEBUG builds only)
+
+    /// `CUW_RENDER_FRAMES=<dir>` at launch: every 20 s, write what the bar and
+    /// both click surfaces show for the LIVE roster — each provider item's
+    /// composite as painted (at the display's pixel scale), the classic
+    /// popover content and the fleet dashboard, the last two in light and
+    /// dark — as `<surface>-<state>-<light|dark>@2x.png` plus an `index.md`.
+    /// For the owner's pixel pass over a menu-bar agent that has no window to
+    /// screenshot; fixture-driven frames of every state live in the test
+    /// target (`FrameRenderTests`). Never compiled into Release.
+    private static var frameRenderTimer: Timer?
+
+    private func startFrameRenderingIfRequested() {
+        guard Self.frameRenderTimer == nil,
+              let dir = ProcessInfo.processInfo.environment["CUW_RENDER_FRAMES"], !dir.isEmpty else { return }
+        let url = URL(fileURLWithPath: dir, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        Self.frameRenderTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.renderLiveFrames(into: url) }
+        }
+        LoggingService.shared.log("Frame harness: writing live frames to \(dir) every 20 s")
+    }
+
+    private func renderLiveFrames(into dir: URL) {
+        var index = ["# Live frames — \(Date())", "", "Rendered from the running roster; the bar images are the composites as painted.", ""]
+        for entry in statusBarUIManager?.debugGroupImages() ?? [] {
+            let name = "bar-\(entry.layout)-\(entry.provider)@2x.png"
+            if let tiff = entry.image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+               Self.writePNG(rep, to: dir.appendingPathComponent(name)) {
+                index.append("- `\(name)` — \(entry.provider) group composite, layout family \(entry.layout)")
+            }
+        }
+        rebuildDashboardSnapshot()
+        let noActions = DashboardActions(refresh: {}, openSettings: { _ in }, makeActive: { _ in .profileNotFound },
+                                         queueNext: { _ in }, removeFromQueue: { _ in })
+        for dark in [false, true] {
+            let mode = dark ? "dark" : "light"
+            let popover = PopoverContentView(manager: self, onRefresh: {}, onPreferences: {}, onManageProfiles: {})
+            if let rep = Self.snapshot(popover, size: DashboardSurface.size(for: .classic), dark: dark),
+               Self.writePNG(rep, to: dir.appendingPathComponent("popover-live-\(mode)@2x.png")) {
+                index.append("- `popover-live-\(mode)@2x.png` — classic popover for the viewed account (\(mode))")
+            }
+            let dashboard = DashboardView(store: dashboardStore, actions: noActions, height: 1400)
+            if let rep = Self.snapshot(dashboard, size: NSSize(width: DashboardSurface.dashboardSize.width, height: 1400), dark: dark),
+               Self.writePNG(rep, to: dir.appendingPathComponent("dashboard-live-\(mode)@2x.png")) {
+                index.append("- `dashboard-live-\(mode)@2x.png` — fleet dashboard, full height (\(mode))")
+            }
+        }
+        try? index.joined(separator: "\n").write(to: dir.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
+    }
+
+    static func snapshot<V: View>(_ view: V, size: NSSize, dark: Bool) -> NSBitmapImageRep? {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
+        rep.size = size
+        host.cacheDisplay(in: host.bounds, to: rep)
+        return rep
+    }
+
+    static func writePNG(_ rep: NSBitmapImageRep, to url: URL) -> Bool {
+        guard let png = rep.representation(using: .png, properties: [:]) else { return false }
+        return (try? png.write(to: url)) != nil
+    }
+#endif
+
     private static func requestTokenUsageWindow(profileId: UUID?, provider: Profile.ProviderKind?) {
         NotificationCenter.default.post(
             name: .telemetryWindowRequested,
@@ -3769,6 +3865,12 @@ private func observeCredentialChanges() {
         ))
     }
 
+    /// Opens the click surface (dashboard or classic popover) on the viewed
+    /// account — the inspector's "Open in dashboard" button.
+    func openDashboard() {
+        togglePopover(nil)
+    }
+
     /// Creates the ⇄ item exactly once; `setup()` re-entry reuses it.
     private func installActiveSelectorIfNeeded() {
         guard activeSelector == nil else { return }
@@ -3794,7 +3896,8 @@ private func observeCredentialChanges() {
                 self.preferencesClicked(section: section)
             },
             openDashboard: { [weak self] in self?.togglePopover(nil) },
-            openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) }
+            openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) },
+            setAutoSwitchEnabled: { enabled in SharedDataStore.shared.saveAutoSwitchProfileEnabled(enabled) }
         ))
         LoggingService.shared.log("MenuBarManager: ⇄ active-account selector installed (visible: \(activeSelector?.isVisible == true))")
     }

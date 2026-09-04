@@ -163,9 +163,9 @@ class ProfileManager: ObservableObject {
             multiProfileConfig = profileStore.loadMultiProfileConfig()
         }
 
-        activeClaudeProfileId = profileStore.loadActiveClaudeProfileId()
-        activeCodexProfileId = profileStore.loadActiveCodexProfileId()
-        activeGrokProfileId = profileStore.loadActiveGrokProfileId()
+        setProviderOwner(.claude, to: profileStore.loadActiveClaudeProfileId(), cause: .launchRepair)
+        setProviderOwner(.codex, to: profileStore.loadActiveCodexProfileId(), cause: .launchRepair)
+        setProviderOwner(.grok, to: profileStore.loadActiveGrokProfileId(), cause: .launchRepair)
     }
 
     // MARK: - Profile Operations
@@ -223,11 +223,11 @@ class ProfileManager: ObservableObject {
 
         // Release provider-active ownership if the deleted profile held it
         if activeClaudeProfileId == id {
-            activeClaudeProfileId = nil
+            setProviderOwner(.claude, to: nil, cause: .delete)
             profileStore.saveActiveClaudeProfileId(nil)
         }
         if activeCodexProfileId == id {
-            activeCodexProfileId = nil
+            setProviderOwner(.codex, to: nil, cause: .delete)
             profileStore.saveActiveCodexProfileId(nil)
         }
         // The Grok pointer needs the same release. It was missed when Grok got a
@@ -236,7 +236,7 @@ class ProfileManager: ObservableObject {
         // deleted profile's id would go on naming the Grok owner and suppress
         // the sole-credentialed answer that is now correct.
         if activeGrokProfileId == id {
-            activeGrokProfileId = nil
+            setProviderOwner(.grok, to: nil, cause: .delete)
             profileStore.saveActiveGrokProfileId(nil)
         }
 
@@ -736,7 +736,7 @@ class ProfileManager: ObservableObject {
                 // pointer update is a window where a concurrent sweep would adopt
                 // the NEW login into the OLD owner's profile (cross-account
                 // contamination — a real incident).
-                activeClaudeProfileId = id
+                setProviderOwner(.claude, to: id, cause: .activate)
                 profileStore.saveActiveClaudeProfileId(id)
 
                 // Learn/refresh the applied login's account identity in the
@@ -791,7 +791,7 @@ class ProfileManager: ObservableObject {
                 }
                 // Same rule as the Claude side: pointer follows the apply with no
                 // awaits in between.
-                activeCodexProfileId = id
+                setProviderOwner(.codex, to: id, cause: .activate)
                 profileStore.saveActiveCodexProfileId(id)
             }
         }
@@ -837,7 +837,7 @@ class ProfileManager: ObservableObject {
                 }
                 // Same rule as the other two: the pointer follows the apply with
                 // no awaits in between.
-                activeGrokProfileId = id
+                setProviderOwner(.grok, to: id, cause: .activate)
                 profileStore.saveActiveGrokProfileId(id)
             }
         }
@@ -1008,21 +1008,124 @@ class ProfileManager: ObservableObject {
 
     // MARK: - Provider Ownership
 
+    /// Why a provider's owner pointer moved. Travels with every
+    /// `.providerOwnerClaimed` post as `userInfo["cause"]`, so an observer can
+    /// tell a switch the user asked for from the app repairing its own
+    /// bookkeeping behind them.
+    enum OwnerClaimCause: String {
+        /// An activation applied this provider's credentials to the CLI and
+        /// claimed the login it had just written.
+        case activate
+        /// A Sync pulled the CLI's own login INTO a profile, so that profile
+        /// matches the shared login by construction. The default for the three
+        /// `claimActive…Ownership` entry points — every caller today is a Sync.
+        case sync
+        /// An import claimed the pointer. Reserved: no import path claims one
+        /// today, because neither the Codex home import nor the isolated-home
+        /// login writes the default `auth.json` (see `CodexAccountView`). It is
+        /// spelled here so an import that DOES claim never has to invent a
+        /// string the consumers do not know.
+        case `import`
+        /// The app re-derived or restored the pointer itself, with no user act
+        /// and no CLI-side login behind it: the store hydration inside
+        /// `loadProfiles()`, and `resolveProviderActiveAccounts` matching a live
+        /// auth.json or inferring a sole credentialed profile.
+        case launchRepair
+        /// An adoption pass moved the pointer because a login OUTSIDE the app
+        /// changed who owns a shared login (`adoptSystemLoginByIdentity`,
+        /// `adoptCodexLoginByAccountId`). These also post
+        /// `.providerOwnerChangedExternally`, which is the UI's older, narrower
+        /// signal for the same episode.
+        case identityAdoption
+        /// The owning profile was deleted, so the pointer was released.
+        case delete
+        /// The recorded owner no longer holds that provider's credentials, so a
+        /// dangling pointer was cleared.
+        case clear
+        /// The call site cannot say.
+        case unknown
+    }
+
+    /// THE single place any of the three provider pointers is assigned.
+    ///
+    /// Activation, Sync, delete, the launch resolve and both identity adoptions
+    /// all route through here, so `.providerOwnerClaimed` cannot be bypassed by
+    /// a new call site that assigns a pointer directly — which is also why the
+    /// three properties stay `private(set)`.
+    ///
+    /// The assignment is UNCONDITIONAL: a `@Published` republish on an unchanged
+    /// value is exactly what every caller did before this seam existed, and
+    /// `ActiveSelectorMenu` merges those publishers. Only the notification is
+    /// gated on the value actually changing, including a change to nil.
+    ///
+    /// Persisting deliberately stays with the callers. Several of them save a
+    /// value they computed rather than the pointer, and
+    /// `resolveProviderActiveAccounts` saves once at the end of a provider's arm
+    /// after several branches may have run.
+    ///
+    /// `knownAccountStamp` is for a caller that has just RESOLVED the account
+    /// and whose roster copy may still disagree with it. `adoptSystemLoginByIdentity`
+    /// is the one such caller: when it falls back to the organization match, the
+    /// profile it picks failed the stamp match by definition, so its stored
+    /// `claudeAccountUUID` is nil or another account's — and shipping that in a
+    /// telemetry payload would misattribute the login this pass just verified.
+    private func setProviderOwner(
+        _ provider: Profile.ProviderKind, to newId: UUID?, cause: OwnerClaimCause,
+        knownAccountStamp: String? = nil
+    ) {
+        let previous = providerPointer(for: provider)
+        switch provider {
+        case .claude: activeClaudeProfileId = newId
+        case .codex: activeCodexProfileId = newId
+        case .grok: activeGrokProfileId = newId
+        }
+        guard previous != newId else { return }
+
+        var userInfo: [String: Any] = [
+            "provider": String(describing: provider),
+            "cause": cause.rawValue
+        ]
+        if let previous {
+            userInfo["previousOwnerId"] = previous.uuidString
+        }
+        if let stamp = knownAccountStamp ?? accountStamp(for: provider, ownerId: newId) {
+            userInfo["accountStamp"] = stamp
+        }
+
+        NotificationCenter.default.post(
+            name: .providerOwnerClaimed, object: newId, userInfo: userInfo
+        )
+    }
+
+    /// The new owner's non-secret account identity for `.providerOwnerClaimed`,
+    /// or nil when it is not known — an unstamped Claude profile, a Codex login
+    /// synced before that stamp existed, or a Grok login still behind an
+    /// unhydrated Keychain cache. These are the same ids the duplicate-account
+    /// detectors key off; no token or refresh token is ever read here.
+    private func accountStamp(for provider: Profile.ProviderKind, ownerId: UUID?) -> String? {
+        guard let ownerId, let profile = profiles.first(where: { $0.id == ownerId }) else { return nil }
+        switch provider {
+        case .claude: return profile.claudeAccountUUID
+        case .codex: return profile.codexAccountId
+        case .grok: return profile.grokCredentialsJSON.flatMap(GrokUsageService.shared.extractUserId(from:))
+        }
+    }
+
     /// Records `profileId` as the owner of the Claude Code CLI's shared Keychain
     /// login. Call right after syncing the system credentials INTO that profile —
     /// it then matches the shared login by construction, so the pointer must follow
     /// (a Sync used to leave the pointer on the previously active account, and the
     /// launch-time repair never re-checked a non-nil pointer).
-    func claimActiveClaudeOwnership(_ profileId: UUID) {
-        activeClaudeProfileId = profileId
+    func claimActiveClaudeOwnership(_ profileId: UUID, cause: OwnerClaimCause = .sync) {
+        setProviderOwner(.claude, to: profileId, cause: cause)
         profileStore.saveActiveClaudeProfileId(profileId)
         LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Claude login")
     }
 
     /// Records `profileId` as the owner of ~/.codex/auth.json. Call right after
     /// syncing auth.json INTO that profile (see claimActiveClaudeOwnership).
-    func claimActiveCodexOwnership(_ profileId: UUID) {
-        activeCodexProfileId = profileId
+    func claimActiveCodexOwnership(_ profileId: UUID, cause: OwnerClaimCause = .sync) {
+        setProviderOwner(.codex, to: profileId, cause: cause)
         profileStore.saveActiveCodexProfileId(profileId)
         LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Codex login")
     }
@@ -1030,8 +1133,8 @@ class ProfileManager: ObservableObject {
     /// Records `profileId` as the owner of ~/.grok/auth.json. Call right after
     /// syncing that file INTO the profile, or right after applying the profile
     /// TO it (see the two above — same contract, same reason).
-    func claimActiveGrokOwnership(_ profileId: UUID) {
-        activeGrokProfileId = profileId
+    func claimActiveGrokOwnership(_ profileId: UUID, cause: OwnerClaimCause = .sync) {
+        setProviderOwner(.grok, to: profileId, cause: cause)
         profileStore.saveActiveGrokProfileId(profileId)
         LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Grok login")
     }
@@ -1767,7 +1870,7 @@ class ProfileManager: ObservableObject {
         if absenceIsEvidence,
            let id = activeClaudeProfileId,
            profiles.first(where: { $0.id == id })?.cliCredentialsJSON == nil {
-            activeClaudeProfileId = nil
+            setProviderOwner(.claude, to: nil, cause: .clear)
         }
         // With no pointer, infer an owner only from a SOLE credentialed profile
         // — the CLI is signed in as that account or as nobody. This used to
@@ -1779,7 +1882,7 @@ class ProfileManager: ObservableObject {
         if activeClaudeProfileId == nil, absenceIsEvidence {
             let claudeLogins = profiles.filter { $0.cliCredentialsJSON != nil }
             if claudeLogins.count == 1 {
-                activeClaudeProfileId = claudeLogins[0].id
+                setProviderOwner(.claude, to: claudeLogins[0].id, cause: .launchRepair)
             }
         }
         profileStore.saveActiveClaudeProfileId(activeClaudeProfileId)
@@ -1798,19 +1901,19 @@ class ProfileManager: ObservableObject {
         if let fileJSON = codexService.readAuthFile(),
            let fileAccount = codexService.extractAccountId(from: fileJSON),
            let owner = profiles.first(where: { codexService.accountId(of: $0) == fileAccount }) {
-            activeCodexProfileId = owner.id
+            setProviderOwner(.codex, to: owner.id, cause: .launchRepair)
         } else {
             if absenceIsEvidence,
                let id = activeCodexProfileId,
                profiles.first(where: { $0.id == id })?.codexCredentialsJSON == nil {
-                activeCodexProfileId = nil
+                setProviderOwner(.codex, to: nil, cause: .clear)
             }
             // The exactly-one inference also leans on absence: with a partial
             // cache, "one codex profile" may just be "one HYDRATED so far".
             if absenceIsEvidence, activeCodexProfileId == nil {
                 let codexProfiles = profiles.filter { $0.hasCodexAccount }
                 if codexProfiles.count == 1 {
-                    activeCodexProfileId = codexProfiles[0].id
+                    setProviderOwner(.codex, to: codexProfiles[0].id, cause: .launchRepair)
                 }
             }
         }
@@ -1831,14 +1934,14 @@ class ProfileManager: ObservableObject {
         let grokService = GrokUsageService.shared
         if let fileJSON = grokService.readAuthFile(),
            let owner = profiles.first(where: { grokService.profileMatchesAuthFile($0, authFileJSON: fileJSON) }) {
-            activeGrokProfileId = owner.id
+            setProviderOwner(.grok, to: owner.id, cause: .launchRepair)
         } else if absenceIsEvidence,
                   let id = activeGrokProfileId,
                   profiles.first(where: { $0.id == id })?.grokCredentialsJSON == nil {
             // The recorded owner no longer holds a Grok login (removed, or the
             // profile is gone). Same absence rule as the two above: only a
             // completed hydration makes nil credentials mean anything.
-            activeGrokProfileId = nil
+            setProviderOwner(.grok, to: nil, cause: .clear)
         }
         profileStore.saveActiveGrokProfileId(activeGrokProfileId)
 
@@ -1918,7 +2021,8 @@ class ProfileManager: ObservableObject {
 
         if activeClaudeProfileId != owner.id {
             LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
-            activeClaudeProfileId = owner.id
+            setProviderOwner(.claude, to: owner.id, cause: .identityAdoption,
+                             knownAccountStamp: identity.accountUUID)
             profileStore.saveActiveClaudeProfileId(owner.id)
             announceExternalOwnerChange(provider: .claude, newOwner: owner)
         }
@@ -2045,7 +2149,7 @@ class ProfileManager: ObservableObject {
 
         if activeCodexProfileId != owner.id {
             LoggingService.shared.log("ProfileManager: ⚠️ active Codex pointer repaired — auth.json's account belongs to '\(owner.name)', not '\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")'")
-            activeCodexProfileId = owner.id
+            setProviderOwner(.codex, to: owner.id, cause: .identityAdoption)
             profileStore.saveActiveCodexProfileId(owner.id)
             announceExternalOwnerChange(provider: .codex, newOwner: owner)
         }

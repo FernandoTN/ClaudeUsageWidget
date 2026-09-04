@@ -283,23 +283,29 @@ struct ProviderSummary: Hashable {
         members.reduce(into: [:]) { $0[$1.readiness, default: 0] += 1 }
     }
 
-    /// The label-row affix: `→XXX` ranked, `Q→XXX` queued (the renderer
-    /// paints the Q red when the queue head is blocked and this is the ranked
-    /// fallback), `→—` armed with nobody to go to, `⇄` mid-switch; nil while
-    /// idle. Digits and the verdict glyph are separate so the renderer can
-    /// tint each part by its own evidence.
+    /// The label-row affix: `→XXX` towards the candidate, `→—` armed with
+    /// nobody to go to, `⇄` mid-switch; nil while idle. The queue state is
+    /// carried by the ARROW's colour (design round 1, B4: the `Q` letter was
+    /// cryptic at 22 pt) — accent when queued, red when the queue head is
+    /// blocked and this is the ranked fallback. Digits and the verdict glyph
+    /// are separate so the renderer can tint each part by its own evidence.
     var affix: String? {
         if isSwitching { return "⇄" }
         guard armed else { return nil }
         guard let next else { return "→—" }
-        let prefix = (next.queued || next.queueHeadBlocked) ? "Q→" : "→"
-        return prefix + String(next.label.prefix(3))
+        return DesignGlyph.next + String(next.label.prefix(3))
     }
 
-    /// The verdict glyph after the affix: ✓ proved live, ? unverified, × dead.
+    /// The verdict glyph after the affix: ✓ proved live, × dead; nothing
+    /// while unverified (round 1, B4: `?` read as an error, and the absence
+    /// of the check is the information).
     var verdictGlyph: String? {
         guard armed, !isSwitching, let next else { return nil }
-        return next.verdict.glyph
+        switch next.verdict {
+        case .verified: return DesignGlyph.verified
+        case .dead: return DesignGlyph.dead
+        case .unverified: return nil
+        }
     }
 
     /// Dots the fleet block draws and the `+N` it prepends for the rest.
@@ -403,13 +409,19 @@ enum FleetBlockGeometry {
     nonisolated static let markWidth: CGFloat = 10
     /// Gap between the active tile and the fleet block.
     nonisolated static let gap: CGFloat = 3
+    /// Breathing room between the candidate row's segments (digits, arrow +
+    /// name, verdict glyph): the ✓ used to touch the name (round 1, B2).
+    nonisolated static let candidateGap: CGFloat = 1.5
+    /// Gap between the `+N` overflow mark and the first dot column (B3).
+    nonisolated static let overflowGap: CGFloat = 2
     /// Counts row: `●99 ◐99 ▲99 ×99` in one row at 6 pt semibold — 65.4 pt of
     /// glyphs plus three 2 pt gaps, measured.
     nonisolated static let countsWidth: CGFloat = 72
-    /// The candidate row (`99Q→WWW✓` at its widest, 7 pt semibold: 50.1 pt
-    /// measured) lives UNDER the dots, so the block is as wide as the wider
-    /// of the two — reserved whenever the provider has more than one
-    /// account, armed or not.
+    /// The candidate row (`99 →WWW ✓` at its widest, 7 pt semibold with the
+    /// two gaps: measured by `testReservedWidthsCoverTheRealFonts`) lives
+    /// UNDER the dots, so the block is as wide as the wider of the two —
+    /// reserved whenever the provider has more than one account, armed or
+    /// not.
     nonisolated static let affixWidth: CGFloat = 52
     /// Columns reserved at the LEFT of the matrix for the `+N` mark when the
     /// roster is larger than the grid (`+17` at 6 pt is 11 pt wide).
@@ -438,8 +450,12 @@ enum FleetBlockGeometry {
         guard memberCount > 0 else { return 0 }
         let shown = shownDotCount(memberCount: memberCount)
         var columns = dotGrid(count: shown).columns
-        if memberCount > ProviderSummary.maxDotMembers { columns += overflowColumns }
-        return CGFloat(columns - 1) * dotPitch + dotDiameter
+        var extra: CGFloat = 0
+        if memberCount > ProviderSummary.maxDotMembers {
+            columns += overflowColumns
+            extra = overflowGap
+        }
+        return CGFloat(columns - 1) * dotPitch + dotDiameter + extra
     }
 
     /// Width of the whole fleet block (mark + max(dots|counts, candidate

@@ -24,23 +24,23 @@ extension MenuBarIconRenderer {
     /// Colour of one readiness state on the dark bar. Green/orange/red are the
     /// usage palette; purple is data quality (matches the suspected label
     /// tint); grey is "no information".
+    /// The shared colour-role table (`DesignLegend`, round 1 G1): dead is
+    /// red, exhausted and near-limit are amber, suspected purple, ready
+    /// green; unmeasured / excluded stay the bar's dim grey (the legend's
+    /// "informational" resolves against the bar's forced dark appearance).
     nonisolated static func readinessColor(_ readiness: AccountReadiness) -> NSColor {
         switch readiness {
-        case .ready: return .systemGreen
-        case .low: return .systemOrange
-        case .exhausted: return .systemRed
-        case .suspected: return .systemPurple
-        case .dead: return .systemOrange
         case .excluded, .unknown: return NSColor(calibratedWhite: 0.72, alpha: 1.0)
+        default: return readiness.role.nsColor
         }
     }
 
     /// Colour of the verdict glyph after the affix.
     nonisolated static func verdictColor(_ verdict: NextCandidate.Verdict) -> NSColor {
         switch verdict {
-        case .verified: return .systemGreen
+        case .verified: return DesignRole.ready.nsColor
         case .unverified: return NSColor(calibratedWhite: 0.72, alpha: 1.0)
-        case .dead: return .systemRed
+        case .dead: return DesignRole.blocking.nsColor
         }
     }
 
@@ -83,9 +83,12 @@ extension MenuBarIconRenderer {
         defer { image.unlockFocus() }
         opaqueEventShapeBackdrop(in: image)
 
-        // Provider mark, top-left, beside the top dot row.
+        // Provider mark, a badge centred on the block's height so it labels
+        // the whole block — dots and candidate row — rather than sitting
+        // top-left beside the first dot row (round 1, B1).
+        let markSize = (Self.providerMark(summary.provider) as NSString).size(withAttributes: [.font: Self.markFont])
         (Self.providerMark(summary.provider) as NSString).draw(
-            at: NSPoint(x: 0, y: height - 7),
+            at: NSPoint(x: 0, y: ((height - markSize.height) / 2).rounded()),
             withAttributes: [.font: Self.markFont, .foregroundColor: Self.dimText]
         )
 
@@ -148,13 +151,15 @@ extension MenuBarIconRenderer {
             }
         }
         if overflow > 0 {
-            // Two reserved columns left of the matrix — the latest-reset end
-            // of the ranking, the least decision-relevant one. `+17` at 6 pt
-            // is 11 pt wide; the mark's own column (0..10) stays clear.
-            let x = max(originX, leftmostX - CGFloat(FleetBlockGeometry.overflowColumns) * FleetBlockGeometry.dotPitch)
+            // Two reserved columns left of the matrix plus a gap — the
+            // latest-reset end of the ranking, the least decision-relevant
+            // one — on the LAST row, dimmed, so it never competes with the
+            // dead marks beside it (round 1, B3). `+17` at 6 pt is 11 pt.
+            let x = max(originX, leftmostX - CGFloat(FleetBlockGeometry.overflowColumns) * FleetBlockGeometry.dotPitch
+                        - FleetBlockGeometry.overflowGap)
             ("+\(overflow)" as NSString).draw(
                 at: NSPoint(x: x, y: top - d - CGFloat(grid.rows - 1) * FleetBlockGeometry.rowPitch - 1.5),
-                withAttributes: [.font: Self.markFont, .foregroundColor: Self.dimText]
+                withAttributes: [.font: Self.markFont, .foregroundColor: Self.dimText.withAlphaComponent(0.7)]
             )
         }
     }
@@ -166,8 +171,9 @@ extension MenuBarIconRenderer {
     /// One row, not two: the candidate row owns the bottom of the block and
     /// a second counts row would collide with it in 22 pt.
     private func drawFleetCounts(_ counts: [AccountReadiness: Int], at origin: NSPoint) {
+        // The canonical glyph set (`DesignGlyph`, round 1 B5/G2).
         let cells: [(glyph: String, state: AccountReadiness)] = [
-            ("●", .ready), ("◐", .low), ("▲", .exhausted), ("×", .dead),
+            (DesignGlyph.ready, .ready), (DesignGlyph.low, .low), (DesignGlyph.exhausted, .exhausted), (DesignGlyph.dead, .dead),
         ]
         var x = origin.x
         for cell in cells {
@@ -183,63 +189,46 @@ extension MenuBarIconRenderer {
     }
 
     /// Row 3: the active account's digits (tinted by ITS evidence), the
-    /// candidate affix (tinted by the candidate's quota evidence) and the
-    /// verdict glyph (tinted by the login evidence). Nothing while idle.
+    /// arrow (tinted by the QUEUE state: white ranked, accent queued, red
+    /// when the queue head is blocked and this is the fallback), the
+    /// candidate's name (tinted by its quota evidence) and the verdict glyph
+    /// (tinted by the login evidence), each segment separated by
+    /// `FleetBlockGeometry.candidateGap` (round 1, B2/B4). Nothing while idle.
     private func drawCandidateRow(_ summary: ProviderSummary, at origin: NSPoint) {
         guard let affix = summary.affix else { return }
-        let text = NSMutableAttributedString()
+        var x = origin.x
+        func draw(_ string: String, _ color: NSColor, gapAfter: CGFloat = FleetBlockGeometry.candidateGap) {
+            let attributes: [NSAttributedString.Key: Any] = [.font: Self.affixFont, .foregroundColor: color]
+            (string as NSString).draw(at: NSPoint(x: x, y: origin.y), withAttributes: attributes)
+            x += (string as NSString).size(withAttributes: attributes).width + gapAfter
+        }
         if let digits = summary.activeDigits, !summary.isSwitching {
             let color: NSColor
             switch summary.activeReadiness {
-            case .suspected?: color = .systemPurple
+            case .suspected?: color = DesignRole.suspected.nsColor
             case .exhausted?: color = StatusBarUIManager.weeklyMaxedLabelColor
             default: color = Self.brightText
             }
-            text.append(NSAttributedString(string: "\(digits)", attributes: [
-                .font: Self.affixFont, .foregroundColor: color
-            ]))
+            draw("\(digits)", color)
         }
-        // Prefix (→ / Q→ / ⇄) in neutral white — a RED Q when the queue head
-        // is blocked and this is the ranked fallback; the candidate's name
-        // in ITS quota colour (green fresh headroom, orange near a limit,
-        // grey stale/unknown); "→—" red: nobody to go to.
         if let next = summary.next, !summary.isSwitching {
-            let labelStart = affix.index(affix.endIndex, offsetBy: -min(3, next.label.count))
-            let prefix = String(affix[..<labelStart])
-            let name = String(affix[labelStart...])
-            if next.queueHeadBlocked, prefix.hasPrefix("Q") {
-                text.append(NSAttributedString(string: "Q", attributes: [
-                    .font: Self.affixFont, .foregroundColor: NSColor.systemRed
-                ]))
-                text.append(NSAttributedString(string: String(prefix.dropFirst()), attributes: [
-                    .font: Self.affixFont, .foregroundColor: Self.brightText
-                ]))
-            } else {
-                text.append(NSAttributedString(string: prefix, attributes: [
-                    .font: Self.affixFont, .foregroundColor: Self.brightText
-                ]))
-            }
+            let arrowColor: NSColor = next.queueHeadBlocked
+                ? DesignRole.blocking.nsColor
+                : (next.queued ? DesignRole.action.nsColor : Self.brightText)
+            draw(DesignGlyph.next, arrowColor, gapAfter: 0)
             let labelColor: NSColor
             switch next.readiness {
-            case .ready: labelColor = .systemGreen
-            case .low: labelColor = .systemOrange
+            case .ready: labelColor = DesignRole.ready.nsColor
+            case .low: labelColor = DesignRole.caution.nsColor
             default: labelColor = Self.dimText
             }
-            text.append(NSAttributedString(string: name, attributes: [
-                .font: Self.affixFont, .foregroundColor: labelColor
-            ]))
+            draw(String(affix.dropFirst(DesignGlyph.next.count)), labelColor)
+            if let glyph = summary.verdictGlyph {
+                draw(glyph, Self.verdictColor(next.verdict), gapAfter: 0)
+            }
         } else {
-            text.append(NSAttributedString(string: affix, attributes: [
-                .font: Self.affixFont,
-                .foregroundColor: summary.isSwitching ? Self.dimText : NSColor.systemRed
-            ]))
+            draw(affix, summary.isSwitching ? Self.dimText : DesignRole.blocking.nsColor, gapAfter: 0)
         }
-        if let glyph = summary.verdictGlyph, let next = summary.next {
-            text.append(NSAttributedString(string: glyph, attributes: [
-                .font: Self.affixFont, .foregroundColor: Self.verdictColor(next.verdict)
-            ]))
-        }
-        text.draw(at: origin)
     }
 
     // MARK: - Composition

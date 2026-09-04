@@ -630,6 +630,15 @@ struct CodexActivationOffer: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // The switch's cost and both sides, as every switch confirmation
+            // states them (design round 1): the current owner keeps its login
+            // until this button is pressed.
+            Text(DashboardFormatting.switchCost(.codex) + " " + (ProfileManager.shared.activeCodexProfileId
+                .flatMap { id in ProfileManager.shared.profiles.first { $0.id == id }?.name }
+                .map { "codex.activate.from_owner".localized(with: $0) } ?? ""))
+                .font(DesignTokens.Typography.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             // The same sentence the sheet shows before the login, kept for the
             // Not-now path: declining here is not a dead end.
             Text("codex.login.activate_after".localized)

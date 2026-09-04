@@ -182,6 +182,8 @@ struct DashboardSnapshot: Hashable {
     var recentSwitches: [RecentSwitch]
     var generatedAt: Date
 
+    var accountCount: Int { sections.reduce(0) { $0 + $1.roster.count + ($1.active == nil ? 0 : 1) } }
+
     struct Inputs {
         var profiles: [Profile]
         /// Provider owners (`ProfileManager.activeAccountIds`).

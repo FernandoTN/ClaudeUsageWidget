@@ -637,6 +637,10 @@ final class StatusBarUIManager {
         observeAppearanceChanges()
     }
 
+    /// Placeholder width of a composite group item between creation and its
+    /// first paint (see `setupCompositeGroups`).
+    static let initialGroupLength: CGFloat = 24
+
     /// Composite mode: create ONE status item per provider that has selected
     /// profiles. Creation order Claude → Grok → Codex (each new item lands
     /// LEFT of existing ones, so Claude ends up rightmost and Codex clips
@@ -665,7 +669,16 @@ final class StatusBarUIManager {
 
         for provider in [Profile.ProviderKind.claude, .grok, .codex]
         where selectedProfiles.contains(where: { $0.providerKind == provider }) {
-            let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            // A FIXED initial length, never `variableLength`: a variable-length
+            // item is zero-wide until its first image, and zero-wide items tie
+            // on placement — once another fixed-length item of this app exists
+            // (the ⇄ selector, created first), the tiebreak flipped the whole
+            // group order on the deployed bar (Claude leftmost, Codex rightmost,
+            // 2026-09-03; a 130 s quit did not undo it — no slot memory was
+            // involved). Fixed-length items place strictly by creation order,
+            // measured in a fresh process. `assembleComposites` pins the real
+            // width on the first paint.
+            let statusItem = NSStatusBar.system.statusItem(withLength: Self.initialGroupLength)
             if let button = statusItem.button {
                 button.action = action
                 button.target = target
@@ -681,6 +694,32 @@ final class StatusBarUIManager {
         LoggingService.shared.logUIEvent(
             "Multi-profile: composite mode — \(groupItems.count) group items for \(selectedProfiles.count) profiles")
         observeExposureTriggers()
+        logPlacementAtCreation()
+    }
+
+    /// Where the bar put the group items BEFORE any paint (next runloop turn,
+    /// after AppKit's initial layout), beside the auxiliary items. Compared
+    /// with the post-paint exposure line this tells whether the host places
+    /// items by creation order and later RE-INSERTS them when their length
+    /// changes at the first paint — the one hypothesis that fits the
+    /// 2026-09-03 reorder (groups reversed next to a fixed-length anchor,
+    /// unchanged by creation-order and placeholder-length changes, absent in
+    /// a fresh process that never sets images).
+    private func logPlacementAtCreation() {
+        let created = groupItems
+        let auxiliary = auxiliaryExposureItems
+        DispatchQueue.main.async {
+            var parts: [String] = []
+            for (provider, item) in created.sorted(by: { "\($0.key)" < "\($1.key)" }) {
+                let x = item.button?.window?.frame.minX
+                parts.append("\(provider)=\(x.map { "x=\(Int($0))" } ?? "no window") len=\(Int(item.length))")
+            }
+            for (label, item) in auxiliary().sorted(by: { $0.key < $1.key }) {
+                let x = item.button?.window?.frame.minX
+                parts.append("\(label)=\(x.map { "x=\(Int($0))" } ?? "no window") len=\(Int(item.length))")
+            }
+            LoggingService.shared.log("Multi-profile: placement at creation — " + parts.joined(separator: " "))
+        }
     }
 
     /// True when on-screen x-positions no longer strictly DESCEND in creation
@@ -1633,6 +1672,19 @@ final class StatusBarUIManager {
         return Self.compositePaintOrder(multiProfileOrder).filter { idsInGroup.contains($0) }
     }
 
+#if DEBUG
+    /// Frame harness (DEBUG only): the composite image currently on each
+    /// provider item's button — exactly what the bar shows, at the display's
+    /// pixel scale — with the layout family it was painted for.
+    func debugGroupImages() -> [(provider: String, layout: String, image: NSImage)] {
+        groupItems.compactMap { provider, item in
+            item.button?.image.map {
+                ("\(provider)", summaryImages[provider] == nil ? "every" : "fleet", $0)
+            }
+        }.sorted { $0.0 < $1.0 }
+    }
+#endif
+
     // MARK: - Provider-group exposure (menu-bar overflow, stage C0)
 
     /// Provider groups CONFIRMED hidden by the menu bar (two consecutive
@@ -1699,9 +1751,15 @@ final class StatusBarUIManager {
             let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
             let hits = observation.hits.map { $0 ? "1" : "0" }.joined()
             let onScreen = observation.onScreen.map { $0 ? "1" : "0" } ?? "?"
-            snapshot.append(
-                "\(provider)=\(verdict) [\(frame) len=\(Int(item.length)) vis=\(observation.isVisible ? 1 : 0) "
-                    + "occ=\(observation.occluded ? 1 : 0) on=\(onScreen) hits=\(hits)]")
+            var imgText = "img=0/0"
+            if let button = item.button {
+                let counts = debugImageCounts(for: button)
+                imgText = "img=\(counts.assignments)/\(counts.repaints)"
+            }
+            let vis = observation.isVisible ? 1 : 0
+            let occ = observation.occluded ? 1 : 0
+            let length = Int(item.length)
+            snapshot.append("\(provider)=\(verdict) [\(frame) len=\(length) vis=\(vis) occ=\(occ) on=\(onScreen) hits=\(hits) \(imgText)]")
         }
         for (label, item) in auxiliaryExposureItems().sorted(by: { $0.key < $1.key }) {
             let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
@@ -2007,7 +2065,9 @@ final class StatusBarUIManager {
         for (state, label) in order where counts[state, default: 0] > 0 {
             parts.append("\(counts[state]!) \(label)")
         }
-        return parts.joined(separator: " · ")
+        // The words behind the glyphs (round 1, B4/G2): the tooltip is where
+        // the bar spells out what a 22 pt strip can only encode.
+        return parts.joined(separator: " · ") + "\n" + DesignLegend.line
     }
 
     /// The active block for a provider with NO active login right now:
@@ -2223,16 +2283,52 @@ final class StatusBarUIManager {
 
     /// Only sets button.image if the image data actually changed.
     /// This prevents triggering effectiveAppearance KVO when the image is identical.
+    /// Per-button counts, shown as `img=assignments/repaints` on the exposure
+    /// line so a relocation can be matched to the paint that preceded it.
+    private var imageAssignments: [ObjectIdentifier: Int] = [:]
+    private var imageRepaints: [ObjectIdentifier: Int] = [:]
+
+    /// `CUW_ASSIGN_IMAGES=1` restores plain image assignment (lab switch).
+    static let repaintInPlace = ProcessInfo.processInfo.environment["CUW_ASSIGN_IMAGES"] == nil
+
+    func debugImageCounts(for button: NSStatusBarButton) -> (assignments: Int, repaints: Int) {
+        let id = ObjectIdentifier(button)
+        return (imageAssignments[id] ?? 0, imageRepaints[id] ?? 0)
+    }
+
     private func setButtonImage(_ button: NSStatusBarButton, image: NSImage) {
         let buttonId = ObjectIdentifier(button)
         guard let newData = image.tiffRepresentation else {
             RenderInstrumentation.setButtonImageAssignments += 1
+            imageAssignments[buttonId, default: 0] += 1
             button.image = image
             return
         }
         if lastImageData[buttonId] == newData { return }
         lastImageData[buttonId] = newData
         RenderInstrumentation.setButtonImageAssignments += 1
+        // Repaint IN PLACE when the button already holds an image of this
+        // size: swap the representations inside the existing NSImage and
+        // redraw. Assigning a NEW image invalidates the button's intrinsic
+        // size and sends the status bar a relayout, and the scene-hosted bar
+        // (macOS 27) answered that by RELOCATING the item into the app's
+        // default slot among other apps' icons — measured 2026-09-03: on the
+        // sweep after launch grok and codex moved ~430 pt left, exactly the
+        // groups whose composite had changed, widths unchanged, while the
+        // memoized claude composite and the selector stayed put. The same
+        // mechanism is the likeliest reading of the 2026-07-17 "rejected
+        // pin" and the legacy stranded-tile heals.
+        if Self.repaintInPlace, let existing = button.image, existing.size == image.size,
+           existing.isTemplate == image.isTemplate,
+           let rep = image.representations.first?.copy() as? NSImageRep {
+            for old in existing.representations { existing.removeRepresentation(old) }
+            existing.addRepresentation(rep)
+            existing.recache()
+            button.needsDisplay = true
+            imageRepaints[buttonId, default: 0] += 1
+            return
+        }
+        imageAssignments[buttonId, default: 0] += 1
         button.image = image
     }
 

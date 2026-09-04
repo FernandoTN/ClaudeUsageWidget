@@ -127,8 +127,12 @@ final class BorderlessSettingsWindow: NSWindow {
         // looks the same, has a fixed rectangular event shape, native rounded
         // corners/shadow, and real traffic lights.
         super.init(contentRect: contentRect,
-                   styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                    backing: backing, defer: flag)
+        // Resizable since the Accounts inspector (a roster + a detail pane do
+        // not fit a fixed 720); the minimum keeps every page's 520 pt content
+        // and the Codex sheets fitting.
+        minSize = Constants.WindowSizes.settingsMinimum
         titlebarAppearsTransparent = true
         titleVisibility = .hidden
         isOpaque = true
@@ -173,14 +177,27 @@ enum SettingsWindowBuilder {
 /// Professional, native macOS Settings interface with multi-profile support
 struct SettingsView: View {
     @State private var selectedSection: SettingsSection
+    /// The Accounts inspector's detail tab (docs/specs/ux-revamp.md §2.2).
+    @State private var accountTab: AccountTab = .overview
+    /// The section to return to from the Accounts roster sidebar.
+    @State private var sectionBeforeAccounts: SettingsSection = .manageProfiles
+    @StateObject private var accountsStore = AccountsInspectorStore()
     @Environment(\.colorScheme) private var colorScheme
 
     init(initialSection: SettingsSection? = nil) {
-        _selectedSection = State(initialValue: initialSection ?? .appearance)
+        _selectedSection = State(initialValue: initialSection ?? .accounts)
     }
 
     var body: some View {
         HStack(spacing: 0) {
+            if selectedSection == .accounts {
+                // Accounts mode: the sidebar IS the roster (spec §12.2 frame 0).
+                AccountsSidebar(store: accountsStore) {
+                    selectedSection = sectionBeforeAccounts
+                }
+                .background(SidebarVisualEffect())
+                .frame(width: 250)
+            } else {
             // Sidebar with Profile Switcher
             VStack(spacing: 0) {
                 // Native traffic lights live in the (transparent) titlebar now —
@@ -207,10 +224,15 @@ struct SettingsView: View {
             }
             .background(SidebarVisualEffect())
             .frame(width: 190)
+            }
 
             // Content
             Group {
                 switch selectedSection {
+                case .accounts:
+                    AccountsDetailView(store: accountsStore, tab: $accountTab)
+                case .activeAccounts:
+                    ActiveSwitchView()
                 // Credentials
                 case .cliAccount:
                     CLIAccountView()
@@ -243,14 +265,21 @@ struct SettingsView: View {
                     : Color.white.opacity(0.3)
             )
         }
-        .frame(minWidth: 720, maxWidth: 720, maxHeight: .infinity)
+        .frame(minWidth: Constants.WindowSizes.settingsMinimum.width, maxWidth: .infinity, maxHeight: .infinity)
         .background(SettingsBackground())
         .onReceive(NotificationCenter.default.publisher(for: .settingsSectionRequested)) { notification in
-            if let rawValue = notification.object as? String,
-               let section = SettingsSection(rawValue: rawValue) {
-                selectedSection = section
-            }
+            // Both payloads decode: the legacy section string every existing
+            // poster sends, and the typed route that names its profile + tab.
+            guard let route = SettingsRoute(deepLink: notification.object) else { return }
+            if let id = route.profileId { ProfileManager.shared.viewProfile(id) }
+            if let tab = route.tab { accountTab = tab }
+            select(route.section)
         }
+    }
+
+    private func select(_ section: SettingsSection) {
+        if section == .accounts, selectedSection != .accounts { sectionBeforeAccounts = selectedSection }
+        selectedSection = section
     }
 }
 
@@ -476,6 +505,8 @@ enum SettingsSection: String, CaseIterable {
     case general
 
     // Shared Settings
+    case accounts
+    case activeAccounts
     case appSettings
     case manageProfiles
     case shortcuts
@@ -484,6 +515,8 @@ enum SettingsSection: String, CaseIterable {
 
     var title: String {
         switch self {
+        case .accounts: return "section.accounts_title".localized
+        case .activeAccounts: return "section.active_title".localized
         case .cliAccount: return "section.cli_account_title".localized
         case .codexAccount: return "section.codex_account_title".localized
         case .appearance: return "section.appearance_title".localized
@@ -498,6 +531,8 @@ enum SettingsSection: String, CaseIterable {
 
     var icon: String {
         switch self {
+        case .accounts: return "person.crop.rectangle.stack.fill"
+        case .activeAccounts: return "arrow.left.arrow.right"
         case .cliAccount: return "terminal.fill"
         case .codexAccount: return "chevron.left.forwardslash.chevron.right"
         case .appearance: return "paintbrush.fill"
@@ -512,6 +547,8 @@ enum SettingsSection: String, CaseIterable {
 
     var description: String {
         switch self {
+        case .accounts: return "section.accounts_desc".localized
+        case .activeAccounts: return "section.active_desc".localized
         case .cliAccount: return "section.cli_account_desc".localized
         case .codexAccount: return "section.codex_account_desc".localized
         case .appearance: return "section.appearance_desc".localized

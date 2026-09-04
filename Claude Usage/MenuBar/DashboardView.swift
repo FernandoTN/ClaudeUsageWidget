@@ -128,12 +128,55 @@ enum DashboardFormatting {
         case .rankedBehindBlockedQueueHead: parts.append("ranked, queue head blocked")
         }
         switch next.verdict {
-        case .verified: parts.append("✓ proven" + (next.verdictAt.map { " \(age($0, now: now))" } ?? ""))
-        case .unverified: parts.append("? unverified")
-        case .dead: parts.append("× dead")
+        case .verified: parts.append("\(DesignGlyph.verified) verified" + (next.verdictAt.map { " \(age($0, now: now))" } ?? ""))
+        case .unverified: parts.append("not verified")
+        case .dead: parts.append("\(DesignGlyph.dead) dead")
         }
-        if let quota = next.quotaMeasuredAt { parts.append("headroom \(age(quota, now: now))") }
+        if let quota = next.quotaMeasuredAt { parts.append("headroom measured \(age(quota, now: now))") }
         return parts.joined(separator: " · ")
+    }
+
+    /// The counts of a provider in words, precedence order, for the section
+    /// header (round 1, D3): "3 ready · 1 near limit · 4 exhausted · 1 dead · 2 duplicate".
+    static func counts(_ counts: FleetCounts.Provider) -> String {
+        var parts: [String] = []
+        for readiness in [AccountReadiness.ready, .low, .exhausted, .suspected, .unknown, .excluded, .dead] {
+            let n = counts.count(readiness)
+            if n > 0 { parts.append("\(n) \(readiness.legendWord)") }
+        }
+        if counts.duplicateProfiles > 0 { parts.append("\(counts.duplicateProfiles) duplicate") }
+        return parts.joined(separator: " · ")
+    }
+
+    static let gaugeLegend = "S 5-hour session · W weekly · F Fable weekly"
+
+    /// "78 % session · resets in 2h 59m": the firing window (session where
+    /// one exists, else weekly) — what a switch decision is judged on.
+    static func headline(_ gauges: [WindowGauge], now: Date = Date()) -> String? {
+        guard let firing = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly }) else { return nil }
+        var text = "\(Int(firing.percentage.rounded())) % \(gaugeTitle(firing.kind, compact: false).lowercased())"
+        if let reset = firing.resetAt, reset > now { text += " · resets in \(reset.timeRemainingString(from: now))" }
+        return text
+    }
+
+    /// "nobody with headroom · 2 of 3 dead" — the ⇄ menu's form (round 2, R2-2).
+    static func nobodyWithHeadroom(_ counts: FleetCounts.Provider?) -> String {
+        var text = "nobody with headroom"
+        if let counts, counts.count(.dead) > 0 {
+            text += " · \(counts.count(.dead)) of \(counts.profiles) dead"
+        }
+        return text
+    }
+
+    /// Both sides named, with the candidate's headroom, so the trade can be
+    /// judged before the CLI login moves (round 1, M2).
+    static func switchQuestion(provider: Profile.ProviderKind, from: String?, fromHeadline: String?,
+                               to: String, toHeadline: String?) -> String {
+        let cli = ActiveVocabulary.providerName(provider)
+        var text = "Switch the \(cli) login"
+        if let from { text += " from \(from)" + (fromHeadline.map { " (\($0))" } ?? "") }
+        text += " to \(to)" + (toHeadline.map { " (\($0))" } ?? "") + "?"
+        return text
     }
 
     static func switchCost(_ provider: Profile.ProviderKind) -> String {
@@ -146,9 +189,16 @@ enum DashboardFormatting {
         return "Every running \(cli) session re-reads its context (~10–15 % of its quota)."
     }
 
+    /// Provider-free variant kept for the UX-revamp surfaces until they pass
+    /// the provider (round 1, M4 wants the success note to read as state).
     static func outcome(_ outcome: ProfileManager.ActivationOutcome, name: String) -> String {
+        if case .activated = outcome { return "Switched to \(name)." }
+        return self.outcome(outcome, name: name, provider: .claude)
+    }
+
+    static func outcome(_ outcome: ProfileManager.ActivationOutcome, name: String, provider: Profile.ProviderKind) -> String {
         switch outcome {
-        case .activated: return "Switched to \(name)."
+        case .activated: return "\(ActiveVocabulary.activeFor(provider)): \(name) \(DesignGlyph.verified) · just now"
         case .alreadyActive: return "\(name) is already active."
         case .switchInFlight: return "Another switch is in progress — try again in a moment."
         case .profileNotFound: return "\(name) no longer exists."
@@ -210,31 +260,60 @@ enum DashboardFormatting {
 // MARK: - Colours
 
 extension AccountReadiness {
-    var dashboardColor: Color {
-        switch self {
-        case .ready: return .adaptiveGreen
-        case .low: return .orange
-        case .exhausted: return .red
-        case .suspected: return .purple
-        case .dead: return .orange
-        case .excluded, .unknown: return .secondary
-        }
-    }
-
-    var dashboardGlyph: String {
-        switch self {
-        case .dead: return "✕"
-        case .excluded: return "–"
-        case .unknown: return "○"
-        case .ready, .low, .exhausted, .suspected: return "●"
-        }
-    }
+    /// Kept for the UX-revamp surfaces until they consume `DesignLegend`
+    /// directly (round 1, G1/G2): the one colour-role table and glyph set.
+    var dashboardColor: Color { role.color }
+    var dashboardGlyph: String { legendGlyph }
 }
 
-private func gaugeColor(_ percentage: Double) -> Color {
-    if percentage >= 80 { return .red }
-    if percentage >= 50 { return .orange }
-    return .adaptiveGreen
+/// What the status strip shows for each condition (round 1, D1/D2): its
+/// tier decides the colour and the order; the message is provider-neutral.
+extension DashboardBanner {
+    enum Tier: Int {
+        case blocking, actionable, informational
+        var role: DesignRole {
+            switch self {
+            case .blocking: return .blocking
+            case .actionable: return .caution
+            case .informational: return .informational
+            }
+        }
+    }
+
+    struct Action { var title: String; var sectionRawValue: String }
+
+    var tier: Tier {
+        switch self {
+        case .preferencesDegraded: return .blocking
+        case .deadLogins: return .actionable
+        case .noCandidate, .hiddenByOverflow: return .informational
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .preferencesDegraded: return "externaldrive.badge.exclamationmark"
+        case .deadLogins: return "person.crop.circle.badge.exclamationmark"
+        case .noCandidate: return "arrow.right.circle"
+        case .hiddenByOverflow: return "eye.slash"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .preferencesDegraded: return "popover.banner.preferences_degraded".localized
+        case .deadLogins(let count): return "\(count) dead login\(count == 1 ? "" : "s") — repair in Accounts"
+        case .noCandidate(let provider): return "\(DashboardFormatting.title(provider)): nowhere to switch to"
+        case .hiddenByOverflow(let provider): return "\(DashboardFormatting.title(provider)) is not visible in the menu bar"
+        }
+    }
+
+    var action: Action? {
+        switch self {
+        case .deadLogins: return Action(title: "Accounts ›", sectionRawValue: "accounts")
+        default: return nil
+        }
+    }
 }
 
 // MARK: - View
@@ -257,6 +336,7 @@ struct DashboardView: View {
     @State private var switchNote: String?
     @State private var showSwitches = false
     @State private var isRefreshing = false
+    @State private var expandedRosters: Set<Profile.ProviderKind> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -284,33 +364,47 @@ struct DashboardView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(route == .fleet ? "Fleet" : "Account")
                     .font(.system(size: 13, weight: .bold))
                 if let snapshot = store.snapshot {
-                    Text("\(snapshot.sections.reduce(0) { $0 + $1.roster.count + ($1.active == nil ? 0 : 1) }) accounts · updated \(DashboardFormatting.age(snapshot.generatedAt))")
+                    Text("\(snapshot.accountCount) accounts · updated \(DashboardFormatting.age(snapshot.generatedAt))")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
+                    if let last = snapshot.recentSwitches.first {
+                        Text("last switch: \(last.from) → \(last.to) · \(DashboardFormatting.age(last.at))")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             Spacer()
-            HStack(spacing: 2) {
-                HeaderIconButton(icon: "arrow.clockwise", isRefreshing: isRefreshing) {
+            HStack(spacing: 0) {
+                headerButton("arrow.clockwise", help: "Refresh the viewed accounts", refreshing: isRefreshing) {
                     withAnimation(.easeInOut(duration: 0.3)) { isRefreshing = true }
                     actions.refresh()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         withAnimation(.easeInOut(duration: 0.3)) { isRefreshing = false }
                     }
                 }
-                .disabled(isRefreshing)
-                HeaderIconButton(icon: "chart.bar.xaxis", fontSize: 11) { actions.openTokenUsage(nil, nil) }
-                    .help("popover.token_usage".localized)
-                HeaderIconButton(icon: "gearshape.fill", fontSize: 12) { actions.openSettings(nil) }
+                headerButton("chart.bar.xaxis", help: "popover.token_usage".localized) { actions.openTokenUsage(nil, nil) }
+                headerButton("gearshape.fill", help: "Settings") { actions.openSettings(nil) }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    /// 28 pt hit area and a tooltip on every header icon (round 1, D11).
+    private func headerButton(_ icon: String, help: String, refreshing: Bool = false,
+                              action: @escaping () -> Void) -> some View {
+        HeaderIconButton(icon: icon, fontSize: 12, isRefreshing: refreshing, action: action)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+            .help(help)
+            .disabled(refreshing)
     }
 
     // MARK: Fleet
@@ -318,17 +412,23 @@ struct DashboardView: View {
     private func fleet(_ snapshot: DashboardSnapshot) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(snapshot.banners.enumerated()), id: \.offset) { _, banner in
-                        bannerView(banner)
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    if !snapshot.banners.isEmpty {
+                        statusStrip(snapshot.banners)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 8)
                     }
                     ForEach(snapshot.sections, id: \.provider) { section in
-                        sectionView(section)
-                            .id(section.provider)
+                        Section {
+                            sectionBody(section)
+                        } header: {
+                            sectionHeader(section)
+                                .id(section.provider)
+                        }
                     }
                     recentSwitches(snapshot.recentSwitches)
                 }
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
             }
             .onAppear {
                 if let provider = store.clickedProvider { proxy.scrollTo(provider, anchor: .top) }
@@ -336,80 +436,132 @@ struct DashboardView: View {
         }
     }
 
-    @ViewBuilder
-    private func bannerView(_ banner: DashboardBanner) -> some View {
-        switch banner {
-        case .preferencesDegraded:
-            StatusBannerView(icon: "externaldrive.badge.exclamationmark",
-                             message: "popover.banner.preferences_degraded".localized, color: .orange)
-        case .deadLogins(let count):
-            StatusBannerView(icon: "exclamationmark.triangle.fill",
-                             message: "\(count) dead login\(count == 1 ? "" : "s") — log in again, then Sync",
-                             color: .orange) { actions.openSettings("manageProfiles") }
-        case .noCandidate(let provider):
-            StatusBannerView(icon: "arrow.right.circle", message: "\(DashboardFormatting.title(provider)): nowhere to switch to",
-                             color: .red)
-        case .hiddenByOverflow(let provider):
-            StatusBannerView(icon: "eye.slash", message: "\(DashboardFormatting.title(provider)) is not visible in the menu bar",
-                             color: .gray)
+    /// ONE compact strip, one line per condition, tiered and ordered:
+    /// blocking, then actionable, then informational (round 1, D1/D2).
+    private func statusStrip(_ banners: [DashboardBanner]) -> some View {
+        let ordered = banners.sorted { $0.tier.rawValue < $1.tier.rawValue }
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(ordered.enumerated()), id: \.offset) { index, banner in
+                if index > 0 { Divider().opacity(0.5) }
+                statusLine(banner)
+            }
         }
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
     }
 
-    private func sectionView(_ section: ProviderSection) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(DashboardFormatting.title(section.provider).uppercased())
-                        .font(.system(size: 10, weight: .bold))
-                    Spacer()
-                    if let counts = section.selection?.counts {
-                        // The bar's glyph alphabet (● ◐ ○ ▲ × – †); the
-                        // sentence behind it on hover.
-                        Text(counts.strip)
-                            .font(.system(size: 8.5, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .help(ActiveVocabulary.countsSentence(counts))
-                    }
-                    Button { actions.openActiveSelector(section.provider) } label: {
-                        Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                    }
+    private func statusLine(_ banner: DashboardBanner) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: banner.icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(banner.tier.role.color)
+                .frame(width: 14)
+            Text(banner.message)
+                .font(.system(size: 10))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if let action = banner.action {
+                Button(action.title) { actions.openSettings(action.sectionRawValue) }
                     .buttonStyle(.plain)
-                    .help(ActiveVocabulary.makeActive(section.provider))
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(DesignRole.action.color)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: Section
+
+    /// Sticky while its section scrolls (round 1, D9); a hairline and one
+    /// step of contrast so it reads as a band in dark (D10); words instead
+    /// of the glyph strip, the legend on hover (D3).
+    private func sectionHeader(_ section: ProviderSection) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(DashboardFormatting.title(section.provider).uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                if let counts = section.selection?.counts {
+                    Text("· \(counts.profiles) accounts")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
                 }
-                Text(DashboardFormatting.sectionCaption(section))
-                    .font(.system(size: 9.5))
+                Spacer()
+                Button { actions.openActiveSelector(section.provider) } label: {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DesignRole.action.color)
+                        .frame(width: 24, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(ActiveVocabulary.makeActive(section.provider))
+            }
+            Text(DashboardFormatting.sectionCaption(section))
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            if let counts = section.selection?.counts {
+                Text(DashboardFormatting.counts(counts))
+                    .font(.system(size: 8.5))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                if let active = section.active, !active.sameAccountAs.isEmpty {
-                    Text("same account as \(active.sameAccountAs.joined(separator: ", "))")
-                        .font(.system(size: 9))
-                        .foregroundColor(.orange)
-                        .lineLimit(1)
-                }
+                    .minimumScaleFactor(0.85)
+                    .help(DesignLegend.line)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .background(Color.primary.opacity(0.04))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.06))
+        .background(VisualEffectBackground())
+        .overlay(Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 0.5), alignment: .bottom)
+    }
 
+    private func sectionBody(_ section: ProviderSection) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             if let active = section.active {
                 activeCard(active, section: section)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 12)
             }
             nextAndQueue(section)
-                .padding(.horizontal, 14)
-
+                .padding(.horizontal, 16)
             if !section.roster.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(DashboardFormatting.rosterHeader(section))
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 14)
-                    ForEach(section.roster, id: \.id) { row in
-                        rosterRow(row, section: section)
-                    }
+                roster(section)
+            }
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+
+    /// Collapsed to the first rows by default (round 1, D9: 24 accounts made
+    /// the fleet ~1500 pt tall); "Show all N" expands one section.
+    private static let collapsedRosterRows = 3
+
+    private func roster(_ section: ProviderSection) -> some View {
+        let isExpanded = expandedRosters.contains(section.provider)
+        let rows = isExpanded ? section.roster : Array(section.roster.prefix(Self.collapsedRosterRows))
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(DashboardFormatting.rosterHeader(section))
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+            Text(DashboardFormatting.gaugeLegend)
+                .font(.system(size: 8))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+            ForEach(rows, id: \.id) { row in
+                rosterRow(row, section: section)
+            }
+            if section.roster.count > Self.collapsedRosterRows {
+                Button(isExpanded ? "Show fewer" : "Show all \(section.roster.count)") {
+                    if isExpanded { expandedRosters.remove(section.provider) } else { expandedRosters.insert(section.provider) }
                 }
+                .buttonStyle(.plain)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(DesignRole.action.color)
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
             }
         }
     }
@@ -417,22 +569,25 @@ struct DashboardView: View {
     // MARK: Active card
 
     private func activeCard(_ card: ActiveCard, section: ProviderSection) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("ACTIVE").font(.system(size: 8, weight: .bold)).foregroundColor(Color(nsColor: .systemCyan))
+                Text("ACTIVE").font(.system(size: 8, weight: .bold)).foregroundColor(DesignRole.active.color)
                 Text(card.name).font(.system(size: 12, weight: .bold))
                 if card.isFocused {
-                    Text("focused").font(.system(size: 8)).foregroundColor(.secondary)
+                    Text("viewing").font(.system(size: 8)).foregroundColor(.secondary)
+                }
+                if !card.sameAccountAs.isEmpty {
+                    chip("same account as \(card.sameAccountAs.joined(separator: ", "))", role: .informational)
                 }
                 Spacer()
                 if let m = card.measurement {
                     Text(DashboardFormatting.provenance(m))
                         .font(.system(size: 9))
-                        .foregroundColor(m.isOwn ? .secondary : .orange)
+                        .foregroundColor(m.provenance == .ownEndpoint ? .secondary : DesignRole.caution.color)
                 }
             }
             ForEach(card.gauges, id: \.kind) { gauge in
-                gaugeLine(gauge, compact: false, isOwn: card.measurement?.isOwn ?? true, showThreshold: true)
+                gaugeLine(gauge, isOwn: card.measurement?.isOwn ?? true)
             }
             if let caveat = card.suspected {
                 Label {
@@ -440,55 +595,71 @@ struct DashboardView: View {
                          + (caveat.projected.map { ", projected \(Int($0.rounded())) %" } ?? ""))
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } icon: {
-                    Image(systemName: "exclamationmark.triangle").foregroundColor(.purple)
+                    Image(systemName: "exclamationmark.triangle").foregroundColor(DesignRole.suspected.color)
                 }
             }
             if let eta = card.etaToThreshold, let firing = card.gauges.first {
                 Text(eta == 0
-                     ? "\(DashboardFormatting.gaugeTitle(firing.kind, compact: false)) is past its \(Int(firing.threshold)) % switch threshold"
+                     ? "\(DashboardFormatting.gaugeTitle(firing.kind, compact: false)) is past its \(Int(firing.threshold)) % auto-switch threshold"
                      : "ETA to \(Int(firing.threshold)) % \(DashboardFormatting.gaugeTitle(firing.kind, compact: false).lowercased()): ~\(DashboardFormatting.duration(eta)) at the current pace")
                     .font(.system(size: 9))
-                    .foregroundColor(.orange)
+                    .foregroundColor(DesignRole.caution.color)
             }
         }
-        .padding(10)
+        .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
     }
 
-    private func gaugeLine(_ gauge: WindowGauge, compact: Bool, isOwn: Bool, showThreshold: Bool) -> some View {
-        HStack(spacing: 6) {
-            Text(DashboardFormatting.gaugeTitle(gauge.kind, compact: compact))
-                .font(.system(size: compact ? 8 : 9.5, weight: .medium))
+    private func chip(_ text: String, role: DesignRole) -> some View {
+        Text(text)
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundColor(role.color)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(role.color.opacity(0.12)))
+    }
+
+    private func gaugeRole(_ gauge: WindowGauge) -> DesignRole {
+        if gauge.percentage >= 100 { return .blocking }
+        if gauge.percentage >= min(gauge.threshold, 80) { return .caution }
+        return .ready
+    }
+
+    private func gaugeLine(_ gauge: WindowGauge, isOwn: Bool) -> some View {
+        HStack(spacing: 8) {
+            Text(DashboardFormatting.gaugeTitle(gauge.kind, compact: false))
+                .font(.system(size: 9.5, weight: .medium))
                 .foregroundColor(.secondary)
-                .frame(width: compact ? 10 : 46, alignment: .leading)
+                .frame(width: 46, alignment: .leading)
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 2).fill(Color.primary.opacity(0.08))
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(gaugeColor(gauge.percentage))
+                        .fill(gaugeRole(gauge).color)
                         .frame(width: geometry.size.width * min(gauge.percentage / 100, 1))
                 }
             }
             .frame(height: 4)
             .opacity(isOwn ? 1 : 0.5)
             Text("\(Int(gauge.percentage.rounded())) %")
-                .font(.system(size: compact ? 8.5 : 9.5, weight: .semibold, design: .rounded))
-                .foregroundColor(gaugeColor(gauge.percentage))
-                .frame(width: compact ? 30 : 36, alignment: .trailing)
-            if !compact {
-                Text(gauge.resetAt.map { "resets \($0.timeRemainingString().lowercased() == "reset now" ? "now" : "in " + $0.timeRemainingString())" } ?? "")
-                    .font(.system(size: 8.5))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if showThreshold {
-                    Text("fires at \(Int(gauge.threshold)) %")
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
-                }
-            }
+                .font(.system(size: 9.5, weight: .semibold))
+                .monospacedDigit()
+                .foregroundColor(gaugeRole(gauge).color)
+                .frame(width: 36, alignment: .trailing)
+            // The threshold is stated once per section ("Auto-switch at 95 %
+            // session / 99 % weekly") — repeating it per gauge crowded the row
+            // into wrapping (round 1 render). The reset text never yields.
+            Text(gauge.resetAt.map { "resets \($0.timeRemainingString().lowercased() == "reset now" ? "now" : "in " + $0.timeRemainingString())" } ?? "")
+                .font(.system(size: 8.5))
+                .monospacedDigit()
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(width: 92, alignment: .leading)
         }
     }
 
@@ -499,15 +670,18 @@ struct DashboardView: View {
             HStack(spacing: 6) {
                 Text("Next").font(.system(size: 9.5, weight: .medium)).foregroundColor(.secondary)
                 if let next = section.next {
-                    Text("→ \(next.name)").font(.system(size: 9.5, weight: .semibold))
+                    Text("\(DesignGlyph.next) \(next.name)").font(.system(size: 9.5, weight: .semibold))
                     Text(DashboardFormatting.next(next))
                         .font(.system(size: 8.5))
-                        .foregroundColor(next.verdict == .verified ? .adaptiveGreen : (next.verdict == .dead ? .red : .secondary))
+                        .foregroundColor(next.verdict == .verified ? DesignRole.ready.color
+                                         : (next.verdict == .dead ? DesignRole.blocking.color : .secondary))
                         .lineLimit(1)
                 } else if section.roster.isEmpty {
                     Text("single account").font(.system(size: 8.5)).foregroundColor(.secondary)
                 } else {
-                    Text("→ — nobody with headroom").font(.system(size: 9.5, weight: .semibold)).foregroundColor(.red)
+                    Text(DashboardFormatting.nobodyWithHeadroom(section.selection?.counts))
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(DesignRole.blocking.color)
                 }
             }
             HStack(spacing: 6) {
@@ -517,14 +691,14 @@ struct DashboardView: View {
                 } else {
                     Text(section.queue.map { "\($0.name)\($0.blocked ? " (blocked)" : "")" }.joined(separator: " › "))
                         .font(.system(size: 8.5))
-                        .foregroundColor(section.queue.first?.blocked == true ? .red : .primary)
+                        .foregroundColor(section.queue.first?.blocked == true ? DesignRole.blocking.color : .primary)
                         .lineLimit(1)
                 }
                 Spacer()
                 Button("Edit in Settings ›") { actions.openSettings("manageProfiles") }
                     .buttonStyle(.plain)
                     .font(.system(size: 8.5))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(DesignRole.action.color)
             }
             Text("Auto-switch at "
                  + (section.sessionThreshold.map { "\(Int($0)) % session / " } ?? "")
@@ -536,56 +710,65 @@ struct DashboardView: View {
 
     // MARK: Roster
 
+    /// Two lines: state on the left, a fixed right column (state chip over
+    /// the reading's age) so the two never collide (round 1, D7); numerals
+    /// monospaced-digit (G3); no bars — the letters carry the windows and
+    /// the legend sits above the roster.
     private func rosterRow(_ row: RosterRow, section: ProviderSection) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 route = .account(row.id)
             } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(row.readiness.dashboardGlyph)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(row.readiness.dashboardColor)
-                            .frame(width: 10)
-                        Text(row.name).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
-                        if row.isNext {
-                            Text("next").font(.system(size: 8, weight: .bold)).foregroundColor(.accentColor)
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(row.readiness.legendGlyph)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(row.readiness.role.color)
+                                .frame(width: 10)
+                            Text(row.name).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
+                            if row.isNext { tag("next", role: .informational) }
+                            if let position = row.queuePosition { tag("queued #\(position)", role: .informational) }
+                            if row.needsRelogin { tag("re-login needed", role: .caution) }
+                            if !row.sameAccountAs.isEmpty {
+                                tag("same account as \(row.sameAccountAs.joined(separator: ", "))", role: .informational)
+                            }
                         }
-                        if let position = row.queuePosition {
-                            Text("queued #\(position)").font(.system(size: 8)).foregroundColor(.accentColor)
+                        HStack(spacing: 10) {
+                            ForEach(row.gauges, id: \.kind) { gauge in
+                                HStack(spacing: 3) {
+                                    Text(DashboardFormatting.gaugeTitle(gauge.kind, compact: true))
+                                        .font(.system(size: 8, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                    Text("\(Int(gauge.percentage.rounded())) %")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .monospacedDigit()
+                                        .foregroundColor(gaugeRole(gauge).color)
+                                }
+                            }
                         }
-                        if row.needsRelogin {
-                            Text("re-login needed").font(.system(size: 8)).foregroundColor(.orange)
-                        }
-                        if !row.sameAccountAs.isEmpty {
-                            Text("same account as \(row.sameAccountAs.joined(separator: ", "))")
-                                .font(.system(size: 8)).foregroundColor(.orange).lineLimit(1)
-                        }
-                        Spacer()
+                        .padding(.leading, 16)
+                        .opacity((row.measurement?.isOwn ?? true) ? 1 : 0.6)
+                    }
+                    Spacer(minLength: 4)
+                    VStack(alignment: .trailing, spacing: 3) {
                         Text(DashboardFormatting.chip(row.chip))
                             .font(.system(size: 8.5))
-                            .foregroundColor(row.readiness.dashboardColor)
+                            .foregroundColor(row.readiness.role.color)
                             .lineLimit(1)
-                        Image(systemName: "chevron.right").font(.system(size: 8)).foregroundColor(.secondary)
-                    }
-                    HStack(spacing: 8) {
-                        ForEach(row.gauges, id: \.kind) { gauge in
-                            gaugeLine(gauge, compact: true, isOwn: row.measurement?.isOwn ?? true, showThreshold: false)
-                                .frame(width: gauge.kind == .fable ? 44 : 88)
-                        }
-                        Spacer(minLength: 4)
                         if let m = row.measurement {
                             Text(m.isOwn ? DashboardFormatting.age(m.measuredAt) : DashboardFormatting.provenance(m))
                                 .font(.system(size: 8))
-                                .foregroundColor(m.isOwn ? .secondary : .orange)
+                                .monospacedDigit()
+                                .foregroundColor(m.provenance == .cliCache ? DesignRole.caution.color : .secondary)
                                 .lineLimit(1)
-                                .minimumScaleFactor(0.85)
                         }
                     }
-                    .padding(.leading, 16)
+                    .frame(width: 118, alignment: .trailing)
+                    Image(systemName: "chevron.right").font(.system(size: 8)).foregroundColor(.secondary)
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.025)))
                 .contentShape(Rectangle())
             }
@@ -611,41 +794,64 @@ struct DashboardView: View {
                 Text(note).font(.system(size: 9)).foregroundColor(.secondary).padding(.horizontal, 16)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
+    }
+
+    /// Informational tags are neutral pills (round 2, R2-3: "queued" and
+    /// "next" are facts, not actions); caution tags keep their colour.
+    private func tag(_ text: String, role: DesignRole) -> some View {
+        Text(text)
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundColor(role == .informational ? .secondary : role.color)
+            .lineLimit(1)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(role == .informational ? Color.primary.opacity(0.08) : role.color.opacity(0.12)))
     }
 
     @State private var noteFor: UUID?
 
     private func switchConfirm(_ row: RosterRow, section: ProviderSection) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Switch the \(DashboardFormatting.title(section.provider)) login to \(row.name)?")
-                .font(.system(size: 10, weight: .semibold))
+        let dead = row.readiness == .dead
+        return VStack(alignment: .leading, spacing: 5) {
+            SwitchQuestionLines(
+                provider: section.provider,
+                from: section.active.map { ($0.name, DashboardFormatting.headline($0.gauges)) },
+                to: (row.name, DashboardFormatting.headline(row.gauges)))
             Text(DashboardFormatting.switchCost(section.provider))
                 .font(.system(size: 9))
                 .foregroundColor(.secondary)
-            if row.readiness == .dead {
-                Text("This login is dead; the switch will be refused. Log in again first.")
-                    .font(.system(size: 9)).foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            if dead {
+                Text("This login is dead; the switch would be refused. Log in again first.")
+                    .font(.system(size: 9)).foregroundColor(DesignRole.caution.color)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                Button("Switch") {
-                    let id = row.id
-                    let name = row.name
-                    pendingSwitch = nil
-                    Task { @MainActor in
-                        let outcome = await actions.makeActive(id)
-                        switchNote = DashboardFormatting.outcome(outcome, name: name)
-                        noteFor = id
+                if dead {
+                    Button("Log in first") {}.disabled(true)
+                    Button("Cancel") { pendingSwitch = nil }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Switch") {
+                        let id = row.id
+                        let name = row.name
+                        pendingSwitch = nil
+                        Task { @MainActor in
+                            let outcome = await actions.makeActive(id)
+                            switchNote = DashboardFormatting.outcome(outcome, name: name, provider: section.provider)
+                            noteFor = id
+                        }
                     }
+                    .keyboardShortcut(.defaultAction)
+                    Button("Cancel") { pendingSwitch = nil }
+                        .keyboardShortcut(.cancelAction)
                 }
-                .keyboardShortcut(.defaultAction)
-                Button("Cancel") { pendingSwitch = nil }
-                    .keyboardShortcut(.cancelAction)
             }
             .controlSize(.small)
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.10)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(DesignRole.caution.color.opacity(0.10)))
     }
 
     private func repairTitle(_ repair: RepairAction) -> String {
@@ -665,7 +871,7 @@ struct DashboardView: View {
             }
             ForEach(Array(switches.enumerated()), id: \.offset) { _, s in
                 HStack(spacing: 6) {
-                    Text(s.at.formatted(date: .omitted, time: .shortened)).font(.system(size: 9)).foregroundColor(.secondary)
+                    Text(s.at.formatted(date: .omitted, time: .shortened)).font(.system(size: 9)).monospacedDigit().foregroundColor(.secondary)
                     Text("\(s.from) → \(s.to)").font(.system(size: 9, weight: .medium))
                     Text(s.trigger.rawValue).font(.system(size: 8)).foregroundColor(.secondary)
                     if let reason = s.reason {
@@ -678,8 +884,8 @@ struct DashboardView: View {
                 .font(.system(size: 8.5, weight: .semibold))
                 .foregroundColor(.secondary)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 4)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
     // MARK: Account detail
@@ -697,25 +903,26 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                     Text(profile?.name ?? "Account").font(.system(size: 12, weight: .bold))
                     if let readiness = row?.readiness ?? active?.readiness {
-                        Text(readiness.dashboardGlyph).foregroundColor(readiness.dashboardColor).font(.system(size: 9, weight: .bold))
+                        Text(readiness.legendGlyph).foregroundColor(readiness.role.color).font(.system(size: 9, weight: .bold))
+                            .help(DesignLegend.line)
                     }
                     Spacer()
                     if let m = row?.measurement ?? active?.measurement {
                         Text(DashboardFormatting.provenance(m))
                             .font(.system(size: 9))
-                            .foregroundColor(m.isOwn ? .secondary : .orange)
+                            .foregroundColor(m.provenance == .ownEndpoint ? .secondary : DesignRole.caution.color)
                     }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 if let row, let repair = row.repair {
                     StatusBannerView(icon: "exclamationmark.triangle.fill",
                                      message: DashboardFormatting.chip(row.chip) + " — " + repairTitle(repair),
-                                     color: .orange) { actions.openSettings(repair.settingsSectionRawValue ?? "manageProfiles") }
+                                     color: DesignRole.blocking.color) { actions.openSettings(repair.settingsSectionRawValue ?? "manageProfiles") }
                 }
                 if let m = row?.measurement ?? active?.measurement, !m.isOwn {
                     StatusBannerView(icon: "info.circle",
                                      message: "These numbers were attributed from the CLI cache, not read with this account's credentials",
-                                     color: .orange)
+                                     color: DesignRole.caution.color)
                 }
                 SmartUsageDashboard(usage: profile?.claudeUsage ?? .empty)
             }
