@@ -21,4 +21,11 @@ struct SwitchEvent: Codable, Equatable {
     var trigger: Trigger
     /// Human-readable context, e.g. the measurements that fired the trigger.
     var reason: String?
+    /// The outgoing account's session headroom (100 − %) when the switch
+    /// fired — the insights switch log's column (stage 4a). Optional: rows
+    /// written before the field decode nil.
+    var fromHeadroom: Double? = nil
+    /// `String(describing: Profile.ProviderKind)` of the switch, so a row whose
+    /// names no longer resolve to profiles still files under its provider.
+    var providerRaw: String? = nil
 }
