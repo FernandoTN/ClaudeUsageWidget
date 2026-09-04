@@ -613,11 +613,12 @@ final class StatusBarUIManager {
             multiProfileOrder = orderedProfiles.map(\.id)
 
             // Create one status item per selected profile. Deliberately NO
-            // autosaveName: naming the items makes the window server remember
-            // per-name positions in a private store the app cannot reliably
-            // clear or overwrite — a pinning experiment (2026-07-17) left the
-            // group SPLIT across remembered positions with no code-side way
-            // back. Anonymous items always place by fresh creation order.
+            // autosaveName HERE: naming one item per tile with a rotating
+            // roster made the window server remember per-name positions the
+            // app could not clear — the 2026-07-17 pinning experiment left the
+            // group SPLIT across remembered slots. Per-ROLE names for the
+            // composite group items (`pinPosition(of:for:)`) are a different
+            // matter: three stable names whose remembered slot IS the pin.
             for profile in orderedProfiles {
                 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -640,6 +641,60 @@ final class StatusBarUIManager {
     /// Placeholder width of a composite group item between creation and its
     /// first paint (see `setupCompositeGroups`).
     static let initialGroupLength: CGFloat = 24
+
+    // MARK: - Pinned group positions (autosave names)
+
+    /// The scene-hosted bar (macOS 27) does not place this app's items by
+    /// creation order: measured 2026-09-04 on the fleet layout, fully-sized
+    /// items with images attached still came up grok < codex < claude, and a
+    /// recreation in designed order produced yet another order
+    /// (claude < grok < codex). The one thing the host is documented to
+    /// honour is a NAMED item's remembered position, so each group item gets
+    /// a fixed per-role autosave name and its preferred position is written
+    /// BEFORE the item exists, encoding the designed order (Codex leftmost,
+    /// Claude rightmost). The 2026-07-17 pinning experiment named one item
+    /// PER TILE with a rotating roster and the remembered slots split the
+    /// cluster; per-ROLE names are stable, so a remembered slot is exactly
+    /// the pin wanted. `CUW_NO_AUTOSAVE=1` disables the names (lab switch).
+    static let pinGroupPositions = ProcessInfo.processInfo.environment["CUW_NO_AUTOSAVE"] == nil
+
+    nonisolated static func groupAutosaveName(_ provider: Profile.ProviderKind) -> String {
+        switch provider {
+        case .claude: return "cuw.group.claude"
+        case .codex: return "cuw.group.codex"
+        case .grok: return "cuw.group.grok"
+        }
+    }
+
+    /// Preferred position per role: AppKit's value is the distance from the
+    /// RIGHT edge, so a larger number sits further LEFT. The values only need
+    /// to order the three groups against each other; the host packs them.
+    nonisolated static func groupPreferredPosition(_ provider: Profile.ProviderKind) -> CGFloat {
+        switch provider {
+        case .claude: return 100
+        case .grok: return 200
+        case .codex: return 300
+        }
+    }
+
+    /// Seeds the designed position for `provider` — WRITE-IF-ABSENT, so a
+    /// slot the user drags the item to (which AppKit persists under the same
+    /// key) survives relaunches — clears a stale hidden flag, then names the
+    /// item: the autosave name setter is what makes AppKit read the position.
+    private static func pinPosition(of item: NSStatusItem, for provider: Profile.ProviderKind) {
+        guard pinGroupPositions else { return }
+        let name = groupAutosaveName(provider)
+        let defaults = UserDefaults.standard
+        let positionKey = "NSStatusItem Preferred Position \(name)"
+        if defaults.object(forKey: positionKey) == nil {
+            defaults.set(groupPreferredPosition(provider), forKey: positionKey)
+        }
+        let visibleKey = "NSStatusItem Visible \(name)"
+        if defaults.object(forKey: visibleKey) == nil || defaults.bool(forKey: visibleKey) == false {
+            defaults.set(true, forKey: visibleKey)
+        }
+        item.autosaveName = name
+    }
 
     /// Composite mode: create ONE status item per provider that has selected
     /// profiles. Creation order Claude → Grok → Codex (each new item lands
@@ -679,6 +734,7 @@ final class StatusBarUIManager {
             // measured in a fresh process. `assembleComposites` pins the real
             // width on the first paint.
             let statusItem = NSStatusBar.system.statusItem(withLength: Self.initialGroupLength)
+            Self.pinPosition(of: statusItem, for: provider)
             if let button = statusItem.button {
                 button.action = action
                 button.target = target
@@ -1718,6 +1774,7 @@ final class StatusBarUIManager {
         for provider in [Profile.ProviderKind.claude, .grok, .codex] {
             guard let snap = snapshots[provider] else { continue }
             let item = NSStatusBar.system.statusItem(withLength: snap.length)
+            Self.pinPosition(of: item, for: provider)
             if let button = item.button {
                 button.action = action
                 button.target = target
