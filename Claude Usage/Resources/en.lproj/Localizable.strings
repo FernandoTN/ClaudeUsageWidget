@@ -921,7 +921,7 @@
 "accounts.make_active_help" = "Switch this provider's CLI login to this account — a confirmation states the cost first.";
 "accounts.make_active_dead_help" = "This login is dead; repair it on the Login tab first.";
 "accounts.queue_next" = "Queue next";
-"accounts.dead_banner" = "Login dead — the CLI cannot use this account. Repair it on the Login tab.";
+"accounts.dead_banner" = "Login dead — the CLI cannot use this account.";
 "accounts.not_measured_yet" = "Not measured yet — the next sweep measures it.";
 "accounts.not_measured_yet_short" = "not measured yet";
 "accounts.stale" = "stale";
@@ -1177,6 +1177,14 @@
 "insights.kind_rescue" = "measured through the Messages headers";
 "insights.kind_burst" = "burst 429 (streak %d)";
 "insights.evidence_age" = "%@ ago";
+
+// MARK: - Round-3 design pass (spec §12.8)
+"active.word" = "Active";
+"active.make_named" = "Make %@ active…";
+"active.unpin" = "Unpin";
+"active.pinned_help" = "Pinned: you chose this account yourself, so the auto-switch leaves it alone until it regains headroom. Unpin to let the auto-switch move it.";
+"accounts.fact.view_profile" = "View %@";
+"accounts.fact.same_account_help" = "Two profiles hold logins for one account: one quota drawn as two tiles, and the auto-switch never moves between them. Which profile keeps the account is your call.";
 
 // Token usage window (docs/specs/token-telemetry.md) — keys restored after merge
 "telemetry.notes.toggle" = "About these numbers";

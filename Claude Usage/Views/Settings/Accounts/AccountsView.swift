@@ -211,7 +211,7 @@ struct AccountsRosterRow: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(row.name)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(row.isDead ? DesignRole.blocking.color : .primary)
+                    .foregroundColor(.primary)
                     .lineLimit(1)
                 if row.needsRelogin {
                     Text("accounts.relogin_needed".localized).font(.system(size: 9)).foregroundColor(DesignRole.blocking.color)
@@ -225,13 +225,8 @@ struct AccountsRosterRow: View {
                 .foregroundColor(row.percentageText.hasPrefix(DesignGlyph.exhausted) ? DesignRole.caution.color : (row.readiness == .suspected ? DesignRole.suspected.color : .primary))
                 .help(row.readiness == .suspected ? "accounts.suspected_help".localized : "")
             if let mark = row.badge.mark {
-                if row.badge.isActive {
-                    // The provider's own word in a cyan pill = Active for that provider (R1).
-                    Text(mark)
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(DesignRole.active.color))
+                if case .activeFor(let provider) = row.badge {
+                    ActivePill(provider: provider)   // one mark for one concept (round-3 R2)
                 } else {
                     Text(mark)
                         .font(.system(size: 9, weight: .semibold))
@@ -434,7 +429,25 @@ struct AccountOverviewTab: View {
                     fact("accounts.fact.fetch".localized, "accounts.fact.fetch_interval".localized(with: Int(profile.refreshInterval)),
                          help: "accounts.fact.fetch_help".localized)
                     if !sameAccountAs.isEmpty {
-                        fact("accounts.fact.same_account".localized, sameAccountAs.joined(separator: ", "))
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("accounts.fact.same_account".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary).frame(width: 84, alignment: .trailing)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sameAccountAs.joined(separator: ", ")).font(DesignTokens.Typography.body).foregroundColor(DesignRole.caution.color)
+                                HStack(spacing: 8) {
+                                    ForEach(sameAccountAs, id: \.self) { name in
+                                        if let other = ProfileManager.shared.profiles.first(where: { $0.name == name }) {
+                                            Button("accounts.fact.view_profile".localized(with: name)) {
+                                                NotificationCenter.default.post(name: .settingsSectionRequested,
+                                                                                object: SettingsRoute(section: .accounts, profileId: other.id))
+                                            }
+                                            .buttonStyle(.link).font(DesignTokens.Typography.caption)
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .help("accounts.fact.same_account_help".localized)
                     }
                     if profile.providerKind == .codex, let resets = profile.claudeUsage?.codexResetCreditsAvailable {
                         fact("accounts.fact.resets".localized, "selector.resets_available".localized(with: resets))
