@@ -165,6 +165,17 @@ struct OwnerRow: Hashable {
     /// Codex only: usage-limit reset credits the usage payload reported
     /// (nil = none / unknown — indistinguishable on the wire, spec §4.1).
     var resetCreditsAvailable: Int? = nil
+    /// The last on-demand detail answer this process fetched for the account
+    /// (`CodexUsageService.cachedResetCredits`), if any — the only source of an
+    /// expiry; nil until the owner has opened the account's Overview once.
+    var resetsDetail: ResetsDetail? = nil
+
+    struct ResetsDetail: Hashable {
+        /// Soonest expiry among the usable grants; nil = the soonest never expires.
+        var soonestExpiry: Date?
+        var fetchedAt: Date
+        var availableCount: Int
+    }
 }
 
 /// One account the user could switch the provider to, and why (not).
@@ -253,6 +264,9 @@ struct ProviderActiveSelection: Hashable {
         var duplicateGroups: [[UUID]] = []
         /// `MenuBarManager.autoSwitchedProfileIds` (manual pins).
         var manuallyPinned: Set<UUID> = []
+        /// `CodexUsageService.cachedResetCredits(for:)` per Codex profile — read,
+        /// never fetched, so the per-IP-limited endpoint is never touched here.
+        var cachedResets: [UUID: CodexResetCredits] = [:]
         /// `ProfileManager.profilesNeedingAccountRelogin`.
         var needsRelogin: Set<UUID> = []
         var autoSwitchEnabled: Bool = true
@@ -384,6 +398,7 @@ struct ProviderActiveSelection: Hashable {
                     ownerRow(profile, readiness: readiness[profile.id] ?? .unknown,
                              pinned: inputs.manuallyPinned.contains(profile.id),
                              sameAccountAs: duplicates[profile.id] ?? [],
+                             cachedResets: inputs.cachedResets[profile.id],
                              thresholds: thresholds, now: now)
                 },
                 viewing: inputs.focusedId.flatMap { id in members.contains { $0.id == id } ? id : nil },
@@ -401,7 +416,8 @@ struct ProviderActiveSelection: Hashable {
     }
 
     private static func ownerRow(_ profile: Profile, readiness: AccountReadiness, pinned: Bool,
-                                 sameAccountAs: [String], thresholds: ReadinessThresholds, now: Date) -> OwnerRow {
+                                 sameAccountAs: [String], cachedResets: CodexResetCredits?,
+                                 thresholds: ReadinessThresholds, now: Date) -> OwnerRow {
         let usage = profile.claudeUsage
         let gauges = usage.map { DashboardSnapshot.gauges(for: $0, thresholds: thresholds) } ?? []
         let firing = gauges.first { $0.kind == .session } ?? gauges.first { $0.kind == .weekly }
@@ -416,7 +432,10 @@ struct ProviderActiveSelection: Hashable {
             keyedPercentage: usage.map { ProviderSummary.keyedDisplayPercentage($0) },
             etaToThreshold: firing.flatMap { DashboardSnapshot.etaToThreshold($0, now: now) },
             isManuallyPinned: pinned, sameAccountAs: sameAccountAs,
-            resetCreditsAvailable: profile.providerKind == .codex ? usage?.codexResetCreditsAvailable : nil
+            resetCreditsAvailable: profile.providerKind == .codex ? usage?.codexResetCreditsAvailable : nil,
+            resetsDetail: cachedResets.map {
+                OwnerRow.ResetsDetail(soonestExpiry: $0.availableCreditsByExpiry.first?.expiresAt, fetchedAt: $0.fetchedAt, availableCount: $0.availableCount)
+            }
         )
     }
 

@@ -3918,6 +3918,9 @@ private func observeCredentialChanges() {
             duplicateGroups: FleetCounts.duplicateGroups(
                 in: profiles, published: profileManager.duplicateClaudeAccountGroups),
             manuallyPinned: autoSwitchedProfileIds,
+            cachedResets: Dictionary(uniqueKeysWithValues: profiles.filter { $0.providerKind == .codex }.compactMap { profile in
+                CodexUsageService.shared.cachedResetCredits(for: profile.id).map { (profile.id, $0) }
+            }),
             needsRelogin: profileManager.profilesNeedingAccountRelogin,
             autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled()
         ))

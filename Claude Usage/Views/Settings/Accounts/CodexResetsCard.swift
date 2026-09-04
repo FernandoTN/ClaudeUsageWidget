@@ -29,7 +29,8 @@ struct CodexResetsCard: View {
         self.measurement = measurement
         self.readiness = readiness
         self.preloaded = preloaded
-        _details = State(initialValue: preloaded)
+        // The last on-demand answer this process holds, without a fetch.
+        _details = State(initialValue: preloaded ?? CodexUsageService.shared.cachedResetCredits(for: profile.id))
     }
 
     private var count: Int? { details?.availableCount ?? profile.claudeUsage?.codexResetCreditsAvailable }
