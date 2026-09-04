@@ -95,7 +95,7 @@ enum ActiveSelectorMenuModel {
                                 glyph: "↺", glyphTint: .cyan, titleTint: .cyan, enabled: false))
             }
             if let owner = selection.owner, provider == .codex, let resets = owner.resetCreditsAvailable, resets > 0 {
-                rows.append(Row(kind: .info, title: "selector.resets_available".localized(with: resets), glyph: "↻", glyphTint: .secondary, enabled: false))
+                rows.append(Row(kind: .info, title: resetsRowTitle(count: resets, detail: owner.resetsDetail), glyph: "↻", glyphTint: .secondary, enabled: false))
             }
 
             let deadCount = selection.counts.count(.dead)
@@ -292,6 +292,25 @@ enum ActiveSelectorMenuModel {
     }
 
     /// "S 78 · W 16 · F 16" — the menu's stats without the percent signs (S1).
+    /// The resets row: the sweep's count, then the cached detail's expiry with
+    /// its "as of" time when the owner has opened the account view once (S2).
+    static func resetsRowTitle(count: Int, detail: OwnerRow.ResetsDetail?) -> String {
+        let base = "selector.resets_available".localized(with: count)
+        guard let detail else { return base }
+        let asOf = Self.timeFormatter.string(from: detail.fetchedAt)
+        if let expiry = detail.soonestExpiry {
+            return base + " · " + "selector.resets_expires".localized(with: Self.expiryFormatter.string(from: expiry), asOf)
+        }
+        return base + " · " + "selector.resets_never_expires".localized(with: asOf)
+    }
+
+    static let expiryFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; return f
+    }()
+    static let timeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short; return f
+    }()
+
     static func compactGaugeText(_ gauges: [WindowGauge]) -> String {
         gauges.map { gauge in
             let letter: String
