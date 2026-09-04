@@ -125,6 +125,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             SharedDataStore.shared.markWizardShown()
         }
 
+        // Token-consumption telemetry: its own utility-queue timer and its own
+        // SQLite ledger under Application Support (docs/specs/token-telemetry.md).
+        // Nothing here touches the sweep, UserDefaults or the network.
+        if !Self.isRunningUnderXCTest {
+            TelemetryService.shared.start()
+        }
+
         // Headless support: delayed retry for Remote Desktop scenarios
         // If status bar failed to initialize (headless Mac), retry after a delay when displays connect
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
