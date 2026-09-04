@@ -61,6 +61,17 @@ final class GroupExposureTests: XCTestCase {
         XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, visible: false)), .hidden)
     }
 
+    func testGroupOrderIsJudgedAgainstTheOverflowPolicy() {
+        // Field 2026-09-03 before and after another item was created first.
+        XCTAssertTrue(GroupExposure.order(minX: [.codex: 933, .grok: 1041, .claude: 1078]).ok)
+        let flipped = GroupExposure.order(minX: [.claude: 877, .grok: 1346, .codex: 1375])
+        XCTAssertFalse(flipped.ok)
+        XCTAssertEqual(flipped.order, [.claude, .grok, .codex])
+        // Absent groups are simply not part of the expectation.
+        XCTAssertTrue(GroupExposure.order(minX: [.codex: 900, .claude: 1000]).ok)
+        XCTAssertFalse(GroupExposure.order(minX: [.claude: 900, .codex: 1000]).ok)
+    }
+
     func testTrackerConfirmsAfterTwoHiddenAndClearsAfterThreeExposed() {
         var tracker = GroupExposureTracker()
         XCTAssertEqual(tracker.record([.codex: .hidden, .claude: .exposed]), [])

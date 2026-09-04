@@ -71,6 +71,24 @@ enum GroupExposure {
         case unknown
     }
 
+    /// The provider groups' intended left-to-right order on the bar: Codex
+    /// clips first on overflow, the Claude group stays visible longest
+    /// (`StatusBarUIManager.setupCompositeGroups` creates Claude → Grok →
+    /// Codex; each new item lands left of the existing ones).
+    static let intendedOrder: [Profile.ProviderKind] = [.codex, .grok, .claude]
+
+    /// The groups' ACTUAL left-to-right order from their window frames, and
+    /// whether it matches `intendedOrder` restricted to the groups present.
+    /// Field 2026-09-03: creating another status item BEFORE the groups
+    /// shifted every group's auto-generated autosave index by one, and the
+    /// scene-hosted bar's per-name remembered slots reordered the groups to
+    /// Claude-leftmost — a silent inversion of the overflow policy.
+    nonisolated static func order(minX: [Profile.ProviderKind: CGFloat]) -> (order: [Profile.ProviderKind], ok: Bool) {
+        let actual = minX.sorted { $0.value < $1.value }.map(\.key)
+        let expected = intendedOrder.filter { minX[$0] != nil }
+        return (actual, actual == expected)
+    }
+
     /// Probe positions along the button width.
     static let probeFractions: [CGFloat] = [0.25, 0.5, 0.75]
     /// A window whose top edge is further than this below the screen's top
