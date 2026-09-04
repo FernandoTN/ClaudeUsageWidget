@@ -97,14 +97,15 @@ final class FleetInsightsTests: XCTestCase {
 
     func testIncidentRingCapsAtOneHundredAndWindowsToADay() {
         let ring = IncidentRing()
-        for i in 0..<130 {
+        // Oldest first, as a live ring is fed; the ring keeps the 100 newest.
+        for i in stride(from: 129, through: 0, by: -1) {
             ring.record(FleetInsights.Incident(at: now.addingTimeInterval(-Double(i) * 1800), profileId: nil, name: "A", provider: .claude, kind: .inferredStamp, detail: nil))
         }
         XCTAssertEqual(ring.entries.count, 100)
         XCTAssertEqual(ring.recent(now: now).count, 49, "every half-hour up to 24 h back")
         let built = FleetInsights.build(inputs(profiles: [], incidents: ring.entries)).incidents
         XCTAssertEqual(built.count, 49)
-        XCTAssertEqual(built.first?.at, now.addingTimeInterval(-30 * 60 * 0), "newest first")
+        XCTAssertEqual(built.first?.at, now, "newest first")
     }
 
     func testDriftLogRecordsTheNotificationPayload() {
