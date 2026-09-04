@@ -21,19 +21,26 @@ import Foundation
 /// Staleness is NOT a state (a stale "maxed" is still a fact until its
 /// window rolls over) — it is an orthogonal flag rendered as dimming.
 enum AccountReadiness: Int, Hashable, CaseIterable, Comparable {
-    /// The auto-switch would accept this account as a target.
+    /// BRIGHT GREEN — session available; weekly AND Fable both have more
+    /// than half left. The auto-switch would accept it.
     case ready
-    /// Usable, but approaching a limit (session ≥ 80 % or weekly/Fable ≥ 90 %).
-    case low
+    /// LIGHT GREEN — session available; weekly or Fable has half or less left.
+    case readyLight
     /// Never fetched — no reading at all.
     case unknown
     /// Inferred (unverified) throttle stamp live — data quality, not a fact.
     case suspected
-    /// Server-affirmed throttle, session at/over the switch threshold, or
-    /// weekly/Fable at/over the weekly threshold. Outranks `suspected`: a
-    /// measured exhaustion must not vanish because the endpoint is also
-    /// suspect (same precedence the per-account tile tints use).
-    case exhausted
+    /// BRIGHT ORANGE — the 5-hour session limit is hit (server-affirmed);
+    /// weekly and Fable still have more than half left.
+    case sessionHit
+    /// FADED ORANGE — session hit AND weekly or Fable has half or less left.
+    case sessionHitLight
+    /// BRIGHT RED — weekly or Fable limit hit, and the reset is within a
+    /// day (bright = relief is closer, the owner's rule for every hue).
+    case weeklyHitSoon
+    /// LIGHT RED — weekly or Fable limit hit; the reset is more than a day
+    /// away. Blocked regardless of the session window.
+    case weeklyHit
     /// The auto-switch will never pick it: per-profile toggle off, or a
     /// free-plan CLI login. Not a capacity statement.
     case excluded
@@ -48,10 +55,16 @@ enum AccountReadiness: Int, Hashable, CaseIterable, Comparable {
     /// True for the states the auto-switch would refuse as a target.
     var blocksSwitchTarget: Bool {
         switch self {
-        case .ready, .low, .unknown: return false
-        case .suspected, .exhausted, .excluded, .dead: return true
+        case .ready, .readyLight, .unknown: return false
+        case .suspected, .sessionHit, .sessionHitLight, .weeklyHitSoon, .weeklyHit, .excluded, .dead: return true
         }
     }
+
+    /// A measured limit — session, weekly or Fable — is hit.
+    var isAtLimit: Bool { isSessionHit || isWeeklyHit }
+    var isSessionHit: Bool { self == .sessionHit || self == .sessionHitLight }
+    var isWeeklyHit: Bool { self == .weeklyHit || self == .weeklyHitSoon }
+    var hasHeadroom: Bool { self == .ready || self == .readyLight }
 }
 
 /// What each dot showed last time, so a dot changes colour only on
@@ -126,7 +139,7 @@ struct FleetDotMemory {
             default: source = "own endpoint"
             }
             reason = "new measurement (\(source))"
-        } else if let reset = previous.sessionResetAt, reset <= now, (usage?.sessionResetTime ?? reset) != reset || candidate != .exhausted {
+        } else if let reset = previous.sessionResetAt, reset <= now, (usage?.sessionResetTime ?? reset) != reset || !candidate.isSessionHit {
             reason = "session window reset"
         } else if let reset = previous.weeklyResetAt, reset <= now {
             reason = "weekly window reset"
@@ -158,25 +171,25 @@ struct FleetDotMemory {
 struct ReadinessThresholds: Hashable {
     var session: Double
     var weekly: Double
-    var lowSession: Double = 80
-    var lowWeekly: Double = 90
-    /// A reading older than this is drawn dimmed. Matches the switch walk's
-    /// own "verify a stale candidate first" boundary (3 min) rather than an
-    /// hour: the bar should dim exactly the readings the switch would not
-    /// trust without a fresh fetch.
+    /// Owner scheme 2026-09-04: a hit weekly / Fable window whose reset is
+    /// within this reads BRIGHT red (relief is close); further away, light.
+    var weeklyResetSoon: TimeInterval = 24 * 3600
+    /// "More than half left": the cut-off between the bright and light
+    /// shades of green (session available) and orange (session hit).
+    var comfortableRemaining: Double = 50
     var staleAfter: TimeInterval = 180
 
     nonisolated init(
         session: Double,
         weekly: Double,
-        lowSession: Double = 80,
-        lowWeekly: Double = 90,
+        weeklyResetSoon: TimeInterval = 24 * 3600,
+        comfortableRemaining: Double = 50,
         staleAfter: TimeInterval = 180
     ) {
         self.session = session
         self.weekly = weekly
-        self.lowSession = lowSession
-        self.lowWeekly = lowWeekly
+        self.weeklyResetSoon = weeklyResetSoon
+        self.comfortableRemaining = comfortableRemaining
         self.staleAfter = staleAfter
     }
 }
@@ -195,23 +208,35 @@ extension AccountReadiness {
         guard let usage else { return .unknown }
 
         let stampLive = usage.rateLimitedUntil.map { $0 > now } ?? false
-        if stampLive, usage.rateLimitedInferred != true { return .exhausted }
+        let affirmedStamp = stampLive && usage.rateLimitedInferred != true
 
-        let sessionNow = usage.sessionResetTime > now ? usage.sessionPercentage : 0
-        if usage.providesSessionWindow, sessionNow >= thresholds.session { return .exhausted }
-        if MenuBarManager.isWeeklyMaxed(usage, weeklyThreshold: thresholds.weekly, now: now) {
-            return .exhausted
+        // A weekly or Fable limit hit blocks the account regardless of the
+        // session window; the shade says how far the reset is.
+        var hitResets: [Date] = []
+        if usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.weekly {
+            hitResets.append(usage.weeklyResetTime)
         }
-        if stampLive, usage.rateLimitedInferred == true { return .suspected }
-
-        if usage.providesSessionWindow, sessionNow >= thresholds.lowSession { return .low }
-        if usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.lowWeekly { return .low }
         if let fable = usage.fableWeeklyPercentage,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true,
-           fable >= thresholds.lowWeekly {
-            return .low
+           fable >= thresholds.weekly {
+            hitResets.append(usage.fableWeeklyResetTime ?? .distantFuture)
         }
-        return .ready
+        if let soonest = hitResets.min() {
+            return soonest.timeIntervalSince(now) <= thresholds.weeklyResetSoon ? .weeklyHitSoon : .weeklyHit
+        }
+
+        // How much of the weekly windows is left decides the shade.
+        let weeklyLeft = usage.weeklyResetTime >= now ? 100 - usage.weeklyPercentage : 100
+        let fableLeft = usage.fableWeeklyPercentage.map {
+            (usage.fableWeeklyResetTime.map { $0 >= now } ?? true) ? 100 - $0 : 100
+        } ?? 100
+        let comfortable = min(weeklyLeft, fableLeft) > thresholds.comfortableRemaining
+
+        let sessionNow = usage.sessionResetTime > now ? usage.sessionPercentage : 0
+        let sessionHit = affirmedStamp || (usage.providesSessionWindow && sessionNow >= thresholds.session)
+        if sessionHit { return comfortable ? .sessionHit : .sessionHitLight }
+        if stampLive, usage.rateLimitedInferred == true { return .suspected }
+        return comfortable ? .ready : .readyLight
     }
 
     /// True when the last MEASURED reading is older than `thresholds.staleAfter`.

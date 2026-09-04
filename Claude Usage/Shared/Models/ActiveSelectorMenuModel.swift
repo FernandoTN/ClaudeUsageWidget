@@ -245,7 +245,7 @@ enum ActiveSelectorMenuModel {
                     action = .repairDead(candidate.id, provider)
                 case .suspected:
                     reason = "selector.suspected".localized
-                case .exhausted:
+                case .sessionHit, .sessionHitLight, .weeklyHit, .weeklyHitSoon:
                     reason = exhaustedReason(candidate, now: now)
                 default:
                     reason = DashboardFormatting.chip(.unmeasured, now: now)
@@ -345,9 +345,9 @@ enum ActiveSelectorMenuModel {
     /// rest informational gray.
     static func tint(for readiness: AccountReadiness) -> Tint {
         switch readiness.role {
-        case .ready: return .green
-        case .caution: return .orange
-        case .blocking: return .red
+        case .ready, .readyLight: return .green
+        case .caution, .cautionLight: return .orange
+        case .blocking, .blockingLight: return .red
         case .suspected: return .purple
         case .informational, .action, .active: return .secondary
         }

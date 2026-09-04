@@ -52,7 +52,7 @@ struct FleetCounts: Hashable {
         func count(_ readiness: AccountReadiness) -> Int { byReadiness[readiness] ?? 0 }
 
         /// Measured and has headroom.
-        var measuredHeadroom: Int { count(.ready) + count(.low) }
+        var measuredHeadroom: Int { count(.ready) + count(.readyLight) }
         /// Exactly what the auto-switch walk would accept as a target: a
         /// never-measured account is a legal target (`blocksSwitchTarget`).
         var autoSwitchEligible: Int { measuredHeadroom + count(.unknown) }
@@ -75,11 +75,7 @@ struct FleetCounts: Hashable {
 
     /// Glyph per readiness state, in strip order. Same alphabet as the bar's
     /// dots and the dashboard chips (docs/specs/menubar-redesign.md §2.1).
-    static let stripGlyphs: [(AccountReadiness, String)] = [
-        (.ready, DesignGlyph.ready), (.low, DesignGlyph.low), (.unknown, DesignGlyph.unmeasured),
-        (.suspected, DesignGlyph.suspected), (.exhausted, DesignGlyph.exhausted),
-        (.excluded, DesignGlyph.excluded), (.dead, DesignGlyph.dead),
-    ]
+    static let stripGlyphs: [(AccountReadiness, String)] = AccountReadiness.legendOrder.map { ($0, $0.legendGlyph) }
 
     var providers: [Provider]
     var profiles: Int

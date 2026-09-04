@@ -34,12 +34,12 @@ final class FleetDotMemoryTests: XCTestCase {
         XCTAssertEqual(first.readiness, .ready)
         XCTAssertEqual(first.change?.reason, "first paint")
         // Same measurement, different classification (nothing new arrived): held.
-        let held = memory.adopt(id: id, candidate: .low, usage: usage(session: 10), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(30))
+        let held = memory.adopt(id: id, candidate: .readyLight, usage: usage(session: 10), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(30))
         XCTAssertEqual(held.readiness, .ready)
         XCTAssertNil(held.change)
         // A new measurement: adopted, with its provenance in the reason.
-        let measured = memory.adopt(id: id, candidate: .low, usage: usage(session: 85, measuredAgo: 0), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(60))
-        XCTAssertEqual(measured.readiness, .low)
+        let measured = memory.adopt(id: id, candidate: .readyLight, usage: usage(session: 85, measuredAgo: 0), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(60))
+        XCTAssertEqual(measured.readiness, .readyLight)
         XCTAssertEqual(measured.change?.from, .ready)
         XCTAssertEqual(measured.change?.reason, "new measurement (own endpoint)")
     }
@@ -70,9 +70,9 @@ final class FleetDotMemoryTests: XCTestCase {
     func testAServerAffirmedStampAndItsExpiryAreAffirmed() {
         var memory = FleetDotMemory()
         _ = memory.adopt(id: id, candidate: .ready, usage: usage(session: 10), isLoginDead: false, isExcluded: false, now: now)
-        let stamped = memory.adopt(id: id, candidate: .exhausted, usage: usage(session: 10, inferred: false, stampFor: 2918),
+        let stamped = memory.adopt(id: id, candidate: .sessionHit, usage: usage(session: 10, inferred: false, stampFor: 2918),
                                    isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(5))
-        XCTAssertEqual(stamped.readiness, .exhausted)
+        XCTAssertEqual(stamped.readiness, .sessionHit)
         XCTAssertEqual(stamped.change?.reason, "server-affirmed limit stamp")
         let expired = memory.adopt(id: id, candidate: .ready, usage: usage(session: 10, inferred: false, stampFor: -1),
                                    isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(3000))

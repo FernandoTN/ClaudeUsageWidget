@@ -46,6 +46,7 @@ struct SuspectedCaveat: Hashable {
 /// the view formats dates and numbers for the locale.
 enum RowChip: Hashable {
     case ready
+    case readyLight
     case nearLimit
     case sessionExhausted(resetAt: Date)
     case weeklyMaxed
@@ -471,15 +472,16 @@ struct DashboardSnapshot: Hashable {
         case .excluded: chip = profile.isAutoSwitchEnabled ? .freePlan : .autoSwitchOff
         case .unknown: chip = .unmeasured
         case .suspected: chip = .suspected(lastMeasured: usage?.sessionPercentage ?? 0, at: usage?.lastUpdated ?? now)
-        case .low: chip = .nearLimit
         case .ready: chip = .ready
-        case .exhausted:
+        case .readyLight: chip = .readyLight
+        case .sessionHit, .sessionHitLight:
             if let usage, let until = usage.rateLimitedUntil, until > now, usage.rateLimitedInferred != true {
                 chip = .rateLimited(until: until)
-            } else if let usage, usage.providesSessionWindow, usage.sessionResetTime > now,
-                      usage.sessionPercentage >= thresholds.session {
-                chip = .sessionExhausted(resetAt: usage.sessionResetTime)
-            } else if let usage, usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.weekly {
+            } else {
+                chip = .sessionExhausted(resetAt: usage?.sessionResetTime ?? now)
+            }
+        case .weeklyHit, .weeklyHitSoon:
+            if let usage, usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.weekly {
                 chip = .weeklyMaxed
             } else {
                 chip = .fableMaxed

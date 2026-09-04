@@ -201,7 +201,7 @@ final class DashboardModelTests: XCTestCase {
         XCTAssertEqual(chips["Limited"], .rateLimited(until: now.addingTimeInterval(1800)))
         XCTAssertEqual(chips["Dead"], .deadLogin)
         XCTAssertEqual(chips["Never"], .unmeasured)
-        XCTAssertEqual(chips["Near"], .nearLimit)
+        XCTAssertEqual(chips["Near"], .ready, "a session at 85 % with the week untouched is bright green under the owner's scheme")
         XCTAssertEqual(snap.sections[0].roster.first { $0.name == "Dead" }?.repair, .claudeLogin)
         XCTAssertEqual(snap.sections[1].roster.first { $0.name == "DeadX" }?.repair, .codexLogin)
         XCTAssertEqual(RepairAction.codexLogin.settingsSectionRawValue, "codexAccount")

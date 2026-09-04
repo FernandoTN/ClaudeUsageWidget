@@ -145,7 +145,7 @@ extension MenuBarIconRenderer {
             case .excluded:
                 color.setFill()
                 NSRect(x: rect.minX, y: rect.midY - 0.5, width: d, height: 1).fill()
-            case .ready, .low, .exhausted, .suspected:
+            case .ready, .readyLight, .sessionHit, .sessionHitLight, .weeklyHitSoon, .weeklyHit, .suspected:
                 color.setFill()
                 NSBezierPath(ovalIn: rect).fill()
             }
@@ -173,17 +173,21 @@ extension MenuBarIconRenderer {
     /// One row, not two: the candidate row owns the bottom of the block and
     /// a second counts row would collide with it in 22 pt.
     private func drawFleetCounts(_ counts: [AccountReadiness: Int], at origin: NSPoint) {
-        // The canonical glyph set (`DesignGlyph`, round 1 B5/G2).
-        let cells: [(glyph: String, state: AccountReadiness)] = [
-            (DesignGlyph.ready, .ready), (DesignGlyph.low, .low), (DesignGlyph.exhausted, .exhausted), (DesignGlyph.dead, .dead),
+        // The canonical glyph set (`DesignGlyph`): the two shades of a colour
+        // share a cell (● greens, ◐ oranges, ▲ reds, × dead).
+        let cells: [(glyph: String, states: [AccountReadiness], tint: AccountReadiness)] = [
+            (DesignGlyph.ready, [.ready, .readyLight], .ready),
+            (DesignGlyph.sessionHit, [.sessionHit, .sessionHitLight], .sessionHit),
+            (DesignGlyph.weeklyHit, [.weeklyHit, .weeklyHitSoon], .weeklyHit),
+            (DesignGlyph.dead, [.dead], .dead),
         ]
         var x = origin.x
         for cell in cells {
-            let n = counts[cell.state, default: 0]
+            let n = cell.states.reduce(0) { $0 + counts[$1, default: 0] }
             guard n > 0 else { continue }
             let text = "\(cell.glyph)\(n)" as NSString
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: Self.countsFont, .foregroundColor: Self.readinessColor(cell.state),
+                .font: Self.countsFont, .foregroundColor: Self.readinessColor(cell.tint),
             ]
             text.draw(at: NSPoint(x: x, y: origin.y), withAttributes: attributes)
             x += text.size(withAttributes: attributes).width + 2
@@ -208,7 +212,8 @@ extension MenuBarIconRenderer {
             let color: NSColor
             switch summary.activeReadiness {
             case .suspected?: color = DesignRole.suspected.nsColor
-            case .exhausted?: color = StatusBarUIManager.weeklyMaxedLabelColor
+            case .weeklyHit?, .weeklyHitSoon?: color = StatusBarUIManager.weeklyMaxedLabelColor
+            case .sessionHit?, .sessionHitLight?: color = DesignRole.caution.nsColor
             default: color = Self.brightText
             }
             draw("\(digits)", color)
@@ -220,8 +225,8 @@ extension MenuBarIconRenderer {
             draw(DesignGlyph.next, arrowColor, gapAfter: 0)
             let labelColor: NSColor
             switch next.readiness {
-            case .ready: labelColor = DesignRole.ready.nsColor
-            case .low: labelColor = DesignRole.caution.nsColor
+            case .ready, .readyLight, .sessionHit, .sessionHitLight, .weeklyHit, .weeklyHitSoon:
+                labelColor = next.readiness.role.nsColor
             default: labelColor = Self.dimText
             }
             draw(String(affix.dropFirst(DesignGlyph.next.count)), labelColor)

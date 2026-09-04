@@ -108,7 +108,7 @@ final class FrameRenderTests: XCTestCase {
         let ids = (0..<members).map { _ in UUID() }
         var readiness: [UUID: AccountReadiness] = [:]
         for (i, id) in ids.enumerated() {
-            readiness[id] = i < ready ? .ready : (i < ready + dead ? .dead : .exhausted)
+            readiness[id] = i < ready ? .ready : (i < ready + dead ? .dead : .weeklyHit)
         }
         return ProviderSummary.build(
             provider: .claude, orderedMembers: ids, activeId: ids[0], readiness: readiness,
@@ -233,6 +233,25 @@ final class FrameRenderTests: XCTestCase {
             ("counts-armed", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78), .fleetCounts, "counts row, armed"),
             ("counts-nobody", fleet(members: 6, ready: 0, dead: 2, next: nil, keyed: 91), .fleetCounts, "counts row, nobody with headroom"),
         ]
+        // The full palette for the legend: one dot per state, in legend order
+        // (rightmost = first), beside an active account.
+        let paletteIds = AccountReadiness.legendOrder.map { _ in UUID() }
+        var paletteReadiness: [UUID: AccountReadiness] = [:]
+        for (id, state) in zip(paletteIds, AccountReadiness.legendOrder.reversed()) { paletteReadiness[id] = state }
+        let paletteActive = UUID()
+        let palette = ProviderSummary.build(
+            provider: .claude, orderedMembers: paletteIds + [paletteActive], activeId: paletteActive, readiness: paletteReadiness,
+            keyedPercentage: 40, next: nil, preferencesDegraded: false, activeLastMeasured: now.addingTimeInterval(-20), now: now)
+        var paletteBlock: NSImage?
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            paletteBlock = renderer.createFleetBlock(summary: palette, layout: .fleetDots,
+                                                     height: FleetBlockGeometry.blockHeight(activeHeight: 22, memberCount: palette.members.count, layout: .fleetDots))
+        }
+        if let paletteBlock {
+            write(paletteBlock, surface: "fleet", state: "dots-palette",
+                  note: "every dot state left→right: dead, excluded, unmeasured, suspected, weekly hit (light red), weekly hit resets within a day (bright red), session hit weekly under half (faded orange), session hit (bright orange), ready weekly under half (light green), ready (bright green)")
+        }
+
         for (state, summary, layout, note) in blocks {
             let height = FleetBlockGeometry.blockHeight(activeHeight: 22, memberCount: summary.members.count, layout: layout)
             var block: NSImage?

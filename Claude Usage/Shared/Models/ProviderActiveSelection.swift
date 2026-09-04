@@ -94,11 +94,7 @@ enum ActiveVocabulary {
     /// in readiness order, zero counts omitted; the glyph legend moves to hover.
     static func countsWords(_ counts: FleetCounts.Provider) -> String {
         var parts: [String] = []
-        let keys: [(AccountReadiness, String)] = [
-            (.ready, "counts.ready"), (.low, "counts.low"), (.unknown, "counts.unknown"),
-            (.suspected, "counts.suspected"), (.exhausted, "counts.exhausted"),
-            (.excluded, "counts.excluded"), (.dead, "counts.dead"),
-        ]
+        let keys: [(AccountReadiness, String)] = AccountReadiness.legendOrder.map { ($0, ActiveVocabulary.countsKey($0)) }
         for (readiness, key) in keys where counts.count(readiness) > 0 {
             parts.append(key.localized(with: counts.count(readiness)))
         }
@@ -108,16 +104,28 @@ enum ActiveVocabulary {
         return glued.isEmpty ? "counts.none_measured".localized : glued.joined(separator: " · ")
     }
 
+    /// The strings key for one readiness count ("%d ready" …).
+    static func countsKey(_ readiness: AccountReadiness) -> String {
+        switch readiness {
+        case .ready: return "counts.ready"
+        case .readyLight: return "counts.ready_light"
+        case .sessionHit: return "counts.session_hit"
+        case .sessionHitLight: return "counts.session_hit_light"
+        case .weeklyHitSoon: return "counts.weekly_hit_soon"
+        case .weeklyHit: return "counts.weekly_hit"
+        case .unknown: return "counts.unknown"
+        case .suspected: return "counts.suspected"
+        case .excluded: return "counts.excluded"
+        case .dead: return "counts.dead"
+        }
+    }
+
     /// The counts sentence for a provider (docs/specs/ux-revamp.md §3):
     /// "18 Claude profiles, 17 accounts: 4 ready, 2 low, 1 unmeasured,
     /// 10 exhausted, 1 dead · 2 duplicate rows · 7 eligible now".
     static func countsSentence(_ counts: FleetCounts.Provider) -> String {
         var states: [String] = []
-        let keys: [(AccountReadiness, String)] = [
-            (.ready, "counts.ready"), (.low, "counts.low"), (.unknown, "counts.unknown"),
-            (.suspected, "counts.suspected"), (.exhausted, "counts.exhausted"),
-            (.excluded, "counts.excluded"), (.dead, "counts.dead"),
-        ]
+        let keys: [(AccountReadiness, String)] = AccountReadiness.legendOrder.map { ($0, ActiveVocabulary.countsKey($0)) }
         for (readiness, key) in keys {
             let n = counts.count(readiness)
             if n > 0 { states.append(key.localized(with: n)) }

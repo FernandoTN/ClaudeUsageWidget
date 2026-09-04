@@ -22,7 +22,7 @@ final class DesignFrameHarnessTests: XCTestCase {
         let selections = DesignFrameHarness.Fixture.selections(degraded: false, now: Date())
         let claude = selections.first { $0.provider == .claude }!
         let states = Set(claude.candidates.map(\.readiness)) .union([claude.owner?.readiness ?? .unknown])
-        XCTAssertTrue(states.isSuperset(of: [.ready, .exhausted, .dead, .suspected, .unknown, .excluded]),
+        XCTAssertTrue(states.isSuperset(of: [.ready, .dead, .suspected, .unknown, .excluded]) && states.contains { $0.isAtLimit },
                       "the fixture must exercise every readiness state: \(states)")
         XCTAssertTrue(claude.candidates.contains { if case .duplicateOfOwner = $0.status { return true }; return false })
         XCTAssertNotNil(selections.first { $0.provider == .codex }?.owner?.resetCreditsAvailable)

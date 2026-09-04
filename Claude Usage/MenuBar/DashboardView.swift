@@ -104,6 +104,7 @@ enum DashboardFormatting {
     static func chip(_ chip: RowChip, now: Date = Date()) -> String {
         switch chip {
         case .ready: return "ready"
+        case .readyLight: return "ready · weekly under half"
         case .nearLimit: return "near limit"
         case .sessionExhausted(let resetAt): return "session exhausted · \(resetAt.timeRemainingString(from: now))"
         case .weeklyMaxed: return "weekly maxed"
@@ -140,7 +141,7 @@ enum DashboardFormatting {
     /// header (round 1, D3): "3 ready · 1 near limit · 4 exhausted · 1 dead · 2 duplicate".
     static func counts(_ counts: FleetCounts.Provider) -> String {
         var parts: [String] = []
-        for readiness in [AccountReadiness.ready, .low, .exhausted, .suspected, .unknown, .excluded, .dead] {
+        for readiness in AccountReadiness.legendOrder {
             let n = counts.count(readiness)
             if n > 0 { parts.append("\(n) \(readiness.legendWord)") }
         }
