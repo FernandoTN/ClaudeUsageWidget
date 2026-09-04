@@ -1641,6 +1641,11 @@ final class StatusBarUIManager {
     /// banner. Never feeds the heal-rebuild path — an overflowed item cannot
     /// be made to fit by recreating it, and every recreate leaks CAContexts.
     private(set) var hiddenProviders: Set<Profile.ProviderKind> = []
+    /// Status items that are not provider groups but share the bar's fate
+    /// (the ⇄ selector, UX revamp stage 1b): probed and logged in the same
+    /// line, telemetry only — no tracker, no verdict feeds anything. Set by
+    /// `MenuBarManager` at setup; keyed by a short label for the log.
+    var auxiliaryExposureItems: () -> [String: NSStatusItem] = { [:] }
     private var exposureTracker = GroupExposureTracker()
     private var exposureObserver: NSObjectProtocol?
     private var lastExposureLogValue: String?
@@ -1695,6 +1700,14 @@ final class StatusBarUIManager {
             snapshot.append(
                 "\(provider)=\(verdict) [\(frame) len=\(Int(item.length)) vis=\(observation.isVisible ? 1 : 0) "
                     + "occ=\(observation.occluded ? 1 : 0) on=\(onScreen) hits=\(hits)]")
+        }
+        for (label, item) in auxiliaryExposureItems().sorted(by: { $0.key < $1.key }) {
+            let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
+            let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
+            let onScreen = observation.onScreen.map { $0 ? "1" : "0" } ?? "?"
+            snapshot.append(
+                "\(label)=\(GroupExposure.verdict(observation)) [\(frame) len=\(Int(item.length)) "
+                    + "vis=\(observation.isVisible ? 1 : 0) occ=\(observation.occluded ? 1 : 0) on=\(onScreen)]")
         }
         let confirmed = exposureTracker.record(verdicts)
         let changed = confirmed != hiddenProviders
