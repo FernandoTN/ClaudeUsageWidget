@@ -129,9 +129,9 @@ nonisolated struct OwnershipSpan: Sendable, Equatable {
     var basis: OwnershipRecord.Basis
     /// True when `start` was clipped to the range (the span began earlier).
     var startsBeforeRange: Bool
-    /// "from dJormun · activate" — who held the login before and why it moved.
+    /// "from Cedar · activate" — who held the login before and why it moved.
     var openedBy: String? = nil
-    /// "to dJormun · auto-switch" — who took it and why; nil while open.
+    /// "to Cedar · auto-switch" — who took it and why; nil while open.
     var closedBy: String? = nil
 }
 
@@ -415,7 +415,7 @@ nonisolated enum TelemetryReportBuilder {
         case .account: return accountKey(for: row, roster: roster)
         case .originator:
             let source = row.aggregate.source ?? "unknown"
-            // Codex: "xfenrir-dev/exec" reads "exec (xfenrir-dev)" — two homes with
+            // Codex: "juniper-dev/exec" reads "exec (juniper-dev)" — two homes with
             // the same originator would otherwise be two series with one label.
             var label = source
             if row.aggregate.provider == .codex, source.contains("/"), let home = AttributionResolver.codexHomeSlug(in: source) {

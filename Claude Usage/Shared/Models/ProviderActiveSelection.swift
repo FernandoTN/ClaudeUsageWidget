@@ -66,8 +66,8 @@ enum ActiveVocabulary {
         "active.no_active_login".localized(with: providerName(provider))
     }
 
-    /// The R3 caption: "Viewing dJormun · Active for Claude: dRir", or
-    /// "Viewing dJormun · no active Claude login" when the provider has no owner.
+    /// The R3 caption: "Viewing Cedar · Active for Claude: Atlas", or
+    /// "Viewing Cedar · no active Claude login" when the provider has no owner.
     static func viewingLine(viewing: String, provider: Profile.ProviderKind, owner: String?) -> String {
         if let owner {
             return "active.viewing_line".localized(with: viewing, providerName(provider), owner)
@@ -75,7 +75,7 @@ enum ActiveVocabulary {
         return "active.viewing_line_none".localized(with: viewing, providerName(provider))
     }
 
-    /// "Active for Claude changed outside the app: now dLeo"
+    /// "Active for Claude changed outside the app: now Lark"
     static func changedOutside(_ provider: Profile.ProviderKind, newOwner: String) -> String {
         "active.changed_outside".localized(with: providerName(provider), newOwner)
     }

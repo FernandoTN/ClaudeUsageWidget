@@ -172,7 +172,7 @@ Stage 3a merged as `2ea61f9` (#105). WAL note from the fixes session: on a
 normal launch the end-of-catch-up TRUNCATE leaves the WAL at ~300 KB; the
 64 MB residue was the migration launch (VACUUM after the checkpoint), and
 the checkpoint follows the VACUUM since 2ea61f9. The 22:29 PDT auto-switch
-(Google → jskxkxjssh) was confirmed in the live ledger as ownership seq 30,
+(Beacon → Delta) was confirmed in the live ledger as ownership seq 30,
 exactClaim / activate.
 
 ## Stage 3b — the chart (PR #108)
@@ -227,7 +227,7 @@ T26 (the month-boundary yield rule applied to dense axes — a rule, not a
 marker; now sparse axes only, tested); the rate-limit overlay as an opt-in
 legend checkbox with per-bucket status triangles, placed by attribution
 like units and per-series in Split; switch detail on the ownership spans
-("first claim (activate) · handed to dJormun (activate)"); Export CSV…
+("first claim (activate) · handed to Cedar (activate)"); Export CSV…
 with four provenance comment lines and provider / source / attribution /
 cost_basis columns on every row, built from the report's own input.
 `TelemetryExport` is pure; `TelemetryEngine.reportInput` is the one read
@@ -281,17 +281,17 @@ The T27 defect (isolated-home rollouts credited by time to the default-home
 owner, because the home never reached the aggregate). `TelemetrySourceRoots`
 learns the default home; the indexer writes "<home>/<originator>" for
 isolated homes; `AttributionResolver.codexHomeSlug` / `codexOriginator`
-split it; the Originator stack labels "exec (xfenrir-dev)"; the Codex
+split it; the Originator stack labels "exec (juniper-dev)"; the Codex
 reader state carries `sourceVersion`, and a cursor below the current one
 marks its file for a replace-in-transaction re-index (`deleteEvents` +
 upsert + cursor save), counted at scan time into meta
 (`codexReindexPending_v1`) and shown in the Codex notes while files remain.
 Tests: `TelemetryIndexerTests` (+1, end to end). Design pass 52. Harness
-fixture sources are now "exec" and "xfenrir-dev/vscode".
+fixture sources are now "exec" and "juniper-dev/vscode".
 
 Stage 4d merged as `6a5eab2` (#124) and deployed 23:57:36 PDT (pid 54481;
 bar pinned, RSS 165 MB, 0 cfprefsd rejections). **Dormant on this Mac:**
-all four isolated homes under `~/.codex-accounts/` (xfenrir-dev,
+all four isolated homes under `~/.codex-accounts/` (juniper-dev,
 xfho-example, xfme-example, xlucifer-dev) hold zero
 rollouts — the widget copies each account's auth into `~/.codex` on a
 switch, so every Codex session so far ran in the default home and is

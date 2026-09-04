@@ -19,9 +19,9 @@ final class InsightsTimelineLayoutTests: XCTestCase {
     }
 
     func testMarkersOnOneSlotMergeIntoOneLabel() {
-        let result = InsightsTimelineLayout.layout(markers: [marker("dRir", hours: 9, pct: 100), marker("Commits", hours: 9.2, pct: 100)], width: 372, now: now)
+        let result = InsightsTimelineLayout.layout(markers: [marker("Atlas", hours: 9, pct: 100), marker("Harbor", hours: 9.2, pct: 100)], width: 372, now: now)
         XCTAssertEqual(result.placements.count, 1)
-        XCTAssertEqual(result.placements.first?.text, "dRir · Commits W 100 %")
+        XCTAssertEqual(result.placements.first?.text, "Atlas · Harbor W 100 %")
         XCTAssertEqual(result.rows, 1)
         XCTAssertFalse(result.overflow)
         let mixed = InsightsTimelineLayout.mergedLabel([marker("A", hours: 9, pct: 84), marker("B", hours: 9, pct: 10, window: .fable)])

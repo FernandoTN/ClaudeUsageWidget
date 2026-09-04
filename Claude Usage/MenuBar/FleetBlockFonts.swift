@@ -14,7 +14,7 @@ import AppKit
 enum FleetBlockFonts {
     /// Provider mark (`Cl` / `Cx` / `Gk`) and the `+N` overflow mark.
     static let mark = NSFont.systemFont(ofSize: 6, weight: .semibold)
-    /// The candidate row: `91→dJo✓`.
+    /// The candidate row: `91→Ced✓`.
     static let affix = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .semibold)
     /// The counts row: `●12 ◐3 ▲11 ×2`.
     static let counts = NSFont.monospacedDigitSystemFont(ofSize: 6, weight: .semibold)

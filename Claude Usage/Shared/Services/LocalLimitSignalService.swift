@@ -12,7 +12,7 @@ import Foundation
 ///    "You've hit your session limit · resets 10:50pm (America/Los_Angeles)".
 ///    That is a server-affirmed exhaustion signal for the account that owned
 ///    the shared CLI login at that timestamp — the exact event the widget
-///    missed while 'Commits' sat displayed at 67% (real 100%).
+///    missed while 'Harbor' sat displayed at 67% (real 100%).
 /// 2. `~/.claude.json` carries `cachedUsageUtilization` — the CLI's own last
 ///    fetch of the usage bars ({utilization.limits[], fetchedAtMs,
 ///    accountUuid}) — a free measurement the widget can adopt without

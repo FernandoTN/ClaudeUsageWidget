@@ -68,10 +68,10 @@ enum TelemetryFrameHarness {
         frame("fleet-cost", scope: .fleet, metric: .cost, report: report(.fleet, .days7, metric: .cost, input: input, now: now))
         frame("provider-claude", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now))
         frame("provider-codex", scope: .provider(.codex), report: report(.provider(.codex), .days7, input: input, now: now))
-        frame("account-attributed", scope: .account(Fixture.dRir), report: report(.account(Fixture.dRir), .days7, input: input, now: now))
+        frame("account-attributed", scope: .account(Fixture.atlas), report: report(.account(Fixture.atlas), .days7, input: input, now: now))
         frame("unattributed-codex", scope: .unattributed(.codex), report: report(.unattributed(.codex), .days7, input: input, now: now))
         frame("indexing", scope: .fleet, report: nil, status: Fixture.indexingStatus(now: now))
-        frame("empty", scope: .account(Fixture.dLeo), report: report(.account(Fixture.dLeo), .days7, input: input, now: now))
+        frame("empty", scope: .account(Fixture.lark), report: report(.account(Fixture.lark), .days7, input: input, now: now))
         frame("paused", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), status: Fixture.status(now: now, paused: true), paused: true)
         frame("degraded", scope: .fleet, report: nil,
               status: IndexingStatus(ledgerPath: "~/Library/Application Support/Claude Usage/telemetry/ledger.sqlite"))
@@ -80,7 +80,7 @@ enum TelemetryFrameHarness {
         var existing = (try? String(contentsOf: indexURL, encoding: .utf8)) ?? ""
         if let range = existing.range(of: "\n## Token usage window") { existing = String(existing[..<range.lowerBound]) }
         let header = existing.isEmpty ? ["# Design frames", "", "Rendered by `CUW_RENDER_FRAMES` (Debug build) at 2x, light and dark.", ""].joined(separator: "\n") : existing
-        let section = (["", "## Token usage window (telemetry)", "", "Fixture data: 7 days, three providers, dRir → dJormun switch two days ago at noon, a Codex outlier day in the 30-day set.", ""] + index).joined(separator: "\n")
+        let section = (["", "## Token usage window (telemetry)", "", "Fixture data: 7 days, three providers, Atlas → Cedar switch two days ago at noon, a Codex outlier day in the 30-day set.", ""] + index).joined(separator: "\n")
         try? header.appending(section).write(to: indexURL, atomically: true, encoding: .utf8)
         LoggingService.shared.log("TelemetryFrameHarness: wrote \(index.count) frames to \(dir.path)")
     }
@@ -125,28 +125,28 @@ enum TelemetryFrameHarness {
             return c
         }()
         static let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 4, hour: 16, minute: 4))!
-        static let dRir = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        static let dJormun = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
-        static let dLeo = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
-        static let xFenrir = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
-        static let xLucifer = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
+        static let atlas = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        static let cedar = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        static let lark = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        static let juniper = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        static let vireo = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
         static let grok = UUID(uuidString: "66666666-6666-6666-6666-666666666666")!
 
         static let roster: [ProfileSummary] = [
-            ProfileSummary(id: dRir, name: "dRir", provider: .claude, accountStamp: "a"),
-            ProfileSummary(id: dJormun, name: "dJormun", provider: .claude, accountStamp: "b"),
-            ProfileSummary(id: dLeo, name: "dLeo", provider: .claude, accountStamp: "c"),
-            ProfileSummary(id: xFenrir, name: "xFenrir(dev)", provider: .codex, accountStamp: "d", codexHomeSlug: "xfenrir-dev"),
-            ProfileSummary(id: xLucifer, name: "xLucifer(dev)", provider: .codex, accountStamp: "e"),
+            ProfileSummary(id: atlas, name: "Atlas", provider: .claude, accountStamp: "a"),
+            ProfileSummary(id: cedar, name: "Cedar", provider: .claude, accountStamp: "b"),
+            ProfileSummary(id: lark, name: "Lark", provider: .claude, accountStamp: "c"),
+            ProfileSummary(id: juniper, name: "Juniper (dev)", provider: .codex, accountStamp: "d", codexHomeSlug: "juniper-dev"),
+            ProfileSummary(id: vireo, name: "Vireo (dev)", provider: .codex, accountStamp: "e"),
             ProfileSummary(id: grok, name: "GROK", provider: .grok, accountStamp: "f"),
         ]
 
         static let sidebarProfiles: [TelemetrySidebarProfile] = [
-            TelemetrySidebarProfile(id: dRir, name: "dRir", provider: .claude, isOwner: false),
-            TelemetrySidebarProfile(id: dJormun, name: "dJormun", provider: .claude, isOwner: true),
-            TelemetrySidebarProfile(id: dLeo, name: "dLeo", provider: .claude, isOwner: false),
-            TelemetrySidebarProfile(id: xFenrir, name: "xFenrir(dev)", provider: .codex, isOwner: true),
-            TelemetrySidebarProfile(id: xLucifer, name: "xLucifer(dev)", provider: .codex, isOwner: false),
+            TelemetrySidebarProfile(id: atlas, name: "Atlas", provider: .claude, isOwner: false),
+            TelemetrySidebarProfile(id: cedar, name: "Cedar", provider: .claude, isOwner: true),
+            TelemetrySidebarProfile(id: lark, name: "Lark", provider: .claude, isOwner: false),
+            TelemetrySidebarProfile(id: juniper, name: "Juniper (dev)", provider: .codex, isOwner: true),
+            TelemetrySidebarProfile(id: vireo, name: "Vireo (dev)", provider: .codex, isOwner: false),
             TelemetrySidebarProfile(id: grok, name: "GROK", provider: .grok, isOwner: true),
         ]
 
@@ -167,10 +167,10 @@ enum TelemetryFrameHarness {
         /// cache reads; Codex ~100 M; Grok ~30 M), a switch two days ago at noon.
         static func input(now: Date, days: Int = 7) -> TelemetryReportBuilder.Input {
             let ownership = [
-                OwnershipRecord(at: day(days + 20, 0, now: now), provider: .claude, profileId: dRir, previousProfileId: nil, accountStamp: "a", name: "dRir", basis: .exactClaim, cause: "activate"),
-                OwnershipRecord(at: day(2, 12, now: now), provider: .claude, profileId: dJormun, previousProfileId: dRir, accountStamp: "b", name: "dJormun", basis: .exactClaim, cause: "activate"),
-                OwnershipRecord(at: day(days + 20, 0, now: now), provider: .codex, profileId: xLucifer, previousProfileId: nil, accountStamp: "e", name: "xLucifer(dev)", basis: .observedAtTick, cause: nil),
-                OwnershipRecord(at: day(4, 9, now: now), provider: .codex, profileId: xFenrir, previousProfileId: xLucifer, accountStamp: "d", name: "xFenrir(dev)", basis: .observedAtTick, cause: nil),
+                OwnershipRecord(at: day(days + 20, 0, now: now), provider: .claude, profileId: atlas, previousProfileId: nil, accountStamp: "a", name: "Atlas", basis: .exactClaim, cause: "activate"),
+                OwnershipRecord(at: day(2, 12, now: now), provider: .claude, profileId: cedar, previousProfileId: atlas, accountStamp: "b", name: "Cedar", basis: .exactClaim, cause: "activate"),
+                OwnershipRecord(at: day(days + 20, 0, now: now), provider: .codex, profileId: vireo, previousProfileId: nil, accountStamp: "e", name: "Vireo (dev)", basis: .observedAtTick, cause: nil),
+                OwnershipRecord(at: day(4, 9, now: now), provider: .codex, profileId: juniper, previousProfileId: vireo, accountStamp: "d", name: "Juniper (dev)", basis: .observedAtTick, cause: nil),
             ]
             let claudeShape: [Double] = [0.58, 1.39, 1.43, 0.56, 1.26, 1.92, 1.08, 0.19]
             var aggregates: [MinuteAggregate] = []
@@ -182,7 +182,7 @@ enum TelemetryFrameHarness {
                     aggregates.append(aggregate(.claude, "claude-fable-5", at: day(offset, hour + 1, now: now), input: Int(100 * scale), cacheRead: Int(480_000_000 * scale), cacheWrite: Int(20_000_000 * scale), output: Int(900_000 * scale), units: Int(700 * scale), sidechain: true))
                     aggregates.append(aggregate(.claude, "claude-sonnet-5", at: day(offset, hour + 2, now: now), input: Int(60 * scale), cacheRead: Int(120_000_000 * scale), output: Int(400_000 * scale), units: Int(600 * scale), sidechain: true))
                     // Sources are originators; an isolated home's rollouts carry the home as prefix (stage 4d).
-                    aggregates.append(aggregate(.codex, "gpt-5.6-sol", at: day(offset, hour, now: now), input: Int(900_000 * scale), cacheRead: Int(24_000_000 * scale), output: Int(90_000 * scale), units: Int(600 * scale), source: offset % 3 == 0 ? "xfenrir-dev/vscode" : "exec"))
+                    aggregates.append(aggregate(.codex, "gpt-5.6-sol", at: day(offset, hour, now: now), input: Int(900_000 * scale), cacheRead: Int(24_000_000 * scale), output: Int(90_000 * scale), units: Int(600 * scale), source: offset % 3 == 0 ? "juniper-dev/vscode" : "exec"))
                     aggregates.append(aggregate(.grok, "grok-4.6-build", at: day(offset, hour + 3, now: now), input: Int(1_600_000 * scale), cacheRead: Int(7_000_000 * scale), output: Int(160_000 * scale), units: Int(8 * scale), source: "ClaudeUsageWidget", costNano: Int(13_000_000_000 * scale)))
                 }
             }

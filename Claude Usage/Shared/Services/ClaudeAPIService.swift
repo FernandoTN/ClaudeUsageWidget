@@ -157,7 +157,7 @@ class ClaudeAPIService {
     /// Reads the account's LIVE limit counters out of the Messages API's
     /// `anthropic-ratelimit-unified-*` response headers, for a specific token.
     ///
-    /// Why this exists (2026-08-13 'BBR'/'Outlook' incident): under a parallel
+    /// Why this exists (2026-08-13 'Iris'/'Kite' incident): under a parallel
     /// CLI fleet the account's OWN `oauth/usage` endpoint refuses most reads
     /// (HTTP 429, `retry-after: 0`) — measured live 2026-08-14 at 7 refusals in
     /// 8 attempts — so the widget goes blind on the ONE account whose number

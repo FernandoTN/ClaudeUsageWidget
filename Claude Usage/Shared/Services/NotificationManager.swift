@@ -237,8 +237,8 @@ class NotificationManager {
         if previousPercentage > 0.0 && sessionPercentage == 0.0 {
             // Clear all sent notifications for this profile to allow re-notification
             // in the new session. Match "<name>_" — identifiers are
-            // "<name>_<type>_<level>", and a bare-name prefix let profile "Cod"
-            // clear profile "Codex (…)"'s records too.
+            // "<name>_<type>_<level>", and a bare-name prefix let profile "Kestrel"
+            // clear profile "Kestrel (dev)"'s records too.
             sentNotifications = sentNotifications.filter { !$0.hasPrefix("\(profileName)_") }
 
             sendProfileAlert(

@@ -24,13 +24,13 @@ final class TelemetryReportTests: XCTestCase {
         cal.date(from: DateComponents(year: y, month: mo, day: d, hour: h, minute: mi))!
     }
 
-    private let dRir = UUID(), dJormun = UUID(), xFenrir = UUID(), grok = UUID()
+    private let atlas = UUID(), cedar = UUID(), juniper = UUID(), grok = UUID()
 
     private var roster: [ProfileSummary] {
         [
-            ProfileSummary(id: dRir, name: "dRir", provider: .claude, accountStamp: "a"),
-            ProfileSummary(id: dJormun, name: "dJormun", provider: .claude, accountStamp: "b"),
-            ProfileSummary(id: xFenrir, name: "xFenrir(dev)", provider: .codex, accountStamp: "c", codexHomeSlug: "xfenrir-dev"),
+            ProfileSummary(id: atlas, name: "Atlas", provider: .claude, accountStamp: "a"),
+            ProfileSummary(id: cedar, name: "Cedar", provider: .claude, accountStamp: "b"),
+            ProfileSummary(id: juniper, name: "Juniper (dev)", provider: .codex, accountStamp: "c", codexHomeSlug: "juniper-dev"),
             ProfileSummary(id: grok, name: "GROK", provider: .grok, accountStamp: "g"),
         ]
     }
@@ -106,29 +106,29 @@ final class TelemetryReportTests: XCTestCase {
     func testAttributionBandsFollowTheEvidence() {
         let t0 = date(2026, 9, 1, 8, 0)
         let ownership = [
-            OwnershipRecord(at: t0, provider: .claude, profileId: dRir, previousProfileId: nil, accountStamp: "a", name: "dRir", basis: .exactClaim, cause: "activate"),
-            OwnershipRecord(at: t0.addingTimeInterval(3_600), provider: .claude, profileId: dRir, previousProfileId: dRir, accountStamp: "a", name: "dRir", basis: .heartbeat, cause: nil),
-            OwnershipRecord(at: t0.addingTimeInterval(3 * 3_600), provider: .claude, profileId: dJormun, previousProfileId: dRir, accountStamp: "b", name: "dJormun", basis: .observedAtTick, cause: nil),
-            OwnershipRecord(at: t0.addingTimeInterval(6 * 3_600), provider: .claude, profileId: nil, previousProfileId: dJormun, accountStamp: nil, name: nil, basis: .exactClaim, cause: "clear"),
+            OwnershipRecord(at: t0, provider: .claude, profileId: atlas, previousProfileId: nil, accountStamp: "a", name: "Atlas", basis: .exactClaim, cause: "activate"),
+            OwnershipRecord(at: t0.addingTimeInterval(3_600), provider: .claude, profileId: atlas, previousProfileId: atlas, accountStamp: "a", name: "Atlas", basis: .heartbeat, cause: nil),
+            OwnershipRecord(at: t0.addingTimeInterval(3 * 3_600), provider: .claude, profileId: cedar, previousProfileId: atlas, accountStamp: "b", name: "Cedar", basis: .observedAtTick, cause: nil),
+            OwnershipRecord(at: t0.addingTimeInterval(6 * 3_600), provider: .claude, profileId: nil, previousProfileId: cedar, accountStamp: nil, name: nil, basis: .exactClaim, cause: "clear"),
         ]
         let resolver = AttributionResolver(ownership: ownership, roster: roster)
         XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(-60), source: nil), .unattributed(.beforeLog))
-        XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(1_800), source: nil), .profile(dRir, basis: .timeline), "inside the exact claim")
+        XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(1_800), source: nil), .profile(atlas, basis: .timeline), "inside the exact claim")
         XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(2 * 3_600), source: nil), .unattributed(.gap),
-                       "between the last heartbeat of dRir and the first OBSERVATION of dJormun the switch time is unknown")
-        XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(4 * 3_600), source: nil), .profile(dJormun, basis: .timeline),
+                       "between the last heartbeat of Atlas and the first OBSERVATION of Cedar the switch time is unknown")
+        XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(4 * 3_600), source: nil), .profile(cedar, basis: .timeline),
                        "an observed owner followed by an exact claim is bracketed")
         XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(7 * 3_600), source: nil), .unattributed(.noOwner))
-        XCTAssertEqual(resolver.attribute(provider: .codex, at: t0, source: "xfenrir-dev"), .profile(xFenrir, basis: .byPath))
+        XCTAssertEqual(resolver.attribute(provider: .codex, at: t0, source: "juniper-dev"), .profile(juniper, basis: .byPath))
         XCTAssertEqual(resolver.attribute(provider: .codex, at: t0, source: ".codex"), .unattributed(.beforeLog), "the default home follows the (empty) Codex log")
         XCTAssertEqual(resolver.attribute(provider: .grok, at: t0.addingTimeInterval(-9_999), source: "Demo"), .profile(grok, basis: .soleAccount))
     }
 
     func testObservedOwnerWithNothingAfterItIsTrustedForTwoHeartbeats() {
         let t0 = date(2026, 9, 1, 8, 0)
-        let ownership = [OwnershipRecord(at: t0, provider: .claude, profileId: dRir, previousProfileId: nil, accountStamp: "a", name: "dRir", basis: .observedAtTick, cause: nil)]
+        let ownership = [OwnershipRecord(at: t0, provider: .claude, profileId: atlas, previousProfileId: nil, accountStamp: "a", name: "Atlas", basis: .observedAtTick, cause: nil)]
         let resolver = AttributionResolver(ownership: ownership, roster: roster)
-        XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(3_600), source: nil), .profile(dRir, basis: .timeline))
+        XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(3_600), source: nil), .profile(atlas, basis: .timeline))
         XCTAssertEqual(resolver.attribute(provider: .claude, at: t0.addingTimeInterval(3 * 3_600), source: nil), .unattributed(.gap))
     }
 
@@ -137,8 +137,8 @@ final class TelemetryReportTests: XCTestCase {
     private func fixtureInput(now: Date) -> TelemetryReportBuilder.Input {
         let day = { (offset: Int, hour: Int) in self.cal.date(byAdding: .day, value: -offset, to: self.cal.startOfDay(for: now))!.addingTimeInterval(Double(hour) * 3_600) }
         let ownership = [
-            OwnershipRecord(at: day(6, 0), provider: .claude, profileId: dRir, previousProfileId: nil, accountStamp: "a", name: "dRir", basis: .exactClaim, cause: "activate"),
-            OwnershipRecord(at: day(2, 12), provider: .claude, profileId: dJormun, previousProfileId: dRir, accountStamp: "b", name: "dJormun", basis: .exactClaim, cause: "activate"),
+            OwnershipRecord(at: day(6, 0), provider: .claude, profileId: atlas, previousProfileId: nil, accountStamp: "a", name: "Atlas", basis: .exactClaim, cause: "activate"),
+            OwnershipRecord(at: day(2, 12), provider: .claude, profileId: cedar, previousProfileId: atlas, accountStamp: "b", name: "Cedar", basis: .exactClaim, cause: "activate"),
         ]
         var aggregates: [MinuteAggregate] = []
         for offset in (0...6).reversed() {
@@ -172,14 +172,14 @@ final class TelemetryReportTests: XCTestCase {
         XCTAssertEqual(report.models.first { $0.key.id == "grok-4.6-build" }?.totals.costNanoUSD, 7 * 12_000_000)
         XCTAssertEqual(report.models.first?.key.id, "claude-opus-5", "largest input-class first")
         XCTAssertEqual(report.models.reduce(0.0) { $0 + $1.share }, 1.0, accuracy: 1e-9)
-        // Accounts: dRir owned Claude until two days ago at noon, dJormun after; Grok is the sole account; Codex default home is unattributed.
+        // Accounts: Atlas owned Claude until two days ago at noon, Cedar after; Grok is the sole account; Codex default home is unattributed.
         let names = report.accounts.map(\.key.label)
-        XCTAssertEqual(names.first, "dRir")
-        XCTAssertTrue(names.contains("dJormun"))
+        XCTAssertEqual(names.first, "Atlas")
+        XCTAssertTrue(names.contains("Cedar"))
         XCTAssertTrue(names.contains("GROK"))
         XCTAssertEqual(names.last, "Unattributed", "the unattributed band sorts last")
         XCTAssertEqual(report.accounts.last?.key.provider, .codex)
-        XCTAssertEqual(report.accounts.first { $0.key.label == "dJormun" }?.totals.units, 3 * 24 - 20, "days 2 (after noon), 1 and 0; the 09:00 Opus row of day 2 is dRir's")
+        XCTAssertEqual(report.accounts.first { $0.key.label == "Cedar" }?.totals.units, 3 * 24 - 20, "days 2 (after noon), 1 and 0; the 09:00 Opus row of day 2 is Atlas's")
         XCTAssertGreaterThan(report.coverage.attributedShare, 0.9)
         XCTAssertEqual(report.coverage.attributedShare + report.coverage.unattributedShare, 1.0, accuracy: 1e-9)
         XCTAssertNil(report.nativeCount, "Fleet mixes three nouns; coverage replaces the count")
@@ -205,9 +205,9 @@ final class TelemetryReportTests: XCTestCase {
         XCTAssertEqual(codex.nativeCount?.value, 7)
         XCTAssertEqual(codex.coverage.attributedShare, 0, "no Codex ownership record and the default home: all unattributed")
 
-        let account = TelemetryReportBuilder.build(query: TelemetryQuery(scope: .account(dRir), now: now, calendar: cal), input: input)
+        let account = TelemetryReportBuilder.build(query: TelemetryQuery(scope: .account(atlas), now: now, calendar: cal), input: input)
         XCTAssertEqual(account.totals.units, 4 * 24 + 20, "days 6–3 in full plus day 2's morning Opus row")
-        XCTAssertEqual(account.accounts.map(\.key.label), ["dRir"])
+        XCTAssertEqual(account.accounts.map(\.key.label), ["Atlas"])
 
         let unattributed = TelemetryReportBuilder.build(query: TelemetryQuery(scope: .unattributed(.codex), now: now, calendar: cal), input: input)
         XCTAssertEqual(unattributed.totals.units, 21)

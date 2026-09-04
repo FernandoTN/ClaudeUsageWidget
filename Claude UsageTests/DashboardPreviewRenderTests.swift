@@ -50,8 +50,8 @@ final class DashboardPreviewRenderTests: XCTestCase {
         suspected.rateLimitedUntil = now.addingTimeInterval(300)
         suspected.rateLimitedInferred = true
         suspected.projectedSessionPercentage = 81
-        let rir = claude("Atlas (dev)", usage(session: 78, weekly: 16, fable: 16, sessionElapsed: 2 * 3600))
-        let google = claude("Beacon", usage(session: 78, weekly: 16, fable: 16, age: 120), autoSwitch: false)
+        let atlas = claude("Atlas (dev)", usage(session: 78, weekly: 16, fable: 16, sessionElapsed: 2 * 3600))
+        let beacon = claude("Beacon", usage(session: 78, weekly: 16, fable: 16, age: 120), autoSwitch: false)
         let profiles = [
             claude("Fjord", usage(weekly: 70, fable: 99)),
             claude("Granite", usage(session: 100, weekly: 59, fable: 82, sessionElapsed: 1.8 * 3600)),
@@ -62,7 +62,7 @@ final class DashboardPreviewRenderTests: XCTestCase {
             claude("Delta", usage(weekly: 23, fable: 28, age: 3 * 3600, provenance: .cliCache)),
             claude("Cedar", usage(weekly: 16, fable: 22)),
             claude("Juniper (dev)", nil),
-            rir, google,
+            atlas, beacon,
             codex("Kestrel", usage(weekly: 60, sessionWindow: false)),
             codex("Osprey", usage(weekly: 95, sessionWindow: false)),
             codex("Marlin (dev)", usage(weekly: 1, sessionWindow: false)),
@@ -71,17 +71,17 @@ final class DashboardPreviewRenderTests: XCTestCase {
         ]
         let byName = Dictionary(uniqueKeysWithValues: profiles.map { ($0.name, $0) })
         let dead: Set<UUID> = [byName["Echo"]!.id, byName["Kestrel"]!.id, byName["Osprey"]!.id]
-        let jormun = byName["Cedar"]!
+        let cedar = byName["Cedar"]!
         let inputs = DashboardSnapshot.Inputs(
             profiles: profiles,
-            activeIds: [rir.id, byName["Marlin (dev)"]!.id, byName["Grok"]!.id],
-            focusedId: rir.id,
+            activeIds: [atlas.id, byName["Marlin (dev)"]!.id, byName["Grok"]!.id],
+            focusedId: atlas.id,
             context: FleetSummaryContext(
                 thresholds: thresholds,
                 isLoginDead: { dead.contains($0.id) },
                 isExcluded: { !$0.isAutoSwitchEnabled },
-                nextCandidates: [.claude: PredictedCandidate(id: jormun.id, label: "Ced", queued: false, queueHeadBlocked: false)],
-                preflightVerdicts: [jormun.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-720), kind: .probed)],
+                nextCandidates: [.claude: PredictedCandidate(id: cedar.id, label: "Ced", queued: false, queueHeadBlocked: false)],
+                preflightVerdicts: [cedar.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-720), kind: .probed)],
                 preferencesDegraded: false, isSwitching: false, now: now
             ),
             queue: [byName["Delta"]!.id],
@@ -89,7 +89,7 @@ final class DashboardPreviewRenderTests: XCTestCase {
                 SwitchEvent(at: now.addingTimeInterval(-6 * 3600), from: "Kite", to: "Iris", trigger: .queued, reason: nil),
                 SwitchEvent(at: now.addingTimeInterval(-40 * 60), from: "Iris", to: "Atlas (dev)", trigger: .auto, reason: "session 96 % / weekly 73 % crossed threshold"),
             ],
-            duplicateGroups: [[google.id, rir.id]]
+            duplicateGroups: [[beacon.id, atlas.id]]
         )
         return DashboardSnapshot.build(inputs)
     }

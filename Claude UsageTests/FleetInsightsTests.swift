@@ -75,11 +75,11 @@ final class FleetInsightsTests: XCTestCase {
     // MARK: Switch log
 
     func testSwitchLogIsNewestFirstWithProviderInferredAndLegacyRowsMarked() {
-        let a = claude("Memori", usage(session: 10, weekly: 10, weeklyIn: 3600))
-        let old = SwitchEvent(at: FleetInsights.viewingSplitDate.addingTimeInterval(-3600), from: "X", to: "Memori", trigger: .manual, reason: nil)
-        let new = SwitchEvent(at: now, from: "Memori", to: "Gone", trigger: .auto, reason: "session 96 %", fromHeadroom: 4, providerRaw: "codex")
+        let a = claude("Fjord", usage(session: 10, weekly: 10, weeklyIn: 3600))
+        let old = SwitchEvent(at: FleetInsights.viewingSplitDate.addingTimeInterval(-3600), from: "X", to: "Fjord", trigger: .manual, reason: nil)
+        let new = SwitchEvent(at: now, from: "Fjord", to: "Gone", trigger: .auto, reason: "session 96 %", fromHeadroom: 4, providerRaw: "codex")
         let log = FleetInsights.build(inputs(profiles: [a], history: [old, new])).switchLog
-        XCTAssertEqual(log.map(\.to), ["Gone", "Memori"])
+        XCTAssertEqual(log.map(\.to), ["Gone", "Fjord"])
         XCTAssertEqual(log.map(\.isLegacy), [false, true])
         XCTAssertEqual(log[0].provider, .claude, "a name that resolves wins over the recorded raw provider")
         XCTAssertEqual(log[0].fromHeadroom, 4)
@@ -89,7 +89,7 @@ final class FleetInsightsTests: XCTestCase {
     /// The ring is persisted as JSON, so a field the encoder drops is a column
     /// the dashboard silently loses on the next launch.
     func testSwitchEventRoundTripsBothNewFields() throws {
-        let event = SwitchEvent(at: Date(timeIntervalSince1970: 1_786_600_000), from: "Memori", to: "BBR",
+        let event = SwitchEvent(at: Date(timeIntervalSince1970: 1_786_600_000), from: "Fjord", to: "Iris",
                                 trigger: .auto, reason: "session 96 %", fromHeadroom: 3.5, providerRaw: "codex")
         let decoded = try JSONDecoder().decode(SwitchEvent.self, from: JSONEncoder().encode(event))
         XCTAssertEqual(decoded, event)
@@ -124,10 +124,10 @@ final class FleetInsightsTests: XCTestCase {
         let center = NotificationCenter()
         let log = DriftLog(center: center)
         let id = UUID()
-        center.post(name: .providerOwnerChangedExternally, object: id, userInfo: ["provider": "codex", "ownerName": "xFho"])
+        center.post(name: .providerOwnerChangedExternally, object: id, userInfo: ["provider": "codex", "ownerName": "Petrel"])
         XCTAssertEqual(log.episodes.count, 1)
         XCTAssertEqual(log.episodes.first?.provider, .codex)
         XCTAssertEqual(log.episodes.first?.newOwnerId, id)
-        XCTAssertEqual(log.episodes.first?.newOwnerName, "xFho")
+        XCTAssertEqual(log.episodes.first?.newOwnerName, "Petrel")
     }
 }

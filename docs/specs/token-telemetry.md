@@ -267,8 +267,8 @@ a row is a scope, never `viewProfile`.**
 │ ┌ sidebar 220 ┐ ┌ report ──────────────────────────────────────────────────────────────┐ │
 │ │ Fleet       │ │ Fleet                                        Today  [7 days]  30 days  All │ │
 │ │ ▸ Claude 17 │ │ Consumption read from local CLI logs · not quota · Claude through 21:04 · … │ │
-│ │   dRir  Cl  │ │ ┌ Input-class ─────┐ ┌ Output ─────────┐ ┌ Coverage ─┐ ┌ ≈ API list ──┐ │ │
-│ │   dJormun   │ │ │ 78.3 B  ▲ 48 %   │ │ 120 M  ▲ 14 %   │ │ 82 % attr.│ │ $58.7 k       │ │ │
+│ │   Atlas Cl  │ │ ┌ Input-class ─────┐ ┌ Output ─────────┐ ┌ Coverage ─┐ ┌ ≈ API list ──┐ │ │
+│ │   Cedar     │ │ │ 78.3 B  ▲ 48 %   │ │ 120 M  ▲ 14 %   │ │ 82 % attr.│ │ $58.7 k       │ │ │
 │ │   …         │ │ │ 97 % cache reads │ │ 30 % thinking   │ │ Grok: turns│ │ not billed ⓘ  │ │ │
 │ │   Unattrib. │ │ └──────────────────┘ └─────────────────┘ └───────────┘ └───────────────┘ │ │
 │ │ ▸ Codex  5  │ │ Input-class per day · Split ▾ · ─ 7-day mean                 Stacked | Split │ │
@@ -277,7 +277,7 @@ a row is a scope, never `viewProfile`.**
 │ │             │ │ Grok    0.24 B · 0.3 %   ▂ ▂ ▆ ▃ ▆ █ ▄ ░                          70 M │ │
 │ │             │ │        Aug 28  29  30  31  Sep 1  2  3  today      ⇄3   ⇄5  ⇄2         │ │
 │ │             │ │ ┌ By model ──────────────────────┐ ┌ By account ───────────────────────┐ │ │
-│ │             │ │ │ claude-opus-5 ███████▌ 62 % $… │ │ dRir  Active for Claude ████ 31 %  │ │ │
+│ │             │ │ │ claude-opus-5 ███████▌ 62 % $… │ │ Atlas Active for Claude ████ 31 %  │ │ │
 │ │             │ │ │ …                              │ │ Unattributed (before 09-03 01:14) ██│ │ │
 │ │             │ │ └────────────────────────────────┘ └───────────────────────────────────┘ │ │
 │ │             │ │ Sources · caveats · Refresh now · Pause indexing · Copy numbers            │ │
@@ -455,7 +455,7 @@ in light and dark (13 states × 2), reviewed frame by frame:
     `ImageRenderer`: the sidebar, both segmented controls and the progress
     bar became pure SwiftUI (the sidebar scrolls only when its content is
     taller than the pane; ↑↓ move the selection through `onMoveCommand`).
-18. Account share bars took palette slots by row index, so dJormun wore
+18. Account share bars took palette slots by row index, so Cedar wore
     Codex's orange under a legend that said orange = Codex; account bars now
     carry their provider's hue, model bars their model family's.
 19. "indexed 0 s ago" — ages used the wall clock while the fixture's clock
@@ -588,7 +588,7 @@ overlay, switch detail, CSV export):
     plot-level count rather than every row repeating it (the first render
     did exactly that — three copies of the Claude stops).
 47. The ownership span card now says what the switches were: "first claim
-    (activate) · handed to dJormun (activate)", "took over from dRir
+    (activate) · handed to Cedar (activate)", "took over from Atlas
     (auto-switch: session 95 %)" — the cause in brackets, the counterpart
     by roster name, resolved in the report (pure, tested). Four spans
     visible before "more…", two lines each.
@@ -649,10 +649,10 @@ turned out to be a defect):
     and the resolver looked the home slug up in that same field — so an
     isolated home's consumption was credited by time to whoever held the
     default-home login. Now the indexer writes "<home>/<originator>"
-    ("xfenrir-dev/exec") for isolated homes and the plain originator for
+    ("juniper-dev/exec") for isolated homes and the plain originator for
     the default one; the resolver matches the prefix (a bare pre-4d value
     is offered whole and the roster decides); the Originator stack labels
-    "exec (xfenrir-dev)" so two homes with one originator stay two series;
+    "exec (juniper-dev)" so two homes with one originator stay two series;
     the CSV shows the composite, which is honest. Rows written under the
     old rule are re-derived once: the Codex reader state carries a
     `sourceVersion`, a cursor below the current one marks its file for a

@@ -14,7 +14,7 @@
 //    dash         grey                           excluded from auto-switch
 //    50 % alpha                                  reading is stale
 //    "+N"                                        more accounts than dot slots
-//    row 3        91→Mem✓ | Q→Mem? | Q→Mem× (red Q: queue head blocked) | →— | ⇄
+//    row 3        91→Fjo✓ | Q→Fjo? | Q→Fjo× (red Q: queue head blocked) | →— | ⇄
 //
 
 import Cocoa

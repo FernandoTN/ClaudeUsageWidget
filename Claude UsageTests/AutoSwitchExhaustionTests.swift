@@ -207,7 +207,7 @@ final class AutoSwitchExhaustionTests: XCTestCase {
     // MARK: - Account-level throttle stamp
 
     func testThrottledAccountIsExhaustedDespiteLowCachedPercentages() {
-        // The Stanford incident: cache frozen at 16/24/29 while the account's
+        // The Granite incident: cache frozen at 16/24/29 while the account's
         // usage endpoint 429s with a long Retry-After. The stamp must make the
         // trigger (and, via the shared threshold, candidate selection) treat
         // the account as having no capacity.

@@ -20,10 +20,10 @@ final class DashboardInsightsTests: XCTestCase {
     }
 
     func testTimelineLabelNamesTheWindowAndTheHeadroomThatReturns() {
-        let weekly = FleetInsights.ResetMarker(id: UUID(), name: "dRir", provider: .claude, window: .weekly, resetAt: now, headroomReturning: 84.4)
-        let fable = FleetInsights.ResetMarker(id: UUID(), name: "dRir", provider: .claude, window: .fable, resetAt: now, headroomReturning: 10)
-        XCTAssertEqual(InsightsFormatting.timelineLabel(weekly), "dRir W 84 %")
-        XCTAssertEqual(InsightsFormatting.timelineLabel(fable), "dRir F 10 %")
+        let weekly = FleetInsights.ResetMarker(id: UUID(), name: "Atlas", provider: .claude, window: .weekly, resetAt: now, headroomReturning: 84.4)
+        let fable = FleetInsights.ResetMarker(id: UUID(), name: "Atlas", provider: .claude, window: .fable, resetAt: now, headroomReturning: 10)
+        XCTAssertEqual(InsightsFormatting.timelineLabel(weekly), "Atlas W 84 %")
+        XCTAssertEqual(InsightsFormatting.timelineLabel(fable), "Atlas F 10 %")
     }
 
     func testBlindSpotTextNamesEveryPieceOfEvidence() {
@@ -45,7 +45,7 @@ final class DashboardInsightsTests: XCTestCase {
         XCTAssertEqual(InsightsFormatting.incident(rescue, now: now), "1 m ago · measured through the Messages headers · 5-hour window 86 %")
         let affirmed = FleetInsights.Incident(at: now.addingTimeInterval(-60), profileId: nil, name: "A", provider: .claude, kind: .affirmedStamp(until: now.addingTimeInterval(2400)), detail: "retry-after 2918 s")
         XCTAssertEqual(InsightsFormatting.incident(affirmed, now: now), "1 m ago · 429 with Retry-After, 40 min left")
-        let dead = FleetInsights.WhyNot(id: UUID(), name: "Ai", provider: .claude, status: .blocked(.dead), evidence: "dead login", verdictText: "× login dead 2 h ago", evidenceAge: 7200)
+        let dead = FleetInsights.WhyNot(id: UUID(), name: "Echo", provider: .claude, status: .blocked(.dead), evidence: "dead login", verdictText: "× login dead 2 h ago", evidenceAge: 7200)
         XCTAssertEqual(InsightsFormatting.whyNot(dead), "login dead 2 h ago", "the row glyph carries the status; the verdict says dead once")
         let flat = FleetInsights.Burn(id: UUID(), name: "A", provider: .claude, ratePerMinute: nil, samples: [], projectedCrossing: nil)
         XCTAssertEqual(InsightsFormatting.burn(flat, now: now), "flat")

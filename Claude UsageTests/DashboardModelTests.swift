@@ -244,9 +244,9 @@ final class DashboardModelTests: XCTestCase {
     }
 
     func testDuplicateAccountGroupsNameEachOthersProfiles() {
-        let google = claude("Beacon", usage()), rir = claude("Atlas", usage()), other = claude("Other", usage())
-        var inp = inputs([google, rir, other], active: [rir.id])
-        inp.duplicateGroups = [[google.id, rir.id]]
+        let beacon = claude("Beacon", usage()), atlas = claude("Atlas", usage()), other = claude("Other", usage())
+        var inp = inputs([beacon, atlas, other], active: [atlas.id])
+        inp.duplicateGroups = [[beacon.id, atlas.id]]
         let section = DashboardSnapshot.build(inp).sections[0]
         XCTAssertEqual(section.active?.sameAccountAs, ["Beacon"])
         XCTAssertEqual(section.roster.first { $0.name == "Beacon" }?.sameAccountAs, ["Atlas"])

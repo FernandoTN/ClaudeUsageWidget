@@ -189,17 +189,17 @@ final class TelemetryLedgerTests: XCTestCase {
     func testOwnershipAppendsInOrderAndReturnsTheLast() throws {
         let a = UUID(), b = UUID()
         try ledger.append(OwnershipRecord(at: Date(timeIntervalSince1970: 10), provider: .claude, profileId: a,
-                                          previousProfileId: nil, accountStamp: "acct-a", name: "dRir",
+                                          previousProfileId: nil, accountStamp: "acct-a", name: "Atlas",
                                           basis: .seededFromRing, cause: "manual"))
         try ledger.append(OwnershipRecord(at: Date(timeIntervalSince1970: 20), provider: .claude, profileId: b,
-                                          previousProfileId: a, accountStamp: nil, name: "dJormun",
+                                          previousProfileId: a, accountStamp: nil, name: "Cedar",
                                           basis: .exactClaim, cause: "activate"))
         try ledger.append(OwnershipRecord(at: Date(timeIntervalSince1970: 15), provider: .codex, profileId: nil,
                                           previousProfileId: nil, accountStamp: nil, name: nil, basis: .observedAtTick, cause: nil))
         let claude = try ledger.ownership(provider: .claude)
         XCTAssertEqual(claude.map(\.profileId), [a, b])
         XCTAssertEqual(claude.map(\.basis), [.seededFromRing, .exactClaim])
-        XCTAssertEqual(try ledger.lastOwnership(provider: .claude)?.name, "dJormun")
+        XCTAssertEqual(try ledger.lastOwnership(provider: .claude)?.name, "Cedar")
         XCTAssertNil(try ledger.lastOwnership(provider: .codex)?.profileId)
         XCTAssertNil(try ledger.lastOwnership(provider: .grok))
         XCTAssertEqual(try ledger.ownership().count, 3)

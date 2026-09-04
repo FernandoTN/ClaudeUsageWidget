@@ -35,7 +35,7 @@ final class TelemetryExportTests: XCTestCase {
     private func input(markers: [TelemetryMarker] = []) -> TelemetryReportBuilder.Input {
         let roster = [ProfileSummary(id: a, name: "Alpha, Inc", provider: .claude, accountStamp: "a"),
                       ProfileSummary(id: b, name: "Beta", provider: .claude, accountStamp: "b"),
-                      ProfileSummary(id: x, name: "xFenrir(dev)", provider: .codex, accountStamp: "x")]
+                      ProfileSummary(id: x, name: "Juniper (dev)", provider: .codex, accountStamp: "x")]
         let ownership = [
             OwnershipRecord(at: at(daysAgo: 6, hour: 0), provider: .claude, profileId: a, previousProfileId: nil, accountStamp: "a", name: "Alpha, Inc", basis: .exactClaim, cause: "activate"),
             OwnershipRecord(at: at(daysAgo: 2, hour: 12), provider: .claude, profileId: b, previousProfileId: a, accountStamp: "b", name: "Beta", basis: .exactClaim, cause: "auto-switch: session 95 %"),

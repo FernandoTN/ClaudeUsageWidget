@@ -7,7 +7,7 @@
 //  ("You've hit your session limit · resets 10:50pm (America/Los_Angeles)")
 //  and the CLI's cachedUsageUtilization bars in ~/.claude.json. These are the
 //  ground truth the usage endpoint cannot provide while an account's own
-//  sessions saturate its request bucket (the 'Commits' 67%-vs-real-100%
+//  sessions saturate its request bucket (the 'Harbor' 67%-vs-real-100%
 //  incident, 2026-08-12).
 //
 

@@ -3,7 +3,7 @@
 //  Claude UsageTests
 //
 //  Two profiles can hold logins for ONE Anthropic account — measured live on
-//  2026-09-03, where 'Google' and 'dRir(Fenrir)' returned byte-identical usage
+//  2026-09-03, where 'Beacon' and 'Atlas (dev)' returned byte-identical usage
 //  windows because they are the same account. Nothing saw it: only one side
 //  carried a `claudeAccountUUID`, so the account-keyed checks all read nil and
 //  concluded nothing. The consequences were one quota drawn as two tiles, an
@@ -66,21 +66,21 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
     // MARK: - Grouping
 
     func testGroupsProfilesSharingOneAccountAndLeavesSingletonsAlone() {
-        let google = profile("Google", account: "76582cd6")
-        let fenrir = profile("dRir(Fenrir)", account: "76582cd6")
-        let other = profile("Memori", account: "aa11bb22")
+        let beacon = profile("Beacon", account: "76582cd6")
+        let atlas = profile("Atlas (dev)", account: "76582cd6")
+        let other = profile("Fjord", account: "aa11bb22")
 
-        let groups = ProfileManager.duplicateClaudeAccountGroups(in: [google, fenrir, other])
+        let groups = ProfileManager.duplicateClaudeAccountGroups(in: [beacon, atlas, other])
 
         XCTAssertEqual(groups.count, 1)
-        XCTAssertEqual(groups.first, [google.id, fenrir.id])
+        XCTAssertEqual(groups.first, [beacon.id, atlas.id])
     }
 
     func testUnstampedProfilesAreNeverGrouped() {
         // Nil is NO EVIDENCE, not a match: grouping two unstamped profiles
         // would invent a duplicate and block a legitimate auto-switch target.
-        let a = profile("Google", account: nil)
-        let b = profile("dRir(Fenrir)", account: nil)
+        let a = profile("Beacon", account: nil)
+        let b = profile("Atlas (dev)", account: nil)
         let c = profile("Blank", account: "")
 
         XCTAssertTrue(ProfileManager.duplicateClaudeAccountGroups(in: [a, b, c]).isEmpty)
@@ -117,16 +117,16 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
     func testWalkSkipsSameAccountCandidateAndPicksTheNextOne() {
         // 'Twin' resets soonest, so the default ranking would pick it first —
         // but it is the ACTIVE account under another name, and switching onto
-        // it buys nothing. The walk must land on 'Memori' instead.
+        // it buys nothing. The walk must land on 'Fjord' instead.
         let twin = profile("Twin", account: "76582cd6", weeklyResetIn: 1 * 86_400)
-        let memori = profile("Memori", account: "aa11bb22", weeklyResetIn: 3 * 86_400)
+        let fjord = profile("Fjord", account: "aa11bb22", weeklyResetIn: 3 * 86_400)
 
         let distinct = MenuBarManager.excludingBlockedClaudeAccounts(
-            [twin, memori], blocked: ["76582cd6"]
+            [twin, fjord], blocked: ["76582cd6"]
         )
         let ranked = MenuBarManager.rankAutoSwitchCandidates(distinct, customOrder: nil, now: now)
 
-        XCTAssertEqual(ranked.map(\.name), ["Memori"])
+        XCTAssertEqual(ranked.map(\.name), ["Fjord"])
     }
 
     func testUnstampedCandidateIsNeverBlocked() {
@@ -215,7 +215,7 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
     }
 
     func testUnstampedTargetIsResolvedFromItsOwnTokenBeforeDeciding() {
-        // 'Google' carried NO stamp, so the old guard waved the write through on
+        // 'Beacon' carried NO stamp, so the old guard waved the write through on
         // "no evidence either way". Resolving the target from its OWN token
         // first is what turns that into a verdict: the identity the target's own
         // login reports decides, and it refuses when it disagrees.
@@ -250,25 +250,25 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
     // MARK: - Manual sync duplicate guard
 
     func testSyncRefusesAnAccountAnotherProfileAlreadyHoldsButNeverTheTargetsOwn() {
-        let fenrir = profile("dRir(Fenrir)", account: "76582cd6")
-        let google = profile("Google", account: "aa11bb22")
-        let roster = [fenrir, google]
+        let atlas = profile("Atlas (dev)", account: "76582cd6")
+        let beacon = profile("Beacon", account: "aa11bb22")
+        let roster = [atlas, beacon]
 
-        // Syncing the Fenrir login into 'Google' is what makes a duplicate:
+        // Syncing the Atlas login into 'Beacon' is what makes a duplicate:
         // the holder is named so the error can say where the account already is.
         XCTAssertEqual(
             ClaudeCodeSyncService.duplicateAccountHolder(
-                accountUUID: "76582cd6", target: google.id, profiles: roster,
+                accountUUID: "76582cd6", target: beacon.id, profiles: roster,
                 accountUUIDOf: { $0.claudeAccountUUID }
             )?.name,
-            "dRir(Fenrir)"
+            "Atlas (dev)"
         )
 
         // Re-syncing the SAME account into the profile that already holds it is
         // the documented "/login then re-sync" repair, not a duplicate.
         XCTAssertNil(
             ClaudeCodeSyncService.duplicateAccountHolder(
-                accountUUID: "76582cd6", target: fenrir.id, profiles: roster,
+                accountUUID: "76582cd6", target: atlas.id, profiles: roster,
                 accountUUIDOf: { $0.claudeAccountUUID }
             )
         )
@@ -278,7 +278,7 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
         let blank = profile("Blank", account: nil)
         XCTAssertNil(
             ClaudeCodeSyncService.duplicateAccountHolder(
-                accountUUID: "76582cd6", target: google.id, profiles: [blank],
+                accountUUID: "76582cd6", target: beacon.id, profiles: [blank],
                 accountUUIDOf: { $0.claudeAccountUUID }
             )
         )

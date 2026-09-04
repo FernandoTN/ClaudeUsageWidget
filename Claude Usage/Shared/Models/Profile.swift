@@ -84,8 +84,8 @@ struct Profile: Codable, Identifiable, Equatable {
     // MARK: - Display Configuration
     var isSelectedForDisplay: Bool  // For multi-profile menu bar mode
     /// Optional override for the abbreviation shown on the menu-bar tile. The
-    /// tile otherwise shows the first 3 letters of `name` (e.g. "Memori" →
-    /// "Mem"), which can't express a label like "Grk" for "Grok". Nil = use the
+    /// tile otherwise shows the first 3 letters of `name` (e.g. "Fjord" →
+    /// "Fjo"), which can't express a label like "Grk" for "Grok". Nil = use the
     /// name. Kept short; the renderer still truncates to 3 characters.
     var menuBarLabel: String?
 

@@ -25,7 +25,7 @@ enum DesignFrameHarness {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var index = ["# Design frames", "", "Rendered by `CUW_RENDER_FRAMES` (Debug build) at 2x, light and dark.", ""]
         let now = Date()
-        for (state, degraded, external) in [("healthy", false, [:]), ("degraded", true, [:]), ("changed-outside", false, [Profile.ProviderKind.claude: "dLeo"])] as [(String, Bool, [Profile.ProviderKind: String])] {
+        for (state, degraded, external) in [("healthy", false, [:]), ("degraded", true, [:]), ("changed-outside", false, [Profile.ProviderKind.claude: "Lark"])] as [(String, Bool, [Profile.ProviderKind: String])] {
             let sel = Fixture.selections(degraded: degraded, now: now)
             let rows = ActiveSelectorMenuModel.rows(selections: sel, preferencesDegraded: degraded, externalChanges: external, switching: nil, now: now)
             emit(SelectorMenuFacsimile(rows: rows), width: 560, name: "selector-menu-\(state)", to: dir, index: &index)
@@ -47,9 +47,9 @@ enum DesignFrameHarness {
             var m = m; m.resetAt = m.resetAt.addingTimeInterval(Double(i) * 1800); return m
         }
         emit(DashboardInsightsView(insights: crowded, now: now).padding(14), width: 400, name: "dashboard-insights-overflow", to: dir, index: &index)
-        emit(ViewingPickerFacsimile(name: "dJormun"), width: 190, name: "settings-viewing-picker", to: dir, index: &index)
-        for (state, name) in [("owner", "dRir"), ("viewed-non-owner", "dJormun"), ("dead", "Ai"), ("suspected", "Outlook"),
-                              ("duplicate", "Google"), ("at-limit", "Commits"), ("never-measured", "Hotmail"), ("codex-owner", "xFernando")] {
+        emit(ViewingPickerFacsimile(name: "Cedar"), width: 190, name: "settings-viewing-picker", to: dir, index: &index)
+        for (state, name) in [("owner", "Atlas"), ("viewed-non-owner", "Cedar"), ("dead", "Echo"), ("suspected", "Kite"),
+                              ("duplicate", "Beacon"), ("at-limit", "Harbor"), ("never-measured", "Pebble"), ("codex-owner", "Marlin")] {
             guard let profile = Fixture.profiles.first(where: { $0.name == name }),
                   let selection = sel.first(where: { $0.provider == profile.providerKind }) else { continue }
             let isOwner = selection.owner?.id == profile.id
@@ -68,8 +68,8 @@ enum DesignFrameHarness {
         emit(FleetAlertDefaultsCard(settings: .constant(NotificationSettings()), followers: 12, total: 14).padding(16),
              width: 560, name: "alerts-fleet-card", to: dir, index: &index)
         let overrideRows = [
-            FleetAlerts.OverrideRow(id: UUID(), name: "Memori", summary: "50 · 90 % · no sound", differsFromFleet: true),
-            FleetAlerts.OverrideRow(id: UUID(), name: "xFho", summary: "75 · 90 · 95 % · default sound", differsFromFleet: false),
+            FleetAlerts.OverrideRow(id: UUID(), name: "Fjord", summary: "50 · 90 % · no sound", differsFromFleet: true),
+            FleetAlerts.OverrideRow(id: UUID(), name: "Petrel", summary: "75 · 90 · 95 % · default sound", differsFromFleet: false),
         ]
         emit(AlertOverridesCard(rows: overrideRows, onOpen: { _ in }, onFollow: { _ in }, onFollowAll: {}).padding(16),
              width: 560, name: "alerts-overrides", to: dir, index: &index)
@@ -79,11 +79,11 @@ enum DesignFrameHarness {
         emit(DisplayPopoverCard().padding(16), width: 560, name: "display-popover", to: dir, index: &index)
         emit(SingleAccountBarCards().padding(16), width: 560, name: "display-single-account", to: dir, index: &index)
         emit(AdvancedDiagnosticsCard().padding(16), width: 560, name: "advanced-diagnostics", to: dir, index: &index)
-        emit(DeadLoginFlagsCard(rows: [DeadLoginFlagRow(id: UUID(), name: "Ai", provider: .claude),
-                                       DeadLoginFlagRow(id: UUID(), name: "xFenrir(dev)", provider: .codex)]) { _ in }.padding(16),
+        emit(DeadLoginFlagsCard(rows: [DeadLoginFlagRow(id: UUID(), name: "Echo", provider: .claude),
+                                       DeadLoginFlagRow(id: UUID(), name: "Juniper (dev)", provider: .codex)]) { _ in }.padding(16),
              width: 560, name: "advanced-dead-logins", to: dir, index: &index)
         emit(StoredSettingsCard().padding(16), width: 560, name: "advanced-stored-settings", to: dir, index: &index)
-        if let codex = Fixture.profiles.first(where: { $0.name == "xFernando(dev)" }) {
+        if let codex = Fixture.profiles.first(where: { $0.name == "Marlin (dev)" }) {
             let credits = CodexResetCredits(availableCount: 2, credits: [
                 CodexResetCredit(id: "c1", resetType: nil, status: "available", grantedAt: nil, expiresAt: now.addingTimeInterval(3 * 86400), title: "Welcome reset", description: nil),
                 CodexResetCredit(id: "c2", resetType: nil, status: "available", grantedAt: nil, expiresAt: nil, title: nil, description: nil),
@@ -100,7 +100,7 @@ enum DesignFrameHarness {
             emit(ActiveProviderCard(selection: selection, isEnabled: true) { _ in }.padding(16), width: 560,
                  name: "active-card-\(ActiveVocabulary.providerName(selection.provider).lowercased())", to: dir, index: &index)
         }
-        for (state, name) in [("claude", "dRir"), ("codex", "xFernando(dev)"), ("grok", "Grok")] {
+        for (state, name) in [("claude", "Atlas"), ("codex", "Marlin (dev)"), ("grok", "Grok")] {
             if let profile = Fixture.profiles.first(where: { $0.name == name }) {
                 emit(AccountLoginTab(profile: profile).padding(16), width: 560, name: "accounts-login-\(state)", to: dir, index: &index)
             }
@@ -152,21 +152,21 @@ enum DesignFrameHarness {
                     claudeAccountEmail: email, claudeUsage: u, includeInAutoSwitch: autoSwitch)
         }
         static let profiles: [Profile] = [
-            claude("dRir", usage(session: 78, weekly: 16, fable: 16), email: "owner@example.com", account: "acct-1"),
-            claude("dJormun", usage(session: 12, weekly: 70, fable: 90, age: 180), email: "jormun@example.com"),
-            claude("Memori", usage(session: 40, weekly: 55), email: "memori@example.com"),
-            claude("Commits", usage(session: 10, weekly: 99.5), email: "commits@example.com"),
-            claude("BBR", usage(session: 99, weekly: 40), email: "bbr@example.com"),
-            claude("Ai", usage(session: 20), email: "ai@example.com"),
-            claude("Google", usage(session: 78, weekly: 16, fable: 16), email: "owner@example.com", account: "acct-1"),
-            claude("Outlook", usage(session: 74, weekly: 30, age: 720, suspected: true, projected: 81), email: "outlook@example.com"),
-            claude("Hotmail", nil, email: "hotmail@example.com"),
-            claude("Stanford", usage(session: 93, weekly: 20), email: "edu@example.com"),
-            Profile(name: "xFernando(dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-a@example.com", codexAccountId: "c-1",
+            claude("Atlas", usage(session: 78, weekly: 16, fable: 16), email: "owner@example.com", account: "acct-1"),
+            claude("Cedar", usage(session: 12, weekly: 70, fable: 90, age: 180), email: "cedar@example.com"),
+            claude("Fjord", usage(session: 40, weekly: 55), email: "fjord@example.com"),
+            claude("Harbor", usage(session: 10, weekly: 99.5), email: "harbor@example.com"),
+            claude("Iris", usage(session: 99, weekly: 40), email: "iris@example.com"),
+            claude("Echo", usage(session: 20), email: "echo@example.com"),
+            claude("Beacon", usage(session: 78, weekly: 16, fable: 16), email: "owner@example.com", account: "acct-1"),
+            claude("Kite", usage(session: 74, weekly: 30, age: 720, suspected: true, projected: 81), email: "kite@example.com"),
+            claude("Pebble", nil, email: "pebble@example.com"),
+            claude("Granite", usage(session: 93, weekly: 20), email: "edu@example.com"),
+            Profile(name: "Marlin (dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-a@example.com", codexAccountId: "c-1",
                     claudeUsage: usage(weekly: 95, sessionWindow: false, resets: 2)),
-            Profile(name: "xFenrir(dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-b@example.com", codexAccountId: "c-2",
+            Profile(name: "Juniper (dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-b@example.com", codexAccountId: "c-2",
                     claudeUsage: usage(weekly: 10, sessionWindow: false)),
-            Profile(name: "xFho", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex@example.com", codexAccountId: "c-3",
+            Profile(name: "Petrel", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex@example.com", codexAccountId: "c-3",
                     claudeUsage: usage(weekly: 10, sessionWindow: false)),
             Profile(name: "Grok", grokCredentialsJSON: "{\"k\":{\"key\":\"x\"}}", grokEmail: "grok@x.ai",
                     claudeUsage: usage(weekly: 12, sessionWindow: false)),
@@ -174,8 +174,8 @@ enum DesignFrameHarness {
         /// The owner's scale: the ten Claude profiles above plus nine more, mostly
         /// unstamped, with weekly resets that crowd the first two days of the strip.
         static let largeProfiles: [Profile] = profiles + [
-            ("2026", 5.0, 30.0, 2.0), ("Alpha", 55.0, 88.0, 9.0), ("Beta", 61.0, 100.0, 9.5), ("Gamma", 8.0, 100.0, 10.0),
-            ("Delta", 15.0, 42.0, 26.0), ("Echo", 90.0, 100.0, 27.0), ("Foxtrot", 33.0, 12.0, 27.5), ("Golf", 70.0, 64.0, 60.0), ("Hotel", 2.0, 9.0, 150.0),
+            ("Ridge", 5.0, 30.0, 2.0), ("Alpha", 55.0, 88.0, 9.0), ("Beta", 61.0, 100.0, 9.5), ("Gamma", 8.0, 100.0, 10.0),
+            ("Delta", 15.0, 42.0, 26.0), ("Ember", 90.0, 100.0, 27.0), ("Foxtrot", 33.0, 12.0, 27.5), ("Golf", 70.0, 64.0, 60.0), ("Hotel", 2.0, 9.0, 150.0),
         ].map { name, session, weekly, hours -> Profile in
             var u = usage(session: session, weekly: weekly)
             u.weeklyResetTime = now.addingTimeInterval(hours * 3600)
@@ -184,20 +184,20 @@ enum DesignFrameHarness {
         static func selections(degraded: Bool, now: Date, profiles roster: [Profile] = profiles) -> [ProviderActiveSelection] {
             let profiles = roster
             let byName = Dictionary(uniqueKeysWithValues: profiles.map { ($0.name, $0) })
-            let dead: Set<UUID> = [byName["Ai"]!.id, byName["xFenrir(dev)"]!.id]
-            let free: Set<UUID> = [byName["Stanford"]!.id]
-            let next = byName["dJormun"]!
+            let dead: Set<UUID> = [byName["Echo"]!.id, byName["Juniper (dev)"]!.id]
+            let free: Set<UUID> = [byName["Granite"]!.id]
+            let next = byName["Cedar"]!
             let context = FleetSummaryContext(
                 thresholds: ReadinessThresholds(session: 95, weekly: 99),
                 isLoginDead: { dead.contains($0.id) }, isExcluded: { !$0.isAutoSwitchEnabled || free.contains($0.id) },
-                nextCandidates: [.claude: PredictedCandidate(id: next.id, label: "dJo", queued: false, queueHeadBlocked: false)],
+                nextCandidates: [.claude: PredictedCandidate(id: next.id, label: "Ced", queued: false, queueHeadBlocked: false)],
                 preflightVerdicts: [next.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-720), kind: .probed)],
                 preferencesDegraded: degraded, isSwitching: false, now: now)
             return ProviderActiveSelection.build(ProviderActiveSelection.Inputs(
-                profiles: profiles, activeIds: [byName["dRir"]!.id, byName["xFernando(dev)"]!.id, byName["Grok"]!.id],
-                focusedId: next.id, context: context, queue: [byName["Memori"]!.id],
+                profiles: profiles, activeIds: [byName["Atlas"]!.id, byName["Marlin (dev)"]!.id, byName["Grok"]!.id],
+                focusedId: next.id, context: context, queue: [byName["Fjord"]!.id],
                 duplicateGroups: FleetCounts.duplicateGroups(in: profiles, published: []),
-                manuallyPinned: [byName["dRir"]!.id], needsRelogin: [byName["Google"]!.id]))
+                manuallyPinned: [byName["Atlas"]!.id], needsRelogin: [byName["Beacon"]!.id]))
         }
     }
 }

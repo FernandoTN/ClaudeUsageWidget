@@ -219,7 +219,7 @@ enum DashboardFormatting {
     /// The section's second line — the Viewing / Active-for vocabulary
     /// (docs/specs/ux-revamp.md R3), read from the same selection the ⇄
     /// menu shows, so the two surfaces can never disagree about who is
-    /// active. "Viewing dJormun · Active for Claude: dRir", or just the
+    /// active. "Viewing Cedar · Active for Claude: Atlas", or just the
     /// owner when the focus is on another provider, or "No active Claude
     /// login"; "· pinned" when the user chose the owner and the auto-switch
     /// will not move it.

@@ -66,13 +66,13 @@ final class AccountsRosterModelTests: XCTestCase {
     // MARK: - Rows and badges
 
     func testOwnerFirstInBarOrderThenTheWalkRank() {
-        let owner = claude("dRir", usage(session: 78, weeklyResetIn: 5 * 86400))
-        let soon = claude("dJormun", usage(session: 12, weeklyResetIn: 86400))
-        let later = claude("Memori", usage(session: 40, weeklyResetIn: 4 * 86400))
-        let maxed = claude("Commits", usage(weekly: 99.5, weeklyResetIn: 2 * 86400))
+        let owner = claude("Atlas", usage(session: 78, weeklyResetIn: 5 * 86400))
+        let soon = claude("Cedar", usage(session: 12, weeklyResetIn: 86400))
+        let later = claude("Fjord", usage(session: 40, weeklyResetIn: 4 * 86400))
+        let maxed = claude("Harbor", usage(weekly: 99.5, weeklyResetIn: 2 * 86400))
         let profiles = [later, maxed, owner, soon]
         let sections = Model.sections(selections: selections(profiles, active: [owner.id]), profiles: profiles, sort: .bar, filter: "")
-        XCTAssertEqual(rows(sections, .claude).map(\.name), ["dRir", "dJormun", "Commits", "Memori"],
+        XCTAssertEqual(rows(sections, .claude).map(\.name), ["Atlas", "Cedar", "Harbor", "Fjord"],
                        "owner first, then soonest weekly reset first — blocked rows keep their rank, unlike the selector's eligible-first menu")
         XCTAssertEqual(rows(sections, .claude)[0].badge, .activeFor(.claude))
         XCTAssertEqual(rows(sections, .claude)[0].badge.mark, "Active", "one word on the active mark; the provider is the tooltip (round-3 R2)")
@@ -92,45 +92,45 @@ final class AccountsRosterModelTests: XCTestCase {
     }
 
     func testBadgesQueuedNextDuplicateExcludedByPrecedence() {
-        let owner = claude("dRir", usage(session: 78), account: "a")
-        let twin = claude("Google", usage(session: 78), account: "a")
-        let next = claude("dJormun", usage(session: 12))
-        let queued = claude("Memori", usage(session: 40))
-        let off = claude("Ass", usage(session: 5), autoSwitch: false)
+        let owner = claude("Atlas", usage(session: 78), account: "a")
+        let twin = claude("Beacon", usage(session: 78), account: "a")
+        let next = claude("Cedar", usage(session: 12))
+        let queued = claude("Fjord", usage(session: 40))
+        let off = claude("Sorrel", usage(session: 5), autoSwitch: false)
         let profiles = [owner, twin, next, queued, off]
         let sel = selections(profiles, active: [owner.id], next: next, queue: [queued.id],
                              verdicts: [next.id: PreflightVerdict(isLive: true, at: now, kind: .probed)])
         let byName = Dictionary(uniqueKeysWithValues: rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: ""), .claude).map { ($0.name, $0) })
-        XCTAssertEqual(byName["Memori"]?.badge, .queued(position: 1))
-        XCTAssertEqual(byName["Memori"]?.badge.mark, "queued 1")
-        XCTAssertEqual(byName["dJormun"]?.badge, .next(.verified))
-        XCTAssertEqual(byName["dJormun"]?.badge.mark, "✓")
-        XCTAssertEqual(byName["Google"]?.badge, .duplicate(of: "dRir"))
-        XCTAssertEqual(byName["Ass"]?.badge, .excluded(.autoSwitchOff))
-        XCTAssertEqual(byName["Ass"]?.badge.mark, "excluded")
+        XCTAssertEqual(byName["Fjord"]?.badge, .queued(position: 1))
+        XCTAssertEqual(byName["Fjord"]?.badge.mark, "queued 1")
+        XCTAssertEqual(byName["Cedar"]?.badge, .next(.verified))
+        XCTAssertEqual(byName["Cedar"]?.badge.mark, "✓")
+        XCTAssertEqual(byName["Beacon"]?.badge, .duplicate(of: "Atlas"))
+        XCTAssertEqual(byName["Sorrel"]?.badge, .excluded(.autoSwitchOff))
+        XCTAssertEqual(byName["Sorrel"]?.badge.mark, "excluded")
     }
 
     func testPercentageTextIsKeyedPerProviderAndMarksTheMaxedWindow() {
-        let claudeOwner = claude("dRir", usage(session: 78, weekly: 20))
-        let sessionMaxed = claude("BBR", usage(session: 99, weekly: 40))
-        let fableMaxed = claude("Commits", usage(session: 10, weekly: 50, fable: 99.5))
-        let never = claude("Hotmail", nil)
-        let codexOwner = codex("xFernando", usage(weekly: 95, sessionWindow: false))
-        let codexMaxed = codex("xFme", usage(weekly: 99.5, sessionWindow: false))
+        let claudeOwner = claude("Atlas", usage(session: 78, weekly: 20))
+        let sessionMaxed = claude("Iris", usage(session: 99, weekly: 40))
+        let fableMaxed = claude("Harbor", usage(session: 10, weekly: 50, fable: 99.5))
+        let never = claude("Pebble", nil)
+        let codexOwner = codex("Marlin", usage(weekly: 95, sessionWindow: false))
+        let codexMaxed = codex("Tern", usage(weekly: 99.5, sessionWindow: false))
         let profiles = [claudeOwner, sessionMaxed, fableMaxed, never, codexOwner, codexMaxed]
         let sections = Model.sections(selections: selections(profiles, active: [claudeOwner.id, codexOwner.id]), profiles: profiles, sort: .alphabetical, filter: "")
         let all = Dictionary(uniqueKeysWithValues: sections.flatMap(\.rows).map { ($0.name, $0.percentageText) })
-        XCTAssertEqual(all["dRir"], "S 78", "the binding window with its letter (R2)")
-        XCTAssertEqual(all["BBR"]?.hasPrefix("◐ S "), true, "the session glyph + the maxed window + its value (owner scheme: ◐ session, ▲ weekly)")
-        XCTAssertEqual(all["Commits"]?.hasPrefix("▲ F "), true)
-        XCTAssertEqual(all["Hotmail"], "—")
-        XCTAssertEqual(all["xFernando"], "W 95", "weekly for a weekly-only provider")
-        XCTAssertEqual(all["xFme"]?.hasPrefix("▲ W "), true)
+        XCTAssertEqual(all["Atlas"], "S 78", "the binding window with its letter (R2)")
+        XCTAssertEqual(all["Iris"]?.hasPrefix("◐ S "), true, "the session glyph + the maxed window + its value (owner scheme: ◐ session, ▲ weekly)")
+        XCTAssertEqual(all["Harbor"]?.hasPrefix("▲ F "), true)
+        XCTAssertEqual(all["Pebble"], "—")
+        XCTAssertEqual(all["Marlin"], "W 95", "weekly for a weekly-only provider")
+        XCTAssertEqual(all["Tern"]?.hasPrefix("▲ W "), true)
     }
 
     func testDeadRowAndReloginCaption() {
-        let owner = claude("dRir", usage(session: 78))
-        let dead = claude("Ai", usage(session: 20), email: "ai@example.com")
+        let owner = claude("Atlas", usage(session: 78))
+        let dead = claude("Echo", usage(session: 20), email: "echo@example.com")
         let profiles = [owner, dead]
         var inputs = ProviderActiveSelection.Inputs(
             profiles: profiles, activeIds: [owner.id], focusedId: nil,
@@ -139,31 +139,31 @@ final class AccountsRosterModelTests: XCTestCase {
             queue: [])
         inputs.needsRelogin = [dead.id]
         let sel = ProviderActiveSelection.build(inputs)
-        let row = rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: ""), .claude).first { $0.name == "Ai" }!
+        let row = rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: ""), .claude).first { $0.name == "Echo" }!
         XCTAssertTrue(row.isDead)
         XCTAssertTrue(row.needsRelogin)
-        XCTAssertEqual(row.email, "ai@example.com")
+        XCTAssertEqual(row.email, "echo@example.com")
         XCTAssertTrue(row.stateWords.contains("dead") && row.stateWords.contains("relogin"))
     }
 
     // MARK: - Filter
 
     func testFilterMatchesNameEmailAndStateWords() {
-        let owner = claude("dRir", usage(session: 78), email: "owner@roster-mail.test")
-        let maxed = claude("Commits", usage(weekly: 99.5))
-        let dead = claude("Ai", usage(session: 20))
-        let queued = claude("Memori", usage(session: 40), email: "memori@example.com")
+        let owner = claude("Atlas", usage(session: 78), email: "owner@roster-mail.test")
+        let maxed = claude("Harbor", usage(weekly: 99.5))
+        let dead = claude("Echo", usage(session: 20))
+        let queued = claude("Fjord", usage(session: 40), email: "fjord@example.com")
         let profiles = [owner, maxed, dead, queued]
         let sel = selections(profiles, active: [owner.id], dead: [dead.id], queue: [queued.id])
         func names(_ filter: String) -> [String] {
             rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: filter), .claude).map(\.name)
         }
-        XCTAssertEqual(names("mem"), ["Memori"])
-        XCTAssertEqual(names("roster-mail"), ["dRir"], "emails match")
-        XCTAssertEqual(names("dead"), ["Ai"])
-        XCTAssertEqual(names("maxed"), ["Commits"])
-        XCTAssertEqual(names("queued"), ["Memori"])
-        XCTAssertEqual(names("active"), ["dRir"])
+        XCTAssertEqual(names("fjo"), ["Fjord"])
+        XCTAssertEqual(names("roster-mail"), ["Atlas"], "emails match")
+        XCTAssertEqual(names("dead"), ["Echo"])
+        XCTAssertEqual(names("maxed"), ["Harbor"])
+        XCTAssertEqual(names("queued"), ["Fjord"])
+        XCTAssertEqual(names("active"), ["Atlas"])
         XCTAssertTrue(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: "zzz").isEmpty,
                       "a provider with no matching row disappears while a filter is typed")
     }
