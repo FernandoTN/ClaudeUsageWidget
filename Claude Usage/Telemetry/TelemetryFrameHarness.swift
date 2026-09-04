@@ -32,16 +32,23 @@ enum TelemetryFrameHarness {
         let sections = TelemetryWindowModel.sidebar(fleet: report(.fleet, .days7, input: input, now: now), profiles: Fixture.sidebarProfiles)
 
         func frame(_ name: String, scope: TelemetryScope, window: TelemetryWindow = .days7, metric: TelemetryMetric = .inputClass,
-                   report: TelemetryReport?, status: IndexingStatus = status, paused: Bool = false, title: String? = nil) {
+                   report: TelemetryReport?, status: IndexingStatus = status, paused: Bool = false, title: String? = nil,
+                   mode: TelemetryChartMode? = nil, hover: Int? = nil, isolated: SeriesKey? = nil) {
             let view = TelemetryFrameView(
                 sections: sections, selection: .constant(scope), report: report, status: status, isLoading: false, isPaused: paused,
                 // (bindings are constant: the harness renders one state per frame)
                 scopeTitle: title ?? scopeTitle(scope), window: .constant(window), metric: .constant(metric),
-                owners: Set(Fixture.sidebarProfiles.filter(\.isOwner).map(\.id)), actions: TelemetryActions())
+                chartMode: .constant(mode ?? (scope == .fleet ? .split : .stacked)),
+                owners: Set(Fixture.sidebarProfiles.filter(\.isOwner).map(\.id)), actions: TelemetryActions(),
+                initialHover: hover, initialIsolated: isolated, interactive: false)
             emit(view, name: "telemetry-\(name)", to: dir, index: &index)
         }
 
         frame("fleet-7d", scope: .fleet, report: report(.fleet, .days7, input: input, now: now))
+        frame("fleet-7d-stacked", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), mode: .stacked)
+        frame("fleet-7d-hover", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), hover: 5)
+        frame("provider-claude-isolated", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now),
+              isolated: SeriesKey(id: "claude-fable-5", label: "claude-fable-5", provider: .claude))
         frame("fleet-30d", scope: .fleet, window: .days30, report: report(.fleet, .days30, input: Fixture.input(now: now, days: 30), now: now))
         frame("codex-30d-outlier", scope: .provider(.codex), window: .days30, report: report(.provider(.codex), .days30, input: Fixture.inputWithOutlier(now: now), now: now))
         frame("fleet-today", scope: .fleet, window: .today, report: report(.fleet, .today, input: input, now: now))

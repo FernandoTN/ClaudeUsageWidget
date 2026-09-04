@@ -1131,3 +1131,5 @@
 "telemetry.chart.mean" = "7-bucket mean";
 "telemetry.chart.partial" = "current period, partial";
 "telemetry.switches" = "%d switches";
+"telemetry.chart.stacked" = "Stacked";
+"telemetry.chart.split" = "Split";

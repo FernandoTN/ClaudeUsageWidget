@@ -10,7 +10,8 @@
 //  Viewing. The same views render in the DEBUG frame harness with constant
 //  bindings, which is why the pane takes plain values rather than the model —
 //  and why the sidebar and the segmented controls are pure SwiftUI (AppKit-
-//  backed `List` / `Picker` cannot be rendered by `ImageRenderer`).
+//  backed `List` / `Picker` / `ScrollView` / `ProgressView` cannot be rendered
+//  by `ImageRenderer`).
 //
 
 import SwiftUI
@@ -32,6 +33,7 @@ struct TelemetryView: View {
             scopeTitle: model.scopeTitle,
             window: Binding(get: { model.window }, set: { model.window = $0 }),
             metric: Binding(get: { model.metric }, set: { model.metric = $0 }),
+            chartMode: Binding(get: { model.effectiveChartMode }, set: { model.chartMode = $0 }),
             owners: Set(model.sidebar.flatMap(\.rows).filter(\.isOwner).compactMap { UUID(uuidString: $0.id) }),
             actions: TelemetryActions(refresh: model.refreshNow, togglePause: model.togglePaused, copyNumbers: model.copyNumbers))
     }
@@ -47,8 +49,13 @@ struct TelemetryFrameView: View {
     var scopeTitle: String
     @Binding var window: TelemetryWindow
     @Binding var metric: TelemetryMetric
+    @Binding var chartMode: TelemetryChartMode
     var owners: Set<UUID>
     var actions: TelemetryActions
+    /// Harness-only: a fixed pointer position and an isolated series.
+    var initialHover: Int? = nil
+    var initialIsolated: SeriesKey? = nil
+    var interactive = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -57,7 +64,8 @@ struct TelemetryFrameView: View {
                 .background(Color(nsColor: .underPageBackgroundColor).opacity(0.6))
             Divider()
             TelemetryReportPane(report: report, status: status, isLoading: isLoading, isPaused: isPaused, scopeTitle: scopeTitle,
-                                window: $window, metric: $metric, owners: owners, actions: actions)
+                                window: $window, metric: $metric, chartMode: $chartMode, owners: owners, actions: actions,
+                                initialHover: initialHover, initialIsolated: initialIsolated, interactive: interactive)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -106,10 +114,10 @@ struct TelemetrySidebarView: View {
 
     private var flatRows: [TelemetrySidebarRow] { sections.flatMap(\.rows) }
 
-    /// Rows plus section headers, in points — decides whether a scroll view
+    /// Rows plus section gaps, in points — decides whether a scroll view
     /// (AppKit-backed, invisible to `ImageRenderer`) is needed at all.
     private var contentHeight: CGFloat {
-        CGFloat(flatRows.count) * 24 + CGFloat(max(0, sections.count - 1)) * 34 + 42
+        CGFloat(flatRows.count) * 24 + CGFloat(max(0, sections.count - 1)) * 10 + 42
     }
 
     var body: some View {
@@ -208,8 +216,25 @@ struct TelemetryReportPane: View {
     var scopeTitle: String
     @Binding var window: TelemetryWindow
     @Binding var metric: TelemetryMetric
+    @Binding var chartMode: TelemetryChartMode
     var owners: Set<UUID>
     var actions: TelemetryActions
+    var interactive = true
+
+    @State private var isolated: SeriesKey?
+    @State private var hoverIndex: Int?
+    @State private var breakdownIndex: Int?
+
+    init(report: TelemetryReport?, status: IndexingStatus, isLoading: Bool, isPaused: Bool, scopeTitle: String,
+         window: Binding<TelemetryWindow>, metric: Binding<TelemetryMetric>, chartMode: Binding<TelemetryChartMode>,
+         owners: Set<UUID>, actions: TelemetryActions, initialHover: Int? = nil, initialIsolated: SeriesKey? = nil,
+         interactive: Bool = true) {
+        self.report = report; self.status = status; self.isLoading = isLoading; self.isPaused = isPaused
+        self.scopeTitle = scopeTitle; _window = window; _metric = metric; _chartMode = chartMode
+        self.owners = owners; self.actions = actions; self.interactive = interactive
+        _hoverIndex = State(initialValue: initialHover)
+        _isolated = State(initialValue: initialIsolated)
+    }
 
     /// The clock every age in the pane is measured against — the report's,
     /// so a rendered frame and the live window agree.
@@ -224,9 +249,9 @@ struct TelemetryReportPane: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
                 kpiRow
-                TelemetryColumnStrip(report: report, metric: $metric, scopeTitle: scopeTitle,
-                                     indexing: status.isCatchingUp && (report?.totals.isEmpty ?? true))
-                    .frame(height: 230)
+                chartSection
+                    .frame(minHeight: 230, maxHeight: .infinity)
+                    .layoutPriority(1)
                 if let report {
                     HStack(alignment: .top, spacing: 12) {
                         TelemetryTableView(title: "telemetry.by_model".localized, rows: report.models, kind: .models,
@@ -234,8 +259,8 @@ struct TelemetryReportPane: View {
                         TelemetryTableView(title: "telemetry.by_account".localized, rows: report.accounts, kind: .accounts,
                                            stack: .account, owners: owners, now: now)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 0)
                 footer
             }
         }
@@ -316,6 +341,104 @@ struct TelemetryReportPane: View {
         }
     }
 
+    // MARK: Chart section
+
+    private var chartTitle: String {
+        let unit: String
+        switch report?.range.granularity ?? .day {
+        case .hour: unit = "hour"
+        case .day: unit = "day"
+        case .week: unit = "week"
+        case .month: unit = "month"
+        }
+        return "telemetry.chart.title".localized(with: metricLabel, unit)
+    }
+
+    private var metricLabel: String {
+        switch metric {
+        case .inputClass: return "Input-class tokens"
+        case .inputByKind: return "Input tokens by kind"
+        case .output: return "Output tokens"
+        case .cost: return "API list-price equivalent"
+        }
+    }
+
+    private var chartSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(chartTitle).font(.system(size: 12, weight: .bold))
+                Spacer()
+                TelemetrySegmentedPicker(options: [(TelemetryChartMode.stacked, "telemetry.chart.stacked".localized),
+                                                   (.split, "telemetry.chart.split".localized)], selection: $chartMode)
+                    .frame(width: 130)
+                TelemetrySegmentedPicker(options: [(TelemetryMetric.inputClass, "Input-class"), (.inputByKind, "By kind"),
+                                                   (.output, "Output"), (.cost, "≈ List")], selection: $metric)
+                    .frame(width: 300)
+            }
+            if let report, !report.totals.isEmpty {
+                legend(report)
+                TelemetryChartView(report: report, metric: metric, mode: chartMode, isolated: $isolated, hoverIndex: $hoverIndex,
+                                   onSelectBucket: { breakdownIndex = $0 }, interactive: interactive)
+                    .popover(isPresented: Binding(get: { breakdownIndex != nil }, set: { if !$0 { breakdownIndex = nil } }),
+                             arrowEdge: .bottom) {
+                        if let index = breakdownIndex, report.buckets.indices.contains(index) {
+                            TelemetryBucketBreakdown(bucket: report.buckets[index], report: report, metric: metric)
+                        }
+                    }
+            } else {
+                Text(status.isCatchingUp && (report?.totals.isEmpty ?? true)
+                     ? "Indexing — the chart fills in as files complete." : "telemetry.empty".localized(with: scopeTitle))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    /// Always present for ≥ 2 series; a click isolates (emphasis), a second
+    /// click restores. Series are never recoloured.
+    private func legend(_ report: TelemetryReport) -> some View {
+        HStack(spacing: 12) {
+            ForEach(Array(report.seriesOrder.enumerated()), id: \.element) { index, key in
+                Button {
+                    isolated = isolated == key ? nil : key
+                } label: {
+                    HStack(spacing: 4) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(TelemetryPalette.color(for: key, stack: report.query.effectiveStack, index: index))
+                            .frame(width: 10, height: 10)
+                        Text(key.label).font(.system(size: 9, weight: isolated == key ? .semibold : .regular)).foregroundStyle(.secondary)
+                    }
+                    .opacity(isolated == nil || isolated == key ? 1 : 0.4)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(key.label)\(isolated == key ? ", isolated" : "")")
+            }
+            if report.movingAverage.contains(where: { $0 != nil }) {
+                HStack(spacing: 4) {
+                    Rectangle().fill(Color.secondary).frame(width: 12, height: 2)
+                    Text("telemetry.chart.mean".localized).font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
+            if report.buckets.contains(where: \.isPartial) {
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.45)).frame(width: 10, height: 10)
+                    Text("telemetry.chart.partial".localized).font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if let outliers = report.outliers, chartMode == .stacked {
+                let described = outliers.indices.sorted().prefix(2).map { index in
+                    let total = report.buckets[index].total.value(for: metric)
+                    let value = metric == .cost ? TelemetryFormatting.usd(nanoUSD: total) : TelemetryFormatting.compact(total)
+                    return "\(TelemetryFormatting.bucketLabel(report.buckets[index].start, granularity: report.range.granularity, calendar: report.query.calendar, first: true)): \(value)"
+                }.joined(separator: ", ")
+                Text("\(outliers.indices.count) outlier bucket\(outliers.indices.count == 1 ? "" : "s") clipped to the typical range (\(described))")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let report {
@@ -383,201 +506,6 @@ struct TelemetryStatTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
-    }
-}
-
-// MARK: - Chart (stage 3a: static stacked columns; 3b adds hover, split, markers)
-
-struct TelemetryColumnStrip: View {
-    var report: TelemetryReport?
-    @Binding var metric: TelemetryMetric
-    var scopeTitle: String
-    var indexing = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 8) {
-                Text(title).font(.system(size: 12, weight: .bold))
-                Spacer()
-                TelemetrySegmentedPicker(options: [(TelemetryMetric.inputClass, "Input-class"), (.inputByKind, "By kind"),
-                                                   (.output, "Output"), (.cost, "≈ List")], selection: $metric)
-                    .frame(width: 300)
-            }
-            if let report, !report.totals.isEmpty {
-                legend(report)
-                GeometryReader { geometry in columns(report, in: geometry.size) }
-                axis(report)
-            } else {
-                Text(indexing ? "Indexing — the chart fills in as files complete." : "telemetry.empty".localized(with: scopeTitle))
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilitySummary)
-    }
-
-    private var title: String {
-        let unit: String
-        switch report?.range.granularity ?? .day {
-        case .hour: unit = "hour"
-        case .day: unit = "day"
-        case .week: unit = "week"
-        case .month: unit = "month"
-        }
-        return "telemetry.chart.title".localized(with: metricLabel, unit)
-    }
-
-    private var metricLabel: String {
-        switch metric {
-        case .inputClass: return "Input-class tokens"
-        case .inputByKind: return "Input tokens by kind"
-        case .output: return "Output tokens"
-        case .cost: return "API list-price equivalent"
-        }
-    }
-
-    private func value(_ totals: TokenTotals) -> Int { totals.value(for: metric) }
-
-    private func format(_ value: Int) -> String {
-        metric == .cost ? TelemetryFormatting.usd(nanoUSD: value) : TelemetryFormatting.compact(value)
-    }
-
-    /// The axis ceiling: the largest column (or the typical range when an
-    /// outlier is clipped) rounded up to 1 / 2 / 2.5 / 5 × 10ⁿ.
-    static func niceCeiling(_ value: Int) -> Int {
-        guard value > 0 else { return 1 }
-        let magnitude = pow(10, floor(log10(Double(value))))
-        let normalized = Double(value) / magnitude
-        let step = [1.0, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].first { normalized <= $0 } ?? 10
-        return Int((step * magnitude).rounded())
-    }
-
-    private func legend(_ report: TelemetryReport) -> some View {
-        HStack(spacing: 12) {
-            ForEach(Array(report.seriesOrder.enumerated()), id: \.element) { index, key in
-                HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(TelemetryPalette.color(for: key, stack: report.query.effectiveStack, index: index))
-                        .frame(width: 10, height: 10)
-                    Text(key.label).font(.system(size: 9)).foregroundStyle(.secondary)
-                }
-            }
-            if report.movingAverage.contains(where: { $0 != nil }) {
-                HStack(spacing: 4) {
-                    Rectangle().fill(Color.secondary).frame(width: 12, height: 2)
-                    Text("telemetry.chart.mean".localized).font(.system(size: 9)).foregroundStyle(.secondary)
-                }
-            }
-            if report.buckets.contains(where: \.isPartial) {
-                HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.45)).frame(width: 10, height: 10)
-                    Text("telemetry.chart.partial".localized).font(.system(size: 9)).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if let outliers = report.outliers {
-                let described = outliers.indices.sorted().prefix(2).map { index in
-                    "\(TelemetryFormatting.bucketLabel(report.buckets[index].start, granularity: report.range.granularity, calendar: report.query.calendar, first: true)): \(format(value(report.buckets[index].total)))"
-                }.joined(separator: ", ")
-                Text("\(outliers.indices.count) outlier bucket\(outliers.indices.count == 1 ? "" : "s") clipped to the typical range (\(described))")
-                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-    }
-
-    private func columns(_ report: TelemetryReport, in size: CGSize) -> some View {
-        let axisWidth: CGFloat = 48
-        let plotWidth = max(1, size.width - axisWidth)
-        let count = max(1, report.buckets.count)
-        let pitch = plotWidth / CGFloat(count)
-        let columnWidth = min(24, max(4, pitch * 0.6))
-        let rawCeiling = report.outliers?.typicalMax ?? report.buckets.map { value($0.total) }.max() ?? 1
-        let ceiling = max(1, Self.niceCeiling(rawCeiling))
-        let stack = report.query.effectiveStack
-        return ZStack(alignment: .topLeading) {
-            ForEach([0.0, 0.5, 1.0], id: \.self) { fraction in
-                Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: plotWidth, height: 1)
-                    .offset(y: size.height * (1 - fraction))
-            }
-            ForEach(Array(report.buckets.enumerated()), id: \.offset) { index, bucket in
-                let total = value(bucket.total)
-                let clipped = report.outliers?.indices.contains(index) ?? false
-                let height = size.height * CGFloat(min(total, ceiling)) / CGFloat(ceiling)
-                VStack(spacing: 0) {
-                    if clipped {
-                        Text("▲ " + format(total)).font(.system(size: 8)).foregroundStyle(.secondary).fixedSize()
-                    }
-                    VStack(spacing: 2) {
-                        ForEach(Array(report.seriesOrder.enumerated().reversed()), id: \.element) { seriesIndex, key in
-                            let part = value(bucket.series[key] ?? TokenTotals())
-                            if part > 0 {
-                                Rectangle()
-                                    .fill(TelemetryPalette.color(for: key, stack: stack, index: seriesIndex))
-                                    .frame(height: max(1, height * CGFloat(part) / CGFloat(max(total, 1))))
-                            }
-                        }
-                    }
-                    .frame(width: columnWidth, height: height, alignment: .bottom)
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 3, topTrailingRadius: 3))
-                    .opacity(bucket.isPartial ? 0.45 : 1)
-                }
-                .frame(width: pitch, height: size.height, alignment: .bottom)
-                .offset(x: CGFloat(index) * pitch)
-                .accessibilityHidden(true)
-            }
-            movingAverage(report, plotWidth: plotWidth, pitch: pitch, height: size.height, ceiling: ceiling)
-            VStack {
-                Text(format(ceiling)).font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
-                Spacer()
-                Text(format(ceiling / 2)).font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
-                Spacer()
-                Text("0").font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
-            }
-            .frame(width: axisWidth, height: size.height, alignment: .trailing)
-            .offset(x: plotWidth)
-        }
-    }
-
-    private func movingAverage(_ report: TelemetryReport, plotWidth: CGFloat, pitch: CGFloat, height: CGFloat, ceiling: Int) -> some View {
-        Path { path in
-            var started = false
-            for (index, mean) in report.movingAverage.enumerated() {
-                guard let mean else { started = false; continue }
-                let point = CGPoint(x: CGFloat(index) * pitch + pitch / 2,
-                                    y: height - height * CGFloat(min(mean, ceiling)) / CGFloat(ceiling))
-                if started { path.addLine(to: point) } else { path.move(to: point); started = true }
-            }
-        }
-        .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-    }
-
-    private func axis(_ report: TelemetryReport) -> some View {
-        HStack(spacing: 0) {
-            ForEach(Array(report.buckets.enumerated()), id: \.offset) { index, bucket in
-                let showLabel = report.buckets.count <= 12 || index % max(1, report.buckets.count / 8) == 0
-                Text(showLabel ? TelemetryFormatting.bucketLabel(bucket.start, granularity: report.range.granularity,
-                                                                  calendar: report.query.calendar, first: index == 0) : "")
-                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                    .frame(maxWidth: .infinity)
-                    .overlay(alignment: .bottom) {
-                        if bucket.switchCount > 0 {
-                            Text("⇄\(bucket.switchCount > 1 ? String(bucket.switchCount) : "")")
-                                .font(.system(size: 8)).foregroundStyle(.secondary).offset(y: 11)
-                        }
-                    }
-            }
-            Spacer().frame(width: 48)
-        }
-        .padding(.bottom, 10)
-    }
-
-    private var accessibilitySummary: String {
-        guard let report, !report.totals.isEmpty else { return "telemetry.empty".localized(with: scopeTitle) }
-        let peak = report.buckets.max { value($0.total) < value($1.total) }
-        var summary = "\(scopeTitle), \(report.query.window.title): \(metricLabel) \(format(value(report.totals)))"
-        if let peak { summary += ", peak \(format(value(peak.total))) on \(TelemetryFormatting.mediumDate(peak.start, calendar: report.query.calendar))" }
-        return summary
     }
 }
 

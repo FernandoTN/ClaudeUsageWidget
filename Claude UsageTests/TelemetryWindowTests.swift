@@ -34,6 +34,32 @@ final class TelemetryWindowTests: XCTestCase {
         XCTAssertEqual(TelemetryFormatting.delta(current: 5, previous: 0), "—")
     }
 
+    func testChartMathCeilingMeanAndHitTesting() {
+        XCTAssertEqual(TelemetryChartMath.niceCeiling(26_500_000_000), 30_000_000_000)
+        XCTAssertEqual(TelemetryChartMath.niceCeiling(219_000_000), 250_000_000)
+        XCTAssertEqual(TelemetryChartMath.niceCeiling(7), 8)
+        XCTAssertEqual(TelemetryChartMath.niceCeiling(0), 1)
+        let means = TelemetryChartMath.trailingMean([10, 20, 30, 40, 50, 60, 70, 80], partial: [false, false, false, false, false, false, false, true])
+        XCTAssertEqual(means, [nil, nil, nil, nil, nil, nil, 40, nil])
+        XCTAssertEqual(TelemetryChartMath.bucketIndex(atX: 0, plotWidth: 700, count: 7), 0)
+        XCTAssertEqual(TelemetryChartMath.bucketIndex(atX: 699, plotWidth: 700, count: 7), 6)
+        XCTAssertNil(TelemetryChartMath.bucketIndex(atX: 700, plotWidth: 700, count: 7))
+        XCTAssertNil(TelemetryChartMath.bucketIndex(atX: -1, plotWidth: 700, count: 7))
+    }
+
+    #if DEBUG
+    func testBucketsCarryTheirOwnBreakdownForTheClickPopover() {
+        let now = TelemetryFrameHarness.Fixture.now
+        let fleet = TelemetryFrameHarness.report(.fleet, .days7, input: TelemetryFrameHarness.Fixture.input(now: now), now: now)
+        let bucket = fleet.buckets[2]  // four days ago: dRir's, and a default-home Codex day
+        XCTAssertEqual(bucket.byModel.values.reduce(0) { $0 + $1.inputClass }, bucket.total.inputClass)
+        XCTAssertEqual(bucket.byAccount.values.reduce(0) { $0 + $1.inputClass }, bucket.total.inputClass)
+        XCTAssertTrue(bucket.byModel.keys.contains { $0.id == "claude-opus-5" })
+        XCTAssertTrue(bucket.byAccount.keys.contains { $0.label == "dRir" }, "days before the switch belong to dRir")
+        XCTAssertTrue(bucket.byAccount.keys.contains { $0.id == "unattributed:codex" })
+    }
+    #endif
+
     func testScopeFromNotificationDecodesProfileProviderAndFleet() {
         let id = UUID()
         XCTAssertEqual(TelemetryWindowModel.scope(from: Notification(name: .telemetryWindowRequested, object: id, userInfo: ["provider": Profile.ProviderKind.claude])), .account(id))
@@ -87,6 +113,7 @@ final class TelemetryWindowTests: XCTestCase {
             let files = try FileManager.default.contentsOfDirectory(atPath: dir)
             XCTAssertTrue(files.contains("telemetry-fleet-7d-dark@2x.png"), files.joined(separator: ", "))
             XCTAssertTrue(files.contains("telemetry-indexing-light@2x.png"))
+            XCTAssertTrue(files.contains("telemetry-fleet-7d-hover-dark@2x.png"))
             XCTAssertTrue(files.contains("index.md"))
         }
     }
