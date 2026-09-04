@@ -334,7 +334,9 @@ struct DashboardView: View {
     @State private var route: Route = .fleet
     @State private var pendingSwitch: UUID?
     @State private var switchNote: String?
-    @State private var showSwitches = false
+    @State private var showInsights: Bool?
+    /// The harness seeds the Insights block open to render it in situ.
+    var insightsExpanded = false
     @State private var isRefreshing = false
     @State private var expandedRosters: Set<Profile.ProviderKind> = []
 
@@ -426,7 +428,9 @@ struct DashboardView: View {
                                 .id(section.provider)
                         }
                     }
-                    recentSwitches(snapshot.recentSwitches)
+                    if let insights = snapshot.insights {
+                        insightsBlock(insights, now: snapshot.generatedAt)
+                    }
                 }
                 .padding(.bottom, 8)
             }
@@ -580,6 +584,10 @@ struct DashboardView: View {
                     chip("same account as \(card.sameAccountAs.joined(separator: ", "))", role: .informational)
                 }
                 Spacer()
+                if let spot = store.snapshot?.insights?.blindness.first(where: { $0.id == card.id && $0.isBlind }) {
+                    chip("blind · \(InsightsFormatting.blind(spot, now: store.snapshot?.generatedAt ?? Date()))", role: .caution)
+                        .lineLimit(1)
+                }
                 if let m = card.measurement {
                     Text(DashboardFormatting.provenance(m))
                         .font(.system(size: 9))
@@ -862,25 +870,22 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: Recent switches
+    // MARK: Insights
 
-    private func recentSwitches(_ switches: [RecentSwitch]) -> some View {
-        DisclosureGroup(isExpanded: $showSwitches) {
-            if switches.isEmpty {
-                Text("none recorded").font(.system(size: 9)).foregroundColor(.secondary)
-            }
-            ForEach(Array(switches.enumerated()), id: \.offset) { _, s in
-                HStack(spacing: 6) {
-                    Text(s.at.formatted(date: .omitted, time: .shortened)).font(.system(size: 9)).monospacedDigit().foregroundColor(.secondary)
-                    Text("\(s.from) → \(s.to)").font(.system(size: 9, weight: .medium))
-                    Text(s.trigger.rawValue).font(.system(size: 8)).foregroundColor(.secondary)
-                    if let reason = s.reason {
-                        Text(reason).font(.system(size: 8)).foregroundColor(.secondary).lineLimit(1)
-                    }
-                }
-            }
+    /// ONE collapsed block at fleet level under the last section (UX revamp
+    /// stage 4b): reset timeline, blind spots, drift, switch log, burn,
+    /// incidents, capacity, why-not. It replaced the recent-switches
+    /// disclosure — the switch log inside it is the one switch surface; the
+    /// header keeps its "last switch" line.
+    private func insightsBlock(_ insights: FleetInsights, now: Date) -> some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { showInsights ?? insightsExpanded },
+            set: { showInsights = $0 }
+        )) {
+            DashboardInsightsView(insights: insights, now: now)
+                .padding(.top, 4)
         } label: {
-            Text("RECENT SWITCHES · \(switches.count)")
+            Text("INSIGHTS")
                 .font(.system(size: 8.5, weight: .semibold))
                 .foregroundColor(.secondary)
         }

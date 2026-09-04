@@ -86,6 +86,18 @@ final class FleetInsightsTests: XCTestCase {
         XCTAssertEqual(log[1].provider, .claude)
     }
 
+    /// The ring is persisted as JSON, so a field the encoder drops is a column
+    /// the dashboard silently loses on the next launch.
+    func testSwitchEventRoundTripsBothNewFields() throws {
+        let event = SwitchEvent(at: Date(timeIntervalSince1970: 1_786_600_000), from: "Memori", to: "BBR",
+                                trigger: .auto, reason: "session 96 %", fromHeadroom: 3.5, providerRaw: "codex")
+        let decoded = try JSONDecoder().decode(SwitchEvent.self, from: JSONEncoder().encode(event))
+        XCTAssertEqual(decoded, event)
+        XCTAssertEqual(decoded.fromHeadroom, 3.5)
+        XCTAssertEqual(FleetInsights.providerKind(from: decoded.providerRaw ?? ""), .codex,
+                       "the raw string must be the one `providerKind(from:)` reads back")
+    }
+
     func testSwitchEventDecodesRowsWrittenBeforeTheNewFields() throws {
         let json = #"{"at":0,"from":"A","to":"B","trigger":"auto","reason":null}"#.data(using: .utf8)!
         let event = try JSONDecoder().decode(SwitchEvent.self, from: json)

@@ -2817,6 +2817,12 @@ private func observeCredentialChanges() {
         usage.lastUpdated = event.at
         profileManager.saveClaudeUsage(usage, for: profile.id)
         LoggingService.shared.log("MenuBarManager: transcript rate-limit event — '\(profile.name)' hit its session limit at \(event.at), resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)")")
+        // Filed at the EVENT's time, not now: the tripwire routinely reads a
+        // transcript minutes old, and the dashboard's 24 h window must age it
+        // from when the session actually died.
+        incidentRing.record(FleetInsights.Incident(
+            at: event.at, profileId: profile.id, name: profile.name, provider: .claude, kind: .tripwire,
+            detail: "session limit, resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)")"))
         if mayTriggerAutoSwitch(profile.id) {
             checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
         }
@@ -2935,9 +2941,16 @@ private func observeCredentialChanges() {
             LoggingService.shared.log(
                 "MenuBarManager: '\(profile.name)' usage endpoint refused — read live counters from the Messages API headers instead: session \(Int(merged.sessionPercentage))%, weekly \(Int(merged.weeklyPercentage))%\(merged.rateLimitedUntil != nil ? " (5h window REJECTED — sessions are blocked)" : "")"
             )
+            incidentRing.record(FleetInsights.Incident(
+                at: Date(), profileId: profile.id, name: profile.name, provider: .claude, kind: .headerRescue,
+                detail: "session \(Int(merged.sessionPercentage))%, weekly \(Int(merged.weeklyPercentage))%"))
             return merged
         } catch {
-            LoggingService.shared.log("MenuBarManager: header rescue probe for '\(profile.name)' failed — \(AppError.wrap(error).message)")
+            let refusal = AppError.wrap(error)
+            LoggingService.shared.log("MenuBarManager: header rescue probe for '\(profile.name)' failed — \(refusal.message)")
+            incidentRing.record(FleetInsights.Incident(
+                at: Date(), profileId: profile.id, name: profile.name, provider: .claude, kind: .headerProbe429,
+                detail: "\(refusal.code.rawValue)\(refusal.retryAfterSeconds.map { ", retry-after \(clampedInt($0))s" } ?? "")"))
             return nil
         }
     }
@@ -2999,6 +3012,9 @@ private func observeCredentialChanges() {
         }
         burstBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
         LoggingService.shared.log("MenuBarManager: '\(profile.name)' drew a burst 429 (retry-after: \(retryAfter.map { "\(clampedInt($0))s" } ?? "none"), active: \(isActiveAccount)) — backing usage fetch off for \(clampedInt(interval))s (streak \(streak))")
+        incidentRing.record(FleetInsights.Incident(
+            at: Date(), profileId: profile.id, name: profile.name, provider: profile.providerKind,
+            kind: .burst429(streak: streak), detail: "backed usage fetch off for \(clampedInt(interval))s"))
     }
 
     // MARK: - Account-Level Throttle Stamping
@@ -3090,6 +3106,9 @@ private func observeCredentialChanges() {
         // from the pre-switch verification and the popover's age display).
         profileManager.saveClaudeUsage(usage, for: profile.id)
         LoggingService.shared.log("MenuBarManager: '\(profile.name)' SUSPECTED rate-limited — \(streak) consecutive 429s while other accounts fetch fine; displaying last measured %, excluded as a switch target, re-probing until a fetch succeeds")
+        incidentRing.record(FleetInsights.Incident(
+            at: Date(), profileId: profile.id, name: profile.name, provider: profile.providerKind,
+            kind: .inferredStamp, detail: "\(streak) consecutive 429s while other accounts fetch fine"))
         return usage
     }
 
@@ -3166,12 +3185,16 @@ private func observeCredentialChanges() {
               retryAfter >= Self.accountThrottleRetryAfterFloor else { return nil }
 
         var usage = profile.claudeUsage ?? .empty
-        usage.rateLimitedUntil = Date().addingTimeInterval(min(retryAfter, retryAfterMaximum))
+        let until = Date().addingTimeInterval(min(retryAfter, retryAfterMaximum))
+        usage.rateLimitedUntil = until
         // Server-affirmed: clears any inferred provenance a prior stamp left.
         usage.rateLimitedInferred = nil
         usage.lastUpdated = Date()
         profileManager.saveClaudeUsage(usage, for: profile.id)
         LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage endpoint throttled for \(clampedInt(retryAfter))s — treating account as exhausted until the throttle lifts")
+        incidentRing.record(FleetInsights.Incident(
+            at: Date(), profileId: profile.id, name: profile.name, provider: profile.providerKind,
+            kind: .affirmedStamp(until: until), detail: "retry-after \(clampedInt(retryAfter))s"))
         return usage
     }
 
