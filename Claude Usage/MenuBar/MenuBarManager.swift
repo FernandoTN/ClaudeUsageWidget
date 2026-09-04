@@ -234,7 +234,16 @@ class MenuBarManager: NSObject, ObservableObject {
         // The ⇄ selector shares the bar's fate: the exposure probe logs it
         // beside the provider groups (telemetry only).
         statusBarUIManager?.auxiliaryExposureItems = { [weak self] in
-            self?.activeSelectorStatusItem.map { ["selector": $0] } ?? [:]
+            // Hosted in the fleet item, the selector's own item is hidden.
+            guard !StatusBarUIManager.useSingleFleetItem else { return [:] }
+            return self?.activeSelectorStatusItem.map { ["selector": $0] } ?? [:]
+        }
+
+        // Fleet-item mode draws the ⇄ INTO the provider item, so the selector
+        // must exist before the first paint; its placement no longer depends
+        // on creation order (that concern is the separate-items note below).
+        if StatusBarUIManager.useSingleFleetItem {
+            installActiveSelectorIfNeeded()
         }
 
         // Check if we should use multi-profile mode
@@ -1023,6 +1032,14 @@ class MenuBarManager: NSObject, ObservableObject {
             }
             return x
         }()
+
+        // The hosted ⇄ segment of the fleet item opens the selector menu, not
+        // a popover.
+        if let rect = statusBarUIManager?.hostedSelectorRect(for: button, atX: clickX) {
+            LoggingService.shared.log("Composite click: hosted ⇄ segment → selector menu")
+            activeSelector?.popUp(from: button, in: rect)
+            return
+        }
 
         // In multi-profile mode, determine which profile was clicked. Written
         // with an explicit flatMap so there is no nested-optional `??` to
@@ -3971,6 +3988,7 @@ private func observeCredentialChanges() {
     /// Creates the ⇄ item exactly once; `setup()` re-entry reuses it.
     private func installActiveSelectorIfNeeded() {
         guard activeSelector == nil else { return }
+        let hosted = StatusBarUIManager.useSingleFleetItem
         activeSelector = ActiveSelectorItem(actions: ActiveSelectorItem.Actions(
             selections: { [weak self] in self?.buildActiveSelections() ?? [] },
             preferencesDegraded: { [weak self] in self?.profileManager.preferencesDegraded ?? false },
@@ -4000,8 +4018,19 @@ private func observeCredentialChanges() {
             openDashboard: { [weak self] in self?.togglePopover(nil) },
             openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) },
             setAutoSwitchEnabled: { enabled in SharedDataStore.shared.saveAutoSwitchProfileEnabled(enabled) }
-        ))
-        LoggingService.shared.log("MenuBarManager: ⇄ active-account selector installed (visible: \(activeSelector?.isVisible == true))")
+        ), hosted: hosted)
+        if hosted {
+            activeSelector?.onHostedChange = { [weak self] in self?.statusBarUIManager?.reassembleHosts() }
+            activeSelector?.hostedAnchor = { [weak self] in self?.statusBarUIManager?.hostedSelectorAnchor() }
+            statusBarUIManager?.hostedSelector = StatusBarUIManager.HostedSelector(
+                image: { [weak self] in self?.activeSelector?.hostedImage() },
+                tooltip: { [weak self] in self?.activeSelector?.hostedTooltip() },
+                open: { [weak self] view, rect in self?.activeSelector?.popUp(from: view, in: rect) }
+            )
+        }
+        LoggingService.shared.log(
+            "MenuBarManager: ⇄ active-account selector installed ("
+                + (hosted ? "hosted in the fleet item" : "visible: \(activeSelector?.isVisible == true)") + ")")
     }
 
     private func fleetSummaryContext(for config: MultiProfileDisplayConfig) -> FleetSummaryContext? {

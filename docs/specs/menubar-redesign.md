@@ -226,6 +226,29 @@ click-surface change. The popover's group navigator keeps walking every
 member: `paintedGroupMembers` reads the summary's painted order, not the
 single click segment.
 
+### 2.7 Placement — one status item for the whole fleet
+
+The bar host (macOS 27) does not place this app's items by creation order,
+and it honours a named item's remembered position only sometimes: the
+per-role pins (`cuw.group.<provider>`, seeded Preferred Positions) held on
+four launches on 2026-09-04 and not on the fifth (14:19:35 restart:
+`codex < claude < grok`, no repair line, saved positions intact). The
+placement ladder's last rung is therefore the design: **one status item**
+(`cuw.fleet`, `StatusBarUIManager.useSingleFleetItem`) hosts the Codex, Grok
+and Claude strips side by side in that order, 6 pt apart
+(`StatusBarUIManager.hostLayout`), with the ⇄ selector drawn in as the
+rightmost segment (`ActiveSelectorItem(hosted:)`; its own item stays hidden
+and the menu pops up from the segment). Nothing of ours is left for the
+host to order. A click resolves host x → provider strip → tile segment
+(`hostedHit`); the tooltip follows the hovered segment
+(`HostTooltipOwner`); the exposure probe logs one `fleet=… hosts=…` entry.
+`CUW_SEPARATE_GROUPS=1` restores one item per provider for the lab.
+
+Consequence for Stage C: an overflow now hides the WHOLE fleet at once —
+there is no Codex item left to clip first — so the degrade ladder must
+shrink the fleet image (drop the candidate rows, then counts, then
+active-only) rather than count on the host clipping a provider.
+
 ## 3. The dashboard: what is one click away (Stage B)
 
 ### D1 — Fleet board popover (380 pt wide, scrollable, detachable) — **recommended**
