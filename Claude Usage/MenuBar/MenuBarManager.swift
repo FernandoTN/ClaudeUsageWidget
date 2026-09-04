@@ -214,6 +214,11 @@ class MenuBarManager: NSObject, ObservableObject {
         // Initialize status bar UI manager
         statusBarUIManager = StatusBarUIManager()
         statusBarUIManager?.delegate = self
+        // The ⇄ selector shares the bar's fate: the exposure probe logs it
+        // beside the provider groups (telemetry only).
+        statusBarUIManager?.auxiliaryExposureItems = { [weak self] in
+            self?.activeSelectorStatusItem.map { ["selector": $0] } ?? [:]
+        }
 
         // Check if we should use multi-profile mode
         if profileManager.displayMode == .multi {
