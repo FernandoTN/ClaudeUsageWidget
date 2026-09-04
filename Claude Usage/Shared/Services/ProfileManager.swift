@@ -907,6 +907,16 @@ class ProfileManager: ObservableObject {
         // Persist the switch for forensics — the unified log keeps nothing for
         // this process, so this ring buffer is the only durable record of who
         // was active before a switch (a real reconstruction need, 2026-08-12).
+        // The outgoing account's own headroom at the moment it was left — the
+        // insights switch log's column, and the only place it can be read: the
+        // profile's cached usage moves on afterwards. `claudeUsage` is the
+        // unified container for every provider (Codex and Grok parse into it
+        // too), so `remainingPercentage` — 100 − the effective session % —
+        // answers for all three. Nil when the outgoing name resolves to no
+        // profile or that profile was never measured.
+        let outgoingHeadroom = outgoingNameForHistory
+            .flatMap { name in profiles.first(where: { $0.name == name }) }?
+            .claudeUsage?.remainingPercentage
         SharedDataStore.shared.recordSwitchEvent(SwitchEvent(
             at: Date(),
             from: outgoingNameForHistory ?? "none",
@@ -914,7 +924,11 @@ class ProfileManager: ObservableObject {
             trigger: userInitiated ? .manual : .auto,
             reason: focusOnly
                 ? "focus only — \(RefusedProvider.summary(refusedProviders)) login NOT applied, CLI unchanged"
-                : nil
+                : nil,
+            fromHeadroom: outgoingHeadroom,
+            // Files the row under a provider even after both names stop
+            // resolving to profiles (rename, delete).
+            providerRaw: String(describing: updatedProfile.providerKind)
         ))
 
         if focusOnly {
