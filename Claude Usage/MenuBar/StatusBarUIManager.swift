@@ -1751,9 +1751,15 @@ final class StatusBarUIManager {
             let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
             let hits = observation.hits.map { $0 ? "1" : "0" }.joined()
             let onScreen = observation.onScreen.map { $0 ? "1" : "0" } ?? "?"
-            snapshot.append(
-                "\(provider)=\(verdict) [\(frame) len=\(Int(item.length)) vis=\(observation.isVisible ? 1 : 0) "
-                    + "occ=\(observation.occluded ? 1 : 0) on=\(onScreen) hits=\(hits)]")
+            var imgText = "img=0/0"
+            if let button = item.button {
+                let counts = debugImageCounts(for: button)
+                imgText = "img=\(counts.assignments)/\(counts.repaints)"
+            }
+            let vis = observation.isVisible ? 1 : 0
+            let occ = observation.occluded ? 1 : 0
+            let length = Int(item.length)
+            snapshot.append("\(provider)=\(verdict) [\(frame) len=\(length) vis=\(vis) occ=\(occ) on=\(onScreen) hits=\(hits) \(imgText)]")
         }
         for (label, item) in auxiliaryExposureItems().sorted(by: { $0.key < $1.key }) {
             let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
@@ -2275,16 +2281,52 @@ final class StatusBarUIManager {
 
     /// Only sets button.image if the image data actually changed.
     /// This prevents triggering effectiveAppearance KVO when the image is identical.
+    /// Per-button counts, shown as `img=assignments/repaints` on the exposure
+    /// line so a relocation can be matched to the paint that preceded it.
+    private var imageAssignments: [ObjectIdentifier: Int] = [:]
+    private var imageRepaints: [ObjectIdentifier: Int] = [:]
+
+    /// `CUW_ASSIGN_IMAGES=1` restores plain image assignment (lab switch).
+    static let repaintInPlace = ProcessInfo.processInfo.environment["CUW_ASSIGN_IMAGES"] == nil
+
+    func debugImageCounts(for button: NSStatusBarButton) -> (assignments: Int, repaints: Int) {
+        let id = ObjectIdentifier(button)
+        return (imageAssignments[id] ?? 0, imageRepaints[id] ?? 0)
+    }
+
     private func setButtonImage(_ button: NSStatusBarButton, image: NSImage) {
         let buttonId = ObjectIdentifier(button)
         guard let newData = image.tiffRepresentation else {
             RenderInstrumentation.setButtonImageAssignments += 1
+            imageAssignments[buttonId, default: 0] += 1
             button.image = image
             return
         }
         if lastImageData[buttonId] == newData { return }
         lastImageData[buttonId] = newData
         RenderInstrumentation.setButtonImageAssignments += 1
+        // Repaint IN PLACE when the button already holds an image of this
+        // size: swap the representations inside the existing NSImage and
+        // redraw. Assigning a NEW image invalidates the button's intrinsic
+        // size and sends the status bar a relayout, and the scene-hosted bar
+        // (macOS 27) answered that by RELOCATING the item into the app's
+        // default slot among other apps' icons — measured 2026-09-03: on the
+        // sweep after launch grok and codex moved ~430 pt left, exactly the
+        // groups whose composite had changed, widths unchanged, while the
+        // memoized claude composite and the selector stayed put. The same
+        // mechanism is the likeliest reading of the 2026-07-17 "rejected
+        // pin" and the legacy stranded-tile heals.
+        if Self.repaintInPlace, let existing = button.image, existing.size == image.size,
+           existing.isTemplate == image.isTemplate,
+           let rep = image.representations.first?.copy() as? NSImageRep {
+            for old in existing.representations { existing.removeRepresentation(old) }
+            existing.addRepresentation(rep)
+            existing.recache()
+            button.needsDisplay = true
+            imageRepaints[buttonId, default: 0] += 1
+            return
+        }
+        imageAssignments[buttonId, default: 0] += 1
         button.image = image
     }
 
