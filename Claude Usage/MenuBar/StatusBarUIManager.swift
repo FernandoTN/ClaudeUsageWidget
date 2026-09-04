@@ -637,6 +637,10 @@ final class StatusBarUIManager {
         observeAppearanceChanges()
     }
 
+    /// Placeholder width of a composite group item between creation and its
+    /// first paint (see `setupCompositeGroups`).
+    static let initialGroupLength: CGFloat = 24
+
     /// Composite mode: create ONE status item per provider that has selected
     /// profiles. Creation order Claude → Grok → Codex (each new item lands
     /// LEFT of existing ones, so Claude ends up rightmost and Codex clips
@@ -665,7 +669,16 @@ final class StatusBarUIManager {
 
         for provider in [Profile.ProviderKind.claude, .grok, .codex]
         where selectedProfiles.contains(where: { $0.providerKind == provider }) {
-            let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            // A FIXED initial length, never `variableLength`: a variable-length
+            // item is zero-wide until its first image, and zero-wide items tie
+            // on placement — once another fixed-length item of this app exists
+            // (the ⇄ selector, created first), the tiebreak flipped the whole
+            // group order on the deployed bar (Claude leftmost, Codex rightmost,
+            // 2026-09-03; a 130 s quit did not undo it — no slot memory was
+            // involved). Fixed-length items place strictly by creation order,
+            // measured in a fresh process. `assembleComposites` pins the real
+            // width on the first paint.
+            let statusItem = NSStatusBar.system.statusItem(withLength: Self.initialGroupLength)
             if let button = statusItem.button {
                 button.action = action
                 button.target = target
