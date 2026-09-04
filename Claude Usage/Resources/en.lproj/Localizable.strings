@@ -1138,3 +1138,16 @@
 "insights.excluded_free" = "free plan";
 "telemetry.chart.stacked" = "Stacked";
 "telemetry.chart.split" = "Split";
+"telemetry.notes.toggle" = "About these numbers";
+"telemetry.notes.collapsed" = "About these numbers ▸";
+"telemetry.notes.expanded" = "About these numbers ▾";
+"telemetry.spans.title" = "Active for %@ in this window";
+"telemetry.spans.none" = "Attributed by path or as the sole account — no login spans to show.";
+"telemetry.spans.since_before" = "since before this window";
+"telemetry.spans.to_now" = "now";
+"telemetry.chart.share" = "100 %";
+"telemetry.footer.unavailable" = "ledger unavailable";
+"telemetry.chart.tokens" = "Tokens";
+"telemetry.paused_short" = "paused";
+"telemetry.last_known" = "last known";
+"telemetry.ledger_unavailable_path" = "Telemetry ledger unavailable at %@ — nothing is shown rather than a guess. Refresh now retries.";

@@ -189,13 +189,37 @@ fleet-7d-stacked, fleet-7d-hover, provider-claude-isolated. Ownership claim
 and external-observation writes log one line each. Design passes 26–31.
 Full suite on the merged tree 519 / 0.
 
+Stage 3b merged as `fe8f7f4` (#108); deployed by the orchestrator at
+22:46:58 PDT (pid 57516): first incremental slice 5 files / +1043 events /
+1.81 s, ledger 288 MB, WAL 0 KB after the checkpoint, RSS 168 MB idle.
+
+## Stage 3c — the punch list
+
+Every MUST and SHOULD from the orchestrator's 3b review (T1–T25) plus the
+By-kind 100 % share toggle. Delta sanity ("new" / "from 2.33 B") with one
+comparison caption under the tiles; mean on the clipped series and named
+by bucket unit; model colours by provider hue and tier step; the by-kind
+ramp re-stepped and validated (≥ 16.6 ΔE every adjacent pair, both
+surfaces — the old dark steps sat at ΔE 4.9); hatched partial swatch;
+badge tooltips (`ActivePill` swap deferred until it is on main); account
+scope shows "Active for <provider> in this window" spans instead of the
+100 % self-reference; degraded state keeps last-known sidebar numbers and
+names the ledger path; collapsible "About these numbers" persisted in
+ledger meta; `ViewThatFits` scroll fallback so the footer is never
+clipped; month-boundary axis labels; "≈ Cost"; "still to index";
+"· paused"; provider-unit count tile for accounts. Frames added:
+fleet-7d-notes (760 pt tall), fleet-by-kind-share; degraded now carries
+the path. Tests: delta / mean label / comparison caption, model colour
+steps, ownership spans. Design passes 32–43.
+
 ## Next
 
-4 (attribution polish: Switches table in the account scope, rate-limit
-overlay opt-in, by-kind / by-originator / main-vs-subagent stacks, export;
-minute-compaction of raw events older than 90 days — lossless for the
-report), then the fixes session's punch list on the shell (typography,
-sidebar density, footer actions) once its pixel pass lands.
+Stage 4 (attribution polish: Switches table in the account scope,
+rate-limit overlay opt-in, by-originator / main-vs-subagent stacks, export
+CSV; minute-compaction of raw events older than 90 days — lossless for the
+report; adopt `ActivePill` once on main), then the fixes session's punch
+list on the shell (typography, sidebar density, footer actions) once its
+pixel pass lands.
 
 ## Open questions
 

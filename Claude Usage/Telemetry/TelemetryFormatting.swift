@@ -55,13 +55,43 @@ nonisolated enum TelemetryFormatting {
         return String(format: "%.0f\u{2009}%%", value)
     }
 
-    /// Signed, uncoloured delta versus the previous period: "▲ 48 %", "▼ 4 %",
-    /// "—" when there is nothing to compare with.
-    static func delta(current: Int, previous: Int) -> String {
-        guard previous > 0 else { return "—" }
+    /// Signed, uncoloured delta versus the previous period: "▲ 48 %", "▼ 4 %".
+    /// A percentage against a tiny base is noise ("▲ 1551 %"), so when the
+    /// previous value is under 5 % of the current one the delta says what it
+    /// grew from ("from 2.3 B"), and "new" when there was nothing at all.
+    static func delta(current: Int, previous: Int, format: (Int) -> String = compact) -> String {
+        guard previous > 0 else { return current > 0 ? "new" : "—" }
+        // Ten times the base or more is not a percentage anyone reads
+        // ("▲ 1574 %"): name the base instead.
+        if Double(current) >= Double(previous) * 10 { return "from \(format(previous))" }
         let change = (Double(current) - Double(previous)) / Double(previous) * 100
         if abs(change) < 0.5 { return "▬ 0 %" }
         return (change > 0 ? "▲ " : "▼ ") + String(format: "%.0f\u{2009}%%", abs(change))
+    }
+
+    /// "4 d 12 h" / "6 h 20 m" / "45 m" — the length of an ownership span.
+    static func span(_ interval: TimeInterval) -> String {
+        let minutes = Int((max(0, interval) / 60).rounded())
+        if minutes < 60 { return "\(minutes) m" }
+        let hours = minutes / 60, rest = minutes % 60
+        if hours < 48 { return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) m" }
+        let days = hours / 24, hoursRest = hours % 24
+        return hoursRest == 0 ? "\(days) d" : "\(days) d \(hoursRest) h"
+    }
+
+    /// "7-day mean" / "7-hour mean" / "7-week mean" / "7-month mean".
+    static func meanLabel(_ granularity: BucketGranularity, window: Int = 7) -> String {
+        "\(window)-\(granularity.rawValue) mean"
+    }
+
+    /// What the KPI deltas compare against, once, under the tile row.
+    static func comparisonLabel(for window: TelemetryWindow) -> String? {
+        switch window {
+        case .today: return "vs yesterday to this hour"
+        case .days7: return "vs the prior 7 days, to the same hour"
+        case .days30: return "vs the prior 30 days, to the same hour"
+        case .allIndexed: return nil
+        }
     }
 
     static func bucketLabel(_ start: Date, granularity: BucketGranularity, calendar: Calendar, first: Bool) -> String {
@@ -127,9 +157,12 @@ enum TelemetryPalette {
     static let other = dynamic(light: "#b8b7b2", dark: "#5c5b57")
     /// Cache reads are the light step of the series hue when stacking by kind.
     static let kindSteps: [Color] = [
-        dynamic(light: "#2a78d6", dark: "#3987e5"),  // uncached input: full blue
-        dynamic(light: "#5598e7", dark: "#256abf"),  // cache writes
-        dynamic(light: "#9ec5f4", dark: "#1c5cab"),  // cache reads
+        // One hue, three lightness steps in cost order (uncached is the
+        // expensive part, cache reads the cheap bulk). Validated: every
+        // adjacent pair ≥ 16.6 ΔE in normal, deutan, protan and tritan vision.
+        dynamic(light: "#1a5db8", dark: "#9ccaff"),  // uncached input
+        dynamic(light: "#6ba3e8", dark: "#3f82d4"),  // cache writes
+        dynamic(light: "#bfd8f4", dark: "#27528a"),  // cache reads
     ]
 
     static func color(for provider: TelemetryProvider) -> Color {
@@ -140,17 +173,32 @@ enum TelemetryPalette {
         }
     }
 
-    /// Model family → fixed slot, so a filter never repaints survivors.
-    static func color(forModel model: String) -> Color {
+    /// A model wears its PROVIDER's hue at a lightness step — never another
+    /// provider's colour (a green Sonnet under a green Grok legend read as the
+    /// same thing). Steps are fixed per model, so a filter never repaints.
+    static func modelColorStep(_ model: String) -> (provider: TelemetryProvider?, step: Double) {
         let lower = model.lowercased()
-        if lower.contains("opus") { return slots[0] }
-        if lower.contains("fable") || lower.contains("mythos") { return slots[6] }
-        if lower.contains("sonnet") { return slots[2] }
-        if lower.contains("haiku") { return slots[3] }
-        if lower.hasPrefix("gpt") { return slots[1] }
-        if lower.contains("codex") { return slots[4] }
-        if lower.contains("grok") { return slots[5] }
-        return other
+        if lower.contains("opus") { return (.claude, 1.0) }
+        if lower.contains("fable") || lower.contains("mythos") { return (.claude, 0.72) }
+        if lower.contains("sonnet") { return (.claude, 0.5) }
+        if lower.contains("haiku") { return (.claude, 0.34) }
+        if lower.hasPrefix("claude") { return (.claude, 0.6) }
+        if lower.hasPrefix("gpt-5.6-sol") { return (.codex, 1.0) }
+        if lower.hasPrefix("gpt-5.6-terra") { return (.codex, 0.72) }
+        if lower.hasPrefix("gpt-5.6-luna") { return (.codex, 0.5) }
+        if lower.hasPrefix("gpt-5.5") { return (.codex, 0.6) }
+        if lower.hasPrefix("gpt") { return (.codex, 0.4) }
+        if lower.contains("codex") { return (.codex, 0.3) }
+        if lower.hasPrefix("grok-4.6") { return (.grok, 1.0) }
+        if lower.hasPrefix("grok-4.5") { return (.grok, 0.7) }
+        if lower.contains("grok") { return (.grok, 0.5) }
+        return (nil, 1.0)
+    }
+
+    static func color(forModel model: String) -> Color {
+        let (provider, step) = modelColorStep(model)
+        guard let provider else { return other }
+        return color(for: provider).opacity(step)
     }
 
     static func color(for key: SeriesKey, stack: TelemetryStack, index: Int) -> Color {

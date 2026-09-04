@@ -5,13 +5,13 @@
 //  Layout B (spec §3.2): a 220 pt source list that IS the filter — Fleet, each
 //  provider, its accounts, an Unattributed row — beside a report pane: header
 //  with the window control and the one provenance line, four KPI tiles, the
-//  chart, the two tables, the footer. Every number carries its source and age;
-//  nothing here is a percentage of a limit. Selecting a row is a scope, never
-//  Viewing. The same views render in the DEBUG frame harness with constant
-//  bindings, which is why the pane takes plain values rather than the model —
-//  and why the sidebar and the segmented controls are pure SwiftUI (AppKit-
-//  backed `List` / `Picker` / `ScrollView` / `ProgressView` cannot be rendered
-//  by `ImageRenderer`).
+//  chart, the two tables, the notes and the footer. Every number carries its
+//  source and age; nothing here is a percentage of a limit. Selecting a row
+//  is a scope, never Viewing. The same views render in the DEBUG frame
+//  harness with constant bindings, which is why the pane takes plain values
+//  rather than the model — and why the sidebar and the segmented controls
+//  are pure SwiftUI (AppKit-backed `List` / `Picker` / `ScrollView` /
+//  `ProgressView` cannot be rendered by `ImageRenderer`).
 //
 
 import SwiftUI
@@ -34,6 +34,7 @@ struct TelemetryView: View {
             window: Binding(get: { model.window }, set: { model.window = $0 }),
             metric: Binding(get: { model.metric }, set: { model.metric = $0 }),
             chartMode: Binding(get: { model.effectiveChartMode }, set: { model.chartMode = $0 }),
+            caveatsExpanded: Binding(get: { model.caveatsExpanded }, set: { model.caveatsExpanded = $0 }),
             owners: Set(model.sidebar.flatMap(\.rows).filter(\.isOwner).compactMap { UUID(uuidString: $0.id) }),
             actions: TelemetryActions(refresh: model.refreshNow, togglePause: model.togglePaused, copyNumbers: model.copyNumbers))
     }
@@ -50,22 +51,25 @@ struct TelemetryFrameView: View {
     @Binding var window: TelemetryWindow
     @Binding var metric: TelemetryMetric
     @Binding var chartMode: TelemetryChartMode
+    @Binding var caveatsExpanded: Bool
     var owners: Set<UUID>
     var actions: TelemetryActions
-    /// Harness-only: a fixed pointer position and an isolated series.
+    /// Harness-only: a fixed pointer position, an isolated series, share mode.
     var initialHover: Int? = nil
     var initialIsolated: SeriesKey? = nil
+    var initialShare = false
     var interactive = true
 
     var body: some View {
         HStack(spacing: 0) {
-            TelemetrySidebarView(sections: sections, selection: $selection)
+            TelemetrySidebarView(sections: sections, selection: $selection, degraded: !status.ledgerAvailable)
                 .frame(width: 220)
                 .background(Color(nsColor: .underPageBackgroundColor).opacity(0.6))
             Divider()
             TelemetryReportPane(report: report, status: status, isLoading: isLoading, isPaused: isPaused, scopeTitle: scopeTitle,
-                                window: $window, metric: $metric, chartMode: $chartMode, owners: owners, actions: actions,
-                                initialHover: initialHover, initialIsolated: initialIsolated, interactive: interactive)
+                                window: $window, metric: $metric, chartMode: $chartMode, caveatsExpanded: $caveatsExpanded,
+                                owners: owners, actions: actions, initialHover: initialHover, initialIsolated: initialIsolated,
+                                initialShare: initialShare, interactive: interactive)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -105,11 +109,37 @@ struct TelemetrySegmentedPicker<Value: Hashable>: View {
     }
 }
 
+/// The legend swatch for the partial bucket: the series colour tinted and
+/// hatched exactly as the column is drawn, so the two agree.
+struct TelemetryHatchedSwatch: View {
+    var color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let rect = CGRect(origin: .zero, size: size)
+            context.opacity = 0.55
+            context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color))
+            context.opacity = 1
+            var lines = Path()
+            var offset: CGFloat = -size.height
+            while offset < size.width {
+                lines.move(to: CGPoint(x: offset, y: size.height))
+                lines.addLine(to: CGPoint(x: offset + size.height, y: 0))
+                offset += 3
+            }
+            context.clip(to: Path(roundedRect: rect, cornerRadius: 2))
+            context.stroke(lines, with: .color(Color(nsColor: .windowBackgroundColor)), lineWidth: 1)
+        }
+        .frame(width: 10, height: 10)
+    }
+}
+
 // MARK: - Sidebar
 
 struct TelemetrySidebarView: View {
     var sections: [TelemetrySidebarSection]
     @Binding var selection: TelemetryScope
+    var degraded = false
     @FocusState private var focused: Bool
 
     private var flatRows: [TelemetrySidebarRow] { sections.flatMap(\.rows) }
@@ -117,7 +147,7 @@ struct TelemetrySidebarView: View {
     /// Rows plus section gaps, in points — decides whether a scroll view
     /// (AppKit-backed, invisible to `ImageRenderer`) is needed at all.
     private var contentHeight: CGFloat {
-        CGFloat(flatRows.count) * 24 + CGFloat(max(0, sections.count - 1)) * 10 + 42
+        CGFloat(flatRows.count) * 24 + CGFloat(max(0, sections.count - 1)) * 10 + 60
     }
 
     var body: some View {
@@ -144,6 +174,11 @@ struct TelemetrySidebarView: View {
 
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
+            if degraded {
+                Text("telemetry.last_known".localized)
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                    .padding(.leading, 10).padding(.bottom, 2)
+            }
             ForEach(sections) { section in
                 if section.id != "fleet" { Spacer().frame(height: 10) }
                 // The provider row is the section header: bold, with its account count.
@@ -167,9 +202,12 @@ struct TelemetrySidebarView: View {
                     Text("\(count)").font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
                 }
                 if row.isOwner, let provider = row.provider {
+                    // The bar's mark for the provider-active account; the shared
+                    // ActivePill replaces it once that component is on main.
                     Text(mark(for: provider))
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.cyan)
+                        .help(ActiveVocabulary.activeFor(kind(provider)))
                         .accessibilityLabel(ActiveVocabulary.activeFor(kind(provider)))
                 }
                 Spacer(minLength: 4)
@@ -177,6 +215,7 @@ struct TelemetrySidebarView: View {
                     .font(.system(size: 11))
                     .monospacedDigit()
                     .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .opacity(degraded ? 0.45 : 1)
             }
             .padding(.leading, row.indent ? 18 : 10)
             .padding(.trailing, 10)
@@ -217,6 +256,7 @@ struct TelemetryReportPane: View {
     @Binding var window: TelemetryWindow
     @Binding var metric: TelemetryMetric
     @Binding var chartMode: TelemetryChartMode
+    @Binding var caveatsExpanded: Bool
     var owners: Set<UUID>
     var actions: TelemetryActions
     var interactive = true
@@ -224,48 +264,70 @@ struct TelemetryReportPane: View {
     @State private var isolated: SeriesKey?
     @State private var hoverIndex: Int?
     @State private var breakdownIndex: Int?
+    @State private var shareMode = false
 
     init(report: TelemetryReport?, status: IndexingStatus, isLoading: Bool, isPaused: Bool, scopeTitle: String,
          window: Binding<TelemetryWindow>, metric: Binding<TelemetryMetric>, chartMode: Binding<TelemetryChartMode>,
-         owners: Set<UUID>, actions: TelemetryActions, initialHover: Int? = nil, initialIsolated: SeriesKey? = nil,
-         interactive: Bool = true) {
+         caveatsExpanded: Binding<Bool>, owners: Set<UUID>, actions: TelemetryActions, initialHover: Int? = nil,
+         initialIsolated: SeriesKey? = nil, initialShare: Bool = false, interactive: Bool = true) {
         self.report = report; self.status = status; self.isLoading = isLoading; self.isPaused = isPaused
-        self.scopeTitle = scopeTitle; _window = window; _metric = metric; _chartMode = chartMode
+        self.scopeTitle = scopeTitle; _window = window; _metric = metric; _chartMode = chartMode; _caveatsExpanded = caveatsExpanded
         self.owners = owners; self.actions = actions; self.interactive = interactive
         _hoverIndex = State(initialValue: initialHover)
         _isolated = State(initialValue: initialIsolated)
+        _shareMode = State(initialValue: initialShare)
     }
 
     /// The clock every age in the pane is measured against — the report's,
     /// so a rendered frame and the live window agree.
     private var now: Date { report?.query.now ?? Date() }
 
+    /// The chart takes whatever height is left, never under 260 pt; when the
+    /// pane is shorter than that (a small window, the notes expanded) the
+    /// same content scrolls with the chart at a fixed 300 pt instead of
+    /// clipping the footer. `ViewThatFits` is pure SwiftUI, so the harness
+    /// still renders the first layout wherever it fits.
     var body: some View {
+        ViewThatFits(in: .vertical) {
+            content(chartHeight: nil)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            ScrollView(.vertical) {
+                content(chartHeight: 300)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    private func content(chartHeight: CGFloat?) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if !status.ledgerAvailable {
-                Text("telemetry.ledger_unavailable".localized)
+                Text("telemetry.ledger_unavailable_path".localized(with: status.ledgerPath ?? "~/Library/Application Support/Claude Usage/telemetry/ledger.sqlite"))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 520)
+                    .frame(maxWidth: .infinity, minHeight: chartHeight ?? 0, maxHeight: .infinity, alignment: .center)
             } else {
                 kpiRow
-                chartSection
-                    .frame(minHeight: 230, maxHeight: .infinity)
-                    .layoutPriority(1)
-                if let report {
-                    HStack(alignment: .top, spacing: 12) {
-                        TelemetryTableView(title: "telemetry.by_model".localized, rows: report.models, kind: .models,
-                                           stack: .model, owners: owners, now: now)
-                        TelemetryTableView(title: "telemetry.by_account".localized, rows: report.accounts, kind: .accounts,
-                                           stack: .account, owners: owners, now: now)
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
+                if let caption = TelemetryFormatting.comparisonLabel(for: window), report?.totals.isEmpty == false {
+                    Text("▲▼ \(caption)").font(.system(size: 9)).foregroundStyle(.secondary).padding(.top, -6)
                 }
-                footer
+                if let chartHeight {
+                    chartSection.frame(height: chartHeight)
+                } else {
+                    chartSection
+                        .frame(minHeight: 260, maxHeight: .infinity)
+                        .layoutPriority(1)
+                }
+                if let report {
+                    tables(report)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                notes
             }
+            footer
         }
         .padding(EdgeInsets(top: 30, leading: 16, bottom: 12, trailing: 16))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var header: some View {
@@ -293,6 +355,7 @@ struct TelemetryReportPane: View {
             }
         }
         if let scanned = status.scannedAt { parts.append("indexed \(DashboardFormatting.age(scanned, now: now))") }
+        if isPaused { parts.append("telemetry.paused_short".localized) }
         return parts.joined(separator: " · ")
     }
 
@@ -302,24 +365,27 @@ struct TelemetryReportPane: View {
                 TelemetryStatTile(label: "Indexing the CLI logs",
                                   value: "telemetry.indexing".localized(with: Int((status.progress * 100).rounded())),
                                   delta: nil,
-                                  sub: "\(TelemetryFormatting.compact(status.backlogFiles)) of \(TelemetryFormatting.compact(status.filesSeen)) files remaining · the numbers appear as files complete",
+                                  sub: "\(TelemetryFormatting.compact(status.backlogFiles)) of \(TelemetryFormatting.compact(status.filesSeen)) files still to index · the numbers appear as files complete",
                                   progress: status.progress)
             } else if let report {
                 let totals = report.totals, previous = report.previousTotals
+                let deltas = TelemetryFormatting.comparisonLabel(for: window) != nil
+                let empty = totals.units == 0
                 let cacheShare = totals.inputClass > 0 ? Double(totals.cacheRead) / Double(totals.inputClass) : 0
                 let writeShare = totals.inputClass > 0 ? Double(totals.cacheWrite) / Double(totals.inputClass) : 0
                 TelemetryStatTile(label: "telemetry.kpi.input_class".localized,
                                   value: TelemetryFormatting.compact(totals.inputClass),
-                                  delta: TelemetryFormatting.delta(current: totals.inputClass, previous: previous.inputClass),
-                                  sub: "telemetry.kpi.input_class_sub".localized(with: TelemetryFormatting.percent(cacheShare), TelemetryFormatting.percent(writeShare)))
+                                  delta: deltas ? TelemetryFormatting.delta(current: totals.inputClass, previous: previous.inputClass) : nil,
+                                  sub: empty ? nil : "telemetry.kpi.input_class_sub".localized(with: TelemetryFormatting.percent(cacheShare), TelemetryFormatting.percent(writeShare)))
                 let thinking = totals.output > 0 ? Double(totals.reasoning) / Double(totals.output) : 0
                 TelemetryStatTile(label: "telemetry.kpi.output".localized,
                                   value: TelemetryFormatting.compact(totals.output),
-                                  delta: TelemetryFormatting.delta(current: totals.output, previous: previous.output),
-                                  sub: "telemetry.kpi.output_sub".localized(with: TelemetryFormatting.percent(thinking)))
+                                  delta: deltas ? TelemetryFormatting.delta(current: totals.output, previous: previous.output) : nil,
+                                  sub: empty ? nil : "telemetry.kpi.output_sub".localized(with: TelemetryFormatting.percent(thinking)))
                 if let native = report.nativeCount {
                     TelemetryStatTile(label: native.label.capitalized, value: TelemetryFormatting.compact(native.value),
-                                      delta: TelemetryFormatting.delta(current: totals.units, previous: previous.units), sub: native.detail)
+                                      delta: deltas ? TelemetryFormatting.delta(current: totals.units, previous: previous.units) : nil,
+                                      sub: empty ? nil : native.detail)
                 } else {
                     let oldest = report.coverage.oldestDataThrough.map {
                         "oldest \(TelemetryFormatting.timeOfDay($0, calendar: report.query.calendar))"
@@ -327,14 +393,15 @@ struct TelemetryReportPane: View {
                     TelemetryStatTile(label: "telemetry.kpi.coverage".localized,
                                       value: TelemetryFormatting.percent(report.coverage.attributedShare),
                                       delta: nil,
-                                      sub: ["telemetry.kpi.coverage_sub".localized(with: TelemetryFormatting.percent(report.coverage.unattributedShare)), oldest]
+                                      sub: empty ? nil : ["telemetry.kpi.coverage_sub".localized(with: TelemetryFormatting.percent(report.coverage.unattributedShare)), oldest]
                                           .compactMap { $0 }.joined(separator: " · "))
                 }
                 let unpriced = totals.unpricedUnits > 0 ? " · " + "telemetry.kpi.unpriced".localized(with: totals.unpricedUnits) : ""
                 TelemetryStatTile(label: "telemetry.kpi.cost".localized,
                                   value: TelemetryFormatting.usd(nanoUSD: totals.costNanoUSD),
-                                  delta: TelemetryFormatting.delta(current: totals.costNanoUSD, previous: previous.costNanoUSD),
-                                  sub: "telemetry.kpi.cost_sub".localized(with: TelemetryFormatting.mediumDate(report.priceTable.asOf)) + unpriced)
+                                  delta: deltas ? TelemetryFormatting.delta(current: totals.costNanoUSD, previous: previous.costNanoUSD,
+                                                                             format: { TelemetryFormatting.usd(nanoUSD: $0) }) : nil,
+                                  sub: empty ? nil : "telemetry.kpi.cost_sub".localized(with: TelemetryFormatting.mediumDate(report.priceTable.asOf)) + unpriced)
             } else {
                 ForEach(0..<4, id: \.self) { _ in TelemetryStatTile(label: " ", value: "—", delta: nil, sub: nil) }
             }
@@ -357,7 +424,7 @@ struct TelemetryReportPane: View {
     private var metricLabel: String {
         switch metric {
         case .inputClass: return "Input-class tokens"
-        case .inputByKind: return "Input tokens by kind"
+        case .inputByKind: return shareMode ? "Input share by kind" : "Input tokens by kind"
         case .output: return "Output tokens"
         case .cost: return "API list-price equivalent"
         }
@@ -368,17 +435,27 @@ struct TelemetryReportPane: View {
             HStack(alignment: .center, spacing: 8) {
                 Text(chartTitle).font(.system(size: 12, weight: .bold))
                 Spacer()
-                TelemetrySegmentedPicker(options: [(TelemetryChartMode.stacked, "telemetry.chart.stacked".localized),
-                                                   (.split, "telemetry.chart.split".localized)], selection: $chartMode)
-                    .frame(width: 130)
+                if metric == .inputByKind {
+                    TelemetrySegmentedPicker(options: [(false, "telemetry.chart.tokens".localized), (true, "telemetry.chart.share".localized)],
+                                             selection: $shareMode)
+                        .frame(width: 120)
+                }
+                // Share mode is one 100 % column per bucket; a per-provider
+                // split would draw three identical rows.
+                if !(metric == .inputByKind && shareMode) {
+                    TelemetrySegmentedPicker(options: [(TelemetryChartMode.stacked, "telemetry.chart.stacked".localized),
+                                                       (.split, "telemetry.chart.split".localized)], selection: $chartMode)
+                        .frame(width: 130)
+                }
                 TelemetrySegmentedPicker(options: [(TelemetryMetric.inputClass, "Input-class"), (.inputByKind, "By kind"),
-                                                   (.output, "Output"), (.cost, "≈ List")], selection: $metric)
+                                                   (.output, "Output"), (.cost, "≈ Cost")], selection: $metric)
                     .frame(width: 300)
             }
             if let report, !report.totals.isEmpty {
                 legend(report)
                 TelemetryChartView(report: report, metric: metric, mode: chartMode, isolated: $isolated, hoverIndex: $hoverIndex,
-                                   onSelectBucket: { breakdownIndex = $0 }, interactive: interactive)
+                                   onSelectBucket: { breakdownIndex = $0 }, interactive: interactive,
+                                   normalized: shareMode && metric == .inputByKind)
                     .popover(isPresented: Binding(get: { breakdownIndex != nil }, set: { if !$0 { breakdownIndex = nil } }),
                              arrowEdge: .bottom) {
                         if let index = breakdownIndex, report.buckets.indices.contains(index) {
@@ -417,12 +494,12 @@ struct TelemetryReportPane: View {
             if report.movingAverage.contains(where: { $0 != nil }) {
                 HStack(spacing: 4) {
                     Rectangle().fill(Color.secondary).frame(width: 12, height: 2)
-                    Text("telemetry.chart.mean".localized).font(.system(size: 9)).foregroundStyle(.secondary)
+                    Text(TelemetryFormatting.meanLabel(report.range.granularity)).font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
-            if report.buckets.contains(where: \.isPartial) {
+            if report.buckets.contains(where: \.isPartial), let first = report.seriesOrder.first {
                 HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.45)).frame(width: 10, height: 10)
+                    TelemetryHatchedSwatch(color: TelemetryPalette.color(for: first, stack: report.query.effectiveStack, index: 0))
                     Text("telemetry.chart.partial".localized).font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
@@ -439,13 +516,46 @@ struct TelemetryReportPane: View {
         }
     }
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    // MARK: Tables
+
+    private func tables(_ report: TelemetryReport) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            TelemetryTableView(title: "telemetry.by_model".localized, rows: report.models, kind: .models,
+                               stack: .model, owners: owners, now: now)
+            if case .account = report.query.scope {
+                // A single account's "by account" is a 100 % self-reference; show
+                // when it held its provider's login instead.
+                if !report.ownershipSpans.isEmpty {
+                    TelemetrySpansCard(spans: report.ownershipSpans, calendar: report.query.calendar, now: now)
+                }
+            } else {
+                TelemetryTableView(title: "telemetry.by_account".localized, rows: report.accounts, kind: .accounts,
+                                   stack: .account, owners: owners, now: now)
+            }
+        }
+    }
+
+    // MARK: Notes and footer
+
+    /// "About these numbers": the per-provider caveats, collapsed by default;
+    /// the Codex attribution line stays visible in the Codex scope.
+    private var notes: some View {
+        VStack(alignment: .leading, spacing: 4) {
             if let report {
+                Button {
+                    caveatsExpanded.toggle()
+                } label: {
+                    Text((caveatsExpanded ? "telemetry.notes.expanded" : "telemetry.notes.collapsed").localized)
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
                 ForEach(report.provenance, id: \.provider) { provenance in
-                    ForEach(provenance.caveats, id: \.self) { caveat in
-                        Text("\(TelemetryReportBuilder.providerLabel(provenance.provider)): \(caveat)")
-                            .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                    let alwaysVisible = provenance.provider == .codex && report.query.scope.provider == .codex
+                    if caveatsExpanded || alwaysVisible {
+                        ForEach(provenance.caveats, id: \.self) { caveat in
+                            Text("\(TelemetryReportBuilder.providerLabel(provenance.provider)): \(caveat)")
+                                .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
                     if provenance.health.filesUnreadable + provenance.health.linesMalformed + provenance.health.unknownShapes > 0 {
                         Text("\(TelemetryReportBuilder.providerLabel(provenance.provider)): \(provenance.health.filesUnreadable) files unreadable · \(provenance.health.linesMalformed) lines skipped · \(provenance.health.unknownShapes) unknown shapes")
@@ -453,20 +563,25 @@ struct TelemetryReportPane: View {
                     }
                 }
             }
-            HStack(spacing: 8) {
-                Button("telemetry.refresh_now".localized, action: actions.refresh)
-                Button((isPaused ? "telemetry.resume" : "telemetry.pause").localized, action: actions.togglePause)
-                Button("telemetry.copy_numbers".localized, action: actions.copyNumbers)
-                if isPaused {
-                    Text("indexing paused").font(.system(size: 9)).foregroundStyle(.orange)
-                }
-                Spacer()
-                Text("telemetry.footer.storage".localized(with: TelemetryFormatting.compact(status.eventCount),
-                                                           ByteCountFormatter.string(fromByteCount: status.storageBytes, countStyle: .file)))
-                    .font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit()
-            }
-            .controlSize(.small)
         }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button("telemetry.refresh_now".localized, action: actions.refresh)
+            Button((isPaused ? "telemetry.resume" : "telemetry.pause").localized, action: actions.togglePause)
+            Button("telemetry.copy_numbers".localized, action: actions.copyNumbers)
+            if isPaused {
+                Text("indexing paused").font(.system(size: 9)).foregroundStyle(.orange)
+            }
+            Spacer()
+            Text(status.ledgerAvailable
+                 ? "telemetry.footer.storage".localized(with: TelemetryFormatting.compact(status.eventCount),
+                                                        ByteCountFormatter.string(fromByteCount: status.storageBytes, countStyle: .file))
+                 : "telemetry.footer.unavailable".localized)
+                .font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .controlSize(.small)
     }
 }
 
@@ -506,6 +621,63 @@ struct TelemetryStatTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+    }
+}
+
+// MARK: - Ownership spans (account scope)
+
+struct TelemetrySpansCard: View {
+    var spans: [OwnershipSpan]
+    var calendar: Calendar
+    var now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("telemetry.spans.title".localized(with: spans.map { TelemetryReportBuilder.providerLabel($0.provider) }
+                    .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.joined(separator: " / ")))
+                    .font(.system(size: 11, weight: .bold))
+                Spacer()
+                Text("\(spans.count) span\(spans.count == 1 ? "" : "s")").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            ForEach(Array(spans.prefix(6).enumerated()), id: \.offset) { _, span in
+                HStack(spacing: 6) {
+                    Text(span.startsBeforeRange ? "telemetry.spans.since_before".localized : stamp(span.start))
+                        .font(.system(size: 9.5)).monospacedDigit()
+                    Text("→").font(.system(size: 9.5)).foregroundStyle(.secondary)
+                    Text(span.end.map(stamp) ?? "telemetry.spans.to_now".localized)
+                        .font(.system(size: 9.5)).monospacedDigit()
+                    Spacer(minLength: 4)
+                    Text(TelemetryFormatting.span((span.end ?? now).timeIntervalSince(span.start)))
+                        .font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit()
+                    Text(basisLabel(span.basis)).font(.system(size: 8.5)).foregroundStyle(.secondary).frame(width: 64, alignment: .trailing)
+                }
+                .frame(height: 16)
+            }
+            if spans.count > 6 {
+                Text("\(spans.count - 6) more…").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+    }
+
+    private func stamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "MMM d HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func basisLabel(_ basis: OwnershipRecord.Basis) -> String {
+        switch basis {
+        case .exactClaim: return "exact"
+        case .seededFromRing: return "from history"
+        case .externalObservation, .observedAtTick, .heartbeat: return "observed"
+        }
     }
 }
 

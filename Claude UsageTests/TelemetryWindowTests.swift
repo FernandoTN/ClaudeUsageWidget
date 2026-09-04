@@ -31,7 +31,46 @@ final class TelemetryWindowTests: XCTestCase {
         XCTAssertEqual(TelemetryFormatting.percent(0.0031), "0.3\u{2009}%")
         XCTAssertEqual(TelemetryFormatting.delta(current: 148, previous: 100), "▲ 48\u{2009}%")
         XCTAssertEqual(TelemetryFormatting.delta(current: 96, previous: 100), "▼ 4\u{2009}%")
-        XCTAssertEqual(TelemetryFormatting.delta(current: 5, previous: 0), "—")
+        XCTAssertEqual(TelemetryFormatting.delta(current: 5, previous: 0), "new")
+        XCTAssertEqual(TelemetryFormatting.delta(current: 0, previous: 0), "—")
+        XCTAssertEqual(TelemetryFormatting.delta(current: 38_500_000_000, previous: 2_300_000_000), "from 2.3\u{2009}B", "a percentage against a tiny base is noise")
+        XCTAssertEqual(TelemetryFormatting.delta(current: 24_100_000_000_000, previous: 1_000_000_000_000, format: { TelemetryFormatting.usd(nanoUSD: $0) }), "from $1.0\u{2009}k")
+        XCTAssertEqual(TelemetryFormatting.meanLabel(.day), "7-day mean")
+        XCTAssertEqual(TelemetryFormatting.meanLabel(.hour), "7-hour mean")
+        XCTAssertNil(TelemetryFormatting.comparisonLabel(for: .allIndexed))
+        XCTAssertEqual(TelemetryFormatting.comparisonLabel(for: .today), "vs yesterday to this hour")
+    }
+
+    func testModelColoursNeverBorrowAnotherProvidersHue() {
+        XCTAssertEqual(TelemetryPalette.modelColorStep("claude-sonnet-5").provider, .claude, "Sonnet was Grok's green")
+        XCTAssertEqual(TelemetryPalette.modelColorStep("claude-opus-5").step, 1.0)
+        XCTAssertLessThan(TelemetryPalette.modelColorStep("claude-fable-5-1").step, 1.0)
+        XCTAssertEqual(TelemetryPalette.modelColorStep("gpt-5.6-sol").provider, .codex)
+        XCTAssertEqual(TelemetryPalette.modelColorStep("codex-auto-review").provider, .codex)
+        XCTAssertEqual(TelemetryPalette.modelColorStep("grok-4.5-build").provider, .grok)
+        XCTAssertNil(TelemetryPalette.modelColorStep("unknown").provider)
+        let claudeSteps = ["claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5"].map { TelemetryPalette.modelColorStep($0).step }
+        XCTAssertEqual(claudeSteps, claudeSteps.sorted(by: >), "steps descend by tier so four models stay distinct")
+        XCTAssertEqual(Set(claudeSteps).count, 4)
+    }
+
+    func testOwnershipSpansForAnAccountAreClaimToClaimAndClippedToTheWindow() {
+        let a = UUID(), b = UUID()
+        let t = { (h: Double) in Date(timeIntervalSince1970: h * 3_600) }
+        let log = [
+            OwnershipRecord(at: t(0), provider: .claude, profileId: a, previousProfileId: nil, accountStamp: nil, name: "a", basis: .exactClaim, cause: "activate"),
+            OwnershipRecord(at: t(5), provider: .claude, profileId: a, previousProfileId: a, accountStamp: nil, name: "a", basis: .heartbeat, cause: nil),
+            OwnershipRecord(at: t(10), provider: .claude, profileId: b, previousProfileId: a, accountStamp: nil, name: "b", basis: .exactClaim, cause: "activate"),
+            OwnershipRecord(at: t(20), provider: .claude, profileId: a, previousProfileId: b, accountStamp: nil, name: "a", basis: .observedAtTick, cause: nil),
+            OwnershipRecord(at: t(30), provider: .codex, profileId: a, previousProfileId: nil, accountStamp: nil, name: "a", basis: .seededFromRing, cause: "manual"),
+        ]
+        let spans = TelemetryReportBuilder.ownershipSpans(for: a, ownership: log, from: t(4), to: t(40))
+        XCTAssertEqual(spans.count, 3)
+        XCTAssertEqual(spans[0].start, t(4)); XCTAssertTrue(spans[0].startsBeforeRange); XCTAssertEqual(spans[0].end, t(10)); XCTAssertEqual(spans[0].basis, .exactClaim)
+        XCTAssertEqual(spans[1].start, t(20)); XCTAssertNil(spans[1].end, "still the owner at the end of the window"); XCTAssertEqual(spans[1].basis, .observedAtTick)
+        XCTAssertEqual(spans[2].provider, .codex); XCTAssertEqual(spans[2].start, t(30)); XCTAssertNil(spans[2].end)
+        XCTAssertTrue(TelemetryReportBuilder.ownershipSpans(for: b, ownership: log, from: t(12), to: t(15)).allSatisfy { $0.startsBeforeRange && $0.end == nil })
+        XCTAssertTrue(TelemetryReportBuilder.ownershipSpans(for: b, ownership: log, from: t(25), to: t(40)).isEmpty)
     }
 
     func testChartMathCeilingMeanAndHitTesting() {

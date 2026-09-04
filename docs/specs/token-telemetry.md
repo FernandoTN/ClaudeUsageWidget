@@ -497,6 +497,68 @@ isolated states:
 31. Legend click isolates a series (the others fade to 22 %, nothing is
     recoloured); a second click restores.
 
+Stage 3c (the orchestrator's punch list T1–T25 on the 3b frames, plus the
+By-kind share toggle):
+
+32. Deltas are sane: no delta at all when the previous period was zero
+    ("new"), and a base ten times smaller or more is named instead of
+    turned into a percentage ("from 2.33 B", "from $1.5 k") — "▲ 1574 %"
+    told nobody anything. One caption under the tile row says what the
+    arrows compare against ("vs the prior 7 days, to the same hour";
+    "vs yesterday to this hour"); the All window has no comparison and no
+    arrows.
+33. The 7-bucket mean is computed on the CLIPPED series, so an outlier
+    no longer drags the line along the clip ceiling for seven buckets
+    where it read as data. The legend names the mean by the bucket unit
+    ("7-day mean", "7-hour mean").
+34. Model colours never borrow another provider's hue: every model is its
+    provider's hue at a lightness step by tier (Opus 1.0, Fable 0.72,
+    Sonnet 0.5, Haiku 0.34; Sol 1.0, Terra 0.72, Luna 0.5; Grok 4.6 1.0,
+    4.5 0.7). Sonnet used to land on Grok's green in the by-model table.
+35. The by-kind steps were too close in dark mode (cache writes ↔ cache
+    reads ΔE 4.9 — indistinguishable). Re-stepped as one hue in cost
+    order (uncached input the strongest, cache reads the muted bulk);
+    validated at ≥ 16.6 ΔE for every adjacent pair in normal, deutan,
+    protan and tritan vision, both surfaces. Relief for the light and
+    dark ends: text-token legend labels, the per-segment hover breakdown,
+    and the shares on the Input-class tile.
+36. The partial-bucket legend swatch is drawn exactly as the column is —
+    the series colour tinted and hatched — so the two agree.
+37. Provider badge letters carry the shared "Active for Claude" tooltip
+    and accessibility label; the `ActivePill` component replaces the
+    letters the stage after it lands on main (one-line swap).
+38. Account scope: the "By account" card was a 100 % self-reference. It
+    is now "Active for <provider> in this window": claim-to-claim
+    intervals from the ownership log, "since before this window" for a
+    span that opened earlier, "→ now" for one still open, each with its
+    length ("4 d 12 h") and basis (exact / observed / from history). The
+    card hides and By model takes the full width when the account held no
+    login in the window. Ownership spans are pure and tested
+    (`TelemetryReportBuilder.ownershipSpans`).
+39. Degraded ledger: the sidebar keeps its last known numbers, dimmed,
+    under a "last known" caption; the message names the ledger path; the
+    footer says "ledger unavailable" instead of "0 units · Zero KB on
+    disk" (a guess dressed as a fact); Refresh now stays.
+40. "About these numbers" collapses by default (persisted in the ledger
+    meta table, not preferences); the Codex attribution line stays visible
+    in the Codex scope because it explains the Unattributed row there.
+41. The pane never clips its footer: `ViewThatFits` renders the flexible
+    layout (chart ≥ 260 pt) when it fits and the same content in a scroll
+    view with the chart at 300 pt when it does not (small window, notes
+    expanded). The harness renders the notes frame at 760 pt because the
+    scrolling layout is invisible to `ImageRenderer`.
+42. By kind gets a Tokens | 100 % toggle: every bucket scaled to its
+    total with a 0 / 50 / 100 % axis, so the 3 % of uncached input that
+    costs the money is visible at all; the tooltip adds each kind's share.
+    Stacked | Split hides in share mode (a per-provider split would draw
+    three identical rows) and the title shortens to "Input share by kind".
+43. Axis labels name a month boundary on a 30-day axis ("Sep 1") and the
+    regular label beside it yields. The metric picker says "≈ Cost"; the
+    indexing tile says "still to index"; a paused indexer adds "· paused"
+    to the provenance line; zero sub-lines are hidden; an account's count
+    tile speaks its provider's unit ("Messages · 25 % from subagents")
+    instead of "Units".
+
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 
 1. Layout **B** vs A. 2. Default **7 days** vs 30. 3. Cost **shown, labelled**
