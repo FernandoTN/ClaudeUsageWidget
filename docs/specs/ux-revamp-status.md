@@ -93,7 +93,7 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 4a `FleetInsights` (timeline, blindness, drift, switch log, burn, incidents ring, capacity, why-not), `IncidentRing` + `DriftLog`, `MenuBarManager.makeFleetInsights()`, `SwitchEvent.fromHeadroom/providerRaw` | `feat/ux-revamp-4a-insights-model` | #107 | **merged** `b02b49f`; incident call sites + `SwitchEvent` field population requested from the fixes session |
 | 4b `DashboardInsightsView` (eight sections, timeline strip, sparkline, `InsightsFormatting`, `FleetInsights.fixture`) — the redesign embeds it under the last section | `feat/ux-revamp-4b-insights-view` | #110 | **merged** `ec3f474` |
 | Round-3 design pass (R1–R8, S1; `ActivePill`, `clearManualPin`) | `feat/ux-revamp-r3-design-pass` | draft | spec §12.8; lands after the fixes session's seams PR |
-| 4.1 usage-limit resets surface | — | — | after 4b |
+| 4.1 `CodexResetsCard` in the Overview (count never claims zero, on-demand details by expiry, Redeem gated on a measured limit with confirmation and outcome) | `feat/ux-revamp-41-resets` | draft | spec §12.9; stacked on the round-3 pass, lands after the seams PR |
 
 ## Open items
 

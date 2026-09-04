@@ -1185,3 +1185,30 @@
 "active.pinned_help" = "Pinned: you chose this account yourself, so the auto-switch leaves it alone until it regains headroom. Unpin to let the auto-switch move it.";
 "accounts.fact.view_profile" = "View %@";
 "accounts.fact.same_account_help" = "Two profiles hold logins for one account: one quota drawn as two tiles, and the auto-switch never moves between them. Which profile keeps the account is your call.";
+
+// MARK: - Codex usage limit resets (stage 4.1, spec §4.1, §12.9)
+"resets.count_unknown" = "Usage limit resets: none or unknown";
+"resets.details" = "Details";
+"resets.use_one" = "Use one usage limit reset…";
+"resets.none_listed" = "No usable grant listed.";
+"resets.fetched" = "Details fetched %@.";
+"resets.rule" = "A reset is a grant the account earned — spending one clears its current windows, the same as the CLI's Redeem. It is never used automatically, and only offered while a fresh measurement says the account is at its limit.";
+"resets.help_none" = "No grant to use.";
+"resets.help_headroom" = "The account still has headroom; a reset now would be wasted.";
+"resets.help_unmeasured" = "The shown number is not the account's own measurement; refresh first.";
+"resets.help_ready" = "Spend one grant to clear this account's current windows (same as the CLI's Redeem).";
+"resets.credit" = "Usage limit reset";
+"resets.credit_never" = "%@ · never expires";
+"resets.credit_expires" = "%@ · expires in %@";
+"resets.confirm_title" = "Use one usage limit reset for %@?";
+"resets.confirm_body" = "This spends one of %d grants and clears the account's current windows, the same as the CLI's Redeem. Evidence: the account measured at its limit %@.";
+"resets.confirm_button" = "Use one reset";
+"resets.outcome_reset" = "Reset applied · %d windows cleared";
+"resets.outcome_nothing" = "Nothing to reset — the account was not at a limit on the server.";
+"resets.outcome_no_credit" = "No grant available on the server.";
+"resets.outcome_already" = "That reset was already used.";
+"resets.outcome_unknown" = "The server answered with an unknown code: %@";
+"resets.error_unavailable" = "Unknown right now — the resets endpoint is rate-limited; try again in a few minutes.";
+"resets.error_api_key" = "Usage limit resets exist only for ChatGPT-login accounts.";
+"resets.error_stale" = "The at-limit measurement is too old; refresh and try again.";
+"resets.days" = "%d d";
