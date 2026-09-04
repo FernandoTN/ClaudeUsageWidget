@@ -125,6 +125,14 @@ struct RosterRow: Hashable {
     /// Other profiles that are the SAME provider account (one quota). A
     /// duplicate is never a switch candidate — switching to it changes nothing.
     var sameAccountAs: [String] = []
+    /// The ⇄ selector's verdict on this row (eligible / blocked / duplicate
+    /// of the owner / excluded), from the shared `ProviderActiveSelection`.
+    var candidateStatus: CandidateRow.Status?
+    /// The auto-switch's predicted next target.
+    var isNext: Bool = false
+    /// Named by `ProfileManager.profilesNeedingAccountRelogin` (a login that
+    /// carried another account, or a duplicate of the CLI's login).
+    var needsRelogin: Bool = false
 }
 
 struct ProviderSection: Hashable {
@@ -140,6 +148,10 @@ struct ProviderSection: Hashable {
     var roster: [RosterRow]
     var hiddenByOverflow: Bool
     var summary: ProviderSummary
+    /// What the ⇄ selector menu shows for this provider (owner, viewing,
+    /// ranked candidates, counts) — the same value, built once here, so the
+    /// dashboard and the menu can never disagree (docs/specs/ux-revamp.md D6).
+    var selection: ProviderActiveSelection?
 }
 
 struct RecentSwitch: Hashable {
@@ -182,8 +194,13 @@ struct DashboardSnapshot: Hashable {
         var history: [SwitchEvent]
         var hiddenProviders: Set<Profile.ProviderKind> = []
         /// Groups of profile ids that resolve to one provider account
-        /// (`ProfileManager.duplicateClaudeAccountGroups`).
+        /// (`FleetCounts.duplicateGroups(in:published:)`).
         var duplicateGroups: [[UUID]] = []
+        /// `MenuBarManager.autoSwitchedProfileIds`: user-chosen owners the
+        /// auto-switch will not move while they are over a threshold.
+        var manuallyPinned: Set<UUID> = []
+        /// `ProfileManager.profilesNeedingAccountRelogin`.
+        var needsRelogin: Set<UUID> = []
     }
 
     static func build(_ inputs: Inputs) -> DashboardSnapshot {
@@ -191,6 +208,16 @@ struct DashboardSnapshot: Hashable {
         let thresholds = inputs.context.thresholds
         let byId = Dictionary(uniqueKeysWithValues: inputs.profiles.map { ($0.id, $0) })
         let nameToProvider = Dictionary(inputs.profiles.map { ($0.name, $0.providerKind) }, uniquingKeysWith: { a, _ in a })
+
+        // The selector's view of every provider, built ONCE per snapshot.
+        let selections = Dictionary(uniqueKeysWithValues: ProviderActiveSelection.build(
+            ProviderActiveSelection.Inputs(
+                profiles: inputs.profiles, activeIds: inputs.activeIds, focusedId: inputs.focusedId,
+                paintedOrder: inputs.paintedOrder, context: inputs.context, queue: inputs.queue,
+                duplicateGroups: inputs.duplicateGroups, manuallyPinned: inputs.manuallyPinned,
+                needsRelogin: inputs.needsRelogin
+            )
+        ).map { ($0.provider, $0) })
 
         // id → the names of its duplicates (same account, other profiles).
         var duplicates: [UUID: [String]] = [:]
@@ -258,6 +285,8 @@ struct DashboardSnapshot: Hashable {
             if summary.alert == .noCandidate { banners.append(.noCandidate(provider)) }
             if inputs.hiddenProviders.contains(provider) { banners.append(.hiddenByOverflow(provider)) }
 
+            let selection = selections[provider]
+            let candidates = Dictionary(uniqueKeysWithValues: (selection?.candidates ?? []).map { ($0.id, $0) })
             let weeklyOnly = activeProfile?.claudeUsage.map { !$0.providesSessionWindow }
                 ?? (provider != .claude)
             let queue = inputs.queue.enumerated().compactMap { index, id -> QueueEntry? in
@@ -297,11 +326,17 @@ struct DashboardSnapshot: Hashable {
                                             queuePosition: inputs.queue.firstIndex(of: id).map { $0 + 1 },
                                             thresholds: thresholds, now: now)
                         row.sameAccountAs = duplicates[id] ?? []
+                        if let candidate = candidates[id] {
+                            row.candidateStatus = candidate.status
+                            row.isNext = candidate.isNext
+                            row.needsRelogin = candidate.needsRelogin
+                        }
                         return row
                     }
                 },
                 hiddenByOverflow: inputs.hiddenProviders.contains(provider),
-                summary: summary
+                summary: summary,
+                selection: selection
             ))
         }
 

@@ -28,6 +28,8 @@ Spec: `docs/specs/menubar-redesign.md`. Check-in brief (self-contained HTML):
 | 20:15–20:45 | Stage B2: dashboard view + wiring; rendered from the test harness and inspected at full height (no overlaps; Codex "nowhere with headroom", single-account Grok, collapsed switches all correct). UX-revamp sibling (`fe2aabe1`) agreed a file split: it owns the selection vocabulary model, per-provider selectors, the inspector, Settings restructure, counts; I keep the bar, dashboard view/model, popover lifecycle, overflow. |
 | 21:05 | B2 merged (#62, `8da0c3d`). Fixes session deployed main `46bc36a` (B2 + #63), then `98aff7b` (+ #64) at 19:51 PDT: 23 profiles / 22 tiles, default layout, no composite rebuild at launch. |
 | 22:07 | Fixes session deployed `ead8c54` (C0 + #66): the probe's first field sample was a false positive on every group (hit-test leg structurally blind on macOS 27). C0.1 fix-forward: WindowServer evidence, advisory hit test. |
+| 22:47 | Deployed `a8f3a60` reads the healthy signature: first paint `unknown` (h = 0, occ = 1), second probe `exposed` (occ = 0) on every group, no CONFIRMED HIDDEN. |
+| 22:50–23:15 | B2.1 on `a8f3a60` (UX revamp stage 1a merged as #72): the dashboard reads the ⇄ selector's `ProviderActiveSelection` built once per snapshot; section captions in the Viewing / Active-for vocabulary; counts strip + ⇄ button per section; roster rows carry the selector's verdict, `next`, `re-login needed`; the classic name menu is view-only ("Viewing …"); "Token usage…" entries on both surfaces post `.telemetryWindowRequested`. Rendered and inspected frame by frame; 4 tests; suite 397 / 0. |
 | 22:40 | Second probe sample on `96c9aa5`: `on=0` for every group (status-item windows are not in this app's on-screen list on macOS 27). C0.2: the on-screen list is telemetry only; occlusion alone says exposed. |
 | 22:25 | Popover lifecycle (row 25 of `docs/specs/ux-revamp-focus-authority.md`, my half): a focus change no longer drops the open popover — `refocusOpenSurface(on:)` rebuilds the dashboard snapshot or re-points the classic popover through `viewProfile`. Found by reading: the dashboard's own Make active… closed the dashboard one runloop after confirming. |
 | 21:10–21:55 | Stage C0: observe-only exposure telemetry. Pure `MenuBar/GroupExposure.swift` (verdict over one observation + hysteresis tracker), the probe in `StatusBarUIManager` (next runloop after every composite assembly, and on `NSWorkspace.didActivateApplicationNotification`), `hiddenProviders` fed to the dashboard's overflow banner, `GroupExposureTests` (5). Full suite 350 / 0. |
@@ -68,6 +70,16 @@ branch. Its asks, all folded into B1's model: provenance + age beside every
 number, never a value measured with someone else's credentials, a one-click
 repair route for dead logins, the verdict age on the next-candidate card,
 and duplicate groups shown as one quota with member names.
+
+## Stage B2.1 — vocabulary + selector hook + telemetry entries
+
+| PR | Branch | Contents | State |
+|---|---|---|---|
+| B2.1 | `feat/menubar-dashboard-b2-1` | `ProviderSection.selection` (built once inside `DashboardSnapshot.build` from `ProviderActiveSelection.build`, #72); `RosterRow.candidateStatus / isNext / needsRelogin`; `Inputs.manuallyPinned / needsRelogin`; `DashboardFormatting.sectionCaption` ("Viewing X · Active for Claude: Y" / "Active for Claude: Y" / "No active Claude login" / "· pinned") and `rosterHeader` ("· N eligible now"); section header with `FleetCounts.Provider.strip` (sentence on hover) and the ⇄ button posting `.activeSelectorRequested(provider)`; "Make active for <provider>…"; `ProfileSwitcherCompact` view-only through `ProfileManager.viewProfile` with a "Viewing" label; "Token usage…" in the dashboard header (fleet), row context menus (account) and the classic name menu, all posting `.telemetryWindowRequested` (object = profile id or nil, `userInfo["provider"]`); `rebuildDashboardSnapshot` passes `FleetCounts.duplicateGroups(in:published:)`, the manual pins and the re-login set. `DashboardSelectionTests` (4). | draft PR, suite 397 / 0 |
+
+Until UX-revamp stage 1b (the ⇄ item + observer) and the telemetry
+sibling's window controller land, the ⇄ button and the "Token usage…"
+entries post notifications nobody observes (no-ops by design).
 
 ## Stage C — overflow (C0 in review)
 

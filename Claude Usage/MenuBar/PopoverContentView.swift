@@ -62,6 +62,8 @@ struct PopoverContentView: View {
     let onRefresh: () -> Void
     let onPreferences: () -> Void
     let onManageProfiles: () -> Void
+    /// Open the token-usage window for the viewed account (nil = fleet).
+    var onTokenUsage: (UUID?, Profile.ProviderKind?) -> Void = { _, _ in }
 
     @State private var isRefreshing = false
     @StateObject private var profileManager = ProfileManager.shared
@@ -168,7 +170,8 @@ struct PopoverContentView: View {
                 },
                 onManageProfiles: onManageProfiles,
                 onPreferences: onPreferences,
-                clickedProfileId: manager.clickedProfileId
+                clickedProfileId: manager.clickedProfileId,
+                onTokenUsage: onTokenUsage
             )
 
             PopoverDivider()
@@ -493,10 +496,15 @@ struct PopoverDivider: View {
 
 // MARK: - Profile Switcher Compact (for header)
 
+/// The name menu VIEWS an account — it never switches a CLI (docs/specs/
+/// ux-revamp.md D6: focus is never authority). Making a login active is the
+/// ⇄ selector's and the dashboard's job, where the cost and the target's
+/// verdict are spelled out first.
 struct ProfileSwitcherCompact: View {
     @StateObject private var profileManager = ProfileManager.shared
     @State private var isHovered = false
     let onManageProfiles: () -> Void
+    var onTokenUsage: (UUID?, Profile.ProviderKind?) -> Void = { _, _ in }
 
     /// True when a provider login this profile carries is known dead (expired
     /// with a revoked refresh token). Selecting such a profile is refused by the
@@ -512,9 +520,7 @@ struct ProfileSwitcherCompact: View {
             ForEach(profileManager.profiles) { profile in
                 let loginDead = hasDeadLogin(profile)
                 Button(action: {
-                    Task {
-                        await profileManager.activateProfile(profile.id, userInitiated: true)
-                    }
+                    _ = profileManager.viewProfile(profile.id)
                 }) {
                     HStack(spacing: 8) {
                         Image(systemName: loginDead ? "exclamationmark.triangle.fill" : "person.circle.fill")
@@ -570,11 +576,27 @@ struct ProfileSwitcherCompact: View {
                         .font(.system(size: 12, weight: .medium))
                 }
             }
+
+            Button(action: {
+                onTokenUsage(profileManager.activeProfile?.id, profileManager.activeProfile?.providerKind)
+            }) {
+                HStack {
+                    Image(systemName: "chart.bar.xaxis")
+                        .font(.system(size: 12))
+                    Text("popover.token_usage".localized)
+                        .font(.system(size: 12, weight: .medium))
+                }
+            }
         } label: {
-            Text(profileManager.activeProfile?.name ?? "popover.no_profile".localized)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(.primary)
-                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(ActiveVocabulary.viewing)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text(profileManager.activeProfile?.name ?? "popover.no_profile".localized)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+            }
         }
         .menuStyle(.borderlessButton)
         .buttonStyle(.plain)
@@ -590,6 +612,7 @@ struct SmartHeader: View {
     let onManageProfiles: () -> Void
     let onPreferences: () -> Void
     var clickedProfileId: UUID? = nil
+    var onTokenUsage: (UUID?, Profile.ProviderKind?) -> Void = { _, _ in }
 
     @StateObject private var profileManager = ProfileManager.shared
 
@@ -625,7 +648,7 @@ struct SmartHeader: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                ProfileSwitcherCompact(onManageProfiles: onManageProfiles)
+                ProfileSwitcherCompact(onManageProfiles: onManageProfiles, onTokenUsage: onTokenUsage)
 
                 // Status
                 Button(action: {
