@@ -1136,3 +1136,5 @@
 "insights.same_account_as" = "same account as %@";
 "insights.excluded_toggle" = "excluded by its auto-switch toggle";
 "insights.excluded_free" = "free plan";
+"telemetry.chart.stacked" = "Stacked";
+"telemetry.chart.split" = "Split";
