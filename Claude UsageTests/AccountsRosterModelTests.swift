@@ -171,8 +171,9 @@ final class AccountsRosterModelTests: XCTestCase {
     // MARK: - Routes
 
     func testRouteDecodesTheLegacyStringAndTheTypedPayload() {
-        XCTAssertEqual(SettingsRoute(deepLink: "manageProfiles"), SettingsRoute(section: .manageProfiles))
-        XCTAssertEqual(SettingsRoute(deepLink: "cliAccount")?.section, .cliAccount)
+        XCTAssertEqual(SettingsRoute(deepLink: "manageProfiles"), SettingsRoute(section: .accounts), "a deleted section's raw value still decodes")
+        XCTAssertEqual(SettingsRoute(deepLink: "cliAccount"), SettingsRoute(section: .accounts, tab: .login))
+        XCTAssertEqual(SettingsRoute(deepLink: "accounts"), SettingsRoute(section: .accounts))
         XCTAssertNil(SettingsRoute(deepLink: "nope"))
         XCTAssertNil(SettingsRoute(deepLink: 42))
         let id = UUID()
@@ -185,8 +186,9 @@ final class AccountsRosterModelTests: XCTestCase {
     func testAccountsSectionIsListedAndTitled() {
         XCTAssertTrue(SettingsSection.allCases.contains(.accounts))
         XCTAssertEqual(SettingsSection.accounts.title, "Accounts")
-        XCTAssertFalse(SettingsSection.accounts.isProfileSetting)
-        XCTAssertFalse(SettingsSection.accounts.isCredential)
+        XCTAssertFalse(SettingsSection.accounts.isBottomBarItem)
+        XCTAssertEqual(SettingsSection.allCases, [.accounts, .activeAccounts, .alerts, .display, .advanced, .about],
+                       "the revamp's five pages plus About — the legacy sections are gone (stage 3d)")
         XCTAssertEqual(SettingsSection(rawValue: "accounts"), .accounts)
     }
 

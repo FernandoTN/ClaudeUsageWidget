@@ -180,7 +180,7 @@ struct SettingsView: View {
     /// The Accounts inspector's detail tab (docs/specs/ux-revamp.md §2.2).
     @State private var accountTab: AccountTab = .overview
     /// The section to return to from the Accounts roster sidebar.
-    @State private var sectionBeforeAccounts: SettingsSection = .manageProfiles
+    @State private var sectionBeforeAccounts: SettingsSection = .activeAccounts
     @StateObject private var accountsStore = AccountsInspectorStore()
     @Environment(\.colorScheme) private var colorScheme
 
@@ -240,26 +240,6 @@ struct SettingsView: View {
                 case .advanced:
                     AdvancedSettingsView()
                 // Credentials
-                case .cliAccount:
-                    CLIAccountView()
-                case .codexAccount:
-                    CodexAccountView()
-
-                // Profile Settings
-                case .appearance:
-                    AppearanceSettingsView()
-                case .general:
-                    GeneralSettingsView()
-
-                // Shared Settings
-                case .appSettings:
-                    AppSettingsView()
-                case .manageProfiles:
-                    ManageProfilesView()
-                case .shortcuts:
-                    ShortcutsSettingsView()
-                case .popover:
-                    PopoverSettingsView()
                 case .about:
                     AboutView()
                 }
@@ -276,8 +256,8 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .settingsSectionRequested)) { notification in
             // Both payloads decode: the legacy section string every existing
             // poster sends, and the typed route that names its profile + tab.
-            // Legacy sections land on the pages that replace them (spec §5.5).
-            guard let route = SettingsRoute(deepLink: notification.object)?.canonical else { return }
+            // Legacy section strings decode onto the pages that replaced them (SettingsRoute.legacyAliases).
+            guard let route = SettingsRoute(deepLink: notification.object) else { return }
             if let id = route.profileId { ProfileManager.shared.viewProfile(id) }
             if let tab = route.tab { accountTab = tab }
             select(route.section)
@@ -296,9 +276,6 @@ struct ProfileSectionContainer: View {
     @Binding var selectedSection: SettingsSection
     @StateObject private var profileManager = ProfileManager.shared
 
-    var profileSections: [SettingsSection] {
-        SettingsSection.allCases.filter { $0.isProfileSetting && !$0.isCredential }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -352,40 +329,10 @@ struct ProfileSectionContainer: View {
                     .padding(.horizontal, 8)
                     .padding(.top, 6)
 
-                ProfileCredentialCardsRow(selectedSection: $selectedSection)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 4)
             }
 
-            Divider()
-                .padding(.horizontal, 8)
-
-            // Profile Settings
-            VStack(alignment: .leading, spacing: 4) {
-                Text("section.settings".localized)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-
-                VStack(spacing: 4) {
-                    ForEach(profileSections, id: \.self) { section in
-                        Button {
-                            selectedSection = section
-                        } label: {
-                            SettingMiniButton(
-                                icon: section.icon,
-                                title: section.title,
-                                isSelected: selectedSection == section
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .help(section.description)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 4)
-            }
         }
         .background(
             RoundedRectangle(cornerRadius: 6)
@@ -404,7 +351,7 @@ struct AppSettingsSection: View {
     @Binding var selectedSection: SettingsSection
 
     var sharedSections: [SettingsSection] {
-        SettingsSection.allCases.filter { !$0.isProfileSetting && !$0.isCredential && !$0.isBottomBarItem }
+        SettingsSection.allCases.filter { !$0.isBottomBarItem }
     }
 
     var body: some View {
@@ -504,12 +451,8 @@ struct BottomBarSection: View {
 
 enum SettingsSection: String, CaseIterable {
     // Credentials (not shown in sidebar)
-    case cliAccount
-    case codexAccount
 
     // Profile Settings
-    case appearance
-    case general
 
     // Shared Settings
     case accounts
@@ -517,10 +460,6 @@ enum SettingsSection: String, CaseIterable {
     case alerts
     case display
     case advanced
-    case appSettings
-    case manageProfiles
-    case shortcuts
-    case popover
     case about
 
     var title: String {
@@ -530,14 +469,6 @@ enum SettingsSection: String, CaseIterable {
         case .alerts: return "section.alerts_title".localized
         case .display: return "section.display_title".localized
         case .advanced: return "section.advanced_title".localized
-        case .cliAccount: return "section.cli_account_title".localized
-        case .codexAccount: return "section.codex_account_title".localized
-        case .appearance: return "section.appearance_title".localized
-        case .general: return "section.general_title".localized
-        case .appSettings: return "section.app_settings_title".localized
-        case .manageProfiles: return "section.manage_profiles_title".localized
-        case .shortcuts: return "section.shortcuts_title".localized
-        case .popover: return "section.popover_title".localized
         case .about: return "settings.about".localized
         }
     }
@@ -549,14 +480,6 @@ enum SettingsSection: String, CaseIterable {
         case .alerts: return "bell.badge.fill"
         case .display: return "macwindow"
         case .advanced: return "wrench.and.screwdriver.fill"
-        case .cliAccount: return "terminal.fill"
-        case .codexAccount: return "chevron.left.forwardslash.chevron.right"
-        case .appearance: return "paintbrush.fill"
-        case .general: return "gearshape.fill"
-        case .appSettings: return "gearshape.2.fill"
-        case .manageProfiles: return "person.2.fill"
-        case .shortcuts: return "keyboard"
-        case .popover: return "rectangle.topthird.inset.filled"
         case .about: return "info.circle.fill"
         }
     }
@@ -568,14 +491,6 @@ enum SettingsSection: String, CaseIterable {
         case .alerts: return "section.alerts_desc".localized
         case .display: return "section.display_desc".localized
         case .advanced: return "section.advanced_desc".localized
-        case .cliAccount: return "section.cli_account_desc".localized
-        case .codexAccount: return "section.codex_account_desc".localized
-        case .appearance: return "section.appearance_desc".localized
-        case .general: return "section.general_desc".localized
-        case .appSettings: return "section.app_settings_desc".localized
-        case .manageProfiles: return "section.manage_profiles_desc".localized
-        case .shortcuts: return "section.shortcuts_desc".localized
-        case .popover: return "section.popover_desc".localized
         case .about: return "settings.about.description".localized
         }
     }
@@ -584,24 +499,6 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .about: return "About"
         default: return title
-        }
-    }
-
-    var isCredential: Bool {
-        switch self {
-        case .cliAccount, .codexAccount:
-            return true
-        default:
-            return false
-        }
-    }
-
-    var isProfileSetting: Bool {
-        switch self {
-        case .appearance, .general:
-            return true
-        default:
-            return false
         }
     }
 
@@ -654,124 +551,6 @@ struct SidebarItem: View {
             isHovered = hovering
         }
         .help(description)
-    }
-}
-
-// MARK: - Profile Credential Cards Row
-
-struct ProfileCredentialCardsRow: View {
-    @Binding var selectedSection: SettingsSection
-    @StateObject private var profileManager = ProfileManager.shared
-
-    // Provider exclusivity: a Codex profile never offers the Claude credential
-    // sections and vice versa. A profile with no credentials yet offers both.
-    private var showsClaudeSections: Bool {
-        !(profileManager.activeProfile?.carriesCodexAccount ?? false)
-    }
-
-    private var showsCodexSection: Bool {
-        !(profileManager.activeProfile?.carriesClaudeAccount ?? false)
-    }
-
-    var body: some View {
-        VStack(spacing: 4) {
-            if showsClaudeSections {
-                // CLI Account Card
-                Button {
-                    selectedSection = .cliAccount
-                } label: {
-                    CredentialMiniCard(
-                        icon: "terminal.fill",
-                        title: "CLI Account",
-                        isConnected: profileManager.activeProfile?.hasCliAccount ?? false,
-                        isSelected: selectedSection == .cliAccount
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            if showsCodexSection {
-                // Codex Account Card
-                Button {
-                    selectedSection = .codexAccount
-                } label: {
-                    CredentialMiniCard(
-                        icon: "chevron.left.forwardslash.chevron.right",
-                        title: "Codex Account",
-                        isConnected: profileManager.activeProfile?.hasCodexAccount ?? false,
-                        isSelected: selectedSection == .codexAccount
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .onAppear {
-            normalizeSelection()
-        }
-        .onChange(of: activeAvailabilitySignature) { _, _ in
-            normalizeSelection()
-        }
-    }
-
-    /// What `normalizeSelection` actually depends on: WHO is focused and which
-    /// credential kinds they carry. Observing the full 14-profile array ran a
-    /// deep ~30-field Equatable compare per publish; observing ids alone missed
-    /// same-id credential-kind transitions (Codex-caught).
-    private var activeAvailabilitySignature: String {
-        let p = profileManager.activeProfile
-        return "\(p?.id.uuidString ?? "-")|\(p?.hasCliAccount == true)|\(p?.hasCodexAccount == true)"
-    }
-
-    /// Moves the selection off a credential section the focused profile doesn't
-    /// offer (e.g. the Codex page was open and the user switched to a Claude
-    /// profile) — otherwise the content pane would show a page with no sidebar card.
-    private func normalizeSelection() {
-        if !showsCodexSection, selectedSection == .codexAccount {
-            selectedSection = .cliAccount
-        } else if !showsClaudeSections, selectedSection == .cliAccount {
-            selectedSection = .codexAccount
-        }
-    }
-}
-
-struct CredentialMiniCard: View {
-    let icon: String
-    let title: String
-    let isConnected: Bool
-    let isSelected: Bool
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            // Icon
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? .white : (isConnected ? .green : .gray))
-                .frame(width: 12)
-
-            // Title
-            Text(title)
-                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                .foregroundColor(isSelected ? .white : .primary)
-
-            Spacer()
-
-            // Status indicator
-            Circle()
-                .fill(isSelected ? Color.white.opacity(0.9) : (isConnected ? Color.green : Color.gray.opacity(0.3)))
-                .frame(width: 5, height: 5)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(isSelected ? DesignTokens.Colors.accent : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
-        )
-        .padding(.horizontal, 4)
-        .padding(.vertical, 1)
-        .onHover { hovering in
-            isHovered = hovering
-        }
     }
 }
 

@@ -71,19 +71,18 @@ final class SettingsKeyRegistryTests: XCTestCase {
 
     // MARK: Route aliases (spec §5.5, stage 3c)
 
-    func testLegacySectionsRouteOntoTheirReplacements() {
-        XCTAssertEqual(SettingsRoute(section: .manageProfiles).canonical.section, .accounts)
-        XCTAssertEqual(SettingsRoute(section: .general).canonical.section, .accounts)
-        let login = SettingsRoute(section: .cliAccount, profileId: nil, tab: nil).canonical
-        XCTAssertEqual(login.section, .accounts)
-        XCTAssertEqual(login.tab, .login)
-        XCTAssertEqual(SettingsRoute(section: .codexAccount, tab: .overview).canonical.tab, .overview, "an explicit tab is kept")
-        XCTAssertEqual(SettingsRoute(section: .popover).canonical.section, .display)
-        XCTAssertEqual(SettingsRoute(section: .appSettings).canonical.section, .advanced)
-        XCTAssertEqual(SettingsRoute(section: .shortcuts).canonical.section, .advanced)
-        XCTAssertEqual(SettingsRoute(section: .appearance).canonical.section, .display, "the single-account config moved with 3d")
-        XCTAssertEqual(SettingsRoute(section: .accounts, tab: .alerts).canonical, SettingsRoute(section: .accounts, tab: .alerts))
-        XCTAssertEqual(SettingsRoute(deepLink: "manageProfiles")?.canonical.section, .accounts, "the legacy string payload aliases too")
+    func testDeletedSectionsStillDecodeOntoTheirReplacements() {
+        XCTAssertEqual(SettingsRoute(deepLink: "manageProfiles")?.section, .accounts)
+        XCTAssertEqual(SettingsRoute(deepLink: "general")?.section, .accounts)
+        XCTAssertEqual(SettingsRoute(deepLink: "cliAccount"), SettingsRoute(section: .accounts, tab: .login))
+        XCTAssertEqual(SettingsRoute(deepLink: "codexAccount"), SettingsRoute(section: .accounts, tab: .login))
+        XCTAssertEqual(SettingsRoute(deepLink: "appearance")?.section, .display)
+        XCTAssertEqual(SettingsRoute(deepLink: "popover")?.section, .display)
+        XCTAssertEqual(SettingsRoute(deepLink: "appSettings")?.section, .advanced)
+        XCTAssertEqual(SettingsRoute(deepLink: "shortcuts")?.section, .advanced)
+        XCTAssertNil(SettingsRoute(deepLink: "nope"))
+        XCTAssertEqual(Set(SettingsRoute.legacyAliases.keys).intersection(SettingsSection.allCases.map(\.rawValue)), [],
+                       "an alias never shadows a live section")
     }
 
     func testDisplayAndAdvancedSectionsAreRegistered() {

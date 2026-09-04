@@ -42,6 +42,8 @@ struct SettingsRoute: Hashable {
             self = route
         } else if let raw = object as? String, let section = SettingsSection(rawValue: raw) {
             self = SettingsRoute(section: section)
+        } else if let raw = object as? String, let alias = Self.legacyAliases[raw] {
+            self = alias
         } else {
             return nil
         }
@@ -53,20 +55,16 @@ struct SettingsRoute: Hashable {
         self.tab = tab
     }
 
-    /// The legacy sections mapped onto the pages that replace them (spec §5.5,
-    /// stage 3c), so every existing poster lands somewhere current.
-    var canonical: SettingsRoute {
-        switch section {
-        case .manageProfiles, .general:
-            return SettingsRoute(section: .accounts, profileId: profileId, tab: tab)
-        case .cliAccount, .codexAccount:
-            return SettingsRoute(section: .accounts, profileId: profileId, tab: tab ?? .login)
-        case .appearance, .popover:
-            return SettingsRoute(section: .display, profileId: profileId, tab: tab)
-        case .appSettings, .shortcuts:
-            return SettingsRoute(section: .advanced, profileId: profileId, tab: tab)
-        default:
-            return self
-        }
-    }
+    /// Raw values of the sections deleted in stage 3d, decoded onto the pages that
+    /// replaced them (spec §5.5) so every existing poster keeps landing somewhere.
+    static let legacyAliases: [String: SettingsRoute] = [
+        "manageProfiles": SettingsRoute(section: .accounts),
+        "general": SettingsRoute(section: .accounts),
+        "cliAccount": SettingsRoute(section: .accounts, tab: .login),
+        "codexAccount": SettingsRoute(section: .accounts, tab: .login),
+        "appearance": SettingsRoute(section: .display),
+        "popover": SettingsRoute(section: .display),
+        "appSettings": SettingsRoute(section: .advanced),
+        "shortcuts": SettingsRoute(section: .advanced),
+    ]
 }
