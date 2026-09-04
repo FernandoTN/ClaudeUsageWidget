@@ -186,11 +186,13 @@ struct AccountsSectionHeader: View {
                 Text(section.subtitle).font(.system(size: 9.5)).foregroundColor(.secondary)
             }
             // Words, not glyphs (owner ruling 2026-09-04); the legend is on hover only.
+            // One line at the sidebar's width — the List's header row clips a
+            // second line (owner finding V2); the full sentence is the tooltip.
             Text(ActiveVocabulary.countsWords(section.counts))
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .help(ActiveVocabulary.countsSentence(section.counts) + "\n" + DesignLegend.line)
         }
         .padding(.vertical, 2)

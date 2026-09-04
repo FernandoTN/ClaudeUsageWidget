@@ -22,6 +22,10 @@ struct FleetCounts: Hashable {
         var profiles: Int
         /// Distinct accounts behind those rows (`FleetCounts.accountKey`).
         var distinctAccounts: Int
+        /// Accounts whose identity is stamped (`claudeAccountUUID` / Codex
+        /// `account_id`); an unstamped profile counts as its own unknown account
+        /// in `distinctAccounts` but not here (owner finding V2).
+        var identifiedAccounts: Int = 0
         /// First-match partition of the rows — the seven states sum to `profiles`.
         var byReadiness: [AccountReadiness: Int]
         /// The two meanings of `.excluded`: a toggle the user flipped (still
@@ -192,6 +196,7 @@ struct FleetCounts: Hashable {
                 provider: kind,
                 profiles: rows.count,
                 distinctAccounts: byAccount.count,
+                identifiedAccounts: byAccount.keys.filter { !$0.hasPrefix("profile:") }.count,
                 byReadiness: byReadiness,
                 excludedByToggle: excludedByToggle,
                 freePlan: freePlan,
