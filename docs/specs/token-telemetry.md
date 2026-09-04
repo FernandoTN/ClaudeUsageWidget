@@ -402,6 +402,7 @@ one footer line, the window keeps working from memory. Nothing for a scope →
 | **4a — attribution polish, part 1** | T26 dense-axis labels, rate-limit overlay (opt-in, per-series in Split), switch detail on the ownership spans, export CSV with provenance columns | export provenance and scoping, marker counts by scope and by series, span edges, axis label rule |
 | **4b — stacks** | the stack switch: by project / originator (source), main vs subagents (Claude's sidechain), account; a pill beside the chart title, options by scope | series keys per stack, option lists per scope, titles per provider |
 | **4c — compaction** | minute compaction of raw events older than 90 days (lossless for the report: same aggregation, session counts, spans) | compaction equivalence on a synthetic ledger; replay after compaction is dropped; in-flight rows untouched |
+| **4d — isolated Codex homes** | the by-path attribution actually reaches the aggregate: "<home>/<originator>" as source for isolated-home rollouts, a one-time replace-in-transaction re-index with per-file progress, a note while pending | an isolated home end to end (prefix, attribution, replace without double counting, pending count, never re-runs) |
 
 Each stage: Release build + full suite green on the merged tree
 (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, dedicated
@@ -638,6 +639,32 @@ none):
     is additive (two tables); nothing moves at open. Nothing on the live
     ledger is that old yet — the archive began 2026-08-04 — so the first
     real pass is months away.
+
+Stage 4d (the orchestrator's T27 from the 4b review — a fixture label that
+turned out to be a defect):
+
+52. Isolated-home Codex rollouts never attributed by path in production:
+    the indexer knew each rollout's home but handed it only to the Grok
+    parser, the Codex reader stored the originator as the event's source,
+    and the resolver looked the home slug up in that same field — so an
+    isolated home's consumption was credited by time to whoever held the
+    default-home login. Now the indexer writes "<home>/<originator>"
+    ("xfenrir-dev/exec") for isolated homes and the plain originator for
+    the default one; the resolver matches the prefix (a bare pre-4d value
+    is offered whole and the roster decides); the Originator stack labels
+    "exec (xfenrir-dev)" so two homes with one originator stay two series;
+    the CSV shows the composite, which is honest. Rows written under the
+    old rule are re-derived once: the Codex reader state carries a
+    `sourceVersion`, a cursor below the current one marks its file for a
+    replace-in-transaction re-index (delete the file's rows, re-insert
+    from offset 0, save the cursor — one transaction, so a crash leaves
+    either the old file or the new and resumes from the files still at
+    version 0, never looping), large rollouts continue from their cursor
+    like any other file, and a meta counter feeds an "About these numbers"
+    line while files remain ("Re-attributing isolated-home Codex sessions
+    · N files to go"). Tested end to end on a synthetic isolated home:
+    prefix, attribution, replace without double counting, pending count,
+    done means done.
 
 ## 6. Open questions for the owner (check-in brief, sent 21:01)
 

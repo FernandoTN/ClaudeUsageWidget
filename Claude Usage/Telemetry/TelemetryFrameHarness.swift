@@ -181,7 +181,8 @@ enum TelemetryFrameHarness {
                     aggregates.append(aggregate(.claude, "claude-opus-5", at: day(offset, hour, now: now), input: Int(400 * scale), cacheRead: Int(2_400_000_000 * scale), cacheWrite: Int(80_000_000 * scale), output: Int(3_100_000 * scale), units: Int(3_900 * scale)))
                     aggregates.append(aggregate(.claude, "claude-fable-5", at: day(offset, hour + 1, now: now), input: Int(100 * scale), cacheRead: Int(480_000_000 * scale), cacheWrite: Int(20_000_000 * scale), output: Int(900_000 * scale), units: Int(700 * scale), sidechain: true))
                     aggregates.append(aggregate(.claude, "claude-sonnet-5", at: day(offset, hour + 2, now: now), input: Int(60 * scale), cacheRead: Int(120_000_000 * scale), output: Int(400_000 * scale), units: Int(600 * scale), sidechain: true))
-                    aggregates.append(aggregate(.codex, "gpt-5.6-sol", at: day(offset, hour, now: now), input: Int(900_000 * scale), cacheRead: Int(24_000_000 * scale), output: Int(90_000 * scale), units: Int(600 * scale), source: offset % 3 == 0 ? "xfenrir-dev" : ".codex"))
+                    // Sources are originators; an isolated home's rollouts carry the home as prefix (stage 4d).
+                    aggregates.append(aggregate(.codex, "gpt-5.6-sol", at: day(offset, hour, now: now), input: Int(900_000 * scale), cacheRead: Int(24_000_000 * scale), output: Int(90_000 * scale), units: Int(600 * scale), source: offset % 3 == 0 ? "xfenrir-dev/vscode" : "exec"))
                     aggregates.append(aggregate(.grok, "grok-4.6-build", at: day(offset, hour + 3, now: now), input: Int(1_600_000 * scale), cacheRead: Int(7_000_000 * scale), output: Int(160_000 * scale), units: Int(8 * scale), source: "ClaudeUsageWidget", costNano: Int(13_000_000_000 * scale)))
                 }
             }

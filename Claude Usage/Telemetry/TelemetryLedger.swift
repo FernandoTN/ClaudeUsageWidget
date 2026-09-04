@@ -459,6 +459,16 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         return try statement.step() ? statement.int(0) : 0
     }
 
+    /// Every raw row of one file — the first half of a replace-in-place
+    /// re-index (stage 4d); the second half is the upsert in the same
+    /// transaction. Compacted minutes are untouched.
+    func deleteEvents(fileId: String) throws {
+        guard let fileRef = try internedId(fileId) else { return }
+        let statement = try prepare("DELETE FROM events WHERE file_ref = ?1")
+        statement.bind(1, fileRef)
+        _ = try statement.step()
+    }
+
     /// Raw rows still in `events` — a test seam.
     func rawEventCount() throws -> Int {
         let statement = try prepare("SELECT COUNT(*) FROM events")

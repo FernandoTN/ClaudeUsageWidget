@@ -82,6 +82,48 @@ final class TelemetryIndexerTests: XCTestCase {
 
     // MARK: - Tests
 
+    func testIsolatedHomeRolloutsCarryTheHomeAndAreReindexedOnceByReplacement() throws {
+        // A second Codex home beside the default one (stage 4d).
+        let isolated = root.appendingPathComponent("codex-accounts/xfenrir-dev")
+        try FileManager.default.createDirectory(at: isolated.appendingPathComponent("sessions/2026/07/25"), withIntermediateDirectories: true)
+        let isolatedFile = isolated.appendingPathComponent("sessions/2026/07/25/rollout-2026-07-25T15-00-00-0abcdef1.jsonl")
+        try write(isolatedFile, codexLines)
+        roots.codexHomes.append(isolated)
+        roots.defaultCodexHome = roots.codexHomes[0]
+        let fileId = "codex:" + isolatedFile.lastPathComponent
+
+        _ = TelemetryIndexer(ledger: ledger, roots: roots).runSlice()
+        let fresh = try allEvents().filter { $0.provider == .codex }
+        XCTAssertEqual(fresh.count, 4)
+        XCTAssertEqual(Set(fresh.map { $0.source ?? "" }), ["codex_exec", "xfenrir-dev/codex_exec"],
+                       "the default home keeps the plain originator; the isolated home is prefixed")
+        XCTAssertEqual(AttributionResolver.codexHomeSlug(in: "xfenrir-dev/codex_exec"), "xfenrir-dev")
+        XCTAssertEqual(AttributionResolver.codexHomeSlug(in: "codex_exec"), "codex_exec", "a bare source is offered whole; the roster decides")
+        XCTAssertEqual(AttributionResolver.codexOriginator(in: "xfenrir-dev/codex_exec"), "codex_exec")
+        XCTAssertEqual(AttributionResolver.codexOriginator(in: "codex_exec"), "codex_exec")
+
+        // Rows written before stage 4d: the plain originator and a cursor without a source version.
+        let old = fresh.filter { $0.fileId == fileId }.map { event -> TelemetryEvent in var e = event; e.source = "codex_exec"; return e }
+        try ledger.upsert(old)
+        let cursor = try XCTUnwrap(try ledger.cursor(for: fileId))
+        try ledger.save(TelemetryCursor(fileId: fileId, path: cursor.path, inode: cursor.inode, size: cursor.size,
+                                        mtime: cursor.mtime, offset: cursor.offset, state: nil))
+        XCTAssertEqual(Set(try allEvents().filter { $0.fileId == fileId }.map { $0.source ?? "" }), ["codex_exec"])
+
+        // A scan that processes nothing still publishes the pending count.
+        _ = TelemetryIndexer(ledger: ledger, roots: roots, bounds: IndexerBounds(maxFiles: 0)).runSlice()
+        XCTAssertEqual(ledger.meta(TelemetryIndexer.codexReindexPendingKey), "1")
+
+        // The re-index replaces: same unit count, composite sources, one pass, never again.
+        let report = TelemetryIndexer(ledger: ledger, roots: roots).runSlice()
+        XCTAssertEqual(report.filesScanned, 1, "only the isolated file, which did not change on disk")
+        let after = try allEvents().filter { $0.provider == .codex }
+        XCTAssertEqual(after.count, 4, "replaced, not appended")
+        XCTAssertEqual(Set(after.filter { $0.fileId == fileId }.map { $0.source ?? "" }), ["xfenrir-dev/codex_exec"])
+        XCTAssertEqual(ledger.meta(TelemetryIndexer.codexReindexPendingKey), "0")
+        XCTAssertEqual(TelemetryIndexer(ledger: ledger, roots: roots).runSlice().filesScanned, 0, "done means done")
+    }
+
     func testOnePassIndexesAllThreeProvidersAndPrunesToolResults() throws {
         let indexer = TelemetryIndexer(ledger: ledger, roots: roots)
         let report = indexer.runSlice()

@@ -272,18 +272,26 @@ day, checkpoint after, one log line. Tests: `TelemetryCompactionTests`
 dropped / new file lands / watermarks survive reopen, budget stops after a
 day and resumes). Design pass 51.
 
+Stage 4c merged as `734755c` (#123), held back from deploy until the
+imminent auto-switch completes (it is inert on this ledger anyway).
+
+## Stage 4d — isolated Codex homes attribute by path
+
+The T27 defect (isolated-home rollouts credited by time to the default-home
+owner, because the home never reached the aggregate). `TelemetrySourceRoots`
+learns the default home; the indexer writes "<home>/<originator>" for
+isolated homes; `AttributionResolver.codexHomeSlug` / `codexOriginator`
+split it; the Originator stack labels "exec (xfenrir-dev)"; the Codex
+reader state carries `sourceVersion`, and a cursor below the current one
+marks its file for a replace-in-transaction re-index (`deleteEvents` +
+upsert + cursor save), counted at scan time into meta
+(`codexReindexPending_v1`) and shown in the Codex notes while files remain.
+Tests: `TelemetryIndexerTests` (+1, end to end). Design pass 52. Harness
+fixture sources are now "exec" and "xfenrir-dev/vscode".
+
 ## Next
 
-Stage 4d — the T27 defect: isolated-home Codex rollouts never attribute by
-path in production because the reader stores the originator as `source`
-and the indexer hands the home only to the Grok parser. Fix: composite
-source "<home>/<originator>" for isolated homes (default home stays plain),
-resolver matches the prefix, the Originator stack labels the suffix, the
-CSV shows the composite; a one-time per-file re-index of isolated-home
-rollouts that REPLACES that file's rows in the same transaction (unit
-counts asserted unchanged), flagged per file as each completes so a crash
-never loops, with an "About these numbers" line while pending. Then the
-fixes session's punch
+The fixes session's punch
 list on the shell (typography, sidebar density, footer actions) once its
 pixel pass lands.
 

@@ -69,16 +69,34 @@ nonisolated struct AttributionResolver: Sendable {
         self.roster = Dictionary(roster.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// `source` is the unit's origin string: for Codex the home directory's
-    /// last path component (an isolated home's slug, or ".codex").
+    /// `source` is the unit's origin string. For Codex it is the rollout's
+    /// originator ("exec", "vscode"), prefixed with the home's slug when the
+    /// rollout lives in an isolated home — "xfenrir-dev/exec" — and that
+    /// prefix is what attributes by path (stage 4d; before it the home never
+    /// reached the aggregate and this rule was dead).
     func attribute(provider: TelemetryProvider, at: Date, source: String?) -> Attribution {
-        if provider == .codex, let source, let profile = codexSlugToProfile[source] {
+        if provider == .codex, let slug = Self.codexHomeSlug(in: source), let profile = codexSlugToProfile[slug] {
             return .profile(profile, basis: .byPath)
         }
         if provider == .grok, let sole = soleGrokProfile {
             return .profile(sole, basis: .soleAccount)
         }
         return timeline(provider: provider, at: at)
+    }
+
+    /// "xfenrir-dev/exec" → "xfenrir-dev". A source without a slash is
+    /// returned whole: rows written before stage 4d carried a bare slug or a
+    /// bare originator, and the roster lookup decides which it was.
+    static func codexHomeSlug(in source: String?) -> String? {
+        guard let source, !source.isEmpty else { return nil }
+        guard let slash = source.firstIndex(of: "/"), slash > source.startIndex else { return source }
+        return String(source[..<slash])
+    }
+
+    /// "xfenrir-dev/exec" → "exec"; "exec" → "exec".
+    static func codexOriginator(in source: String) -> String {
+        guard let slash = source.firstIndex(of: "/") else { return source }
+        return String(source[source.index(after: slash)...])
     }
 
     private func timeline(provider: TelemetryProvider, at: Date) -> Attribution {
