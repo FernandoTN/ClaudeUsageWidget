@@ -291,6 +291,9 @@
 "notification.codex_relogin.title" = "Codex account needs re-login";
 "notification.codex_relogin.message" = "The saved Codex token for '%@' was revoked. Run `codex login` for that account, then re-sync it in Settings → Codex Account.";
 "notification.codex_relogin.revoked_by_default_home" = "A `codex login` in ~/.codex revoked '%@'. Log that account in under its own home — CODEX_HOME=~/.codex-accounts/<name> codex login — then use Import in Settings → Codex Account.";
+"notification.focus_without_login.title" = "Showing account — CLI unchanged";
+"notification.focus_without_login.message" = "Showing '%1$@'. Its %2$@ login is dead, so the CLI stays on '%3$@' — use %4$@ → Log in to repair it.";
+"notification.focus_without_login.message_no_owner" = "Showing '%1$@'. Its %2$@ login is dead and was not applied, so the CLI is unchanged — use %3$@ → Log in to repair it.";
 "notification.grok_relogin.title" = "Grok account needs re-login";
 "notification.grok_relogin.message" = "The saved Grok token for '%@' was revoked. Run `grok` and log in with that account, then re-sync it in Settings.";
 "notification.preferences_degraded.title" = "Preferences service unavailable";

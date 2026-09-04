@@ -3141,7 +3141,12 @@ private func observeCredentialChanges() {
             return .switched
         case .switchInFlight:
             return .deferToNextSweep
-        case .profileNotFound, .credentialsRefused:
+        case .profileNotFound, .credentialsRefused, .focusedWithoutApplying:
+            // `focusedWithoutApplying` is a USER-initiated outcome and the walk
+            // never sets `userInitiated`, so it cannot arrive here today. It is
+            // mapped anyway, and to exactly what `.credentialsRefused` maps to:
+            // no login changed hands, so the queue entry must not be consumed,
+            // and the candidate is unusable for this walk.
             return .excludeCandidate
         }
     }
