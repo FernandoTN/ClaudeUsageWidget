@@ -61,40 +61,40 @@ final class FrameRenderTests: XCTestCase {
         suspected.rateLimitedUntil = now.addingTimeInterval(300)
         suspected.rateLimitedInferred = true
         suspected.projectedSessionPercentage = 81
-        let owner = claude("dRir(Fenrir)", usage(session: 78, weekly: 16, fable: 16), account: "acct-1")
-        let twin = claude("Google", usage(session: 78, weekly: 16, fable: 16, age: 120), autoSwitch: false, account: "acct-1")
-        let next = claude("dJormun", usage(weekly: 16, fable: 22))
-        let queued = claude("jskxkxjssh", usage(weekly: 23, fable: 28, age: 3 * 3600, provenance: .cliCache))
-        let dead = claude("Ai", usage(weekly: 100, fable: 91))
+        let owner = claude("Atlas (dev)", usage(session: 78, weekly: 16, fable: 16), account: "acct-1")
+        let twin = claude("Beacon", usage(session: 78, weekly: 16, fable: 16, age: 120), autoSwitch: false, account: "acct-1")
+        let next = claude("Cedar", usage(weekly: 16, fable: 22))
+        let queued = claude("Delta", usage(weekly: 23, fable: 28, age: 3 * 3600, provenance: .cliCache))
+        let dead = claude("Echo", usage(weekly: 100, fable: 91))
         let profiles = [
-            claude("Memori", usage(weekly: 70, fable: 99)),
-            claude("Stanford", usage(session: 100, weekly: 59, fable: 82)),
-            claude("Commits", suspected),
-            claude("BBR", usage(weekly: 73, fable: 99, age: 400, provenance: .headerRescue)),
-            claude("xFenrir(dev)", nil),
+            claude("Fjord", usage(weekly: 70, fable: 99)),
+            claude("Granite", usage(session: 100, weekly: 59, fable: 82)),
+            claude("Harbor", suspected),
+            claude("Iris", usage(weekly: 73, fable: 99, age: 400, provenance: .headerRescue)),
+            claude("Juniper (dev)", nil),
             dead, queued, next, owner, twin,
-            codex("Cod", usage(weekly: 60, sessionWindow: false)),
-            codex("Dex", usage(weekly: 95, sessionWindow: false)),
-            codex("xFernando(dev)", usage(weekly: 1, sessionWindow: false)),
+            codex("Kestrel", usage(weekly: 60, sessionWindow: false)),
+            codex("Osprey", usage(weekly: 95, sessionWindow: false)),
+            codex("Marlin (dev)", usage(weekly: 1, sessionWindow: false)),
             Profile(name: "Grok", grokCredentialsJSON: "{}", grokEmail: "g@example.com",
                     claudeUsage: usage(weekly: 19, sessionWindow: false)),
         ]
         let byName = Dictionary(uniqueKeysWithValues: profiles.map { ($0.name, $0) })
-        let deadIds: Set<UUID> = [dead.id, byName["Cod"]!.id, byName["Dex"]!.id]
+        let deadIds: Set<UUID> = [dead.id, byName["Kestrel"]!.id, byName["Osprey"]!.id]
         return DashboardSnapshot.build(DashboardSnapshot.Inputs(
             profiles: profiles,
-            activeIds: [owner.id, byName["xFernando(dev)"]!.id, byName["Grok"]!.id],
+            activeIds: [owner.id, byName["Marlin (dev)"]!.id, byName["Grok"]!.id],
             focusedId: next.id,
             context: FleetSummaryContext(
                 thresholds: thresholds,
                 isLoginDead: { deadIds.contains($0.id) },
                 isExcluded: { !$0.isAutoSwitchEnabled },
-                nextCandidates: [.claude: PredictedCandidate(id: next.id, label: "dJo", queued: false, queueHeadBlocked: false)],
+                nextCandidates: [.claude: PredictedCandidate(id: next.id, label: "Ced", queued: false, queueHeadBlocked: false)],
                 preflightVerdicts: [next.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-720), kind: .probed)],
                 preferencesDegraded: degraded, isSwitching: false, now: now
             ),
             queue: [queued.id],
-            history: [SwitchEvent(at: now.addingTimeInterval(-40 * 60), from: "BBR", to: "dRir(Fenrir)", trigger: .auto,
+            history: [SwitchEvent(at: now.addingTimeInterval(-40 * 60), from: "Iris", to: "Atlas (dev)", trigger: .auto,
                                   reason: "session 96 % / weekly 73 % crossed threshold")],
             hiddenProviders: hidden,
             duplicateGroups: [[twin.id, owner.id]],
@@ -181,7 +181,7 @@ final class FrameRenderTests: XCTestCase {
         XCTAssertEqual(host.fittingSize.width, width)
         write(DashboardView(store: DashboardStore(snapshot: snap, clickedProvider: .claude), actions: noActions, height: 1500),
               surface: "dashboard", state: "fleet", size: tall,
-              note: "fleet: Claude (viewing dJormun, owner pinned, duplicate Google, next, queued, dead + re-login, suspected, CLI cache, header rescue, unmeasured, auto-switch off), Codex (nowhere to switch), Grok (single)")
+              note: "fleet: Claude (viewing Cedar, owner pinned, duplicate Beacon, next, queued, dead + re-login, suspected, CLI cache, header rescue, unmeasured, auto-switch off), Codex (nowhere to switch), Grok (single)")
         write(DashboardView(store: DashboardStore(snapshot: snapshot(degraded: true), clickedProvider: .claude), actions: noActions, height: 600),
               surface: "dashboard", state: "degraded", size: NSSize(width: width, height: 600), note: "preferences-degraded banner outranking the rest")
         write(DashboardView(store: DashboardStore(snapshot: snapshot(hidden: [.codex]), clickedProvider: .codex), actions: noActions, height: 600),
@@ -200,20 +200,20 @@ final class FrameRenderTests: XCTestCase {
         let rowSize = NSSize(width: DashboardSurface.size(for: .classic).width - 20, height: 140)
         let ownerHeadline = "78 % session · resets in 2h 59m"
         let steps: [(String, MakeActiveRow, String)] = [
-            ("offer", MakeActiveRow(name: "dJormun", provider: .claude, ownerName: "dRir(Fenrir)", ownerHeadline: ownerHeadline,
+            ("offer", MakeActiveRow(name: "Cedar", provider: .claude, ownerName: "Atlas (dev)", ownerHeadline: ownerHeadline,
                                     headline: "0 % session · resets in 4h", loginDead: false, isPending: false, note: nil,
                                     onBegin: {}, onConfirm: {}, onCancel: {}), "the offer on a viewed non-owner, owner named"),
-            ("confirm", MakeActiveRow(name: "dJormun", provider: .claude, ownerName: "dRir(Fenrir)", ownerHeadline: ownerHeadline,
+            ("confirm", MakeActiveRow(name: "Cedar", provider: .claude, ownerName: "Atlas (dev)", ownerHeadline: ownerHeadline,
                                       headline: "0 % session · resets in 4h", loginDead: false, isPending: true, note: nil,
                                       onBegin: {}, onConfirm: {}, onCancel: {}), "confirmation: from / to lines with headroom, cost"),
-            ("confirm-dead", MakeActiveRow(name: "Ai", provider: .claude, ownerName: "dRir(Fenrir)", ownerHeadline: ownerHeadline,
+            ("confirm-dead", MakeActiveRow(name: "Echo", provider: .claude, ownerName: "Atlas (dev)", ownerHeadline: ownerHeadline,
                                            headline: "0 % session", loginDead: true, isPending: true, note: nil,
                                            onBegin: {}, onConfirm: {}, onCancel: {}), "confirmation on a dead login: Log in first disabled, Cancel default"),
-            ("outcome", MakeActiveRow(name: "dJormun", provider: .codex, ownerName: nil, loginDead: false, isPending: false,
-                                      note: DashboardFormatting.outcome(.activated, name: "dJormun", provider: .codex), succeeded: true,
+            ("outcome", MakeActiveRow(name: "Cedar", provider: .codex, ownerName: nil, loginDead: false, isPending: false,
+                                      note: DashboardFormatting.outcome(.activated, name: "Cedar", provider: .codex), succeeded: true,
                                       onBegin: {}, onConfirm: {}, onCancel: {}), "state after a successful switch — no action label"),
-            ("refused", MakeActiveRow(name: "Ai", provider: .claude, ownerName: "dRir(Fenrir)", loginDead: true, isPending: false,
-                                      note: DashboardFormatting.outcome(.credentialsRefused, name: "Ai", provider: .claude),
+            ("refused", MakeActiveRow(name: "Echo", provider: .claude, ownerName: "Atlas (dev)", loginDead: true, isPending: false,
+                                      note: DashboardFormatting.outcome(.credentialsRefused, name: "Echo", provider: .claude),
                                       onBegin: {}, onConfirm: {}, onCancel: {}), "after a refused switch — the offer stays"),
         ]
         for (state, row, note) in steps {
@@ -222,10 +222,10 @@ final class FrameRenderTests: XCTestCase {
 
         // Fleet blocks (the bar's new element) for both fleet layouts.
         let renderer = MenuBarIconRenderer()
-        let verified = NextCandidate(id: UUID(), label: "dJo", queued: false, queueHeadBlocked: false, readiness: .ready, verdict: .verified)
-        let blockedQueue = NextCandidate(id: UUID(), label: "jsk", queued: true, queueHeadBlocked: true, readiness: .ready, verdict: .unverified)
+        let verified = NextCandidate(id: UUID(), label: "Ced", queued: false, queueHeadBlocked: false, readiness: .ready, verdict: .verified)
+        let blockedQueue = NextCandidate(id: UUID(), label: "Del", queued: true, queueHeadBlocked: true, readiness: .ready, verdict: .unverified)
         let blocks: [(String, ProviderSummary, MenuBarLayout, String)] = [
-            ("dots-armed", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78), .fleetDots, "12 accounts, armed, → dJo ✓"),
+            ("dots-armed", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78), .fleetDots, "12 accounts, armed, → Ced ✓"),
             ("dots-queue-blocked", fleet(members: 12, ready: 4, dead: 1, next: blockedQueue, keyed: 78), .fleetDots, "queue head blocked (red Q)"),
             ("dots-nobody", fleet(members: 6, ready: 0, dead: 2, next: nil, keyed: 91), .fleetDots, "nobody with headroom (→—)"),
             ("dots-overflow", fleet(members: 25, ready: 9, dead: 3, next: verified, keyed: 40), .fleetDots, "25 accounts: two dot rows + overflow +N"),

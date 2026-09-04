@@ -118,7 +118,7 @@ decision seam, not the display seam).
  ┌─────────┬──────────────────────────┐
  │ ▓▓▓▓▓▓░ │ Cl   ●●●●●●●●●  ← row 1 │   dots: OTHER accounts, column-major
  │ ▓▓░░░░░ │      ●●×●–●●●●  ← row 2 │   from the RIGHT edge of the block;
- │   dRi   │      91→dJo✓            │   rightmost column = soonest weekly reset
+ │   Atl   │      91→Ced✓            │   rightmost column = soonest weekly reset
  └─────────┴──────────────────────────┘
    24 pt   3      10 + max(dots, 52)
 ```
@@ -173,7 +173,7 @@ dots for this roster (Claude 109 pt vs 89 pt): a style preference, selectable
 in Settings, not a width win — the Stage C ladder therefore steps
 `dots → active-only`.
 
-### 2.4 The candidate row — `91→dJo✓`
+### 2.4 The candidate row — `91→Ced✓`
 
 Shown while **armed**: the active account's keyed window ≥ 75 % (the
 preflight's own milestone; `ProviderSummary.keyedDisplayPercentage` — the
@@ -207,7 +207,7 @@ proves nothing about an externally revoked login. Verdicts expire after
 | **"unknown = older than 60 min"** | Mis-encodes a still-valid weekly-maxed reading and a 90-minute-old 42 %; staleness is a flag, not a colour. |
 | **Growing the tile at 75 %** | Length jitter exactly when the bar is fullest; the candidate row lives under the dots instead. |
 | **Row-major dots** | Put the soonest reset mid-row-2 for 17 accounts; column-major from the right keeps "rightmost = next to burn". |
-| **Character-count widths** (`Q!→`, a 40 pt reserve) | The real arrow is 7.6 pt wide and `91→dJo✓` measures 45 pt at 8 pt — the first draft would have clipped its own candidate row and the check-in frames overlapped. Every reserved width is now measured against the shipped fonts and re-checked by a test; the row is 7 pt and `Q!→` became a red `Q`. |
+| **Character-count widths** (`Q!→`, a 40 pt reserve) | The real arrow is 7.6 pt wide and `91→Ced✓` measures 45 pt at 8 pt — the first draft would have clipped its own candidate row and the check-in frames overlapped. Every reserved width is now measured against the shipped fonts and re-checked by a test; the row is 7 pt and `Q!→` became a red `Q`. |
 | **Two counts rows** | The second row collided with the candidate row in 22 pt; counts are one row. |
 
 ### 2.6 What the redesign REMOVES from the bar, and where the information lives
@@ -215,7 +215,7 @@ proves nothing about an externally revoked login. Verdicts expire after
 | Removed from the bar | Where it lives now |
 |---|---|
 | One tile per selected account (22 → 3 tiles) | Dashboard roster rows (same bars, same tints); dots on the bar |
-| Per-account 3-letter labels | Dashboard rows; the group button's tooltip / accessibility label spells the summary out (`Claude: dRir 78 % · next → dJormun (ranked, login verified) · 4 ready · 11 exhausted · 1 dead`) |
+| Per-account 3-letter labels | Dashboard rows; the group button's tooltip / accessibility label spells the summary out (`Claude: Atlas 78 % · next → Cedar (ranked, login verified) · 4 ready · 11 exhausted · 1 dead`) |
 | Per-account weekly-maxed light-red label | Red dot on the bar; red chip in the dashboard |
 | Per-account pace ticks and time markers | Active block keeps them; dashboard rows keep them |
 | Per-account click targets | A click on a provider tile opens the popover for that provider's active account (Stage A) / the dashboard scrolled to that provider (Stage B); the navigator and rows open any account. The `everyAccount` layout keeps today's per-tile click routing |
@@ -237,19 +237,19 @@ shows all three groups; default-scroll to the clicked provider):
  ┌──────────────────────────────────────────────────────┐
  │ [banner: preferences degraded] [health: 2 dead, overflow]│
  │ CLAUDE ──────────────────────────────── ⟳  ⚙         │
- │ ACTIVE  dRir (owns the CLI login)        Updated 28s │
+ │ ACTIVE  Atlas (owns the CLI login)        Updated 28s │
  │  Session  ▓▓▓▓▓▓▓▓░░ 78 %   resets in 1h 12m         │
  │  Weekly   ▓▓░░░░░░░░ 16 %   resets Mon 09:41         │
  │  Fable    ▓▓░░░░░░░░ 16 %   ← the window the 99 % switch fires on │
  │  ⚠ Suspected: endpoint refusing since 12:41; last     │
  │    measured 74 % (12:39), projection 81 % (only when suspected) │
- │  Next → dJormun  ✓ probed 12 m ago · headroom measured 3 m ago │
- │  Queue (this provider): Mem › 2026     [Edit in Settings] │
+ │  Next → Cedar  ✓ probed 12 m ago · headroom measured 3 m ago │
+ │  Queue (this provider): Fjo › Quarry     [Edit in Settings] │
  │  ROSTER (17) · soonest weekly reset first                │
- │  ● dJormun        ready            Mon 09:41         › │
+ │  ● Cedar        ready            Mon 09:41         › │
  │    session ▓▓▓░░ 12   weekly ▓▓▓▓▓▓▓░ 70   Fable 99       │
- │  × Ai             dead — /login then Sync  [Open Settings]│
- │  ◐ Stanford       session exhausted · 3 h 10 m        › │
+ │  × Echo             dead — /login then Sync  [Open Settings]│
+ │  ◐ Granite       session exhausted · 3 h 10 m        › │
  │  …                                                    │
  │ CODEX ─────────────────────────────────────────────── │
  │ GROK ──────────────────────────────────────────────── │

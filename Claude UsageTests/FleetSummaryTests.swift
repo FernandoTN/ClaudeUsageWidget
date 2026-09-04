@@ -111,7 +111,7 @@ final class FleetSummaryTests: XCTestCase {
     private func candidate(_ id: UUID, queued: Bool = false, blocked: Bool = false,
                            readiness: AccountReadiness = .ready,
                            verdict: NextCandidate.Verdict = .verified) -> NextCandidate {
-        NextCandidate(id: id, label: "Memori", queued: queued, queueHeadBlocked: blocked,
+        NextCandidate(id: id, label: "Fjord", queued: queued, queueHeadBlocked: blocked,
                       readiness: readiness, verdict: verdict)
     }
 
@@ -146,14 +146,14 @@ final class FleetSummaryTests: XCTestCase {
 
         let armed = build(members: [a, active], active: active, readiness: [:], keyed: 91.4,
                           next: candidate(a), activeMeasured: now)
-        XCTAssertEqual(armed.affix, "→Mem")
+        XCTAssertEqual(armed.affix, "→Fjo")
         XCTAssertEqual(armed.verdictGlyph, "✓")
         XCTAssertEqual(armed.activeDigits, 91)
 
         let queued = build(members: [a, active], active: active, readiness: [:], keyed: 10,
                            next: candidate(a, queued: true, verdict: .unverified), activeMeasured: now)
         XCTAssertTrue(queued.armed, "a queued hand-off is shown regardless of usage")
-        XCTAssertEqual(queued.affix, "→Mem", "the queue state is the arrow's colour, not a letter")
+        XCTAssertEqual(queued.affix, "→Fjo", "the queue state is the arrow's colour, not a letter")
         XCTAssertNil(queued.verdictGlyph, "unverified shows no glyph — the missing check is the information")
     }
 
@@ -161,7 +161,7 @@ final class FleetSummaryTests: XCTestCase {
         let a = UUID(), active = UUID()
         let fallback = build(members: [a, active], active: active, readiness: [:], keyed: 80,
                              next: candidate(a, blocked: true, verdict: .dead), activeMeasured: now)
-        XCTAssertEqual(fallback.affix, "→Mem", "same affix — the renderer paints the arrow red")
+        XCTAssertEqual(fallback.affix, "→Fjo", "same affix — the renderer paints the arrow red")
         XCTAssertEqual(fallback.verdictGlyph, "×")
         XCTAssertEqual(fallback.alert, .noCandidate, "a dead next candidate is no candidate")
 
