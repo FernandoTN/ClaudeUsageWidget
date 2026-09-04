@@ -6,7 +6,7 @@
 //  menu bar is drawn (mode, per-provider layout, what a click opens, tile
 //  cosmetics), the ⇄ selector item, the popover's time display. WHICH accounts
 //  show is each account's own choice (Accounts › Monitoring). The single-account
-//  icon configuration stays on the Appearance page until stage 3d moves it.
+//  icon configuration (`SingleAccountBarCards`) is here since stage 3d.
 //
 
 import SwiftUI
@@ -25,18 +25,11 @@ struct DisplaySettingsView: View {
                 SettingsSectionCard(title: "display.popover_title".localized, subtitle: "display.popover_subtitle".localized) {
                     DisplayPopoverCard()
                 }
-                SettingsSectionCard(title: "display.single_title".localized, subtitle: "display.single_subtitle".localized) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("display.single_note".localized)
-                            .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer()
-                        Button("display.single_open".localized) {
-                            NotificationCenter.default.post(name: .settingsSectionRequested, object: SettingsRoute(section: .appearance))
-                        }
-                        .buttonStyle(.link)
-                    }
-                }
+                // Single-account bar: the two cards that were the Appearance page (stage 3d).
+                Text("display.single_note".localized)
+                    .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                SingleAccountBarCards()
             }
             .padding()
         }
@@ -98,6 +91,9 @@ struct DisplayMenuBarCard: View {
                 SettingToggle(title: "multiprofile.show_week".localized, description: "multiprofile.show_week_description".localized, isOn: config(\.showWeek))
                 SettingToggle(title: "multiprofile.show_label".localized, description: "multiprofile.show_label_description".localized, isOn: config(\.showProfileLabel))
                 SettingToggle(title: "multiprofile.use_system_color".localized, description: "multiprofile.use_system_color_description".localized, isOn: config(\.useSystemColor))
+                SettingToggle(title: "appearance.show_time_marker_title".localized, description: "appearance.show_time_marker_description".localized, isOn: config(\.showTimeMarker))
+                SettingToggle(title: "appearance.show_pace_marker_title".localized, description: "appearance.show_pace_marker_description".localized, isOn: config(\.showPaceMarker))
+                SettingToggle(title: "appearance.pace_coloring_title".localized, description: "appearance.pace_coloring_description".localized, isOn: config(\.usePaceColoring))
             }
         }
     }

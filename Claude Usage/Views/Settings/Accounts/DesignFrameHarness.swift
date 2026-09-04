@@ -66,6 +66,7 @@ enum DesignFrameHarness {
              width: 560, name: "alerts-overrides-empty", to: dir, index: &index)
         emit(DisplayMenuBarCard().padding(16), width: 560, name: "display-menu-bar", to: dir, index: &index)
         emit(DisplayPopoverCard().padding(16), width: 560, name: "display-popover", to: dir, index: &index)
+        emit(SingleAccountBarCards().padding(16), width: 560, name: "display-single-account", to: dir, index: &index)
         emit(AdvancedDiagnosticsCard().padding(16), width: 560, name: "advanced-diagnostics", to: dir, index: &index)
         emit(DeadLoginFlagsCard(rows: [DeadLoginFlagRow(id: UUID(), name: "Ai", provider: .claude),
                                        DeadLoginFlagRow(id: UUID(), name: "xFenrir(dev)", provider: .codex)]) { _ in }.padding(16),

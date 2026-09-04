@@ -33,7 +33,7 @@ final class SettingsKeyRegistryTests: XCTestCase {
         "weekIconEnabled", "weekIconStyle", "weekIconOrder", "weekDisplayMode",
         "apiIconEnabled", "apiIconStyle", "apiIconOrder", "apiDisplayMode",
         "debugTileLayout", "debugGroupExposure", "NSQuitAlwaysKeepsWindows",
-        "autoSwitchCustomOrder", "autoSwitchCustomOrderEnabled",
+        "autoSwitchCustomOrder", "autoSwitchCustomOrderEnabled", "cuwSlotPinsVersion",
         "fleetAlertDefaults_v1", "activeSelectorItem_v1",
     ]
 
@@ -81,7 +81,7 @@ final class SettingsKeyRegistryTests: XCTestCase {
         XCTAssertEqual(SettingsRoute(section: .popover).canonical.section, .display)
         XCTAssertEqual(SettingsRoute(section: .appSettings).canonical.section, .advanced)
         XCTAssertEqual(SettingsRoute(section: .shortcuts).canonical.section, .advanced)
-        XCTAssertEqual(SettingsRoute(section: .appearance).canonical.section, .appearance, "moves with the single-account config in 3d")
+        XCTAssertEqual(SettingsRoute(section: .appearance).canonical.section, .display, "the single-account config moved with 3d")
         XCTAssertEqual(SettingsRoute(section: .accounts, tab: .alerts).canonical, SettingsRoute(section: .accounts, tab: .alerts))
         XCTAssertEqual(SettingsRoute(deepLink: "manageProfiles")?.canonical.section, .accounts, "the legacy string payload aliases too")
     }

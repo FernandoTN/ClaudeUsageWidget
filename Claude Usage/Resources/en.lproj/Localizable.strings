@@ -1069,7 +1069,7 @@
 "display.popover_subtitle" = "Times shown in the classic popover";
 "display.single_title" = "Single-account bar";
 "display.single_subtitle" = "Icon style, metrics and markers for the single-account mode";
-"display.single_note" = "These options are still on the Appearance page; they move here with the next stage.";
+"display.single_note" = "Icon style, metrics and markers of the single-account mode, for the viewed account. Dimmed while the bar shows multiple accounts.";
 "display.single_open" = "Open Appearance";
 "advanced.title" = "Advanced";
 "advanced.subtitle" = "Startup, shortcuts, diagnostics, and what this app stores";
@@ -1093,3 +1093,5 @@
 "advanced.keys_show" = "Show all keys";
 "advanced.keys_on_disk" = "On disk";
 "advanced.keys_absent" = "Not on disk";
+"accounts.add" = "Add account…";
+"accounts.relogin_banner" = "Re-login needed — this profile holds a login that belongs to another profile's account. Log in the right account on the Login tab.";

@@ -54,16 +54,14 @@ struct SettingsRoute: Hashable {
     }
 
     /// The legacy sections mapped onto the pages that replace them (spec §5.5,
-    /// stage 3c), so every existing poster lands somewhere current. Appearance
-    /// keeps routing to itself until stage 3d moves the single-account icon
-    /// configuration onto Display.
+    /// stage 3c), so every existing poster lands somewhere current.
     var canonical: SettingsRoute {
         switch section {
         case .manageProfiles, .general:
             return SettingsRoute(section: .accounts, profileId: profileId, tab: tab)
         case .cliAccount, .codexAccount:
             return SettingsRoute(section: .accounts, profileId: profileId, tab: tab ?? .login)
-        case .popover:
+        case .appearance, .popover:
             return SettingsRoute(section: .display, profileId: profileId, tab: tab)
         case .appSettings, .shortcuts:
             return SettingsRoute(section: .advanced, profileId: profileId, tab: tab)
