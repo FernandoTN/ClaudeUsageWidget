@@ -236,6 +236,15 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         return result
     }
 
+    /// Codex rollouts can log token snapshots before their first `turn_context`;
+    /// once the model is known, the file's earlier "unknown" units take it
+    /// (a rollout rarely changes model — 3 of 1,209 on disk).
+    func reassignUnknownModel(fileId: String, to model: String) throws {
+        let statement = try prepare("UPDATE events SET model = ?1 WHERE file_id = ?2 AND model = 'unknown'")
+        statement.bind(1, model); statement.bind(2, fileId)
+        _ = try statement.step()
+    }
+
     func eventCount() throws -> Int {
         let statement = try prepare("SELECT COUNT(*) FROM events")
         return try statement.step() ? statement.int(0) : 0
