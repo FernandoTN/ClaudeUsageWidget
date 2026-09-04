@@ -346,6 +346,7 @@ final class StatusBarUIManager {
         tileImages.removeAll()
         tileImageSeq.removeAll()
         lastCompositeKey.removeAll()
+        clearFleetSummaryState()
 
         // Deallocated buttons can leave ObjectIdentifier keys that a NEW button
         // may reuse (same address) — a stale cache hit would skip drawing its
@@ -396,6 +397,7 @@ final class StatusBarUIManager {
             // will re-render, but the memo would otherwise let a re-shown group
             // keep whatever image survived the visibility cycle.
             self.lastCompositeKey.removeAll()
+            self.lastSummaryKey.removeAll()
         }
     }
 
@@ -414,7 +416,11 @@ final class StatusBarUIManager {
     /// to burn first. Name breaks ties so equal resets (e.g. two profiles with
     /// no cached usage) don't reshuffle. Static and `now`-injectable so the
     /// ordering/quantization rules are unit-testable.
-    static func multiProfileCreationOrder(for profiles: [Profile], now: Date = Date()) -> [Profile] {
+    static func multiProfileCreationOrder(
+        for profiles: [Profile],
+        now: Date = Date(),
+        includeUnselected: Bool = false
+    ) -> [Profile] {
         // The usage API reports the SAME weekly boundary with ±1s jitter between
         // fetches (22:59:59.8 one sweep, 23:00:00.1 the next), and two accounts can
         // share a boundary. Quantize the ranking key to the minute so jitter can't
@@ -432,7 +438,10 @@ final class StatusBarUIManager {
                 return a != b ? a < b : $0.name < $1.name
             }
         }
-        let selected = profiles.filter { $0.isSelectedForDisplay }
+        // Fleet-summary layouts rank the WHOLE provider (the switch walk
+        // considers every profile, selected or not); the per-account layout
+        // keeps selection as its display filter.
+        let selected = includeUnselected ? profiles : profiles.filter { $0.isSelectedForDisplay }
         return ranked(selected.filter { $0.providerKind == .claude })
             + ranked(selected.filter { $0.providerKind == .grok })
             + ranked(selected.filter { $0.providerKind == .codex })
@@ -848,7 +857,11 @@ final class StatusBarUIManager {
     }
 
     /// Updates all multi-profile status items
-    func updateMultiProfileButtons(profiles: [Profile], config: MultiProfileDisplayConfig) {
+    func updateMultiProfileButtons(
+        profiles: [Profile],
+        config: MultiProfileDisplayConfig,
+        context: FleetSummaryContext? = nil
+    ) {
         RenderInstrumentation.updateMultiProfileButtonsCalls += 1
         guard isMultiProfileMode else { return }
 
@@ -904,8 +917,13 @@ final class StatusBarUIManager {
                 paintPlaceholderLogo()
                 return
             }
-            paintTiles(profiles: profiles, config: config)
-            pruneTileState(keeping: Set(selected.map(\.id)))
+            if config.barLayout.isFleetSummary {
+                paintFleetSummaries(profiles: profiles, config: config, context: context)
+            } else {
+                clearFleetSummaryState()
+                paintTiles(profiles: profiles, config: config)
+                pruneTileState(keeping: Set(selected.map(\.id)))
+            }
             assembleComposites(profiles: profiles)
             return
         }
@@ -1316,10 +1334,17 @@ final class StatusBarUIManager {
 
         for (provider, statusItem) in groupItems {
             guard let button = statusItem.button else { continue }
-            let members: [(id: UUID, image: NSImage)] = paintOrder.compactMap { id in
-                guard let profile = byId[id], profile.providerKind == provider,
-                      profile.isSelectedForDisplay, let image = tileImages[id] else { return nil }
-                return (id, image)
+            let members: [(id: UUID, image: NSImage)]
+            if let summary = summaryImages[provider], let anchor = summaryAnchor[provider] {
+                // Fleet-summary layout: ONE image per provider and ONE click
+                // segment — the active account (else the rightmost member).
+                members = [(anchor, summary)]
+            } else {
+                members = paintOrder.compactMap { id in
+                    guard let profile = byId[id], profile.providerKind == provider,
+                          profile.isSelectedForDisplay, let image = tileImages[id] else { return nil }
+                    return (id, image)
+                }
             }
             guard !members.isEmpty else {
                 // Nothing to draw for this group (all members unpainted or
@@ -1340,7 +1365,9 @@ final class StatusBarUIManager {
             let isTemplate = members.allSatisfy { $0.image.isTemplate }
             let key = CompositeKey(
                 members: members.map(\.id),
-                seqs: members.map { tileImageSeq[$0.id] ?? 0 },
+                seqs: summaryImages[provider] != nil
+                    ? [summarySeq[provider] ?? 0]
+                    : members.map { tileImageSeq[$0.id] ?? 0 },
                 isTemplate: isTemplate,
                 scaleQ: Int((scale * 100).rounded())
             )
@@ -1585,12 +1612,291 @@ final class StatusBarUIManager {
     /// ids' providers apart. Empty when nothing has been painted yet, which is
     /// the caller's signal to fall back to a fresh ranking.
     func paintedGroupMembers(for provider: Profile.ProviderKind, among profiles: [Profile] = []) -> [UUID] {
+        // Fleet-summary layouts paint one segment per provider, but the
+        // popover's navigator must still walk every member in dot order.
+        if let order = summaryMemberOrder[provider], !order.isEmpty {
+            return order
+        }
         if let segments = groupSegments[provider], !segments.isEmpty {
             return segments.map(\.profileId)
         }
         guard !multiProfileOrder.isEmpty, !profiles.isEmpty else { return [] }
         let idsInGroup = Set(profiles.filter { $0.providerKind == provider }.map(\.id))
         return Self.compositePaintOrder(multiProfileOrder).filter { idsInGroup.contains($0) }
+    }
+
+    // MARK: - Fleet summary layouts (menu-bar redesign, stage A)
+
+    /// Inputs a provider's summary tile is a pure function of — equal ⇒ skip
+    /// the render. Discrete visible facts only (no dates): the verdict is
+    /// keyed by its glyph, staleness by its flag.
+    private struct SummaryRenderKey: Hashable {
+        var activeKey: TileRenderKey?
+        var members: [FleetMember]
+        var affix: String?
+        var glyph: String?
+        var digits: Int?
+        var activeReadiness: AccountReadiness?
+        var nextReadiness: AccountReadiness?
+        var activeIsStale: Bool
+        var layout: MenuBarLayout
+        var config: MultiProfileDisplayConfig
+        var appearanceName: String
+        var backingScaleQ: Int
+    }
+
+    /// Per-provider summary state — deliberately SEPARATE from the per-tile
+    /// `tileImages` pipeline: a summary stored under the active id would leave
+    /// the previous active's block alive across a switch until pruned.
+    private var summaryImages: [Profile.ProviderKind: NSImage] = [:]
+    private var summaryAnchor: [Profile.ProviderKind: UUID] = [:]
+    private var summaryMemberOrder: [Profile.ProviderKind: [UUID]] = [:]
+    private var summarySeq: [Profile.ProviderKind: Int] = [:]
+    private var lastSummaryKey: [Profile.ProviderKind: SummaryRenderKey] = [:]
+
+    private func clearFleetSummaryState() {
+        summaryImages.removeAll()
+        summaryAnchor.removeAll()
+        summaryMemberOrder.removeAll()
+        summarySeq.removeAll()
+        lastSummaryKey.removeAll()
+    }
+
+    /// Paints ONE summary tile per provider group: the provider-active
+    /// account's tile (rendered by the configured style, unchanged) plus the
+    /// fleet block. The whole provider is summarised — every profile of the
+    /// provider, selected or not, exactly the population the switch walk
+    /// ranks — and the active account is shown even when deselected: a fleet
+    /// summary whose active block is missing would be a semantic failure.
+    private func paintFleetSummaries(
+        profiles: [Profile],
+        config: MultiProfileDisplayConfig,
+        context: FleetSummaryContext?
+    ) {
+        let now = context?.now ?? Date()
+        let thresholds = context?.thresholds ?? ReadinessThresholds(
+            session: SharedDataStore.shared.loadAutoSwitchThreshold(),
+            weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+        )
+        let activeIds = ProfileManager.shared.activeAccountIds(among: profiles)
+        let byId = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+
+        // Readiness for every profile of every painted provider.
+        var readiness: [UUID: AccountReadiness] = [:]
+        var stale: Set<UUID> = []
+        for profile in profiles where groupItems[profile.providerKind] != nil {
+            readiness[profile.id] = AccountReadiness.classify(
+                usage: profile.claudeUsage,
+                isLoginDead: context?.isLoginDead(profile) ?? false,
+                isExcluded: context?.isExcluded(profile) ?? false,
+                thresholds: thresholds,
+                now: now
+            )
+            if AccountReadiness.isStale(profile.claudeUsage, thresholds: thresholds, now: now) {
+                stale.insert(profile.id)
+            }
+        }
+
+        // The active tiles come from the unchanged per-tile pipeline (render
+        // keys, style renderers). A deselected owner is painted anyway.
+        let activeProfiles: [Profile] = profiles
+            .filter { activeIds.contains($0.id) && groupItems[$0.providerKind] != nil }
+            .map { var p = $0; p.isSelectedForDisplay = true; return p }
+        paintTiles(profiles: activeProfiles, config: config)
+        pruneTileState(keeping: Set(activeProfiles.map(\.id)))
+
+        let paintOrder = Self.compositePaintOrder(
+            Self.multiProfileCreationOrder(for: profiles, now: now, includeUnselected: true).map(\.id)
+        )
+        let groupAppearance = NSAppearance(named: .darkAqua) ?? NSApp.effectiveAppearance
+
+        for (provider, statusItem) in groupItems {
+            guard let button = statusItem.button else { continue }
+            let members = paintOrder.filter { byId[$0]?.providerKind == provider }
+            guard !members.isEmpty else {
+                summaryImages.removeValue(forKey: provider)
+                summaryAnchor.removeValue(forKey: provider)
+                summaryMemberOrder.removeValue(forKey: provider)
+                lastSummaryKey.removeValue(forKey: provider)
+                continue
+            }
+            let activeId = members.first { activeIds.contains($0) }
+            let activeProfile = activeId.flatMap { byId[$0] }
+            // Display seam, never effectiveSessionPercentage (synthetic 100 on
+            // a suspected account — see ProviderSummary.keyedDisplayPercentage).
+            let keyed = activeProfile?.claudeUsage.map { ProviderSummary.keyedDisplayPercentage($0) }
+
+            let next: NextCandidate? = context?.nextCandidates[provider].map { candidate in
+                let candidateReadiness = readiness[candidate.id] ?? .unknown
+                return NextCandidate(
+                    id: candidate.id,
+                    label: candidate.label,
+                    queued: candidate.queued,
+                    queueHeadBlocked: candidate.queueHeadBlocked,
+                    readiness: candidateReadiness,
+                    verdict: NextCandidate.verdict(
+                        readiness: candidateReadiness,
+                        preflight: context?.preflightVerdicts[candidate.id],
+                        now: now
+                    )
+                )
+            }
+            let summary = ProviderSummary.build(
+                provider: provider,
+                orderedMembers: members,
+                activeId: activeId,
+                readiness: readiness,
+                stale: stale,
+                keyedPercentage: keyed,
+                next: next,
+                isSwitching: context?.isSwitching ?? false,
+                preferencesDegraded: context?.preferencesDegraded ?? false,
+                activeLastMeasured: activeProfile?.claudeUsage?.lastUpdated,
+                now: now
+            )
+            let layout = config.barLayout
+            let anchor = activeId ?? members[members.count - 1]
+            let backingScale = button.window?.backingScaleFactor
+                ?? button.superview?.window?.backingScaleFactor
+                ?? 0
+            let key = SummaryRenderKey(
+                activeKey: activeId.flatMap { lastRenderKey[$0] },
+                members: summary.members,
+                affix: summary.affix,
+                glyph: summary.verdictGlyph,
+                digits: summary.activeDigits,
+                activeReadiness: summary.activeReadiness,
+                nextReadiness: summary.next?.readiness,
+                activeIsStale: summary.activeIsStale,
+                layout: layout,
+                config: config,
+                appearanceName: groupAppearance.name.rawValue,
+                backingScaleQ: Int((backingScale * 100).rounded())
+            )
+            summaryMemberOrder[provider] = members
+            summaryAnchor[provider] = anchor
+            // Ambiguous click / shortcut resolution opens the active account.
+            groupActiveIds[provider] = anchor
+            // Per-item tooltip + accessibility title: the one place the bar
+            // can spell the summary out (per-dot tooltips are not possible on
+            // a status item; the dashboard is the lookup).
+            let tooltip = Self.summaryTooltip(summary, activeName: activeProfile?.name, byId: byId)
+            if button.toolTip != tooltip { button.toolTip = tooltip }
+            button.setAccessibilityLabel(tooltip)
+
+            if lastSummaryKey[provider] == key, summaryImages[provider] != nil { continue }
+
+            RenderInstrumentation.tileRenders += 1
+            var image = NSImage()
+            groupAppearance.performAsCurrentDrawingAppearance {
+                let activeTile = activeId.flatMap { tileImages[$0] }
+                    ?? placeholderActiveTile(config: config)
+                let fleet = renderer.createFleetBlock(
+                    summary: summary,
+                    layout: layout,
+                    height: FleetBlockGeometry.blockHeight(
+                        activeHeight: activeTile.size.height,
+                        memberCount: summary.members.count,
+                        layout: layout
+                    )
+                )
+                image = renderer.createProviderSummaryTile(
+                    activeTile: activeTile,
+                    activeIsStale: summary.activeIsStale,
+                    fleet: fleet
+                )
+            }
+            image.isTemplate = false
+            summaryImages[provider] = image
+            nextTileSeq += 1
+            summarySeq[provider] = nextTileSeq
+            lastSummaryKey[provider] = key
+        }
+    }
+
+    /// "Claude: dRir 78 % → dJormun ✓ · 4 ready · 1 low · 11 exhausted · 1 dead".
+    private static func summaryTooltip(
+        _ summary: ProviderSummary,
+        activeName: String?,
+        byId: [UUID: Profile]
+    ) -> String {
+        let providerName: String
+        switch summary.provider {
+        case .claude: providerName = "Claude"
+        case .codex: providerName = "Codex"
+        case .grok: providerName = "Grok"
+        }
+        var parts: [String] = []
+        if let activeName {
+            var head = "\(providerName): \(activeName)"
+            if let digits = summary.activeDigits { head += " \(digits) %" }
+            if summary.activeReadiness == .suspected { head += " (suspected throttle, last measured)" }
+            parts.append(head)
+        } else {
+            parts.append("\(providerName): no active login")
+        }
+        if summary.isSwitching {
+            parts.append("switching…")
+        } else if summary.armed {
+            if let next = summary.next {
+                let verdict: String
+                switch next.verdict {
+                case .verified: verdict = "login verified"
+                case .unverified: verdict = "login unverified"
+                case .dead: verdict = "login dead"
+                }
+                let how = next.queued ? "queued" : (next.queueHeadBlocked ? "ranked, queue head blocked" : "ranked")
+                parts.append("next → \(byId[next.id]?.name ?? next.label) (\(how), \(verdict))")
+            } else {
+                parts.append("no candidate with headroom")
+            }
+        }
+        let counts = summary.counts
+        let order: [(AccountReadiness, String)] = [
+            (.ready, "ready"), (.low, "near limit"), (.exhausted, "exhausted"),
+            (.suspected, "suspected"), (.unknown, "unmeasured"), (.excluded, "excluded"), (.dead, "dead"),
+        ]
+        for (state, label) in order where counts[state, default: 0] > 0 {
+            parts.append("\(counts[state]!) \(label)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The active block for a provider with NO active login right now:
+    /// empty gauges in the configured style and a "—" label, so the tile
+    /// says "nobody owns this login" rather than promoting some other
+    /// account to look active.
+    private func placeholderActiveTile(config: MultiProfileDisplayConfig) -> NSImage {
+        let label = "—"
+        let grey = NSColor(calibratedWhite: 0.72, alpha: 1.0)
+        switch config.iconStyle {
+        case .concentric:
+            return renderer.createConcentricIconWithLabel(
+                sessionPercentage: 0, weekPercentage: 0,
+                sessionStatus: .safe, weekStatus: .safe,
+                profileName: label, monochromeMode: true, isDarkMode: true,
+                activeLabelColor: grey
+            )
+        case .progressBar:
+            return renderer.createMultiProfileProgressBar(
+                sessionPercentage: 0, weekPercentage: config.showWeek ? 0 : nil,
+                sessionStatus: .safe, weekStatus: .safe,
+                profileName: label, monochromeMode: true, isDarkMode: true,
+                activeLabelColor: grey
+            )
+        case .compact:
+            return renderer.createCompactDot(
+                percentage: 0, status: .safe, profileInitial: label,
+                monochromeMode: true, isDarkMode: true, activeLabelColor: grey
+            )
+        case .percentage:
+            return renderer.createMultiProfilePercentage(
+                sessionPercentage: 0, weekPercentage: config.showWeek ? 0 : nil,
+                sessionStatus: .safe, weekStatus: .safe,
+                profileName: label, monochromeMode: true, isDarkMode: true,
+                activeLabelColor: grey
+            )
+        }
     }
 
     /// Checks if currently in multi-profile mode

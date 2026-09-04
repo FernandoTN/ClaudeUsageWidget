@@ -153,6 +153,38 @@ struct ManageProfilesView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
 
+                            // Menu bar layout: every account as its own tile
+                            // (original), or ONE summary tile per provider —
+                            // the active account plus a readiness fleet.
+                            VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+                                Text("multiprofile.layout".localized)
+                                    .font(DesignTokens.Typography.caption)
+                                    .foregroundColor(.secondary)
+
+                                Picker("", selection: Binding(
+                                    get: { profileManager.multiProfileConfig.barLayout },
+                                    set: { newLayout in
+                                        var config = profileManager.multiProfileConfig
+                                        config.barLayout = newLayout
+                                        // Cosmetic: the provider item set is unchanged,
+                                        // only what is painted into each item.
+                                        profileManager.updateMultiProfileConfig(config)
+                                    }
+                                )) {
+                                    ForEach(MenuBarLayout.allCases, id: \.self) { layout in
+                                        Text(layout.shortNameKey.localized).tag(layout)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+
+                                Text("multiprofile.layout_description".localized)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
                             // Show Week Toggle
                             SettingToggle(
                                 title: "multiprofile.show_week".localized,

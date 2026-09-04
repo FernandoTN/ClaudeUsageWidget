@@ -679,7 +679,7 @@ final class MenuBarIconRenderer {
     /// backdrop, 0 events/min, 0.0% CPU. Visually imperceptible (2% black on
     /// a dark bar). `CUW_TRANSPARENT_TILES=1` restores the old behavior for
     /// experiments.
-    private func opaqueEventShapeBackdrop(in image: NSImage) {
+    func opaqueEventShapeBackdrop(in image: NSImage) {
         guard !Self.transparentTilesOverride else { return }
         NSColor.black.withAlphaComponent(0.02).setFill()
         NSRect(origin: .zero, size: image.size).fill()
@@ -1309,7 +1309,7 @@ final class MenuBarIconRenderer {
 
     /// Returns the appropriate foreground color for menu bar icons based on appearance
     /// This is needed because NSColor.labelColor doesn't resolve correctly in image drawing contexts
-    private func menuBarForegroundColor(isDarkMode: Bool) -> NSColor {
+    func menuBarForegroundColor(isDarkMode: Bool) -> NSColor {
         return isDarkMode ? .white : .black
     }
 

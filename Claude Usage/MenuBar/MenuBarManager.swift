@@ -25,6 +25,12 @@ class MenuBarManager: NSObject, ObservableObject {
     @Published private(set) var clickedProfileId: UUID?
     @Published private(set) var clickedProfileUsage: ClaudeUsage?
 
+    /// What the last candidate preflight (or auto-switch walk) learned about
+    /// each candidate's login, keyed by profile id. Before this existed the
+    /// verdict was a log line only; the fleet-summary tile's `›Mem✓` affix
+    /// and the dashboard read it (docs/specs/menubar-redesign.md §4).
+    @Published private(set) var preflightVerdicts: [UUID: PreflightVerdict] = [:]
+
     // Track when refresh was last triggered (for distinguishing user vs auto refresh)
     private var lastRefreshTriggerTime: Date = .distantPast
 
@@ -902,7 +908,8 @@ class MenuBarManager: NSObject, ObservableObject {
             let config = profileManager.multiProfileConfig
             statusBarUIManager?.updateMultiProfileButtons(
                 profiles: profileManager.profiles,
-                config: config
+                config: config,
+                context: fleetSummaryContext(for: config)
             )
         } else {
             // Single profile mode - use the standard update
@@ -1158,7 +1165,11 @@ private func observeCredentialChanges() {
         // Defer icon update to next run loop iteration to let NSStatusBar finalize layout
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.statusBarUIManager?.updateMultiProfileButtons(profiles: self.profileManager.profiles, config: config)
+            self.statusBarUIManager?.updateMultiProfileButtons(
+                profiles: self.profileManager.profiles,
+                config: config,
+                context: self.fleetSummaryContext(for: config)
+            )
         }
 
         LoggingService.shared.log("MenuBarManager: Multi-profile mode enabled with \(selectedProfiles.count) profiles, style=\(config.iconStyle.rawValue)")
@@ -1603,7 +1614,8 @@ private func observeCredentialChanges() {
             let config = self.profileManager.multiProfileConfig
             self.statusBarUIManager?.updateMultiProfileButtons(
                 profiles: self.profileManager.profiles,
-                config: config
+                config: config,
+                context: self.fleetSummaryContext(for: config)
             )
 
             // Reflect the sweep's real outcome in the error-tracking state.
@@ -2119,7 +2131,8 @@ private func observeCredentialChanges() {
                     self.refreshViewedProfileUsage()
                     self.statusBarUIManager?.updateMultiProfileButtons(
                         profiles: self.profileManager.profiles,
-                        config: self.profileManager.multiProfileConfig
+                        config: self.profileManager.multiProfileConfig,
+                        context: self.fleetSummaryContext(for: self.profileManager.multiProfileConfig)
                     )
                     return
                 }
@@ -2163,7 +2176,8 @@ private func observeCredentialChanges() {
             self.refreshViewedProfileUsage()
             self.statusBarUIManager?.updateMultiProfileButtons(
                 profiles: self.profileManager.profiles,
-                config: self.profileManager.multiProfileConfig
+                config: self.profileManager.multiProfileConfig,
+                context: self.fleetSummaryContext(for: self.profileManager.multiProfileConfig)
             )
         }
     }
@@ -3060,6 +3074,7 @@ private func observeCredentialChanges() {
                 let outcome = await self.profileManager.activateProfileDetailed(nextProfile.id)
                 switch Self.walkReaction(to: outcome) {
                 case .switched:
+                    self.preflightVerdicts[nextProfile.id] = PreflightVerdict(isLive: true, at: Date(), kind: .switched)
                     // Consume the queue entry only now — the switch landed.
                     if cameFromQueue {
                         self.consumeQueuedSwitchTarget(nextProfile.id)
@@ -3086,6 +3101,9 @@ private func observeCredentialChanges() {
 
                 case .excludeCandidate:
                     excluded.insert(nextProfile.id)
+                    // The switch itself is the strongest liveness probe there
+                    // is — record it so the bar stops advertising this account.
+                    self.preflightVerdicts[nextProfile.id] = PreflightVerdict(isLive: false, at: Date(), kind: .switched)
                     LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
                 }
             }
@@ -3257,6 +3275,7 @@ private func observeCredentialChanges() {
             if candidate.id == profileManager.activeClaudeProfileId
                 || candidate.id == profileManager.activeCodexProfileId {
                 LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' already owns its provider login — OK")
+                preflightVerdicts[candidate.id] = PreflightVerdict(isLive: true, at: Date(), kind: .ownsLogin)
                 return
             }
 
@@ -3269,12 +3288,31 @@ private func observeCredentialChanges() {
             defer { preflightInFlightCandidates.remove(candidate.id) }
 
             var alive = true
+            // How the verdict was reached — a ✓ on the bar is earned only by a
+            // check that PROVES the login (probe / refresh); an expiry check on
+            // an externally revoked token proves nothing (consult, 2026-09-03).
+            var verdictKind: PreflightVerdict.Kind = .expiryOnly
             if candidate.isCodexOnlyProfile {
                 _ = await CodexUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600)
                 // Expiry is not evidence for a 10-day Codex token — ask the
                 // account's own usage endpoint, exactly as the switch gate does,
-                // so preflight and the switch cannot disagree (audit C2).
-                alive = await CodexUsageService.shared.isSafeToApplyLogin(for: candidate.id)
+                // so preflight and the switch cannot disagree (audit C2). Same
+                // decision as `isSafeToApplyLogin`, unrolled so an INCONCLUSIVE
+                // probe (429/5xx/transport) is recorded as expiry-only evidence
+                // rather than as a proven-live login.
+                let codex = CodexUsageService.shared
+                let expired = ProfileStore.shared.loadProfiles()
+                    .first(where: { $0.id == candidate.id })?.codexCredentialsJSON
+                    .map { codex.isTokenExpired($0) } ?? true
+                let liveness: CodexUsageService.LoginLiveness = expired
+                    ? .unknown
+                    : await codex.confirmLoginLiveness(for: candidate.id)
+                alive = !expired && CodexUsageService.applyDecision(
+                    isExpired: false,
+                    markedDead: codex.isLoginMarkedDead(candidate.id),
+                    verdict: liveness
+                )
+                verdictKind = liveness == .unknown ? .expiryOnly : .probed
                 // The refresh path notifies only when the REFRESH grant is
                 // refused. A login whose refresh works but whose account still
                 // rejects it (the externally-invalidated case) is just as dead
@@ -3286,23 +3324,27 @@ private func observeCredentialChanges() {
                 // milestone — grok session% is always 0 — and candidates are
                 // same-provider), but kept correct for a future multi-account
                 // grok group rather than falling into the claude branches.
-                _ = await GrokUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600)
+                if await GrokUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600) {
+                    verdictKind = .refreshed
+                }
                 if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.grokCredentialsJSON {
                     alive = !GrokUsageService.shared.isTokenExpired(json)
                 }
             } else if candidate.cliCredentialsJSON != nil {
-                _ = await ClaudeCodeSyncService.shared.ensureFreshCredentials(
+                let refreshed = await ClaudeCodeSyncService.shared.ensureFreshCredentials(
                     for: candidate.id,
                     adoptSystemKeychain: false,
                     syncToSystem: false,
                     freshFor: 3600
                 )
+                if refreshed { verdictKind = .refreshed }
                 if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.cliCredentialsJSON {
                     alive = !ClaudeCodeSyncService.shared.isTokenExpired(json)
                 }
             }
             // claude.ai-session-only candidates carry no OAuth tokens to validate.
 
+            preflightVerdicts[candidate.id] = PreflightVerdict(isLive: alive, at: Date(), kind: verdictKind)
             if alive {
                 LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' login is live and fresh")
                 return
@@ -3328,8 +3370,22 @@ private func observeCredentialChanges() {
     /// the next-soonest weekly reset is tried. Claude CLI accounts without a paid
     /// subscription are skipped.
     private func findNextAvailableProfile(after currentProfile: Profile, excluding: Set<UUID> = []) -> Profile? {
+        findNextAvailableProfile(
+            provider: currentProfile.providerKind,
+            excluding: excluding.union([currentProfile.id])
+        )
+    }
+
+    /// The same ranking keyed by PROVIDER rather than by an outgoing profile,
+    /// so the fleet-summary tile can predict a next candidate for a provider
+    /// with no active login at all. `quiet` suppresses the per-candidate log
+    /// lines — this runs on every paint, not just at a threshold crossing.
+    private func findNextAvailableProfile(
+        provider switchingProvider: Profile.ProviderKind,
+        excluding: Set<UUID>,
+        quiet: Bool = false
+    ) -> Profile? {
         let now = Date()
-        let switchingProvider = currentProfile.providerKind
         // Candidates are held to the SAME per-window thresholds the trigger
         // fires at: a profile at ≥threshold is exactly what the switch is
         // escaping, so landing on one (and ping-ponging between two
@@ -3338,7 +3394,7 @@ private func observeCredentialChanges() {
         let weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
 
         let candidates = profileManager.profiles.filter { candidate in
-            guard candidate.id != currentProfile.id, candidate.hasUsageCredentials,
+            guard candidate.hasUsageCredentials,
                   !excluding.contains(candidate.id) else { return false }
 
             // Same-provider rule: never cross between Claude, Codex, and Grok accounts
@@ -3346,7 +3402,9 @@ private func observeCredentialChanges() {
 
             // Respect the per-profile eligibility toggle (Settings → Profiles → Auto-Switch)
             guard candidate.isAutoSwitchEnabled else {
-                LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (excluded by per-profile toggle)")
+                if !quiet {
+                    LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (excluded by per-profile toggle)")
+                }
                 return false
             }
 
@@ -3356,7 +3414,9 @@ private func observeCredentialChanges() {
                let cliJSON = candidate.cliCredentialsJSON,
                let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),
                info.type.lowercased() == "free" {
-                LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (free subscription)")
+                if !quiet {
+                    LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (free subscription)")
+                }
                 return false
             }
             return true
@@ -3373,9 +3433,102 @@ private func observeCredentialChanges() {
                 && hasFableWeeklyHeadroom(candidate, threshold: weeklyThreshold, now: now) {
                 return candidate
             }
-            LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
+            if !quiet {
+                LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no session, weekly or Fable headroom, trying next")
+            }
         }
         return nil
+    }
+
+    // MARK: - Fleet summary (menu-bar redesign, stage A)
+
+    /// The account the auto-switch would pick next for `provider` — the head
+    /// of the user's queue when one is eligible, else the ranked candidate —
+    /// or nil when nobody has headroom. Exactly the walk's selection, minus
+    /// the side effects (no queue cleanup, no log lines): this is read on
+    /// every paint by the fleet-summary tile.
+    func predictedNextCandidate(for provider: Profile.ProviderKind) -> PredictedCandidate? {
+        let profiles = profileManager.profiles
+        let activeIds = profileManager.activeAccountIds(among: profiles)
+        let excluded = Set(profiles.filter { $0.providerKind == provider && activeIds.contains($0.id) }.map(\.id))
+        let sessionThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+        let weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+        let now = Date()
+
+        let queue = SharedDataStore.shared.loadAutoSwitchQueue()
+        // A queue entry for THIS provider that is not executable right now is
+        // a blocked head: the ranked fallback must say so, or the bar would
+        // misrepresent the user's hand-off plan (consult, 2026-09-03).
+        var queueHeadBlocked = false
+        if !queue.isEmpty {
+            let (queued, _) = Self.selectQueuedSwitchTarget(
+                queue: queue,
+                profiles: profiles,
+                provider: provider,
+                excluding: excluded,
+                isEligible: { profile in
+                    profile.hasUsageCredentials
+                        && hasSessionHeadroom(profile, threshold: sessionThreshold)
+                        && hasWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now)
+                        && hasFableWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now)
+                }
+            )
+            if let queued {
+                return PredictedCandidate(
+                    id: queued.id, label: queued.menuBarDisplayName, queued: true, queueHeadBlocked: false
+                )
+            }
+            queueHeadBlocked = queue.contains { id in
+                profiles.first(where: { $0.id == id })?.providerKind == provider && !excluded.contains(id)
+            }
+        }
+        guard let ranked = findNextAvailableProfile(provider: provider, excluding: excluded, quiet: true) else {
+            return nil
+        }
+        return PredictedCandidate(
+            id: ranked.id, label: ranked.menuBarDisplayName, queued: false, queueHeadBlocked: queueHeadBlocked
+        )
+    }
+
+    /// Everything the fleet-summary layouts need beyond profiles + config.
+    /// Nil for the per-account layout so none of this work happens for it.
+    private func fleetSummaryContext(for config: MultiProfileDisplayConfig) -> FleetSummaryContext? {
+        guard config.barLayout.isFleetSummary else { return nil }
+        var next: [Profile.ProviderKind: PredictedCandidate] = [:]
+        for provider in Profile.ProviderKind.allCases {
+            if let candidate = predictedNextCandidate(for: provider) {
+                next[provider] = candidate
+            }
+        }
+        return FleetSummaryContext(
+            thresholds: ReadinessThresholds(
+                session: SharedDataStore.shared.loadAutoSwitchThreshold(),
+                weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+            ),
+            isLoginDead: { profile in
+                // Same definition the profile switcher menu uses (flag, or
+                // expired with no refresh token) plus the Grok flag.
+                ProfileCredentialStatusCache.hasDeadLogin(profile)
+                    || (profile.isGrokOnlyProfile && GrokUsageService.shared.isLoginMarkedDead(profile.id))
+            },
+            isExcluded: { profile in
+                // The walk's own eligibility rules (findNextAvailableProfile),
+                // so a green dot means exactly "the auto-switch would take it".
+                if !profile.isAutoSwitchEnabled { return true }
+                if profile.providerKind == .claude, !profile.hasClaudeAI,
+                   let cliJSON = profile.cliCredentialsJSON,
+                   let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),
+                   info.type.lowercased() == "free" {
+                    return true
+                }
+                return false
+            },
+            nextCandidates: next,
+            preflightVerdicts: preflightVerdicts,
+            preferencesDegraded: profileManager.preferencesDegraded,
+            isSwitching: profileManager.isSwitchingProfile,
+            now: Date()
+        )
     }
 
     /// Selects the next queued auto-switch target for this provider WITHOUT
