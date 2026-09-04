@@ -37,6 +37,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return olderSiblingExists
     }
 
+    /// True inside the XCTest host, which launches the real app around the
+    /// tests. Starting the menu bar there gives every test a live 30s sweep
+    /// that adopts the machine's real Claude Code login into whatever profile
+    /// the test just made active, silently overwriting a seeded credential
+    /// mid-assertion (three CredentialHydrationTests, 2026-09-03). Until now
+    /// the suite was protected only by an accident — the focused test profile
+    /// happened to look credential-less, so the wizard branch ran instead —
+    /// which any correct broadening of the setup predicate removes. Tests that
+    /// need a MenuBarManager build their own.
+    private static var isRunningUnderXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single-instance guard, BEFORE any side effects: duplicate instances
         // double every API sweep (feeding oauth/usage 429s), double Keychain
@@ -98,7 +112,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         )
 
         // Check if setup has been completed
-        if !shouldShowSetupWizard() {
+        if Self.isRunningUnderXCTest {
+            LoggingService.shared.log(
+                "AppDelegate: XCTest host — skipping menu bar and setup wizard")
+        } else if !shouldShowSetupWizard() {
             // Initialize menu bar with active profile
             menuBarManager = MenuBarManager()
             menuBarManager?.setup()
@@ -133,6 +150,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
 
+    /// Setup is complete when the INSTALL has a usable login, not when the
+    /// focused profile does. PURE, so the predicate is testable without a
+    /// Keychain or an app launch.
+    ///
+    /// The old rule read the focused profile only, which made a Codex-only
+    /// install permanently unfinished: the auto-import lands "Codex (email)"
+    /// as an extra profile while focus stays on the empty "Account 1", so
+    /// "Claude Code login required" reopened on every launch until the user
+    /// activated the Codex profile by hand. Any credentialed profile of any
+    /// provider counts, and so does a live provider CLI login on disk (the
+    /// auto-import turns those into profiles, but it runs once and may not
+    /// have run yet).
+    ///
+    /// `carries*Account` is deliberately part of the profile test: the wizard
+    /// gate runs at launch, when the background Keychain hydration may not
+    /// have filled in the credential fields yet, and a profile that looks
+    /// credential-less for that reason must not reopen the wizard.
+    /// The three CLI probes are `@autoclosure` so the profile test
+    /// short-circuits them. `hasValidSystemCLICredentials()` reads the system
+    /// Keychain on the calling (main) thread, and this gate runs at launch —
+    /// evaluating it eagerly on every launch would put a blocking Keychain
+    /// read in front of the UI for no reason.
+    static func isSetupComplete(
+        profiles: [Profile],
+        hasClaudeCLILogin: @autoclosure () -> Bool,
+        hasCodexCLILogin: @autoclosure () -> Bool,
+        hasGrokCLILogin: @autoclosure () -> Bool
+    ) -> Bool {
+        if profiles.contains(where: {
+            $0.hasAnyCredentials || $0.carriesClaudeAccount || $0.carriesCodexAccount || $0.carriesGrokAccount
+        }) {
+            return true
+        }
+        return hasClaudeCLILogin() || hasCodexCLILogin() || hasGrokCLILogin()
+    }
+
     private func shouldShowSetupWizard() -> Bool {
         // FORCE SHOW wizard on very first app launch (one-time)
         // This ensures users see the migration option if they have old data
@@ -142,26 +195,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
         // After first launch, use normal checks:
-
-        // activeProfile will always exist after loadProfiles() is called
-        // (ProfileManager creates a default profile if none exist)
-        guard let activeProfile = ProfileManager.shared.activeProfile else {
-            return true  // Safety fallback, should never happen
+        let profiles = ProfileManager.shared.profiles
+        guard !profiles.isEmpty else {
+            return true  // Safety fallback, should never happen after loadProfiles()
         }
 
-        // If profile already has any credentials, skip wizard
-        if activeProfile.hasAnyCredentials {
-            return false
-        }
-
-        // Check if valid CLI credentials exist in system Keychain
-        if hasValidSystemCLICredentials() {
-            LoggingService.shared.log("AppDelegate: Found valid CLI credentials, skipping wizard")
+        if Self.isSetupComplete(
+            profiles: profiles,
+            hasClaudeCLILogin: hasValidSystemCLICredentials(),
+            hasCodexCLILogin: Self.hasValidCodexCLILogin(),
+            hasGrokCLILogin: Self.hasValidGrokCLILogin()
+        ) {
             return false
         }
 
         // No credentials found - show wizard
         return true
+    }
+
+    /// A live `~/.codex/auth.json` login. File read only — no Keychain, so it
+    /// is safe on the main thread at launch.
+    static func hasValidCodexCLILogin() -> Bool {
+        guard let json = CodexUsageService.shared.readAuthFile() else { return false }
+        return CodexUsageService.shared.extractAccessToken(from: json) != nil
+    }
+
+    /// A live `~/.grok/auth.json` login. Same file-only read as the Codex twin.
+    static func hasValidGrokCLILogin() -> Bool {
+        guard let json = GrokUsageService.shared.readAuthFile() else { return false }
+        return GrokUsageService.shared.extractAccessToken(from: json) != nil
     }
 
     /// Checks if valid Claude Code CLI credentials exist in system Keychain
