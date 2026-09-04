@@ -233,6 +233,8 @@ struct SettingsView: View {
                     AccountsDetailView(store: accountsStore, tab: $accountTab)
                 case .activeAccounts:
                     ActiveSwitchView()
+                case .alerts:
+                    AlertsSettingsView()
                 // Credentials
                 case .cliAccount:
                     CLIAccountView()
@@ -507,6 +509,7 @@ enum SettingsSection: String, CaseIterable {
     // Shared Settings
     case accounts
     case activeAccounts
+    case alerts
     case appSettings
     case manageProfiles
     case shortcuts
@@ -517,6 +520,7 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .accounts: return "section.accounts_title".localized
         case .activeAccounts: return "section.active_title".localized
+        case .alerts: return "section.alerts_title".localized
         case .cliAccount: return "section.cli_account_title".localized
         case .codexAccount: return "section.codex_account_title".localized
         case .appearance: return "section.appearance_title".localized
@@ -533,6 +537,7 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .accounts: return "person.crop.rectangle.stack.fill"
         case .activeAccounts: return "arrow.left.arrow.right"
+        case .alerts: return "bell.badge.fill"
         case .cliAccount: return "terminal.fill"
         case .codexAccount: return "chevron.left.forwardslash.chevron.right"
         case .appearance: return "paintbrush.fill"
@@ -549,6 +554,7 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .accounts: return "section.accounts_desc".localized
         case .activeAccounts: return "section.active_desc".localized
+        case .alerts: return "section.alerts_desc".localized
         case .cliAccount: return "section.cli_account_desc".localized
         case .codexAccount: return "section.codex_account_desc".localized
         case .appearance: return "section.appearance_desc".localized

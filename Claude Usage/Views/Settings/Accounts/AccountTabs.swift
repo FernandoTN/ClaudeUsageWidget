@@ -16,9 +16,11 @@ struct AccountAlertsTab: View {
     let profile: Profile
     @StateObject private var profileManager = ProfileManager.shared
 
-    private func update(_ change: (inout NotificationSettings) -> Void) {
+    private var fleet: NotificationSettings { SharedDataStore.shared.loadFleetAlertDefaults() }
+
+    private func update(_ change: (inout Profile) -> Void) {
         var updated = profile
-        change(&updated.notificationSettings)
+        change(&updated)
         profileManager.updateProfile(updated)
     }
 
@@ -26,30 +28,33 @@ struct AccountAlertsTab: View {
         SettingsContentCard {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.cardPadding) {
                 SettingToggle(
-                    title: "notifications.enable".localized,
-                    description: "accounts.alerts.enable_desc".localized(with: profile.name),
-                    isOn: Binding(get: { profile.notificationSettings.enabled }, set: { on in update { $0.enabled = on } })
+                    title: "accounts.alerts.follow_title".localized,
+                    description: (profile.followsFleetAlertDefaults ? "accounts.alerts.follow_desc" : "accounts.alerts.own_state_desc").localized(with: profile.name),
+                    isOn: Binding(get: { profile.followsFleetAlertDefaults }, set: { follows in
+                        update { p in
+                            // Leaving the fleet starts from the fleet's values when the
+                            // account never had its own; its stored settings otherwise.
+                            if !follows && p.notificationSettings == NotificationSettings() { p.notificationSettings = fleet }
+                            p.followsFleetAlertDefaults = follows
+                        }
+                    })
                 )
-                if profile.notificationSettings.enabled {
-                    Divider()
-                    Text("notifications.alert_thresholds".localized)
-                        .font(DesignTokens.Typography.body).fontWeight(.medium).foregroundColor(.secondary)
-                    VStack(spacing: DesignTokens.Spacing.small) {
-                        ThresholdToggleRow(level: "75%", color: DesignTokens.Colors.usageMedium, label: "notifications.threshold.warning".localized,
-                                           isOn: Binding(get: { profile.notificationSettings.threshold75Enabled }, set: { on in update { $0.threshold75Enabled = on } }))
-                        ThresholdToggleRow(level: "90%", color: DesignTokens.Colors.warning, label: "notifications.threshold.high".localized,
-                                           isOn: Binding(get: { profile.notificationSettings.threshold90Enabled }, set: { on in update { $0.threshold90Enabled = on } }))
-                        ThresholdToggleRow(level: "95%", color: DesignTokens.Colors.error, label: "notifications.threshold.critical".localized,
-                                           isOn: Binding(get: { profile.notificationSettings.threshold95Enabled }, set: { on in update { $0.threshold95Enabled = on } }))
+                Divider()
+                if profile.followsFleetAlertDefaults {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("accounts.alerts.following".localized(with: FleetAlerts.summary(fleet)))
+                            .font(DesignTokens.Typography.body).foregroundColor(.secondary)
+                        Spacer()
+                        Button("accounts.alerts.edit_fleet".localized) {
+                            NotificationCenter.default.post(name: .settingsSectionRequested, object: SettingsRoute(section: .alerts))
+                        }
+                        .buttonStyle(.link)
                     }
-                    Divider()
-                    Text("notifications.custom_thresholds".localized)
-                        .font(DesignTokens.Typography.body).fontWeight(.medium).foregroundColor(.secondary)
-                    CustomThresholdsEditor(thresholds: Binding(get: { profile.notificationSettings.customThresholds },
-                                                               set: { list in update { $0.customThresholds = list } }))
-                    Divider()
-                    NotificationSoundPicker(soundName: Binding(get: { profile.notificationSettings.soundName },
-                                                               set: { name in update { $0.soundName = name } }))
+                } else {
+                    NotificationSettingsEditor(
+                        settings: Binding(get: { profile.notificationSettings }, set: { value in update { $0.notificationSettings = value } }),
+                        enableDescription: "accounts.alerts.own_desc".localized(with: profile.name)
+                    )
                 }
                 Text("accounts.alerts.fleet_note".localized)
                     .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
