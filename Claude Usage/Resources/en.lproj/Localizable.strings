@@ -981,3 +981,24 @@
 "accounts.monitoring.eligible_off" = "Excluded from the auto-switch";
 "accounts.monitoring.eligible_edit" = "Change…";
 "accounts.footer.last_profile" = "The last profile cannot be deleted";
+
+// MARK: - Accounts › Login tab (stage 2c, spec §2.2 D13)
+"accounts.login.none" = "no login stored";
+"accounts.login.synced_at" = "imported %@";
+"accounts.login.import" = "Import the CLI's current login into this profile…";
+"accounts.login.reimport" = "Re-import the CLI's current login…";
+"accounts.login.import_help_allowed" = "Copies the login the CLI is using right now into this profile and makes this profile Active for the provider.";
+"accounts.login.import_help_repair" = "The CLI's login is this profile's own account — the repair after a fresh login.";
+"accounts.login.import_help_different" = "The CLI holds a different account (%@) than this profile (%@) — you will be asked first.";
+"accounts.login.import_help_unknown" = "The CLI's account could not be identified — you will be asked first.";
+"accounts.login.confirm_title" = "Import the %@ login into “%@”?";
+"accounts.login.confirm_different" = "The CLI is logged into account %@, but “%@” holds account %@. Importing replaces this profile's login with the CLI's and makes it Active for %@. If you meant to repair this profile, log in as its own account first.";
+"accounts.login.confirm_unknown" = "The CLI's account could not be identified. Importing copies whatever login the CLI holds into “%@” and makes it Active for %@.";
+"accounts.login.confirm_import" = "Import";
+"accounts.login.claude_how" = "Run /login in Claude Code as this account, then import. The shared login is one Keychain item on this Mac: importing makes this profile Active for Claude.";
+"accounts.login.claude_repair" = "This login is dead. Run /login in Claude Code as this account, then re-import.";
+"accounts.login.codex_how" = "Log a new account in through the button (an isolated CODEX_HOME — it never revokes the account the CLI is using), or import one you logged in yourself.";
+"accounts.login.codex_repair" = "This login is dead. Log the account in again through the button below — never `codex login` in ~/.codex, that revokes the active account.";
+"accounts.login.grok_how" = "Log in with the grok CLI, then import its ~/.grok/auth.json into this profile.";
+"accounts.login.grok_missing" = "No grok login found (~/.grok/auth.json has no access token).";
+"codex.activate.from_owner" = "Active for Codex today: %@.";

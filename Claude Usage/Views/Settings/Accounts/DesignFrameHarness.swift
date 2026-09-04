@@ -50,6 +50,11 @@ enum DesignFrameHarness {
             emit(AccountAlertsTab(profile: profile).padding(16), width: 560, name: "accounts-alerts", to: dir, index: &index)
             emit(AccountMonitoringTab(profile: profile).padding(16), width: 560, name: "accounts-monitoring", to: dir, index: &index)
         }
+        for (state, name) in [("claude", "dRir"), ("codex", "xFernando(dev)"), ("grok", "Grok")] {
+            if let profile = Fixture.profiles.first(where: { $0.name == name }) {
+                emit(AccountLoginTab(profile: profile).padding(16), width: 560, name: "accounts-login-\(state)", to: dir, index: &index)
+            }
+        }
         // Shared directory convention with the menu-bar redesign's harness:
         // append a section rather than overwrite its index.
         let indexURL = dir.appendingPathComponent("index.md")
@@ -166,12 +171,12 @@ struct SelectorMenuFacsimile: View {
     }
     private func color(_ tint: ActiveSelectorMenuModel.Tint?) -> Color? {
         switch tint {
-        case .cyan: return .cyan
-        case .green: return .adaptiveGreen
-        case .orange: return .orange
-        case .red: return .red
-        case .purple: return .purple
-        case .secondary: return .secondary
+        case .cyan: return DesignRole.active.color
+        case .green: return DesignRole.ready.color
+        case .orange: return DesignRole.caution.color
+        case .red: return DesignRole.blocking.color
+        case .purple: return DesignRole.suspected.color
+        case .secondary: return DesignRole.informational.color
         case nil: return nil
         }
     }

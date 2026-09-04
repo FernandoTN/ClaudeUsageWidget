@@ -179,9 +179,9 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
     static func badgeColor(_ badge: ActiveSelectorMenuModel.Badge) -> NSColor {
         switch badge {
-        case .red: return .systemRed
-        case .purple: return .systemPurple
-        case .amber: return .systemOrange
+        case .red: return DesignRole.blocking.nsColor
+        case .purple: return DesignRole.suspected.nsColor
+        case .amber: return DesignRole.caution.nsColor
         }
     }
 
@@ -283,12 +283,12 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
     static func color(_ tint: ActiveSelectorMenuModel.Tint) -> NSColor {
         switch tint {
-        case .cyan: return .systemCyan
-        case .green: return .systemGreen
-        case .orange: return .systemOrange
-        case .red: return .systemRed
-        case .purple: return .systemPurple
-        case .secondary: return .secondaryLabelColor
+        case .cyan: return DesignRole.active.nsColor
+        case .green: return DesignRole.ready.nsColor
+        case .orange: return DesignRole.caution.nsColor
+        case .red: return DesignRole.blocking.nsColor
+        case .purple: return DesignRole.suspected.nsColor
+        case .secondary: return DesignRole.informational.nsColor
         }
     }
 

@@ -76,8 +76,8 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 1b ⇄ selector item + menu + confirmation + setting | `feat/ux-revamp-1b-selector` | #77 | **merged** `6b83180`, deployed 20:56 |
 | 2a Accounts shell: typed `SettingsRoute`, window 820 resizable, roster sidebar + Overview tab, Debug frame harness | `feat/ux-revamp-2a-shell` | draft | frames rendered and reviewed (§12.2) |
 | 2a fix: selector created after the groups | `fix/ux-revamp-selector-after-groups` | #88 | **merged** `8d2f8d4`; harmless — the probe showed the host re-inserts groups after paints, so the paint side (redesign) owns the order fix |
-| 2b Alerts + Monitoring tabs, Rename/Delete, Open in dashboard, round-1 punch list (S1–S5, I1–I2, R1–R4, O1–O4), confirmation names both sides / "Log in first" | `feat/ux-revamp-2b-tabs` | draft | frames re-rendered and reviewed |
-| 2c Login components (profile-id scoped), gated Import, DesignLegend switch (S6/S7/R5) | — | — | after the redesign's `DesignLegend.swift` |
+| 2b Alerts + Monitoring tabs … | `feat/ux-revamp-2b-tabs` | #90 | **merged** `a9a3515` |
+| 2c Login tab (profile-id scoped Claude / Codex / Grok components), gated Import (`ImportGate`), DesignLegend switch (S6/S7/R5), activation offer states cost + owner | `feat/ux-revamp-2c-login` | draft | frames reviewed; 435/0 |
 | 3a / 3b / 3c / 3d Settings | — | — | after 2 |
 | 4a / 4b insights, 4.1 resets | — | — | after 3 / the reset seams |
 

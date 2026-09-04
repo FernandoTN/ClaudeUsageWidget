@@ -247,8 +247,10 @@ final class ActiveSelectorMenuTests: XCTestCase {
         let dead = claude("Ai", usage(session: 5))
         let codexOwner = codex("xFernando", usage(weekly: 95, sessionWindow: false))
         let sel = selections([owner, twin, dead, codexOwner], active: [owner.id, codexOwner.id], dead: [dead.id])
-        XCTAssertEqual(Model.tooltip(selections: sel),
-                       "Active: Claude dRir 78 % · Codex xFernando 95 % — 4 profiles / 3 accounts · 1 dead · 2 duplicate rows")
+        let tooltip = Model.tooltip(selections: sel)
+        XCTAssertTrue(tooltip.hasPrefix("Active: Claude dRir 78 % · Codex xFernando 95 % — 4 profiles / 3 accounts · 1 dead · 2 duplicate rows"), tooltip)
+        XCTAssertTrue(tooltip.hasSuffix(DesignLegend.line), "the shared legend rides on the tooltip (S7/G2)")
+        XCTAssertTrue(Model.tooltip(selections: sel, badge: .red).hasPrefix("Needs attention"), "badge meaning first (I2)")
     }
 
     // MARK: - Frame 9: confirmation
