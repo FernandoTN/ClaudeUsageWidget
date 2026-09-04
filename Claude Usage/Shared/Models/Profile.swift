@@ -50,6 +50,14 @@ struct Profile: Codable, Identifiable, Equatable {
     /// unhydrated profile otherwise looks account-less and the same Codex
     /// account gets synced into a second profile (two tiles, one quota).
     var codexAccountId: String?
+    /// The `CODEX_HOME` this account's own `codex login` lives in (e.g.
+    /// `~/.codex-accounts/work`), when the account was brought in with Import
+    /// rather than synced from the default `~/.codex`. Non-secret — a folder
+    /// path, not a credential — and informational: it records where to re-login
+    /// WITHOUT revoking anything, because `codex login` revokes whatever
+    /// credentials already sit in the home it runs in. Nil = synced from the
+    /// default home.
+    var codexHomePath: String?
 
     // MARK: - Grok Account (xAI Grok CLI)
     /// Full contents of the account's ~/.grok/auth.json — Keychain-only, never
@@ -123,6 +131,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case codexEmail
         case codexAccountSyncedAt
         case codexAccountId
+        case codexHomePath
         case grokEmail
         case grokAccountSyncedAt
         case claudeUsage
@@ -158,6 +167,7 @@ struct Profile: Codable, Identifiable, Equatable {
         codexEmail: String? = nil,
         codexAccountSyncedAt: Date? = nil,
         codexAccountId: String? = nil,
+        codexHomePath: String? = nil,
         grokCredentialsJSON: String? = nil,
         grokEmail: String? = nil,
         grokAccountSyncedAt: Date? = nil,
@@ -190,6 +200,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.codexEmail = codexEmail
         self.codexAccountSyncedAt = codexAccountSyncedAt
         self.codexAccountId = codexAccountId
+        self.codexHomePath = codexHomePath
         self.grokCredentialsJSON = grokCredentialsJSON
         self.grokEmail = grokEmail
         self.grokAccountSyncedAt = grokAccountSyncedAt

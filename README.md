@@ -90,7 +90,56 @@ The project is **ad-hoc signed** (`CODE_SIGN_IDENTITY = "-"`) with no developmen
 There is no wizard step for Codex (yet):
 
 1. If `~/.codex/auth.json` exists (you ran `codex login`), the app auto-imports it once as a "Codex (email)" profile.
-2. For additional Codex accounts: `codex login` with the other account, create a new profile, then Settings → Codex Account → Sync.
+2. For additional Codex accounts, follow the next section — do **not** run `codex login` again in the default home.
+
+### Codex accounts: adding more than one
+
+**Never run `codex login` or `codex logout` in the default `~/.codex` once an account is stored there.** `codex login` revokes, server-side, whatever credentials already sit in the home it runs in *before* it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt` → `clear_existing_auth_before_login` → `logout_with_revoke`). The account the widget applied there dies with it — the widget's stored copy starts answering 401 and cannot be repaired app-side. Three accounts were lost this way on 2026-09-03.
+
+The CLI honours `$CODEX_HOME` for its config directory, so every extra account gets its own home, where there is nothing to revoke. Two ways to do that:
+
+**From the widget (easiest).** Go to the profile that should hold the account, then **Settings → Codex Account → Log in a new Codex account…**. The widget runs `codex login` with `CODEX_HOME` pointed at a folder of its own under `~/.codex-accounts`; your browser opens, and the finished login is imported. Cancel, or a five-minute timeout, leaves every account untouched. This never runs against the default home.
+
+Where the login lands follows the profile you are looking at:
+
+| The viewed profile | Result |
+| --- | --- |
+| Has no Codex account | The login goes into that profile. The folder is named after it, e.g. `~/.codex-accounts/xfenrir-dev`. |
+| Has a Codex account whose login is dead | The login replaces those dead tokens in place, reusing the same folder. Activate the profile afterwards to hand the new login to the CLI. |
+| Has a working Codex account | You type a label, and the login goes into a new profile of that name. A profile holds exactly one Codex account. |
+
+In every case, a login whose account another profile already holds is refused by name rather than duplicated. To add an account for a profile that does not exist yet, create it in Manage Profiles first, then use the button on its Codex page.
+
+**From a terminal.** Log in under the isolated home yourself, then import:
+
+```bash
+mkdir -p ~/.codex-accounts/work
+CODEX_HOME=~/.codex-accounts/work codex login
+```
+
+Then **Settings → Codex Account**, select the profile for that account, and click **Import from another Codex home…**. Pick `~/.codex-accounts/work`. The sheet shows the account's email and the last characters of its account id before you commit, and refuses the import if another profile already holds the same account.
+
+A shell function makes the terminal path a one-liner:
+
+```bash
+# ~/.zshrc — then: codex-add work
+codex-add() {
+  [ -n "$1" ] || { echo "usage: codex-add <name>" >&2; return 2; }
+  mkdir -p "$HOME/.codex-accounts/$1" && CODEX_HOME="$HOME/.codex-accounts/$1" codex login
+}
+```
+
+It has to be a function, not an alias — an alias cannot take an argument.
+
+How the pieces fit:
+
+- The widget is the **single writer** of `~/.codex/auth.json`. The in-app login writes only to the isolated home it creates. Activating a profile writes that profile's stored login there, which is how the CLI follows your account switches.
+- **Import never writes `~/.codex`** and never claims the Codex owner pointer. It only copies the login into the profile; activate the profile to switch the CLI.
+- Run `codex` itself against the **default** home, not an isolated one. The isolated home exists for `codex login` only — a session run under it rotates tokens the widget will not see.
+- The imported home path is shown in the profile's account details, so you know where to re-login for that account later.
+- Re-syncing an account whose token was rotated by the widget is not needed: it adopts the CLI's silent refreshes out of `~/.codex/auth.json` automatically, matched by account id.
+
+What is established here is the client-side mechanism: the CLI revokes the refresh token it finds in the home it is running in, so a home with no `auth.json` has nothing to revoke. Whether OpenAI's authorization server ever revokes more widely than that single grant is not observable from the client — see `docs/research/2026-09-03-codex-accounts-tokens.md`.
 
 ### Configuration
 
@@ -107,7 +156,7 @@ There is no wizard step for Codex (yet):
 
 **"login expired. Please run /login" in Claude Code.** The account that owns the CLI login has a dead token. Run `/login` in Claude Code, then Settings → CLI Account → Sync on that profile.
 
-**"refresh token was revoked" from the codex CLI.** Same story: `codex login`, then Settings → Codex Account → Sync.
+**"refresh token was revoked" from the codex CLI, or a Codex profile stuck at 401.** Its login was revoked — usually by a `codex login` in the default `~/.codex`, which revokes whatever was there first. Do not repeat that login in the default home; it would revoke the next account too. Log the account in under its own home (`CODEX_HOME=~/.codex-accounts/<name> codex login`) and use Settings → Codex Account → Import from another Codex home. See [Codex accounts: adding more than one](#codex-accounts-adding-more-than-one).
 
 **Usage looks frozen.** Check the logs:
 

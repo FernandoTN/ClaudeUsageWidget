@@ -5,6 +5,7 @@
 //  Created by Claude Code on 2026-07-05.
 //
 
+import AppKit
 import SwiftUI
 
 /// Settings page for the OpenAI Codex CLI account attached to the active profile.
@@ -15,6 +16,8 @@ struct CodexAccountView: View {
     @StateObject private var profileManager = ProfileManager.shared
     @State private var isSyncing = false
     @State private var syncError: String?
+    @State private var showingImportSheet = false
+    @State private var showingLoginSheet = false
 
     /// Provider exclusivity: a profile that already holds a Claude account can never
     /// be given a Codex one (the sidebar hides this page for such profiles; this is
@@ -83,6 +86,26 @@ struct CodexAccountView: View {
                                                 Text(email)
                                                     .font(DesignTokens.Typography.body)
                                                     .foregroundColor(.primary)
+                                            }
+                                        }
+                                    }
+
+                                    if let home = profile.codexHomePath {
+                                        HStack(spacing: DesignTokens.Spacing.iconText) {
+                                            Image(systemName: "folder")
+                                                .font(.system(size: DesignTokens.Icons.standard))
+                                                .foregroundColor(.accentColor)
+                                                .frame(width: DesignTokens.Spacing.iconFrame)
+
+                                            VStack(alignment: .leading, spacing: DesignTokens.Spacing.extraSmall) {
+                                                Text("codex.import_path_label".localized)
+                                                    .font(DesignTokens.Typography.caption)
+                                                    .fontWeight(.medium)
+                                                    .foregroundColor(.secondary)
+                                                Text(home)
+                                                    .font(DesignTokens.Typography.monospaced)
+                                                    .foregroundColor(.primary)
+                                                    .textSelection(.enabled)
                                             }
                                         }
                                     }
@@ -156,6 +179,39 @@ struct CodexAccountView: View {
                                     .disabled(isSyncing)
                                 }
 
+                                if !isProviderLocked {
+                                    // The safe way to ADD an account: the CLI is
+                                    // run with CODEX_HOME pointed at a fresh
+                                    // folder, so its login has nothing to revoke.
+                                    Button { showingLoginSheet = true } label: {
+                                        HStack(spacing: DesignTokens.Spacing.extraSmall) {
+                                            Image(systemName: "person.badge.plus")
+                                                .font(.system(size: DesignTokens.Icons.small))
+                                            Text("codex.login_new_account".localized)
+                                                .font(DesignTokens.Typography.body)
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.regular)
+                                    .disabled(isSyncing)
+                                }
+
+                                if !isProviderLocked {
+                                    // The same account brought in from a home the
+                                    // user logged into themselves.
+                                    Button { showingImportSheet = true } label: {
+                                        HStack(spacing: DesignTokens.Spacing.extraSmall) {
+                                            Image(systemName: "folder.badge.plus")
+                                                .font(.system(size: DesignTokens.Icons.small))
+                                            Text("codex.import_from_home".localized)
+                                                .font(DesignTokens.Typography.body)
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.regular)
+                                    .disabled(isSyncing)
+                                }
+
                                 if profile.hasCodexAccount {
                                     Button(action: removeSync) {
                                         HStack(spacing: DesignTokens.Spacing.extraSmall) {
@@ -171,6 +227,13 @@ struct CodexAccountView: View {
                                 }
 
                                 Spacer()
+                            }
+
+                            if !isProviderLocked {
+                                Text("codex.cli_hazard".localized)
+                                    .font(DesignTokens.Typography.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -208,6 +271,30 @@ struct CodexAccountView: View {
         }
         .onChange(of: profileManager.activeProfile?.id) { _, _ in
             syncError = nil
+        }
+        .sheet(isPresented: $showingLoginSheet) {
+            CodexLoginSheet(
+                viewedProfile: isProviderLocked ? nil : profileManager.activeProfile,
+                onFinished: {
+                    profileManager.loadProfiles()
+                    // Like Import, the login writes nothing to ~/.codex, so the
+                    // Codex owner pointer is left where it is.
+                    NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+                    LoggingService.shared.log("CodexAccountView: isolated-home login complete")
+                }
+            )
+        }
+        .sheet(isPresented: $showingImportSheet) {
+            if let profileId = profileManager.activeProfile?.id {
+                CodexHomeImportSheet(profileId: profileId) {
+                    profileManager.loadProfiles()
+                    // Deliberately NOT claimActiveCodexOwnership: an import does
+                    // not write ~/.codex/auth.json, so the imported account is
+                    // not the CLI's login until this profile is activated.
+                    NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+                    LoggingService.shared.log("CodexAccountView: Codex import from a separate home complete")
+                }
+            }
         }
     }
 
