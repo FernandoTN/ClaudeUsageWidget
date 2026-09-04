@@ -235,6 +235,10 @@ struct SettingsView: View {
                     ActiveSwitchView()
                 case .alerts:
                     AlertsSettingsView()
+                case .display:
+                    DisplaySettingsView()
+                case .advanced:
+                    AdvancedSettingsView()
                 // Credentials
                 case .cliAccount:
                     CLIAccountView()
@@ -272,7 +276,8 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .settingsSectionRequested)) { notification in
             // Both payloads decode: the legacy section string every existing
             // poster sends, and the typed route that names its profile + tab.
-            guard let route = SettingsRoute(deepLink: notification.object) else { return }
+            // Legacy sections land on the pages that replace them (spec §5.5).
+            guard let route = SettingsRoute(deepLink: notification.object)?.canonical else { return }
             if let id = route.profileId { ProfileManager.shared.viewProfile(id) }
             if let tab = route.tab { accountTab = tab }
             select(route.section)
@@ -510,6 +515,8 @@ enum SettingsSection: String, CaseIterable {
     case accounts
     case activeAccounts
     case alerts
+    case display
+    case advanced
     case appSettings
     case manageProfiles
     case shortcuts
@@ -521,6 +528,8 @@ enum SettingsSection: String, CaseIterable {
         case .accounts: return "section.accounts_title".localized
         case .activeAccounts: return "section.active_title".localized
         case .alerts: return "section.alerts_title".localized
+        case .display: return "section.display_title".localized
+        case .advanced: return "section.advanced_title".localized
         case .cliAccount: return "section.cli_account_title".localized
         case .codexAccount: return "section.codex_account_title".localized
         case .appearance: return "section.appearance_title".localized
@@ -538,6 +547,8 @@ enum SettingsSection: String, CaseIterable {
         case .accounts: return "person.crop.rectangle.stack.fill"
         case .activeAccounts: return "arrow.left.arrow.right"
         case .alerts: return "bell.badge.fill"
+        case .display: return "macwindow"
+        case .advanced: return "wrench.and.screwdriver.fill"
         case .cliAccount: return "terminal.fill"
         case .codexAccount: return "chevron.left.forwardslash.chevron.right"
         case .appearance: return "paintbrush.fill"
@@ -555,6 +566,8 @@ enum SettingsSection: String, CaseIterable {
         case .accounts: return "section.accounts_desc".localized
         case .activeAccounts: return "section.active_desc".localized
         case .alerts: return "section.alerts_desc".localized
+        case .display: return "section.display_desc".localized
+        case .advanced: return "section.advanced_desc".localized
         case .cliAccount: return "section.cli_account_desc".localized
         case .codexAccount: return "section.codex_account_desc".localized
         case .appearance: return "section.appearance_desc".localized

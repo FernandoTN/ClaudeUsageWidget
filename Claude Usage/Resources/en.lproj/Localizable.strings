@@ -1052,6 +1052,50 @@
 "accounts.alerts.own_desc" = "Notify about %@'s usage milestones";
 "accounts.alerts.own_state_desc" = "%@ keeps its own alert settings";
 
+// MARK: - Settings › Display and Advanced (stage 3c, spec §5.1, §5.2, §12.5)
+"section.display_title" = "Display";
+"section.display_desc" = "Menu bar layout, the selector item and the popover";
+"section.advanced_title" = "Advanced";
+"section.advanced_desc" = "Startup, shortcuts, diagnostics and stored settings";
+"display.title" = "Display";
+"display.subtitle" = "How the menu bar and the popover are drawn — which accounts show is set per account";
+"display.bar_title" = "Menu bar";
+"display.bar_subtitle" = "One tile per account, or one summary tile per provider";
+"display.mode" = "Mode";
+"display.mode_single" = "Single account";
+"display.mode_multi" = "Multiple accounts";
+"display.mode_note" = "Which accounts appear is each account's own choice: Accounts › Monitoring › Show on the menu bar.";
+"display.popover_title" = "Popover";
+"display.popover_subtitle" = "Times shown in the classic popover";
+"display.single_title" = "Single-account bar";
+"display.single_subtitle" = "Icon style, metrics and markers for the single-account mode";
+"display.single_note" = "Icon style, metrics and markers of the single-account mode, for the viewed account. Dimmed while the bar shows multiple accounts.";
+"display.single_open" = "Open Appearance";
+"advanced.title" = "Advanced";
+"advanced.subtitle" = "Startup, shortcuts, diagnostics, and what this app stores";
+"advanced.startup_title" = "Startup";
+"advanced.diagnostics_title" = "Diagnostics";
+"advanced.diagnostics_subtitle" = "The app logs through the unified log only; nothing leaves this Mac";
+"advanced.debug_logging" = "Detailed API logging";
+"advanced.debug_logging_desc" = "Adds request-level detail to the unified log while debugging a fetch problem. Off otherwise.";
+"advanced.log_hint" = "Read the last ten minutes of the app's log in Terminal:";
+"advanced.copy" = "Copy";
+"advanced.version" = "Version %@ (%@)";
+"advanced.dead_title" = "Dead-login flags";
+"advanced.dead_subtitle" = "Logins a provider refused for good — the flag stops retries and repeat notifications";
+"advanced.dead_none" = "No login is flagged dead.";
+"advanced.dead_forget" = "Forget flag";
+"advanced.dead_note" = "Forgetting a flag changes no credentials: the next sweep re-checks the login and the notification is re-armed. The repair itself is on the account's Login tab.";
+"advanced.keys_title" = "Stored settings";
+"advanced.keys_subtitle" = "Every preference key this app has ever written, and whether it is on disk";
+"advanced.keys_counts" = "%d live keys of %d registered · %d keys on disk";
+"advanced.keys_unregistered" = "On disk but registered by nothing: %@";
+"advanced.keys_show" = "Show all keys";
+"advanced.keys_on_disk" = "On disk";
+"advanced.keys_absent" = "Not on disk";
+"accounts.add" = "Add account…";
+"accounts.relogin_banner" = "Re-login needed — this profile holds a login that belongs to another profile's account. Log in the right account on the Login tab.";
+
 // Token usage window (docs/specs/token-telemetry.md)
 "telemetry.window_title" = "Token usage";
 "telemetry.fleet" = "Fleet";

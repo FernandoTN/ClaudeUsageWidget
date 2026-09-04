@@ -52,4 +52,21 @@ struct SettingsRoute: Hashable {
         self.profileId = profileId
         self.tab = tab
     }
+
+    /// The legacy sections mapped onto the pages that replace them (spec §5.5,
+    /// stage 3c), so every existing poster lands somewhere current.
+    var canonical: SettingsRoute {
+        switch section {
+        case .manageProfiles, .general:
+            return SettingsRoute(section: .accounts, profileId: profileId, tab: tab)
+        case .cliAccount, .codexAccount:
+            return SettingsRoute(section: .accounts, profileId: profileId, tab: tab ?? .login)
+        case .appearance, .popover:
+            return SettingsRoute(section: .display, profileId: profileId, tab: tab)
+        case .appSettings, .shortcuts:
+            return SettingsRoute(section: .advanced, profileId: profileId, tab: tab)
+        default:
+            return self
+        }
+    }
 }
