@@ -216,6 +216,11 @@ struct DashboardSnapshot: Hashable {
     var sections: [ProviderSection]
     var recentSwitches: [RecentSwitch]
     var generatedAt: Date
+    /// The fleet-level insights (UX revamp stage 4a: reset timeline, blind
+    /// spots, drift, switch log, burn, incidents, capacity, why-not), built
+    /// by the manager beside the snapshot and rendered as the collapsed
+    /// Insights block under the last section. nil until assigned.
+    var insights: FleetInsights?
 
     var accountCount: Int { sections.reduce(0) { $0 + $1.roster.count + ($1.active == nil ? 0 : 1) } }
 

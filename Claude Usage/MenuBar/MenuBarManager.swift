@@ -3959,6 +3959,10 @@ private func observeCredentialChanges() {
             manuallyPinned: autoSwitchedProfileIds,
             needsRelogin: profileManager.profilesNeedingAccountRelogin
         ))
+        // Same paint, same inputs shape: the insights ride inside the
+        // snapshot so the view observes one value and the frame harness
+        // renders them from a fixture like everything else.
+        dashboardStore.snapshot?.insights = makeFleetInsights()
     }
 
     /// The readiness / candidate / verdict context both the fleet tiles and
