@@ -145,64 +145,25 @@ struct PopoverContentView: View {
         manager.viewProfile(members[next].id)
     }
 
-    @ViewBuilder
     private func makeActiveRow(_ profile: Profile) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if pendingSwitch == profile.id {
-                Text("Switch the \(ActiveVocabulary.providerName(profile.providerKind)) login to \(profile.name)?")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(DashboardFormatting.switchCost(profile.providerKind))
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                if ProfileCredentialStatusCache.hasDeadLogin(profile) {
-                    Text("This login is dead; the switch will be refused. Log in again first.")
-                        .font(.system(size: 9))
-                        .foregroundColor(.orange)
+        MakeActiveRow(
+            name: profile.name,
+            provider: profile.providerKind,
+            loginDead: ProfileCredentialStatusCache.hasDeadLogin(profile),
+            isPending: pendingSwitch == profile.id,
+            note: noteFor == profile.id ? switchNote : nil,
+            onBegin: { pendingSwitch = profile.id; switchNote = nil },
+            onConfirm: {
+                let id = profile.id
+                let name = profile.name
+                pendingSwitch = nil
+                Task { @MainActor in
+                    let outcome = await onMakeActive(id)
+                    switchNote = DashboardFormatting.outcome(outcome, name: name)
+                    noteFor = id
                 }
-                HStack(spacing: 8) {
-                    Button("Switch") {
-                        let id = profile.id
-                        let name = profile.name
-                        pendingSwitch = nil
-                        Task { @MainActor in
-                            let outcome = await onMakeActive(id)
-                            switchNote = DashboardFormatting.outcome(outcome, name: name)
-                            noteFor = id
-                        }
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    Button("common.cancel".localized) { pendingSwitch = nil }
-                        .keyboardShortcut(.cancelAction)
-                }
-                .controlSize(.small)
-            } else {
-                Button {
-                    pendingSwitch = profile.id
-                    switchNote = nil
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(ActiveVocabulary.makeActive(profile.providerKind))
-                            .font(.system(size: 10, weight: .semibold))
-                        Spacer()
-                    }
-                    .foregroundColor(.accentColor)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                if let note = switchNote, noteFor == profile.id {
-                    Text(note)
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(pendingSwitch == profile.id ? Color.orange.opacity(0.10) : Color.primary.opacity(0.03))
+            },
+            onCancel: { pendingSwitch = nil }
         )
     }
 
@@ -572,6 +533,74 @@ struct GroupNavigator: View {
 }
 
 // MARK: - Native Divider
+
+/// The classic popover's "Make active for <provider>…" control: the offer,
+/// the two-step confirmation (cost stated, dead login warned), and the
+/// outcome note. A pure function of its inputs — the state lives in the
+/// popover — so the frame harness can render every step from fixtures.
+struct MakeActiveRow: View {
+    let name: String
+    let provider: Profile.ProviderKind
+    let loginDead: Bool
+    let isPending: Bool
+    let note: String?
+    let onBegin: () -> Void
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if isPending {
+                // Frame harness, first finding: at popover width these
+                // sentences truncated with an ellipsis. They wrap.
+                Text("Switch the \(ActiveVocabulary.providerName(provider)) login to \(name)?")
+                    .font(.system(size: 10, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(DashboardFormatting.switchCost(provider))
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if loginDead {
+                    Text("This login is dead; the switch will be refused. Log in again first.")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 8) {
+                    Button("Switch", action: onConfirm)
+                        .keyboardShortcut(.defaultAction)
+                    Button("common.cancel".localized, action: onCancel)
+                        .keyboardShortcut(.cancelAction)
+                }
+                .controlSize(.small)
+            } else {
+                Button(action: onBegin) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(ActiveVocabulary.makeActive(provider))
+                            .font(.system(size: 10, weight: .semibold))
+                        Spacer()
+                    }
+                    .foregroundColor(.accentColor)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if let note {
+                    Text(note)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isPending ? Color.orange.opacity(0.10) : Color.primary.opacity(0.03))
+        )
+    }
+}
 
 /// When the classic popover offers "Make active for <provider>…" on the
 /// viewed account: never for the provider's current owner, and only for an

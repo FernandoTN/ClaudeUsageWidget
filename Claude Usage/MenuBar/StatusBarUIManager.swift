@@ -1633,6 +1633,19 @@ final class StatusBarUIManager {
         return Self.compositePaintOrder(multiProfileOrder).filter { idsInGroup.contains($0) }
     }
 
+#if DEBUG
+    /// Frame harness (DEBUG only): the composite image currently on each
+    /// provider item's button — exactly what the bar shows, at the display's
+    /// pixel scale — with the layout family it was painted for.
+    func debugGroupImages() -> [(provider: String, layout: String, image: NSImage)] {
+        groupItems.compactMap { provider, item in
+            item.button?.image.map {
+                ("\(provider)", summaryImages[provider] == nil ? "every" : "fleet", $0)
+            }
+        }.sorted { $0.0 < $1.0 }
+    }
+#endif
+
     // MARK: - Provider-group exposure (menu-bar overflow, stage C0)
 
     /// Provider groups CONFIRMED hidden by the menu bar (two consecutive

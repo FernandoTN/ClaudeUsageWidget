@@ -249,6 +249,10 @@ class MenuBarManager: NSObject, ObservableObject {
             statusBarUIManager?.setup(target: self, action: #selector(togglePopover), config: displayConfig)
         }
 
+#if DEBUG
+        startFrameRenderingIfRequested()
+#endif
+
         // The popover is created lazily on first click (ensurePopover) and
         // DESTROYED on close: a closed NSPopover keeps its borderless
         // _NSPopoverWindow alive off-screen forever, and every off-screen
@@ -729,6 +733,75 @@ class MenuBarManager: NSObject, ObservableObject {
     /// Ask the token-usage window (owned under `Telemetry/`) to open for one
     /// account, or the fleet when `profileId` is nil. Contract:
     /// object = the profile id, userInfo["provider"] = the provider kind.
+#if DEBUG
+    // MARK: - Frame harness (DEBUG builds only)
+
+    /// `CUW_RENDER_FRAMES=<dir>` at launch: every 20 s, write what the bar and
+    /// both click surfaces show for the LIVE roster — each provider item's
+    /// composite as painted (at the display's pixel scale), the classic
+    /// popover content and the fleet dashboard, the last two in light and
+    /// dark — as `<surface>-<state>-<light|dark>@2x.png` plus an `index.md`.
+    /// For the owner's pixel pass over a menu-bar agent that has no window to
+    /// screenshot; fixture-driven frames of every state live in the test
+    /// target (`FrameRenderTests`). Never compiled into Release.
+    private static var frameRenderTimer: Timer?
+
+    private func startFrameRenderingIfRequested() {
+        guard Self.frameRenderTimer == nil,
+              let dir = ProcessInfo.processInfo.environment["CUW_RENDER_FRAMES"], !dir.isEmpty else { return }
+        let url = URL(fileURLWithPath: dir, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        Self.frameRenderTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.renderLiveFrames(into: url) }
+        }
+        LoggingService.shared.log("Frame harness: writing live frames to \(dir) every 20 s")
+    }
+
+    private func renderLiveFrames(into dir: URL) {
+        var index = ["# Live frames — \(Date())", "", "Rendered from the running roster; the bar images are the composites as painted.", ""]
+        for entry in statusBarUIManager?.debugGroupImages() ?? [] {
+            let name = "bar-\(entry.layout)-\(entry.provider)@2x.png"
+            if let tiff = entry.image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+               Self.writePNG(rep, to: dir.appendingPathComponent(name)) {
+                index.append("- `\(name)` — \(entry.provider) group composite, layout family \(entry.layout)")
+            }
+        }
+        rebuildDashboardSnapshot()
+        let noActions = DashboardActions(refresh: {}, openSettings: { _ in }, makeActive: { _ in .profileNotFound },
+                                         queueNext: { _ in }, removeFromQueue: { _ in })
+        for dark in [false, true] {
+            let mode = dark ? "dark" : "light"
+            let popover = PopoverContentView(manager: self, onRefresh: {}, onPreferences: {}, onManageProfiles: {})
+            if let rep = Self.snapshot(popover, size: DashboardSurface.size(for: .classic), dark: dark),
+               Self.writePNG(rep, to: dir.appendingPathComponent("popover-live-\(mode)@2x.png")) {
+                index.append("- `popover-live-\(mode)@2x.png` — classic popover for the viewed account (\(mode))")
+            }
+            let dashboard = DashboardView(store: dashboardStore, actions: noActions, height: 1400)
+            if let rep = Self.snapshot(dashboard, size: NSSize(width: DashboardSurface.dashboardSize.width, height: 1400), dark: dark),
+               Self.writePNG(rep, to: dir.appendingPathComponent("dashboard-live-\(mode)@2x.png")) {
+                index.append("- `dashboard-live-\(mode)@2x.png` — fleet dashboard, full height (\(mode))")
+            }
+        }
+        try? index.joined(separator: "\n").write(to: dir.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
+    }
+
+    static func snapshot<V: View>(_ view: V, size: NSSize, dark: Bool) -> NSBitmapImageRep? {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
+        rep.size = size
+        host.cacheDisplay(in: host.bounds, to: rep)
+        return rep
+    }
+
+    static func writePNG(_ rep: NSBitmapImageRep, to url: URL) -> Bool {
+        guard let png = rep.representation(using: .png, properties: [:]) else { return false }
+        return (try? png.write(to: url)) != nil
+    }
+#endif
+
     private static func requestTokenUsageWindow(profileId: UUID?, provider: Profile.ProviderKind?) {
         NotificationCenter.default.post(
             name: .telemetryWindowRequested,
