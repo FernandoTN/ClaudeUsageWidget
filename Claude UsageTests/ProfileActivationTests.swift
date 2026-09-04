@@ -194,6 +194,52 @@ final class ProfileActivationTests: XCTestCase {
         XCTAssertFalse(ProfileManager.ActivationOutcome.focusedWithoutApplying.didActivate)
     }
 
+    // MARK: - Switch history enrichment (the insights switch log)
+
+    /// The outgoing account's headroom can only be read HERE: by the time the
+    /// dashboard renders the row, that profile's cached usage has moved on.
+    /// `providerRaw` files the row under a provider even after both names stop
+    /// resolving to profiles.
+    func testSwitchHistoryRecordsOutgoingHeadroomAndProvider() async {
+        let focusedId = UUID()
+        let deadId = UUID()
+        var usage = ClaudeUsage.empty
+        usage.sessionPercentage = 88
+        usage.sessionResetTime = Date().addingTimeInterval(3600)
+        var focused = Profile(id: focusedId, name: "FocusedWithUsage")
+        focused.claudeUsage = usage
+        var dead = Profile(id: deadId, name: "DeadLogin")
+        dead.cliCredentialsJSON = deadCredentialsJSON()
+
+        testProfileIDs = [focusedId, deadId]
+        store.saveProfiles([focused, dead])
+        manager.profiles = [focused, dead]
+        manager.activeProfile = focused
+        store.saveActiveProfileId(focusedId)
+
+        _ = await manager.activateProfileDetailed(deadId, userInitiated: true)
+
+        let recorded = SharedDataStore.shared.loadSwitchHistory().last
+        XCTAssertEqual(recorded?.from, "FocusedWithUsage")
+        XCTAssertEqual(recorded?.to, "DeadLogin")
+        XCTAssertEqual(recorded?.fromHeadroom ?? -1, 12, accuracy: 0.001,
+                       "100 − the outgoing account's effective session percentage")
+        XCTAssertEqual(recorded?.providerRaw, "claude")
+    }
+
+    /// An outgoing account nothing has ever measured records no headroom —
+    /// a zero there would read as "left at 100 % used" in the switch log.
+    func testSwitchHistoryLeavesHeadroomNilWhenTheOutgoingAccountWasNeverMeasured() async {
+        let ids = seedFocusedPlusDeadLoginProfile()
+
+        _ = await manager.activateProfileDetailed(ids.dead, userInitiated: true)
+
+        let recorded = SharedDataStore.shared.loadSwitchHistory().last
+        XCTAssertEqual(recorded?.from, "Focused")
+        XCTAssertNil(recorded?.fromHeadroom)
+        XCTAssertEqual(recorded?.providerRaw, "claude")
+    }
+
     // MARK: - Focused, but not the owner of its login
 
     /// The second half of the same defect. A focus-only switch leaves the
