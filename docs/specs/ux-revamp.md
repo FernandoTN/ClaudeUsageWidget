@@ -1174,3 +1174,31 @@ deletions only. `.appearance` now aliases to Display.
 **Deletion PR (gated on the owner's OK):** Appearance, General, Manage Profiles,
 Popover, Shortcuts, App Settings, CLI Account, Codex Account pages and their
 `SettingsSection` cases (the raw values stay decodable through the aliases).
+
+### 12.7 Dashboard Insights block (stage 4b)
+
+**Frame 0 — the block.** Eight sections in the agreed order, each a 9-pt bold
+uppercase header over 10-pt rows with 9-pt secondary details (the dashboard's own
+scale). "Resets, next 7 days": a strip with day ticks, one dot per distinct
+account per window (green weekly, purple Fable) and a label "dRir W +84" — the
+headroom that returns — alternating between two label rows so neighbours do not
+collide. "Blind spots": the active accounts, ● green when measured through their
+own endpoint inside the stale threshold, ○ amber otherwise, with the evidence in
+words (own measurement 4m ago · shown from the CLI cache · 2 header rescues ·
+backing off 2m). "Changed outside the app" only when it happened. "Switch log":
+a mini provider filter, then "Google → jskxkxjssh · 12m ago · auto-switch · 4 %
+headroom left · session 96 %"; legacy rows in the informational gray with their
+caption. "Burn rate": a 40×12 sparkline of the last four samples, "+2.1 pp/min ·
+crosses the threshold in 8m", or "flat". "Rate-limit incidents, last 24 h":
+glyph by kind (▲ red affirmed/tripwire, ▲ amber burst/probe, ◆ purple inferred,
+✓ green rescue). "Capacity remaining" as one line per provider. "Why not the
+others" only when candidates are blocked: the legend glyph, the evidence, the
+verdict and its age.
+
+**Empty states.** Every section says what "nothing" means ("Nothing in the last
+24 h.", "No weekly or Fable reset inside the next 7 days.") — an empty ring on a
+fresh deploy must not read as a broken section.
+
+**Rejected.** Charts with axes (the popover is 400 pt wide); a per-row context
+menu (the roster already has one); a second switch surface (the redesign's
+"Recent switches" disclosure goes when this lands).

@@ -72,6 +72,9 @@ enum DesignFrameHarness {
                                        DeadLoginFlagRow(id: UUID(), name: "xFenrir(dev)", provider: .codex)]) { _ in }.padding(16),
              width: 560, name: "advanced-dead-logins", to: dir, index: &index)
         emit(StoredSettingsCard().padding(16), width: 560, name: "advanced-stored-settings", to: dir, index: &index)
+        emit(DashboardInsightsView(insights: .fixture(now: now), now: now).padding(14), width: 400, name: "dashboard-insights", to: dir, index: &index)
+        emit(DashboardInsightsView(insights: FleetInsights(resetTimeline: [], blindness: [], drift: [], switchLog: [], burn: [], incidents: [], capacity: [:], whyNotOthers: []), now: now).padding(14),
+             width: 400, name: "dashboard-insights-empty", to: dir, index: &index)
         for selection in sel {
             emit(ActiveProviderCard(selection: selection, isEnabled: true) { _ in }.padding(16), width: 560,
                  name: "active-card-\(ActiveVocabulary.providerName(selection.provider).lowercased())", to: dir, index: &index)
