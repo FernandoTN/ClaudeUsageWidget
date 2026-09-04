@@ -1400,20 +1400,17 @@ private func observeCredentialChanges() {
                     && profile.claudeUsage?.rateLimitedInferred != true
                 let burstBackoffUntil = burstBackoffs[profile.id]?.until
                 let usageBackedOff = burstBackoffUntil.map { $0 > Date() } ?? false
-                // A dead-flagged CLI login whose access token is ALSO expired
-                // can never fetch: the pre-fetch heal is (correctly) backed
-                // off and fetchUsageForProfile falls through to a throw —
-                // profile 'Ai' burned a background-rotation slot plus an
-                // error log every cycle for six days on this. Both conditions
-                // matter: a still-valid access token keeps fetching even
-                // while flagged (the flag has transient-misfire paths), and
-                // the active-Claude profile keeps its shared-login fallback.
-                // Codex/Grok profiles and the API-console fetch below are
+                // A dead-flagged login that cannot fetch burns a rotation slot
+                // plus an error log every cycle (profile 'Ai' did so for six
+                // days; the Codex twin drew 1,009 401s in nine hours). The
+                // per-provider rule lives in shouldSkipFetchForDeadLogin —
+                // Claude pairs the flag with an expired access token, Codex and
+                // Grok pair it with the 401 backoff window, and each provider's
+                // active account is exempt. The API-console fetch below is
                 // untouched.
-                let cliLoginDead = !profile.isCodexOnlyProfile && !profile.isGrokOnlyProfile
-                    && ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
-                    && !profile.hasValidCLIOAuth
-                    && profile.id != (self.profileManager.activeClaudeProfileId ?? self.profileManager.activeProfile?.id)
+                let cliLoginDead = self.shouldSkipFetchForDeadLogin(profile)
+                let authBackoffUntil = self.authBackoffs[profile.id]?.until
+                let authBackedOff = authBackoffUntil.map { $0 > Date() } ?? false
                 if usageThrottled {
                     LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — endpoint throttled until \(profile.claudeUsage?.rateLimitedUntil ?? Date())", type: .info)
                 } else if usageBackedOff {
@@ -1427,7 +1424,9 @@ private func observeCredentialChanges() {
                     // normally never picked, so this fires mainly for a dead
                     // PRIORITY (provider-active/focused) profile, or in the
                     // race where the flag landed after selection.
-                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — CLI login is dead (revoked refresh token); run /login + re-sync to resume")
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — provider login is dead (revoked refresh token); log in again + re-sync to resume")
+                } else if authBackedOff {
+                    LoggingService.shared.log("MenuBarManager: skipping usage fetch for '\(profile.name)' — backing off 401s until \(authBackoffUntil ?? Date())", type: .info)
                 } else {
                     // Space Claude-bound fetches only: oauth/usage is the sole
                     // reason for pacing. Sleep the remainder so Claude starts are
@@ -1474,6 +1473,7 @@ private func observeCredentialChanges() {
                         sweepSuccesses += 1
                         self.credentialErrorProfileIds.remove(profile.id)
                         self.burstBackoffs.removeValue(forKey: profile.id)
+                        self.authBackoffs.removeValue(forKey: profile.id)
                         self.recordClaudeUsageSuccess(profile, usage: newUsage)
 
                         // Check auto-switch NOW for the accounts actually in use
@@ -1519,6 +1519,13 @@ private func observeCredentialChanges() {
                         if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
                             sweepCredentialError = true
                             self.credentialErrorProfileIds.insert(profile.id)
+                            // Unlike a 429, a 401 carries no Retry-After and
+                            // nothing used to slow it down: one dead-flagged
+                            // Codex profile drew 1,009 401s in nine hours
+                            // (audit H2). Back off instead — and keep it short
+                            // enough that the retry IS the confirmation, since
+                            // a 200 clears the dead flag.
+                            self.registerAuthBackoff(for: profile)
                         }
                         // An account-level 429 IS usage information: the account is
                         // out of capacity and its cached percentages are frozen at
@@ -1619,6 +1626,12 @@ private func observeCredentialChanges() {
             // relaunching the app. Identity is cached per token, so this only
             // touches the network when the CLI's login actually changes.
             await self.profileManager.adoptSystemLoginByIdentity()
+
+            // The Codex twin, and the reason a CLI-side `codex login` can revive
+            // a dead Codex profile: re-derive auth.json's owner from its
+            // account_id and adopt a fresher login into it. File read + JSON
+            // parse, no network (audit H4).
+            await self.profileManager.adoptCodexLoginByAccountId()
 
             // A CLI-side /login only writes the Keychain; keep the credentials
             // FILE in step so headless sessions that read the file aren't left
@@ -2245,12 +2258,68 @@ private func observeCredentialChanges() {
         if (profile.claudeUsage?.rateLimitedUntil.map({ $0 > Date() }) ?? false)
             && profile.claudeUsage?.rateLimitedInferred != true { return true }
         if burstBackoffs[profile.id].map({ $0.until > Date() }) ?? false { return true }
-        // Background candidates are never the active-Claude profile, so unlike
+        if authBackoffs[profile.id].map({ $0.until > Date() }) ?? false { return true }
+        // Background candidates are never a provider-active profile, so unlike
         // the in-loop check no active-profile exemption is needed here.
-        let cliLoginDead = !profile.isCodexOnlyProfile && !profile.isGrokOnlyProfile
-            && ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
-            && !profile.hasValidCLIOAuth
-        return cliLoginDead
+        return shouldSkipFetchForDeadLogin(profile, exemptProviderActive: false)
+    }
+
+    // MARK: - Dead-Login Fetch Skip (per provider)
+
+    /// Whether this sweep should skip fetching a profile whose provider login is
+    /// flagged dead.
+    ///
+    /// Claude and Codex/Grok need different rules because their tokens have
+    /// different lifetimes. A Claude access token lives hours, so "flagged AND
+    /// expired" is reached quickly and the skip can be permanent until a
+    /// re-login. A Codex access token lives ~10 DAYS: the same rule would almost
+    /// never fire (the live incident: 1,009 401s against an unexpired token),
+    /// while skipping on the flag ALONE would remove the only thing that can
+    /// clear it — a 200. So the Codex/Grok arm pairs the flag with the 401
+    /// backoff window: skipped while the window stands, one confirming fetch
+    /// when it expires, and a success clears flag and backoff together.
+    private func shouldSkipFetchForDeadLogin(_ profile: Profile, exemptProviderActive: Bool = true) -> Bool {
+        switch profile.providerKind {
+        case .claude:
+            let exempt = exemptProviderActive
+                && profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+            return ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
+                && !profile.hasValidCLIOAuth
+                && !exempt
+        case .codex:
+            guard CodexUsageService.shared.isLoginMarkedDead(profile.id) else { return false }
+            let exempt = exemptProviderActive && profile.id == profileManager.activeCodexProfileId
+            return !exempt && (authBackoffs[profile.id]?.until).map { $0 > Date() } ?? false
+        case .grok:
+            guard GrokUsageService.shared.isLoginMarkedDead(profile.id) else { return false }
+            // Grok has no shared-login pointer yet — the focused profile is the
+            // closest equivalent of "the account in use".
+            let exempt = exemptProviderActive && profile.id == profileManager.activeProfile?.id
+            return !exempt && (authBackoffs[profile.id]?.until).map { $0 > Date() } ?? false
+        }
+    }
+
+    // MARK: - 401 Fetch Backoff
+
+    /// Auth failures have no Retry-After to honour, so the schedule is fixed:
+    /// 5 minutes, doubling to a 60-minute cap. A provider-active account is
+    /// capped at the first step — its number gates the auto-switch, and its
+    /// login can be revived out-of-band by a CLI-side login at any moment.
+    /// Reset by the first successful fetch (which also clears the dead flag).
+    nonisolated static func authBackoffInterval(streak: Int, isActiveAccount: Bool) -> TimeInterval {
+        min(300 * pow(2, Double(max(0, streak - 1))), isActiveAccount ? 300 : 3600)
+    }
+
+    private var authBackoffs: [UUID: BurstBackoff] = [:]
+
+    private func registerAuthBackoff(for profile: Profile) {
+        let streak = (authBackoffs[profile.id]?.streak ?? 0) + 1
+        let isActiveAccount = profile.id == profileManager.activeProfile?.id
+            || profile.id == profileManager.activeClaudeProfileId
+            || profile.id == profileManager.activeCodexProfileId
+        let interval = Self.authBackoffInterval(streak: streak, isActiveAccount: isActiveAccount)
+        authBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
+        LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage fetch was rejected (401/expired, active: \(isActiveAccount)) — backing off for \(clampedInt(interval))s (streak \(streak))")
     }
 
     // MARK: - Burst-429 Fetch Backoff
@@ -3156,9 +3225,16 @@ private func observeCredentialChanges() {
             var alive = true
             if candidate.isCodexOnlyProfile {
                 _ = await CodexUsageService.shared.ensureFreshCredentials(for: candidate.id, freshFor: 24 * 3600)
-                if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.codexCredentialsJSON {
-                    alive = !CodexUsageService.shared.isTokenExpired(json)
-                }
+                // Expiry is not evidence for a 10-day Codex token — ask the
+                // account's own usage endpoint, exactly as the switch gate does,
+                // so preflight and the switch cannot disagree (audit C2).
+                alive = await CodexUsageService.shared.isSafeToApplyLogin(for: candidate.id)
+                // The refresh path notifies only when the REFRESH grant is
+                // refused. A login whose refresh works but whose account still
+                // rejects it (the externally-invalidated case) is just as dead
+                // for the CLI, and telling the user now — while the current
+                // account still has headroom — is the entire point of preflight.
+                if !alive { CodexUsageService.shared.notifyReloginNeeded(for: candidate.id) }
             } else if candidate.isGrokOnlyProfile {
                 // Structurally dead today (a grok CURRENT never crosses a session
                 // milestone — grok session% is always 0 — and candidates are

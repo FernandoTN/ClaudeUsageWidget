@@ -163,13 +163,62 @@ class CodexUsageService {
             throw CodexError.profileNotFound
         }
 
+        // DUPLICATE-ACCOUNT GUARD: syncing one Codex account into two profiles
+        // gives it two tiles for ONE quota, doubles its fetch load, puts both
+        // copies in the same auto-switch group (a "switch" that changes
+        // nothing), and leaves roster order deciding who owns auth.json. The
+        // Claude side dedupes by identity; this is the Codex twin.
+        if let accountId = extractAccountId(from: json),
+           let holder = Self.duplicateAccountHolder(
+               accountId: accountId,
+               target: profileId,
+               profiles: profiles,
+               accountIdOf: { self.accountId(of: $0) }
+           ) {
+            throw CodexError.accountAlreadySynced(profileName: holder.name)
+        }
+
         profiles[index].codexCredentialsJSON = json
         profiles[index].codexEmail = extractEmail(from: json)
+        profiles[index].codexAccountId = extractAccountId(from: json)
         profiles[index].codexAccountSyncedAt = Date()
         ProfileStore.shared.saveProfiles(profiles)
-        reloginNotifiedProfiles.remove(profileId)
+        // A fresh login just arrived: clear the dead flag AND the measurement
+        // state behind the liveness gate, so a re-synced account is not still
+        // treated as dead by a stale stamp.
+        markLoginRevived(profileId)
 
         LoggingService.shared.log("Codex: Synced CLI credentials to profile \(profileId)")
+    }
+
+    /// The Codex account a profile represents. Prefers the persisted, non-secret
+    /// stamp so a profile matches BEFORE Keychain hydration fills the credentials
+    /// in — an unhydrated profile looks account-less, and a duplicate check that
+    /// cannot see it happily syncs the same account a second time.
+    func accountId(of profile: Profile) -> String? {
+        profile.codexAccountId ?? profile.codexCredentialsJSON.flatMap(extractAccountId(from:))
+    }
+
+    /// The profile representing a Codex account. Pure (each profile's account id
+    /// is injected) so both callers — the duplicate-sync guard and the owner
+    /// re-derivation that reads auth.json — are testable without a store.
+    nonisolated static func profileMatchingAccount(
+        _ accountId: String,
+        in profiles: [Profile],
+        excluding: UUID? = nil,
+        accountIdOf: (Profile) -> String?
+    ) -> Profile? {
+        profiles.first { $0.id != excluding && accountIdOf($0) == accountId }
+    }
+
+    /// The OTHER profile already holding `accountId`, if any.
+    nonisolated static func duplicateAccountHolder(
+        accountId: String,
+        target: UUID,
+        profiles: [Profile],
+        accountIdOf: (Profile) -> String?
+    ) -> Profile? {
+        profileMatchingAccount(accountId, in: profiles, excluding: target, accountIdOf: accountIdOf)
     }
 
     /// Writes a profile's Codex credentials to ~/.codex/auth.json so the `codex` CLI
@@ -192,11 +241,13 @@ class CodexUsageService {
         }
         profiles[index].codexCredentialsJSON = nil
         profiles[index].codexEmail = nil
+        profiles[index].codexAccountId = nil
         profiles[index].codexAccountSyncedAt = nil
         profiles[index].claudeUsage = nil
         ProfileStore.shared.saveProfiles(profiles)
         // saveProfiles never deletes on nil (stale-save protection) — remove explicitly.
         ProfileStore.shared.clearProfileCredential(profileId, key: .codexCredentials)
+        forgetProfile(profileId)
         LoggingService.shared.log("Codex: Removed credentials from profile \(profileId)")
     }
 
@@ -229,8 +280,14 @@ class CodexUsageService {
         }
 
         profiles[index].codexCredentialsJSON = fileJSON
+        profiles[index].codexAccountId = fileAccount
         profiles[index].codexAccountSyncedAt = Date()
         ProfileStore.shared.saveProfiles(profiles)
+        // A `codex login` for this same account writes a whole new token family
+        // into auth.json; adopting it is a REVIVAL — the stored login works
+        // again, so the dead flag (and the notification dedup behind it) must
+        // clear or the profile stays disabled until a manual re-sync.
+        markLoginRevived(profileId)
         LoggingService.shared.log("Codex: Adopted fresher token from auth.json (expires \(fileExpiry))")
         return true
     }
@@ -263,13 +320,20 @@ class CodexUsageService {
 
         let (responseData, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw CodexError.tokenRefreshFailed(status: -1)
+            throw CodexError.tokenRefreshFailed(status: -1, errorCode: nil)
         }
         guard httpResponse.statusCode == 200,
               let payload = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
               let accessToken = payload["access_token"] as? String else {
-            LoggingService.shared.log("Codex: OAuth token refresh failed (HTTP \(httpResponse.statusCode))")
-            throw CodexError.tokenRefreshFailed(status: httpResponse.statusCode)
+            // OAuth 2 (RFC 6749 §5.2) puts the VERDICT in the body, not the
+            // status: `invalid_grant` means the refresh token is revoked or
+            // already consumed, while a plain 400/403 can be a malformed
+            // request or an edge/WAF refusal that says nothing about the grant.
+            // The distinction is what stops a transient refusal from
+            // permanently disabling an account's refresh path (audit C1c).
+            let errorCode = (try? JSONSerialization.jsonObject(with: responseData) as? [String: Any])?["error"] as? String
+            LoggingService.shared.log("Codex: OAuth token refresh failed (HTTP \(httpResponse.statusCode), error: \(errorCode ?? "none"))")
+            throw CodexError.tokenRefreshFailed(status: httpResponse.statusCode, errorCode: errorCode)
         }
 
         toks["access_token"] = accessToken
@@ -296,7 +360,11 @@ class CodexUsageService {
     /// is attempted. The default (2 minutes) suits usage fetches; account switches
     /// pass 24h so the CLI is handed a token it won't have to refresh mid-session
     /// with a possibly-rotated-away refresh token.
-    func ensureFreshCredentials(for profileId: UUID, freshFor: TimeInterval = 120) async -> Bool {
+    /// `allowDeadRetry` lets ONE redemption through for a profile whose login is
+    /// flagged dead — used by the post-401 forced refresh, which is
+    /// cooldown-gated, so a flagged account still gets a periodic chance to heal
+    /// itself instead of staying disabled until a manual re-sync (audit C1b).
+    func ensureFreshCredentials(for profileId: UUID, freshFor: TimeInterval = 120, allowDeadRetry: Bool = false) async -> Bool {
         // Per-profile mutex — concurrent redemptions of the same refresh token make
         // the loser 4xx, spuriously flagging the account dead (see the Claude twin).
         guard !refreshInFlight.contains(profileId) else { return false }
@@ -305,7 +373,7 @@ class CodexUsageService {
 
         var changed = adoptAuthFileIfSameAccount(for: profileId)
         if changed {
-            reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
+            markLoginRevived(profileId)  // fresh login arrived — re-arm
         }
 
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
@@ -316,8 +384,9 @@ class CodexUsageService {
         let expiry = extractTokenExpiry(from: currentJSON) ?? .distantPast
         if expiry < Date().addingTimeInterval(freshFor), extractRefreshToken(from: currentJSON) != nil,
            // Back off dead logins: a revoked refresh token cannot heal itself —
-           // skip redemption until fresh credentials arrive via re-sync/adoption.
-           !reloginNotifiedProfiles.contains(profileId) {
+           // skip redemption until fresh credentials arrive via re-sync/adoption,
+           // or until a cooldown-gated forced retry asks for one attempt.
+           (allowDeadRetry || !reloginNotifiedProfiles.contains(profileId)) {
             do {
                 let refreshed = try await refreshOAuthToken(credentialsJSON: currentJSON)
 
@@ -337,7 +406,7 @@ class CodexUsageService {
                     try? writeAuthFile(refreshed)
                 }
                 changed = true
-                reloginNotifiedProfiles.remove(profileId)
+                markLoginRevived(profileId)
             } catch {
                 LoggingService.shared.logError("Codex: token refresh failed (non-fatal)", error: error)
                 notifyReloginNeededIfRevoked(error, profileId: profileId)
@@ -356,12 +425,24 @@ class CodexUsageService {
 
     private static let deadLoginsKey = "codexDeadLogins_v1"
 
+    /// Same XCTest isolation as ProfileStore/SharedDataStore: a test run must
+    /// never write dead-login flags into the user's real defaults domain (the
+    /// running app reads that key, and a leaked flag disables a live account).
+    private static let deadLoginDefaults: UserDefaults = {
+        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        if isTestRun, let suite = UserDefaults(suiteName: "com.claudeusagewidget.tests") {
+            return suite
+        }
+        return UserDefaults.standard
+    }()
+
     private static func loadDeadLogins() -> Set<UUID> {
-        Set((UserDefaults.standard.stringArray(forKey: deadLoginsKey) ?? []).compactMap(UUID.init(uuidString:)))
+        Set((deadLoginDefaults.stringArray(forKey: deadLoginsKey) ?? []).compactMap(UUID.init(uuidString:)))
     }
 
     private static func saveDeadLogins(_ ids: Set<UUID>) {
-        UserDefaults.standard.set(ids.map(\.uuidString), forKey: deadLoginsKey)
+        deadLoginDefaults.set(ids.map(\.uuidString), forKey: deadLoginsKey)
     }
 
     /// True when this profile's stored login has been flagged dead (revoked refresh
@@ -372,11 +453,26 @@ class CodexUsageService {
         reloginNotifiedProfiles.contains(profileId)
     }
 
+    /// A fresh, WORKING login for this profile just arrived (a 200 from the
+    /// usage endpoint, a successful refresh, an adoption of a `codex login`, or
+    /// a manual re-sync) — clear the dead flag and re-arm the notification.
+    ///
+    /// The missing half of this lifecycle is what took an account dark on
+    /// 2026-09-03: one 4xx flagged the profile while its 10-day access token
+    /// still worked, a 200 never cleared the flag, the flag then blocked the
+    /// refresh that would have healed it, and the notification was deduped
+    /// forever — so the account failed silently for hours (audit C1).
+    func markLoginRevived(_ profileId: UUID) {
+        reloginNotifiedProfiles.remove(profileId)
+        forcedRefreshCooldownUntil.removeValue(forKey: profileId)
+    }
+
     /// Drops all per-profile tracking (persisted dead-login flag, forced-
-    /// refresh cooldown) for a deleted profile.
+    /// refresh cooldown, liveness measurement) for a deleted profile.
     func forgetProfile(_ profileId: UUID) {
         reloginNotifiedProfiles.remove(profileId)
         forcedRefreshCooldownUntil.removeValue(forKey: profileId)
+        lastUsageSuccess.removeValue(forKey: profileId)
     }
 
     /// Per-profile cooldown for post-401 FORCED refreshes. If the usage endpoint
@@ -390,26 +486,153 @@ class CodexUsageService {
     /// Profiles with a heal currently in flight (see ensureFreshCredentials).
     private var refreshInFlight: Set<UUID> = []
 
-    /// A 4xx from the token endpoint (invalid_grant & friends) means the stored
-    /// refresh token is revoked — no retry can fix it, only `codex login` plus a
-    /// re-sync. Tell the user once instead of failing silently on every fetch.
+    /// Only a DEFINITIVE verdict on the refresh grant flags a login dead: the
+    /// auth server saying `invalid_grant` (the revoked/consumed refresh token —
+    /// RFC 6749 §5.2) or rejecting the client with 401. A bare 400/403 with no
+    /// error code is a malformed request or an edge refusal; flagging on it
+    /// disables the account's whole refresh path for a transient failure, which
+    /// is how a working account ended up flagged and then went dark (audit C1c).
+    /// A usage-endpoint 401 never reaches this path on its own — it first forces
+    /// a refresh, and only that refresh's verdict counts.
+    nonisolated static func refreshFailureIsTerminal(status: Int, errorCode: String?) -> Bool {
+        if let errorCode {
+            let terminal: Set<String> = ["invalid_grant", "invalid_client", "unauthorized_client"]
+            return terminal.contains(errorCode.lowercased())
+        }
+        return status == 401
+    }
+
     private func notifyReloginNeededIfRevoked(_ error: Error, profileId: UUID) {
-        guard case CodexError.tokenRefreshFailed(let status) = error,
-              status == 400 || status == 401 || status == 403 else {
+        guard case CodexError.tokenRefreshFailed(let status, let errorCode) = error,
+              Self.refreshFailureIsTerminal(status: status, errorCode: errorCode) else {
             return
         }
         notifyReloginNeeded(for: profileId)
     }
 
+    /// The flag half of `notifyReloginNeeded` — the persisted state transition
+    /// on its own, with no user notification. Symmetric with `markLoginRevived`.
+    func markLoginDead(_ profileId: UUID) {
+        reloginNotifiedProfiles.insert(profileId)
+    }
+
     /// Tells the user (once) that a profile's saved Codex login is dead. Also called
     /// by the activation gate that refuses to hand the CLI a dead login. `force`
     /// bypasses the dedup for USER-initiated actions (a silent no-op on a manual
-    /// click reads as a broken button, not a safety gate).
+    /// click reads as a broken button, not a safety gate). The dedup re-arms as
+    /// soon as the login works again (`markLoginRevived`), so a profile that
+    /// goes working → dead a second time notifies a second time (audit C1d).
     func notifyReloginNeeded(for profileId: UUID, force: Bool = false) {
         guard force || !reloginNotifiedProfiles.contains(profileId) else { return }
-        reloginNotifiedProfiles.insert(profileId)
+        markLoginDead(profileId)
         let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Codex"
         NotificationManager.shared.sendCodexReloginNotification(profileName: name)
+    }
+
+    // MARK: - Measured Liveness
+
+    /// When each profile's login last MEASURED a 200 from the usage endpoint.
+    /// In-memory: a fresh process re-probes, which is the safe direction.
+    private var lastUsageSuccess: [UUID: Date] = [:]
+
+    /// What a usage-endpoint status says about the stored login.
+    /// `.unknown` is a first-class answer: a 429/5xx/transport failure is
+    /// evidence about the ENDPOINT, never about the login, and treating it as
+    /// death would refuse switches during an outage.
+    enum LoginLiveness: Equatable { case live, dead, unknown }
+
+    nonisolated static func livenessVerdict(status: Int) -> LoginLiveness {
+        if status == 200 { return .live }
+        if status == 401 || status == 403 { return .dead }
+        return .unknown
+    }
+
+    /// A 200 is the app's only positive proof a login still works: it clears the
+    /// dead flag, re-arms the notification, and stamps the measurement the
+    /// switch gate reads. Internal rather than private because this is the 200
+    /// seam, and the flag lifecycle it drives is what the tests assert.
+    func recordUsageSuccess(for profileId: UUID) {
+        lastUsageSuccess[profileId] = Date()
+        markLoginRevived(profileId)
+    }
+
+    /// True when this profile read its own usage endpoint successfully within
+    /// `window` — the gate skips its probe on that evidence.
+    func hasRecentUsageSuccess(_ profileId: UUID, within window: TimeInterval) -> Bool {
+        guard let last = lastUsageSuccess[profileId] else { return false }
+        return Date().timeIntervalSince(last) < window
+    }
+
+    /// Whether a stored login may be written to ~/.codex/auth.json.
+    ///
+    /// Expiry alone cannot answer this: a Codex access token lives ~10 days, so
+    /// a login revoked externally (another account's `codex login` on the same
+    /// machine) keeps passing an expiry check for days — and writing it bricks
+    /// the codex CLI with "refresh token was revoked" until a manual login
+    /// (audit C2). The probe is the missing evidence; the dead flag only decides
+    /// the UNKNOWN case, so one 200 is always enough to overrule a stale flag.
+    nonisolated static func applyDecision(
+        isExpired: Bool,
+        markedDead: Bool,
+        verdict: LoginLiveness
+    ) -> Bool {
+        if isExpired { return false }
+        switch verdict {
+        case .live: return true
+        case .dead: return false
+        case .unknown: return !markedDead
+        }
+    }
+
+    /// Probes `wham/usage` once for this profile (own host, one cheap GET) and
+    /// classifies the answer. A `.dead` verdict on a token that has NOT been
+    /// refreshed recently forces one cooldown-gated refresh and re-probes: that
+    /// is exactly the externally-invalidated case the expiry check misses.
+    func confirmLoginLiveness(for profileId: UUID, freshWithin: TimeInterval = 300) async -> LoginLiveness {
+        if hasRecentUsageSuccess(profileId, within: freshWithin) { return .live }
+
+        var verdict = await probeUsageStatus(for: profileId)
+        if verdict == .dead, Date() >= (forcedRefreshCooldownUntil[profileId] ?? .distantPast) {
+            forcedRefreshCooldownUntil[profileId] = Date().addingTimeInterval(Self.forcedRefreshCooldown)
+            if await ensureFreshCredentials(for: profileId, freshFor: Self.forceRefreshWindow, allowDeadRetry: true) {
+                verdict = await probeUsageStatus(for: profileId)
+            }
+        }
+        if verdict == .live { recordUsageSuccess(for: profileId) }
+        return verdict
+    }
+
+    /// The liveness question the activation gate and the candidate preflight
+    /// both ask. Never a bare expiry check — see `applyDecision`.
+    func isSafeToApplyLogin(for profileId: UUID) async -> Bool {
+        guard let json = ProfileStore.shared.loadProfiles()
+            .first(where: { $0.id == profileId })?.codexCredentialsJSON else { return false }
+        if isTokenExpired(json) { return false }
+        let verdict = await confirmLoginLiveness(for: profileId)
+        return Self.applyDecision(
+            isExpired: false,
+            markedDead: isLoginMarkedDead(profileId),
+            verdict: verdict
+        )
+    }
+
+    private func probeUsageStatus(for profileId: UUID) async -> LoginLiveness {
+        guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
+              let json = profile.codexCredentialsJSON,
+              let accessToken = extractAccessToken(from: json),
+              let url = URL(string: Self.usageEndpoint) else {
+            return .unknown
+        }
+        var request = usageRequest(url: url, accessToken: accessToken, accountId: extractAccountId(from: json))
+        request.timeoutInterval = 10
+        LoggingService.shared.logAPIRequest("codex/wham/usage (liveness probe)")
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse else {
+            return .unknown
+        }
+        let verdict = Self.livenessVerdict(status: http.statusCode)
+        LoggingService.shared.log("Codex: liveness probe for '\(profile.name)' → HTTP \(http.statusCode) (\(verdict))")
+        return verdict
     }
 
     // MARK: - Usage Fetch
@@ -417,6 +640,22 @@ class CodexUsageService {
     /// How far ahead of expiry to demand freshness when forcing a refresh after a
     /// 401 — far enough in the future that ANY stored expiry triggers redemption.
     private static let forceRefreshWindow: TimeInterval = 10 * 365 * 24 * 3600
+
+    /// Shared shape of a usage GET (the probe and the real fetch must present
+    /// the same identity, or the probe answers a different question).
+    private func usageRequest(url: URL, accessToken: String, accountId: String?) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let accountId {
+            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
+        }
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        request.setValue("ClaudeUsageWidget/\(version)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 30
+        return request
+    }
 
     /// Fetches session (5h) + weekly usage for a profile's Codex account and maps it
     /// onto the app's usage model (primary window → session, secondary → weekly).
@@ -434,16 +673,7 @@ class CodexUsageService {
             throw CodexError.invalidJSON
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let accountId = extractAccountId(from: json) {
-            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
-        }
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
-        request.setValue("ClaudeUsageWidget/\(version)", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 30
+        let request = usageRequest(url: url, accessToken: accessToken, accountId: extractAccountId(from: json))
 
         LoggingService.shared.logAPIRequest("codex/wham/usage")
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -461,11 +691,15 @@ class CodexUsageService {
             // and takes the existing re-login notification path. Cooldown-gated: a
             // usage endpoint that keeps 401'ing for non-token reasons must not
             // rotate the refresh-token family on every 30s sweep.
+            // A profile already flagged dead gets the SAME one-attempt-per-window
+            // treatment (allowDeadRetry) instead of being skipped: the flag can
+            // be stale, and skipping the retry is what left an account with no
+            // path back (audit C1b).
             if httpResponse.statusCode == 401 || httpResponse.statusCode == 403,
                !isRetryAfterRefresh,
                Date() >= (forcedRefreshCooldownUntil[profileId] ?? .distantPast) {
                 forcedRefreshCooldownUntil[profileId] = Date().addingTimeInterval(Self.forcedRefreshCooldown)
-                if await ensureFreshCredentials(for: profileId, freshFor: Self.forceRefreshWindow) {
+                if await ensureFreshCredentials(for: profileId, freshFor: Self.forceRefreshWindow, allowDeadRetry: true) {
                     LoggingService.shared.log("Codex: usage fetch got \(httpResponse.statusCode) on an unexpired token — refreshed, retrying once")
                     return try await fetchUsage(for: profileId, isRetryAfterRefresh: true)
                 }
@@ -473,7 +707,9 @@ class CodexUsageService {
             throw Self.usageFetchError(for: httpResponse)
         }
 
-        forcedRefreshCooldownUntil.removeValue(forKey: profileId)
+        // A 200 is proof the login works: clear the dead flag, the forced-refresh
+        // cooldown and the notification dedup in one place (audit C1a).
+        recordUsageSuccess(for: profileId)
         return try parseUsageResponse(data)
     }
 
@@ -627,7 +863,8 @@ enum CodexError: LocalizedError {
     case noProfileCredentials
     case profileNotFound
     case invalidJSON
-    case tokenRefreshFailed(status: Int)
+    case tokenRefreshFailed(status: Int, errorCode: String?)
+    case accountAlreadySynced(profileName: String)
 
     var errorDescription: String? {
         switch self {
@@ -639,8 +876,11 @@ enum CodexError: LocalizedError {
             return "Profile not found."
         case .invalidJSON:
             return "Codex credentials are corrupted or invalid."
-        case .tokenRefreshFailed(let status):
-            return "Failed to refresh the Codex OAuth token (HTTP \(status)). Please re-sync your Codex account."
+        case .tokenRefreshFailed(let status, let errorCode):
+            let detail = errorCode.map { " — \($0)" } ?? ""
+            return "Failed to refresh the Codex OAuth token (HTTP \(status)\(detail)). Please re-sync your Codex account."
+        case .accountAlreadySynced(let profileName):
+            return "This Codex account is already synced to the profile \u{201C}\(profileName)\u{201D}. Remove it there first, or log into a different Codex account with `codex login` before syncing here."
         }
     }
 }

@@ -217,6 +217,31 @@ how multi-account switching works); leaving one adopts auth.json back (same-acco
 check). A one-time auto-import (`codexAutoImported_v1`) creates a "Codex (email)"
 profile from an existing CLI login.
 
+**Dead-login lifecycle (2026-09-03 incident).** The dead flag
+(`codexDeadLogins_v1`) is a state with BOTH transitions, not a one-way latch:
+any 200 from `wham/usage`, any successful refresh, an adoption of a CLI-side
+`codex login`, or a manual Sync clears it (`markLoginRevived`), and only a
+DEFINITIVE verdict on the refresh grant sets it (`invalid_grant`, or a 401 from
+the token endpoint — `refreshFailureIsTerminal`). A usage-endpoint 401 never
+flags on its own; it forces one cooldown-gated refresh (allowed even while
+flagged) and only that refresh's verdict counts. Before this, one 4xx flagged a
+profile forever: the flag then blocked the refresh that would have healed it and
+deduped the notification for good, so an account whose 10-day access token was
+invalidated externally went dark silently for hours. Because a Codex access
+token lives ~10 days, **expiry is not evidence of liveness**: the activation gate
+and the candidate preflight both call `isSafeToApplyLogin`, which reuses a 200
+measured in the last 5 minutes or probes `wham/usage` once (`livenessVerdict` /
+`applyDecision` — 401/403 refuses, a 429/5xx/transport failure is no evidence and
+only a standing dead flag refuses on it). A 401 sweep failure now registers a
+fetch backoff (5 min doubling to 60; the provider-active account stays at 5) —
+one dead profile drew 1,009 401s in nine hours without it. The Codex owner is
+re-derived from auth.json's `account_id` at the END OF EVERY SWEEP
+(`ProfileManager.adoptCodexLoginByAccountId`, the twin of
+`adoptSystemLoginByIdentity`), so `codex login` alone revives a profile. Syncing
+is refused when another profile already holds the same `account_id`; the
+non-secret `Profile.codexAccountId` stamp makes that match work before Keychain
+hydration.
+
 **Rotation hazards** (each learned from a real "refresh token was revoked" CLI
 failure): the CLI can rotate ONLY the refresh token, so adoption freshness compares
 `last_refresh` as well as the access-token expiry; activation refreshes the target's
