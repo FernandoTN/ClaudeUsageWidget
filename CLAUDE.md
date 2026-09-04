@@ -219,8 +219,25 @@ a profile named "GROK" from an existing CLI login. Grok is its own
 auto-switch/menu group (`Profile.providerKind`); the menu order is
 right-to-left Claude → Grok → Codex, so a freshly-added Grok tile stays
 visible next to the Claude group and Codex clips first when the bar
-overflows. With one account there is nothing to rotate, and no shared-login
-pointer exists yet (a Grok switch only changes focus).
+overflows. With one account there is nothing to rotate.
+
+**Shared-login pointer (added with `viewProfile`).** Grok now has the
+third provider-active pointer, `ProfileManager.activeGrokProfileId`,
+journaled and shadowed exactly like the other two
+(`ProfileStore.saveActiveGrokProfileId`). Activating a profile that
+carries Grok credentials adopts the outgoing owner's rotated auth.json,
+refuses a login that is still expired after the pre-apply refresh (the
+CLAUDE side's rule — a ~6h Grok token means expiry IS evidence, unlike
+Codex's ~10-day one), writes `~/.grok/auth.json` via
+`GrokUsageService.applyProfileCredentials` and claims the pointer with
+no awaits in between. The launch resolver matches auth.json's `user_id`
+(falling back to the non-secret `grokEmail` stamp before Keychain
+hydration) to a profile; it deliberately does NOT run Codex's
+exactly-one-profile inference, because nothing wrote that file before
+this pointer existed. **Nil is not "no pointer exists" — it is "no Grok
+login has ever been applied on this install"**, and
+`activeAccountIds(among:)` then falls back to the old focused-or-sole
+rule.
 
 ## Codex accounts
 
@@ -550,10 +567,13 @@ while there is still headroom to `/login` + re-sync. It never refreshes a candid
 that already owns its provider's shared login (that would rotate the family out
 from under the CLI); milestones re-arm when usage falls back below 25%.
 
-**Two accounts are active at any time** — one Claude and one Codex.
-`ProfileManager.activeClaudeProfileId` tracks who owns the Claude Code CLI Keychain
-login and `activeCodexProfileId` who owns auth.json; `activeProfile` is only the
-*focused* profile. Activating a profile replaces ONLY the shared login state of the
+**One account per provider is active at any time** — Claude, Codex and (since
+the Grok pointer landed) Grok. `ProfileManager.activeClaudeProfileId` tracks who
+owns the Claude Code CLI Keychain login, `activeCodexProfileId` who owns
+`~/.codex/auth.json` and `activeGrokProfileId` who owns `~/.grok/auth.json`;
+`activeProfile` is only the *focused* profile, and `ProfileManager.viewProfile`
+moves that focus WITHOUT touching credentials, pointers, the switch history or
+the `.profileManuallyActivated` mark. Activating a profile replaces ONLY the shared login state of the
 provider(s) it carries: the outgoing account of that provider is re-adopted first,
 the other provider is never touched. Keychain adoption / syncToSystem decisions key
 off `activeClaudeProfileId`, not the focused profile. The session-limit auto-switch

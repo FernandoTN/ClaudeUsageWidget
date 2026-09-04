@@ -183,6 +183,7 @@ class ProfileStore {
         static let keychainRebuiltV3 = "keychainItemsRebuiltViaSecurityTool_v3"
         static let activeClaudeProfileId = "activeClaudeProfileId"
         static let activeCodexProfileId = "activeCodexProfileId"
+        static let activeGrokProfileId = "activeGrokProfileId"
     }
 
     // MARK: - Preferences (cfprefsd) degradation resilience
@@ -222,6 +223,7 @@ class ProfileStore {
     private var lastKnownGoodActiveProfileId: UUID??
     private var lastKnownGoodActiveClaudeProfileId: UUID??
     private var lastKnownGoodActiveCodexProfileId: UUID??
+    private var lastKnownGoodActiveGrokProfileId: UUID??
 
     /// True while EITHER half of the daemon is misbehaving — reads coming back
     /// empty against a known-good shadow, or a single-shot write that cfprefsd
@@ -282,6 +284,7 @@ class ProfileStore {
         lastKnownGoodActiveProfileId = nil
         lastKnownGoodActiveClaudeProfileId = nil
         lastKnownGoodActiveCodexProfileId = nil
+        lastKnownGoodActiveGrokProfileId = nil
         cachedPlistRoot = nil
         lastPlistFallbackAttempt = nil
         preferencesDegraded = false
@@ -1142,6 +1145,23 @@ class ProfileStore {
             key: Keys.activeCodexProfileId,
             shadow: &lastKnownGoodActiveCodexProfileId,
             label: "activeCodexProfileId"
+        )
+    }
+
+    /// The profile that owns ~/.grok/auth.json — the third provider's shared CLI
+    /// login, symmetric with the two above. Same single-shot journaling and same
+    /// last-known-good shadow: it is written ONCE when ownership changes, which
+    /// is exactly the class of key a cfprefsd write rejection strands (audit C3).
+    func saveActiveGrokProfileId(_ id: UUID?) {
+        writeSingleShot(id?.uuidString, forKey: Keys.activeGrokProfileId)
+        lastKnownGoodActiveGrokProfileId = .some(id)
+    }
+
+    func loadActiveGrokProfileId() -> UUID? {
+        loadPointer(
+            key: Keys.activeGrokProfileId,
+            shadow: &lastKnownGoodActiveGrokProfileId,
+            label: "activeGrokProfileId"
         )
     }
 
