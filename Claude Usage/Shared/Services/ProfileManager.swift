@@ -825,8 +825,14 @@ class ProfileManager: ObservableObject {
         for group in toNotify {
             let names = group.compactMap { id in profiles.first(where: { $0.id == id })?.name }
             guard names.count > 1 else { continue }
+            // A refusal count on a member is the forensic half of the notice:
+            // it says the write guard has already caught something trying to
+            // put one account's login into another account's profile, which is
+            // how a duplicate is MADE (stale pointer + unstamped target).
+            let refused = group.reduce(0) { $0 + ClaudeCodeSyncService.shared.refusedCredentialWrites[$1, default: 0] }
+            let refusals = refused > 0 ? ", \(refused) contaminating write(s) refused" : ""
             LoggingService.shared.log(
-                "ProfileManager: \u{26A0}\u{FE0F} duplicate Anthropic account \u{2014} \(names.joined(separator: ", ")) hold logins for the SAME account (one quota, \(names.count) tiles)"
+                "ProfileManager: \u{26A0}\u{FE0F} duplicate Anthropic account \u{2014} \(names.joined(separator: ", ")) hold logins for the SAME account (one quota, \(names.count) tiles\(refusals))"
             )
             NotificationManager.shared.sendDuplicateClaudeAccountNotification(profileNames: names)
         }

@@ -352,6 +352,37 @@ standing pointer, then the stamp) instead of array order, and a same-account
 profile whose own login is still usable is REPORTED rather than cleared — only
 byte-identical copies and dead same-account tokens are still wiped.
 
+**Identity-verified credential writes (the mechanism behind that duplicate)**:
+`adoptionAccountMatches` is the guard both AUTOMATIC write paths share — the
+pre-switch re-sync of the OUTGOING profile (`resyncBeforeSwitching`, reached from
+`activateProfileDetailed`) and the Keychain adoption inside
+`ensureFreshCredentials`. It used to return true whenever either side was
+unidentifiable, and an UNSTAMPED profile is unidentifiable, so "no evidence"
+read as permission. That is how the contamination happened: during the
+2026-09-03 cfprefsd write-rejection episode the on-disk active-profile pointers
+were stale, the outgoing re-sync trusted the pointer to name the outgoing
+profile, and the CLI's login was written into an unstamped profile that held a
+different account. The guard now resolves the target from its OWN stored token
+first (`stampAccountIdentity`, never from the incoming credentials — that would
+make every comparison trivially agree), then decides:
+`ClaudeCodeSyncService.credentialWriteDecision` returns `.write` on agreement,
+`.refuse` on disagreement, and `.noEvidence` only when neither side can be
+identified at all (unchanged behaviour — refusing there would break every
+legitimate adoption on a network failure). The CLI login's account comes from
+the identity endpoint, falling back to `~/.claude.json`'s cached
+`oauthAccount.accountUuid` so a refused network call does not silently downgrade
+the guard. A refusal logs once per (profile, refused account) pair and is
+counted in `refusedCredentialWrites`, which the duplicate/contamination log line
+reports. **Manual Sync is deliberately NOT gated by this comparison**:
+`syncToProfile` clears the stamp by design because an explicit sync may bring a
+different account (that is the documented `/login` + re-sync repair), so gating
+it on the profile's previous account would refuse the repair. The duplicate
+detector covers that path instead — the forced re-stamp that follows every sync
+fires the notice if the sync created a duplicate. `adoptSystemLoginByIdentity`
+(identity adoption and the launch repair) needs no separate gate: it already
+writes only into the profile whose stamp equals the shared login's live
+identity.
+
 **Dead-login gate**: `activateProfile` NEVER applies credentials that are still
 expired after the pre-apply refresh (both providers). Writing a dead login over the
 shared CLI login bricks every running session ("login expired. Please run /login"

@@ -894,19 +894,133 @@ class ClaudeCodeSyncService {
         }
     }
 
+    // MARK: - Identity-Verified Credential Writes
+
+    /// What the write guard concludes for one (CLI login, target profile) pair.
+    enum CredentialWriteDecision: Equatable {
+        /// The identities agree: this profile really is the account behind the
+        /// CLI's current login.
+        case write
+        /// They disagree: writing would move one account's token into another
+        /// account's profile. Refuse.
+        case refuse
+        /// Neither side could be identified. Not a mismatch — the caller's own
+        /// bookkeeping (the provider-active pointer) stands, as it always has.
+        case noEvidence
+    }
+
+    /// The whole guard, as a pure decision over two identities.
+    ///
+    /// `stampedFromOwnToken` is what the identity pass learned from the TARGET
+    /// PROFILE'S OWN token when the profile carried no stamp yet. Resolving the
+    /// target that way — rather than accepting "unstamped" as permission — is
+    /// the entire fix: an unstamped profile used to pass this guard on "no
+    /// evidence either way", which is how the CLI's login was written into a
+    /// profile holding a different account.
+    nonisolated static func credentialWriteDecision(
+        cliAccountUUID: String?,
+        profileAccountUUID: String?,
+        stampedFromOwnToken: String? = nil
+    ) -> CredentialWriteDecision {
+        let target = [profileAccountUUID, stampedFromOwnToken]
+            .compactMap { $0 }
+            .first { !$0.isEmpty }
+        guard let cli = cliAccountUUID, !cli.isEmpty, let target else { return .noEvidence }
+        return cli == target ? .write : .refuse
+    }
+
+    /// The account behind the CLI's current login. The identity endpoint is the
+    /// authority; `~/.claude.json`'s cached `oauthAccount.accountUuid` is the
+    /// fallback for when it cannot be reached, so a refused network call does
+    /// not silently downgrade the guard to "no evidence".
+    private func cliLoginAccountUUID(systemJSON: String) async -> String? {
+        if let token = extractAccessToken(from: systemJSON),
+           let identity = await fetchAccountIdentity(accessToken: token) {
+            return identity.accountUUID
+        }
+        return cliCachedAccountUUID()
+    }
+
+    /// The account the CLI itself believes it is logged into, read from
+    /// `~/.claude.json`. Local file, no network. This app rewrites that key on
+    /// every apply (`updateCLIAccountMetadata`) from the APPLIED profile's own
+    /// stamp, so it tracks the login rather than the pointer.
+    func cliCachedAccountUUID() -> String? {
+        let fileURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+        guard let data = try? Data(contentsOf: fileURL),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let oauthAccount = root["oauthAccount"] as? [String: Any],
+              let uuid = oauthAccount["accountUuid"] as? String, !uuid.isEmpty else { return nil }
+        return uuid
+    }
+
+    /// Refusals already logged, keyed by profile + the account that was refused,
+    /// so a repeating sweep says it once rather than every 30 seconds.
+    private var refusedWriteSignatures: Set<String> = []
+
+    /// How many contaminating writes the guard has refused per profile this run.
+    /// Surfaced in the duplicate/contamination notice
+    /// (`ProfileManager.refreshDuplicateClaudeAccountGroups`): a refusal count on
+    /// a profile is the strongest evidence that its stored login and the account
+    /// something tried to write into it disagree.
+    private(set) var refusedCredentialWrites: [UUID: Int] = [:]
+
     /// The Claude twin of Codex's account_id match: never copy the shared login
-    /// into a profile KNOWN to belong to a different account. This is the guard
+    /// into a profile that belongs to a different account. This is the guard
     /// against cross-account contamination (a profile silently absorbing another
     /// account's token, which then mislabels usage and auto-switch decisions).
+    ///
+    /// An UNSTAMPED target is no longer waved through. It is stamped from its
+    /// OWN token first and only then compared, because "unstamped" was the hole
+    /// the contamination came through: during the 2026-09-03 cfprefsd
+    /// write-rejection episode the on-disk active-profile pointers were stale,
+    /// the outgoing re-sync trusted the pointer to name the outgoing profile,
+    /// and the CLI's login was written into an unstamped profile that held a
+    /// different account.
+    ///
+    /// Shared by both automatic write paths — the pre-switch re-sync of the
+    /// OUTGOING profile (`resyncBeforeSwitching`) and the Keychain adoption in
+    /// `ensureFreshCredentials` — so neither can write an account into a profile
+    /// that is not that account.
     private func adoptionAccountMatches(profileId: UUID, systemJSON: String) async -> Bool {
-        guard let profileUUID = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.claudeAccountUUID,
-              let token = extractAccessToken(from: systemJSON),
-              let systemIdentity = await fetchAccountIdentity(accessToken: token) else {
-            return true  // no evidence either way — the pointer's word stands
+        let cliUUID = await cliLoginAccountUUID(systemJSON: systemJSON)
+        var profileUUID = ProfileStore.shared.loadProfiles()
+            .first(where: { $0.id == profileId })?.claudeAccountUUID
+
+        var stamped: String? = nil
+        if profileUUID?.isEmpty ?? true {
+            // Resolve the TARGET from its own stored token, never from the
+            // incoming credentials — stamping it from those would make every
+            // comparison trivially agree and rebuild the hole.
+            await stampAccountIdentity(for: profileId)
+            stamped = ProfileStore.shared.loadProfiles()
+                .first(where: { $0.id == profileId })?.claudeAccountUUID
+            profileUUID = stamped
         }
-        if systemIdentity.accountUUID == profileUUID { return true }
-        LoggingService.shared.log("⛔️ Claude adoption skipped: system Keychain login belongs to a DIFFERENT account than this profile (contamination guard)")
-        return false
+
+        switch Self.credentialWriteDecision(
+            cliAccountUUID: cliUUID, profileAccountUUID: profileUUID, stampedFromOwnToken: stamped
+        ) {
+        case .write:
+            return true
+        case .noEvidence:
+            return true  // no evidence either way — the pointer's word stands
+        case .refuse:
+            recordRefusedWrite(profileId: profileId, cliAccountUUID: cliUUID, profileAccountUUID: profileUUID)
+            return false
+        }
+    }
+
+    /// Logs a refusal once per (profile, refused account) pair and counts it.
+    private func recordRefusedWrite(profileId: UUID, cliAccountUUID: String?, profileAccountUUID: String?) {
+        refusedCredentialWrites[profileId, default: 0] += 1
+        let incoming = String((cliAccountUUID ?? "unknown").prefix(8))
+        let held = profileAccountUUID.map { String($0.prefix(8)) } ?? "unstamped"
+        guard refusedWriteSignatures.insert("\(profileId.uuidString)|\(incoming)").inserted else { return }
+        let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "?"
+        LoggingService.shared.log(
+            "⛔️ Claude write guard: refusing to write account \(incoming) into profile '\(name)' which holds \(held)"
+        )
     }
 
     // MARK: - Dead Login Notification
