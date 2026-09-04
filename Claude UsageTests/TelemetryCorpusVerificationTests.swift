@@ -61,4 +61,25 @@ final class TelemetryCorpusVerificationTests: XCTestCase {
         print("CORPUS VERIFY markers=\(markers.count) rateLimit=\(markers.filter { $0.kind == .rateLimit }.count) quotaRejected=\(markers.filter { $0.kind == .quotaRejected }.count)")
         XCTAssertGreaterThan(try ledger.eventCount(), 0)
     }
+
+    /// Opt-in: times the schema migration on a COPY of a real ledger
+    /// (`TEST_RUNNER_CUW_TELEMETRY_MIGRATE_PATH=/path/to/copy.sqlite`). Never
+    /// point it at the live file — the migration rewrites the events table.
+    func testMigrateACopyOfARealLedgerAndPrintTiming() throws {
+        guard let path = ProcessInfo.processInfo.environment["CUW_TELEMETRY_MIGRATE_PATH"], !path.isEmpty else {
+            throw XCTSkip("opt-in: set TEST_RUNNER_CUW_TELEMETRY_MIGRATE_PATH to a copy of a ledger")
+        }
+        let url = URL(fileURLWithPath: path)
+        let before = (try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
+        let start = Date()
+        let ledger = try TelemetryLedger(url: url)
+        let elapsed = Date().timeIntervalSince(start)
+        let count = try ledger.eventCount()
+        let after = ledger.storageBytes()
+        print("MIGRATE TIMING: \(count) events, \(before) → \(after) bytes (\(String(format: "%.0f", Double(after) / Double(max(count, 1)))) B/event), \(String(format: "%.1f", elapsed)) s, schema \(ledger.meta("schemaVersion") ?? "?")")
+        let sample = try ledger.aggregateMinutes(from: Date().addingTimeInterval(-86_400), to: Date())
+        print("MIGRATE TIMING: last-24h minute aggregates = \(sample.count)")
+        XCTAssertEqual(ledger.meta("schemaVersion"), "2")
+        XCTAssertGreaterThan(count, 0)
+    }
 }

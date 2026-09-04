@@ -15,6 +15,11 @@
 //  slice — and one transaction covering the events, the markers and the
 //  cursor advance. Rollups are derived from this table, never stored as truth.
 //
+//  Schema v2 (2026-09-03): the first deploy measured ~470 B/event on v1 because
+//  every row repeated its file id (a ~100-char relative path), the session
+//  uuid and the project slug as text. v2 interns those three into `strings`
+//  and stores integer refs; a v1 ledger is migrated in place on first open.
+//
 //  Threading: every call happens on ONE serial utility queue owned by
 //  TelemetryService. The class is `nonisolated` (load-bearing under the
 //  MainActor default) and `@unchecked Sendable` because that queue is the
@@ -34,11 +39,14 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         var description: String { "SQLite \(code): \(message)" }
     }
 
-    static let schemaVersion = 1
+    static let schemaVersion = 2
+    /// WAL cap; a checkpoint after every catch-up run truncates it.
+    static let journalSizeLimit = 64 << 20
 
     let url: URL
     private var db: OpaquePointer?
     private var transactionDepth = 0
+    private var internCache: [String: Int64] = [:]
 
     /// Opens (creating the directory `0700` and the files `0600`) and migrates.
     init(url: URL) throws {
@@ -61,6 +69,7 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         sqlite3_busy_timeout(handle, 2_000)
         try exec("PRAGMA journal_mode=WAL")
         try exec("PRAGMA synchronous=NORMAL")
+        try exec("PRAGMA journal_size_limit=\(Self.journalSizeLimit)")
         try createSchema()
         for suffix in ["", "-wal", "-shm"] where fm.fileExists(atPath: url.path + suffix) {
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path + suffix)
@@ -73,19 +82,29 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
 
     // MARK: - Schema
 
+    private static let eventsDDL = """
+    CREATE TABLE IF NOT EXISTS events (
+        unit_id TEXT PRIMARY KEY, provider TEXT NOT NULL, at REAL NOT NULL, model TEXT NOT NULL,
+        input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
+        cache_write_1h INTEGER NOT NULL, output INTEGER NOT NULL, reasoning INTEGER NOT NULL,
+        cost_nano INTEGER, session_ref INTEGER NOT NULL, sidechain INTEGER NOT NULL, source_ref INTEGER,
+        file_ref INTEGER NOT NULL, source_offset INTEGER NOT NULL, parser_version INTEGER NOT NULL,
+        in_flight INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS events_provider_at ON events(provider, at);
+    CREATE INDEX IF NOT EXISTS events_at ON events(at);
+    CREATE INDEX IF NOT EXISTS events_file ON events(file_ref);
+    """
+
     private func createSchema() throws {
+        try exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+        try exec("CREATE TABLE IF NOT EXISTS strings (id INTEGER PRIMARY KEY, value TEXT NOT NULL UNIQUE);")
+        let version = meta("schemaVersion")
+        if version == "1" {
+            try migrateV1ToV2()
+        }
+        try exec(Self.eventsDDL)
         try exec("""
-        CREATE TABLE IF NOT EXISTS events (
-            unit_id TEXT PRIMARY KEY, provider TEXT NOT NULL, at REAL NOT NULL, model TEXT NOT NULL,
-            input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
-            cache_write_1h INTEGER NOT NULL, output INTEGER NOT NULL, reasoning INTEGER NOT NULL,
-            cost_nano INTEGER, session TEXT NOT NULL, sidechain INTEGER NOT NULL, source TEXT,
-            file_id TEXT NOT NULL, source_offset INTEGER NOT NULL, parser_version INTEGER NOT NULL,
-            in_flight INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS events_provider_at ON events(provider, at);
-        CREATE INDEX IF NOT EXISTS events_at ON events(at);
-        CREATE INDEX IF NOT EXISTS events_file ON events(file_id);
         CREATE TABLE IF NOT EXISTS markers (
             marker_id TEXT PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, at REAL NOT NULL,
             session TEXT NOT NULL, detail TEXT
@@ -106,9 +125,44 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
             files_unreadable INTEGER NOT NULL, lines_malformed INTEGER NOT NULL, unknown_shapes INTEGER NOT NULL,
             backlog_files INTEGER NOT NULL, backlog_bytes INTEGER NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
-        if meta("schemaVersion") == nil {
+        if version == nil {
+            try setMeta("schemaVersion", String(Self.schemaVersion))
+        }
+        if version == "1" {
+            // Outside the migration transaction: hand the freed pages back.
+            try? exec("VACUUM")
+        }
+    }
+
+    /// v1 stored file id, session and source as text on every row. Rebuild the
+    /// table with interned refs in one transaction; cursors, ownership, health
+    /// and markers are untouched, so no re-index follows.
+    private func migrateV1ToV2() throws {
+        try transaction {
+            try exec("""
+            INSERT OR IGNORE INTO strings (value)
+                SELECT file_id FROM events UNION SELECT session FROM events
+                UNION SELECT source FROM events WHERE source IS NOT NULL;
+            ALTER TABLE events RENAME TO events_v1;
+            DROP INDEX IF EXISTS events_provider_at;
+            DROP INDEX IF EXISTS events_at;
+            DROP INDEX IF EXISTS events_file;
+            """)
+            try exec(Self.eventsDDL)
+            try exec("""
+            INSERT INTO events (unit_id, provider, at, model, input, cache_read, cache_write, cache_write_1h, output, reasoning,
+                cost_nano, session_ref, sidechain, source_ref, file_ref, source_offset, parser_version, in_flight)
+            SELECT e.unit_id, e.provider, e.at, e.model, e.input, e.cache_read, e.cache_write, e.cache_write_1h, e.output, e.reasoning,
+                e.cost_nano, (SELECT id FROM strings WHERE value = e.session), e.sidechain,
+                (SELECT id FROM strings WHERE value = e.source), (SELECT id FROM strings WHERE value = e.file_id),
+                e.source_offset, e.parser_version, e.in_flight
+            FROM events_v1 e;
+            DROP TABLE events_v1;
+            """)
+            // Inside the same transaction: a crash anywhere before COMMIT rolls
+            // the whole rebuild back and the next open migrates again; a crash
+            // after it finds version 2 and never re-runs.
             try setMeta("schemaVersion", String(Self.schemaVersion))
         }
     }
@@ -136,6 +190,34 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         }
     }
 
+    /// Truncates the WAL back into the main file; called after a catch-up run.
+    func checkpoint() {
+        try? exec("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+
+    // MARK: - Interning
+
+    private func intern(_ value: String) throws -> Int64 {
+        if let cached = internCache[value] { return cached }
+        let insert = try prepare("INSERT OR IGNORE INTO strings (value) VALUES (?1)")
+        insert.bind(1, value)
+        _ = try insert.step()
+        let select = try prepare("SELECT id FROM strings WHERE value = ?1")
+        select.bind(1, value)
+        guard try select.step() else { throw LedgerError(code: SQLITE_INTERNAL, message: "intern failed") }
+        let id = select.int64(0)
+        if internCache.count > 200_000 { internCache.removeAll(keepingCapacity: true) }
+        internCache[value] = id
+        return id
+    }
+
+    private func internedId(_ value: String) throws -> Int64? {
+        if let cached = internCache[value] { return cached }
+        let select = try prepare("SELECT id FROM strings WHERE value = ?1")
+        select.bind(1, value)
+        return try select.step() ? select.int64(0) : nil
+    }
+
     // MARK: - Events
 
     /// Inserts or, for a `unitId` already present, replaces the row — but only
@@ -145,13 +227,13 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         guard !events.isEmpty else { return }
         let sql = """
         INSERT INTO events (unit_id, provider, at, model, input, cache_read, cache_write, cache_write_1h, output,
-            reasoning, cost_nano, session, sidechain, source, file_id, source_offset, parser_version, in_flight)
+            reasoning, cost_nano, session_ref, sidechain, source_ref, file_ref, source_offset, parser_version, in_flight)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         ON CONFLICT(unit_id) DO UPDATE SET
             at = excluded.at, model = excluded.model, input = excluded.input, cache_read = excluded.cache_read,
             cache_write = excluded.cache_write, cache_write_1h = excluded.cache_write_1h, output = excluded.output,
-            reasoning = excluded.reasoning, cost_nano = excluded.cost_nano, session = excluded.session,
-            sidechain = excluded.sidechain, source = excluded.source, file_id = excluded.file_id,
+            reasoning = excluded.reasoning, cost_nano = excluded.cost_nano, session_ref = excluded.session_ref,
+            sidechain = excluded.sidechain, source_ref = excluded.source_ref, file_ref = excluded.file_ref,
             source_offset = excluded.source_offset, parser_version = excluded.parser_version,
             in_flight = excluded.in_flight
         WHERE excluded.output >= events.output
@@ -159,14 +241,17 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         let statement = try prepare(sql)
         try transaction {
             for event in events {
+                let sessionRef = try intern(event.session)
+                let sourceRef = try event.source.map { try intern($0) }
+                let fileRef = try intern(event.fileId)
                 statement.bind(1, event.unitId); statement.bind(2, event.provider.rawValue)
                 statement.bind(3, event.at.timeIntervalSince1970); statement.bind(4, event.model)
                 statement.bind(5, event.input); statement.bind(6, event.cacheRead)
                 statement.bind(7, event.cacheWrite); statement.bind(8, event.cacheWrite1h)
                 statement.bind(9, event.output); statement.bind(10, event.reasoning)
-                statement.bind(11, event.reportedCostNanoUSD); statement.bind(12, event.session)
-                statement.bind(13, event.sidechain ? 1 : 0); statement.bind(14, event.source)
-                statement.bind(15, event.fileId); statement.bind(16, event.sourceOffset)
+                statement.bind(11, event.reportedCostNanoUSD); statement.bind(12, sessionRef)
+                statement.bind(13, event.sidechain ? 1 : 0); statement.bind(14, sourceRef)
+                statement.bind(15, fileRef); statement.bind(16, event.sourceOffset)
                 statement.bind(17, event.parserVersion); statement.bind(18, event.inFlight ? 1 : 0)
                 _ = try statement.step()
                 statement.reset()
@@ -190,15 +275,20 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         }
     }
 
+    private static let eventSelect = """
+    SELECT e.unit_id, e.provider, e.at, e.model, e.input, e.cache_read, e.cache_write, e.cache_write_1h, e.output, e.reasoning,
+        e.cost_nano, s.value, e.sidechain, src.value, f.value, e.source_offset, e.parser_version, e.in_flight
+    FROM events e
+    JOIN strings s ON s.id = e.session_ref
+    LEFT JOIN strings src ON src.id = e.source_ref
+    JOIN strings f ON f.id = e.file_ref
+    """
+
     /// Events with `from <= at < to`, oldest first.
     func events(provider: TelemetryProvider? = nil, from: Date, to: Date) throws -> [TelemetryEvent] {
-        var sql = """
-        SELECT unit_id, provider, at, model, input, cache_read, cache_write, cache_write_1h, output, reasoning,
-            cost_nano, session, sidechain, source, file_id, source_offset, parser_version, in_flight
-        FROM events WHERE at >= ?1 AND at < ?2
-        """
-        if provider != nil { sql += " AND provider = ?3" }
-        sql += " ORDER BY at"
+        var sql = Self.eventSelect + " WHERE e.at >= ?1 AND e.at < ?2"
+        if provider != nil { sql += " AND e.provider = ?3" }
+        sql += " ORDER BY e.at"
         let statement = try prepare(sql)
         statement.bind(1, from.timeIntervalSince1970); statement.bind(2, to.timeIntervalSince1970)
         if let provider { statement.bind(3, provider.rawValue) }
@@ -240,9 +330,49 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
     /// once the model is known, the file's earlier "unknown" units take it
     /// (a rollout rarely changes model — 3 of 1,209 on disk).
     func reassignUnknownModel(fileId: String, to model: String) throws {
-        let statement = try prepare("UPDATE events SET model = ?1 WHERE file_id = ?2 AND model = 'unknown'")
-        statement.bind(1, model); statement.bind(2, fileId)
+        guard let fileRef = try internedId(fileId) else { return }
+        let statement = try prepare("UPDATE events SET model = ?1 WHERE file_ref = ?2 AND model = 'unknown'")
+        statement.bind(1, model); statement.bind(2, fileRef)
         _ = try statement.step()
+    }
+
+    /// Minute-level sums for the report builder: one row per (provider, model,
+    /// source, sidechain, UTC minute). Attribution happens at the minute, which
+    /// is finer than any switch the fleet makes. `cost_nano` sums only what the
+    /// source reported (Grok); the null count becomes `unpricedUnits`.
+    func aggregateMinutes(provider: TelemetryProvider? = nil, from: Date, to: Date) throws -> [MinuteAggregate] {
+        var sql = """
+        SELECT e.provider, e.model, src.value, e.sidechain, CAST(e.at / 60 AS INTEGER) AS minute, COUNT(*), SUM(e.input),
+            SUM(e.cache_read), SUM(e.cache_write), SUM(e.cache_write_1h), SUM(e.output), SUM(e.reasoning),
+            COALESCE(SUM(e.cost_nano), 0), SUM(CASE WHEN e.cost_nano IS NULL THEN 1 ELSE 0 END)
+        FROM events e LEFT JOIN strings src ON src.id = e.source_ref
+        WHERE e.at >= ?1 AND e.at < ?2
+        """
+        if provider != nil { sql += " AND e.provider = ?3" }
+        sql += " GROUP BY e.provider, e.model, e.source_ref, e.sidechain, minute ORDER BY minute"
+        let statement = try prepare(sql)
+        statement.bind(1, from.timeIntervalSince1970); statement.bind(2, to.timeIntervalSince1970)
+        if let provider { statement.bind(3, provider.rawValue) }
+        var result: [MinuteAggregate] = []
+        while try statement.step() {
+            guard let providerName = statement.string(0), let provider = TelemetryProvider(rawValue: providerName) else { continue }
+            let sidechain = statement.int(3) != 0
+            var totals = TokenTotals()
+            totals.units = statement.int(5); totals.input = statement.int(6); totals.cacheRead = statement.int(7)
+            totals.cacheWrite = statement.int(8); totals.cacheWrite1h = statement.int(9); totals.output = statement.int(10)
+            totals.reasoning = statement.int(11); totals.costNanoUSD = statement.int(12); totals.unpricedUnits = statement.int(13)
+            totals.sidechainUnits = sidechain ? totals.units : 0
+            result.append(MinuteAggregate(provider: provider, model: statement.string(1) ?? "unknown", source: statement.string(2),
+                                          sidechain: sidechain, minute: Date(timeIntervalSince1970: statement.double(4) * 60),
+                                          totals: totals))
+        }
+        return result
+    }
+
+    func distinctSessions(provider: TelemetryProvider, from: Date, to: Date) throws -> Int {
+        let statement = try prepare("SELECT COUNT(DISTINCT session_ref) FROM events WHERE provider = ?1 AND at >= ?2 AND at < ?3")
+        statement.bind(1, provider.rawValue); statement.bind(2, from.timeIntervalSince1970); statement.bind(3, to.timeIntervalSince1970)
+        return try statement.step() ? statement.int(0) : 0
     }
 
     func eventCount() throws -> Int {
@@ -439,6 +569,9 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
             if let value { sqlite3_bind_int64(handle, index, Int64(value)) } else { sqlite3_bind_null(handle, index) }
         }
         func bind(_ index: Int32, _ value: Int64) { sqlite3_bind_int64(handle, index, value) }
+        func bind(_ index: Int32, _ value: Int64?) {
+            if let value { sqlite3_bind_int64(handle, index, value) } else { sqlite3_bind_null(handle, index) }
+        }
         func bind(_ index: Int32, _ value: Double) { sqlite3_bind_double(handle, index, value) }
         func bind(_ index: Int32, _ value: Double?) {
             if let value { sqlite3_bind_double(handle, index, value) } else { sqlite3_bind_null(handle, index) }
