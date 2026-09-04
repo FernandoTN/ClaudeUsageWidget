@@ -289,6 +289,41 @@ upsert + cursor save), counted at scan time into meta
 Tests: `TelemetryIndexerTests` (+1, end to end). Design pass 52. Harness
 fixture sources are now "exec" and "xfenrir-dev/vscode".
 
+Stage 4d merged as `6a5eab2` (#124) and deployed 23:57:36 PDT (pid 54481;
+bar pinned, RSS 165 MB, 0 cfprefsd rejections). **Dormant on this Mac:**
+all four isolated homes under `~/.codex-accounts/` (xfenrir-dev,
+xfho-fer-hotmail-com, xfme-fernando-mymemori-app, xlucifer-dev) hold zero
+rollouts — the widget copies each account's auth into `~/.codex` on a
+switch, so every Codex session so far ran in the default home and is
+attributed by time. The first tick after launch was an ordinary slice
+(13 files, +259 events): no re-read, no pending line, and the Codex
+Unattributed share will NOT move until Codex is run with `CODEX_HOME`
+pointed at an isolated home. It moves only when a switch-history gap
+closes.
+
+## First live compaction pass (4c), verified
+
+Contrary to the "nothing is 90 days old yet" note above, the Codex archive
+reaches back to mid-May 2026, so the first non-catch-up tick after the
+`734755c` deploy (23:53:02 PDT) folded 1,063 Codex rows from six UTC days
+(May 14, 15, 19, 21, 22, 29) in 43 default-home files into 201 minute rows;
+WAL 8 KB after the checkpoint, ledger unchanged at 288 MB. Verified
+read-only at 23:56 PDT — a `sqlite3 .backup` of the live ledger against the
+22:11 v2 copy that still held the raw rows — with zero deltas per day
+(units, every token column, cost, unpriced, distinct sessions, first and
+last times) and zero differences in both directions on the (provider,
+minute, model, source, sidechain) keys (99 keys each side; 201 rows collapse
+to 99 once sessions merge, by design). No raw row older than the cutoff
+remains; none of the 43 files is in an isolated home, so the 4d re-index
+never meets a compacted file. Scripts: `~/.claude/jobs/35d51d44/tmp/
+verify-compaction.sh`, `verify-compaction-2.sh`.
+
+Stage 4 is closed. The orchestrator's final frame-by-frame pass on
+`6a5eab2` (all three surfaces) found nothing new for telemetry — the
+expanded notes, legend isolation, Split axis with ⇄ markers, dark chart,
+rate-limit overlay and stack pill all hold; no T28. Deployed as pid 54481.
+Nothing further is queued until the owner reviews the window live.
+
 ## Next
 
 The fixes session's punch
