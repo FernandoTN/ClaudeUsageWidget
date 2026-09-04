@@ -329,6 +329,15 @@ extension CodexUsageService {
 
     // MARK: Detail (on demand only)
 
+    /// The last detail answer this process fetched for one profile, or nil —
+    /// no network, no spacing wait, and possibly stale (read `fetchedAt`).
+    /// For surfaces that must never trigger the per-IP-limited endpoint
+    /// themselves (the ⇄ menu's "expires" row, list captions): they show what
+    /// the account view already fetched, or nothing.
+    func cachedResetCredits(for profileId: UUID) -> CodexResetCredits? {
+        CodexResetCreditsState.shared.cache[profileId]
+    }
+
     /// Per-credit detail, including expiry, for one profile.
     ///
     /// **Never call this from the sweep timer, and never from a loop over
