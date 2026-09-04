@@ -262,6 +262,23 @@ is refused when another profile already holds the same `account_id`; the
 non-secret `Profile.codexAccountId` stamp makes that match work before Keychain
 hydration.
 
+**Multiple accounts: isolated homes, never a second `codex login` in `~/.codex`.**
+`codex login` REVOKES, server-side, whatever credentials sit in the home it runs
+in before it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt`
+→ `clear_existing_auth_before_login` → `logout_with_revoke(codex_home, …)`), so a
+second login in the default home kills the account the widget applied there —
+three died that way on 2026-09-03. The CLI honours `$CODEX_HOME`, so each extra
+account is logged in under its own home (`CODEX_HOME=~/.codex-accounts/<name>
+codex login`, nothing there to revoke) and brought in with **Import from another
+Codex home** (`importFromCodexHome` — same parser, same duplicate-account guard
+as Sync, stamps the non-secret `Profile.codexHomePath`). Import never writes
+`~/.codex/auth.json` and never claims the Codex owner pointer: the widget stays
+the single writer of the default auth.json, and activating the profile is what
+switches the CLI. When a dead login's owner no longer matches the account in the
+default home, `reloginGuidance` switches the re-login notification to the
+isolated-home instruction rather than telling the user to repeat the login that
+caused it.
+
 **Rotation hazards** (each learned from a real "refresh token was revoked" CLI
 failure): the CLI can rotate ONLY the refresh token, so adoption freshness compares
 `last_refresh` as well as the access-token expiry; activation refreshes the target's

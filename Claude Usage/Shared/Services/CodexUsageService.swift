@@ -32,11 +32,25 @@ class CodexUsageService {
     private static let oauthTokenEndpoint = "https://auth.openai.com/oauth/token"
     private static let usageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
 
-    private var authFileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex")
-            .appendingPathComponent("auth.json")
+    /// The CODEX_HOME the `codex` CLI uses when `$CODEX_HOME` is unset. This is
+    /// the ONE Codex file the widget writes: switching profiles rewrites
+    /// `auth.json` here so the CLI follows the active account.
+    static var defaultCodexHome: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     }
+
+    /// Conventional parent for the per-account isolated homes (README §"Codex
+    /// accounts: adding more than one"). Offered as the Import panel's starting
+    /// directory when it exists; nothing depends on the location.
+    static var isolatedHomesRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex-accounts")
+    }
+
+    static func authFileURL(inHome home: URL) -> URL {
+        home.appendingPathComponent("auth.json")
+    }
+
+    private var authFileURL: URL { Self.authFileURL(inHome: Self.defaultCodexHome) }
 
     private init() {}
 
@@ -44,7 +58,15 @@ class CodexUsageService {
 
     /// Reads the raw contents of ~/.codex/auth.json (nil if absent/unreadable).
     func readAuthFile() -> String? {
-        guard let data = try? Data(contentsOf: authFileURL),
+        readAuthFile(inHome: Self.defaultCodexHome)
+    }
+
+    /// Reads `<home>/auth.json` for an arbitrary CODEX_HOME (nil if
+    /// absent/unreadable/not JSON). The `codex` CLI honours `$CODEX_HOME` for its
+    /// config directory, so an account logged in under its own home leaves a
+    /// complete auth.json there — which is what Import reads.
+    func readAuthFile(inHome home: URL) -> String? {
+        guard let data = try? Data(contentsOf: Self.authFileURL(inHome: home)),
               let json = String(data: data, encoding: .utf8),
               !json.isEmpty,
               (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil else {
@@ -178,6 +200,12 @@ class CodexUsageService {
             throw CodexError.accountAlreadySynced(profileName: holder.name)
         }
 
+        // The home pointer names where THIS account's own `codex login` lives. A
+        // sync that brings a DIFFERENT account in makes it wrong, so drop it; a
+        // re-sync of the same account keeps it.
+        if extractAccountId(from: json) != profiles[index].codexAccountId {
+            profiles[index].codexHomePath = nil
+        }
         profiles[index].codexCredentialsJSON = json
         profiles[index].codexEmail = extractEmail(from: json)
         profiles[index].codexAccountId = extractAccountId(from: json)
@@ -221,6 +249,124 @@ class CodexUsageService {
         profileMatchingAccount(accountId, in: profiles, excluding: target, accountIdOf: accountIdOf)
     }
 
+    // MARK: - Import From An Isolated CODEX_HOME
+
+    /// The non-secret identity of the account stored in a CODEX_HOME — what the
+    /// Import sheet shows before the user commits. Carries no token.
+    struct CodexHomeAccount: Equatable {
+        let homePath: String
+        let email: String?
+        let accountId: String?
+
+        /// Last 8 characters of the account handle: enough to tell two accounts
+        /// apart on screen without rendering the whole id.
+        var accountIdSuffix: String? {
+            guard let accountId, !accountId.isEmpty else { return nil }
+            return String(accountId.suffix(8))
+        }
+    }
+
+    /// Reads the account identity out of an arbitrary CODEX_HOME without storing
+    /// anything — the confirm step of Import.
+    func inspectCodexHome(_ home: URL) throws -> CodexHomeAccount {
+        guard let json = readAuthFile(inHome: home), extractAccessToken(from: json) != nil else {
+            throw CodexError.noCredentialsInHome(path: Self.authFileURL(inHome: home).path)
+        }
+        return CodexHomeAccount(
+            homePath: home.path,
+            email: extractEmail(from: json),
+            accountId: extractAccountId(from: json)
+        )
+    }
+
+    /// The OTHER profile already holding the account stored in `home`, if any —
+    /// the Import sheet's pre-flight, so the duplicate refusal is visible before
+    /// the click rather than as an error after it.
+    func duplicateHolderName(forHome home: URL, target: UUID) -> String? {
+        guard let json = readAuthFile(inHome: home),
+              let accountId = extractAccountId(from: json) else { return nil }
+        return Self.duplicateAccountHolder(
+            accountId: accountId,
+            target: target,
+            profiles: ProfileStore.shared.loadProfiles(),
+            accountIdOf: { self.accountId(of: $0) }
+        )?.name
+    }
+
+    /// The roster mutation an Import performs: refuse a duplicate account, then
+    /// stamp the credentials plus the non-secret metadata onto the target
+    /// profile. Pure over `profiles` (it never touches ProfileStore) so the
+    /// guard and the stamping are testable without a Keychain.
+    func importedRoster(
+        from json: String,
+        homePath: String?,
+        into profileId: UUID,
+        profiles: [Profile],
+        now: Date = Date()
+    ) throws -> [Profile] {
+        guard extractAccessToken(from: json) != nil else { throw CodexError.invalidJSON }
+
+        var profiles = profiles
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
+            throw CodexError.profileNotFound
+        }
+
+        // Same guard as Sync: one Codex account in two profiles is two tiles for
+        // one quota, double the fetch load, and roster order deciding who owns
+        // auth.json.
+        if let accountId = extractAccountId(from: json),
+           let holder = Self.duplicateAccountHolder(
+               accountId: accountId,
+               target: profileId,
+               profiles: profiles,
+               accountIdOf: { self.accountId(of: $0) }
+           ) {
+            throw CodexError.accountAlreadySynced(profileName: holder.name)
+        }
+
+        profiles[index].codexCredentialsJSON = json
+        profiles[index].codexEmail = extractEmail(from: json)
+        profiles[index].codexAccountId = extractAccountId(from: json)
+        profiles[index].codexAccountSyncedAt = now
+        profiles[index].codexHomePath = homePath
+        return profiles
+    }
+
+    /// Copies `<home>/auth.json` into a profile — the safe way to onboard a
+    /// second, third, Nth Codex account.
+    ///
+    /// `codex login` REVOKES, server-side, whatever credentials already sit in
+    /// the home it runs in before it starts the browser flow
+    /// (`codex-rs/cli/src/login.rs`: `login_with_chatgpt` →
+    /// `clear_existing_auth_before_login` → `logout_with_revoke(codex_home, …)`).
+    /// So logging a second account into the default `~/.codex` kills the account
+    /// the widget had applied there, and the widget's stored copy dies with it
+    /// (its refresh grant starts answering 401). Logging each account into its
+    /// OWN home has nothing to revoke; Import brings that login here and the
+    /// widget stays the single writer of the default auth.json.
+    ///
+    /// Import deliberately does NOT write auth.json and does NOT claim the
+    /// Codex owner pointer: the imported account is not the CLI's current login
+    /// until the user activates its profile.
+    func importFromCodexHome(_ home: URL, into profileId: UUID) throws {
+        guard let json = readAuthFile(inHome: home), extractAccessToken(from: json) != nil else {
+            throw CodexError.noCredentialsInHome(path: Self.authFileURL(inHome: home).path)
+        }
+
+        let profiles = try importedRoster(
+            from: json,
+            homePath: home.path,
+            into: profileId,
+            profiles: ProfileStore.shared.loadProfiles()
+        )
+        ProfileStore.shared.saveProfiles(profiles)
+        // A login that just arrived is by definition not the dead one behind an
+        // older flag (same reasoning as Sync).
+        markLoginRevived(profileId)
+
+        LoggingService.shared.log("Codex: Imported credentials from a separate CODEX_HOME into profile \(profileId)")
+    }
+
     /// Writes a profile's Codex credentials to ~/.codex/auth.json so the `codex` CLI
     /// switches to that account (the multi-account switching path).
     func applyProfileCredentials(_ profileId: UUID) throws {
@@ -242,6 +388,7 @@ class CodexUsageService {
         profiles[index].codexCredentialsJSON = nil
         profiles[index].codexEmail = nil
         profiles[index].codexAccountId = nil
+        profiles[index].codexHomePath = nil
         profiles[index].codexAccountSyncedAt = nil
         profiles[index].claudeUsage = nil
         ProfileStore.shared.saveProfiles(profiles)
@@ -525,8 +672,47 @@ class CodexUsageService {
     func notifyReloginNeeded(for profileId: UUID, force: Bool = false) {
         guard force || !reloginNotifiedProfiles.contains(profileId) else { return }
         markLoginDead(profileId)
-        let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Codex"
-        NotificationManager.shared.sendCodexReloginNotification(profileName: name)
+        let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })
+        let name = profile?.name ?? "Codex"
+        let cause = Self.reloginGuidance(
+            profileOwnsDefaultHome: ProfileStore.shared.loadActiveCodexProfileId() == profileId,
+            profileAccountId: profile.flatMap { self.accountId(of: $0) },
+            defaultHomeAccountId: readAuthFile().flatMap { self.extractAccountId(from: $0) }
+        )
+        NotificationManager.shared.sendCodexReloginNotification(profileName: name, cause: cause)
+    }
+
+    /// Why a Codex login died — the two cases need DIFFERENT instructions.
+    enum ReloginCause: Equatable {
+        /// This profile owned the default `~/.codex/auth.json` and that file no
+        /// longer holds its account: a `codex login` (or `codex logout`) ran
+        /// there and revoked it server-side. Repeating that login in the same
+        /// home would revoke the NEXT account too, so the advice is the
+        /// isolated-home one.
+        case defaultHomeClobbered
+        /// No evidence that the default home took this login out — the generic
+        /// re-login advice.
+        case unknown
+    }
+
+    /// Classifies a dead login against the account the default home currently
+    /// holds. Scoped to the profile the app believes OWNS that file: a
+    /// background profile's account legitimately differs from whatever is in
+    /// `~/.codex`, so a mismatch there says nothing. Pure, so the branch is
+    /// testable without a filesystem.
+    nonisolated static func reloginGuidance(
+        profileOwnsDefaultHome: Bool,
+        profileAccountId: String?,
+        defaultHomeAccountId: String?
+    ) -> ReloginCause {
+        guard profileOwnsDefaultHome,
+              let profileAccountId, !profileAccountId.isEmpty else { return .unknown }
+        guard let defaultHomeAccountId, !defaultHomeAccountId.isEmpty else {
+            // The file vanished under the owner — `codex logout`, or a login
+            // that cleared it and has not written the new one yet.
+            return .defaultHomeClobbered
+        }
+        return profileAccountId == defaultHomeAccountId ? .unknown : .defaultHomeClobbered
     }
 
     // MARK: - Measured Liveness
@@ -865,6 +1051,7 @@ enum CodexError: LocalizedError {
     case invalidJSON
     case tokenRefreshFailed(status: Int, errorCode: String?)
     case accountAlreadySynced(profileName: String)
+    case noCredentialsInHome(path: String)
 
     var errorDescription: String? {
         switch self {
@@ -881,6 +1068,8 @@ enum CodexError: LocalizedError {
             return "Failed to refresh the Codex OAuth token (HTTP \(status)\(detail)). Please re-sync your Codex account."
         case .accountAlreadySynced(let profileName):
             return "This Codex account is already synced to the profile \u{201C}\(profileName)\u{201D}. Remove it there first, or log into a different Codex account with `codex login` before syncing here."
+        case .noCredentialsInHome(let path):
+            return "No readable Codex login at \(path). Log the account in under that home first: CODEX_HOME=<folder> codex login"
         }
     }
 }

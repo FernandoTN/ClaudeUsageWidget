@@ -426,10 +426,20 @@ class NotificationManager {
 
     /// Alerts that a profile's saved Codex refresh token was revoked and the account
     /// needs `codex login` + a re-sync (the app cannot repair a revoked token itself).
-    func sendCodexReloginNotification(profileName: String) {
+    /// `cause` picks the instruction: a login revoked by a `codex login` in the
+    /// DEFAULT home must not be repaired by another `codex login` there — that
+    /// revokes the next account too. Those users are pointed at an isolated home
+    /// plus Import instead.
+    func sendCodexReloginNotification(
+        profileName: String,
+        cause: CodexUsageService.ReloginCause = .unknown
+    ) {
         let content = UNMutableNotificationContent()
         content.title = "notification.codex_relogin.title".localized
-        content.body = "notification.codex_relogin.message".localized(with: profileName)
+        let messageKey = cause == .defaultHomeClobbered
+            ? "notification.codex_relogin.revoked_by_default_home"
+            : "notification.codex_relogin.message"
+        content.body = messageKey.localized(with: profileName)
         content.sound = .default
         content.categoryIdentifier = "INFO_ALERT"
 
