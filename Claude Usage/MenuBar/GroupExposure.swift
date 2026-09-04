@@ -10,14 +10,23 @@
 //  The legacy per-tile detector never ran for composite items (audit
 //  2026-09-03 H7), so an overflowed provider vanished silently.
 //
-//  The primary evidence is a SCREEN-POINT HIT TEST: the window under three
-//  points inside the item's button is asked for (`NSWindow.windowNumber(at:)`);
-//  an exposed item answers with its own window number. The composite's
-//  opaque event shape makes interior points resolve across the tile gaps.
-//  Frame-shape rules are secondary evidence; absent windows are "unknown",
-//  never "hidden". Verdicts are pure; the tracker applies hysteresis so one
-//  odd sample (a menu open over the bar, a display mid-change) cannot flip
-//  the state. Observe-only: this stage logs and feeds the dashboard banner.
+//  Evidence, in order of trust (field data 2026-09-03, macOS 27, build
+//  ead8c54): the WindowServer's answers first — `NSWindow.occlusionState`
+//  (`.visible` = some pixel of the window is on screen) and the on-screen
+//  window list (`CGWindowListCopyWindowInfo(.optionOnScreenOnly)`; an
+//  ordered-out window is absent). Frame-shape rules second: parked items
+//  were measured at y = −33, and a stub narrower than half the item length
+//  is the legacy parking signature. A SCREEN-POINT HIT TEST
+//  (`NSWindow.windowNumber(at:)`) is advisory only: a hit on the item's own
+//  window is proof, but a miss proves nothing — on macOS 27 the menu-bar
+//  host owns the event surface above third-party items, and every probe of
+//  every visibly-painted tile missed (`hits=000` for all three groups while
+//  the owner was clicking them). A frame with no height has not been laid
+//  out yet (the first paint after launch), which is unknown, not hidden.
+//  Absent windows are unknown, never hidden. Verdicts are pure; the tracker
+//  applies hysteresis so one odd sample (a menu open over the bar, a
+//  display mid-change) cannot flip the state. Observe-only: this stage logs
+//  and feeds the dashboard banner.
 //
 
 import CoreGraphics
@@ -30,11 +39,27 @@ enum GroupExposure {
         var frame: CGRect?
         var screenFrame: CGRect?
         var isVisible: Bool
+        /// `!occlusionState.contains(.visible)`: the WindowServer says no
+        /// pixel of the window is on screen.
         var occluded: Bool
+        /// Whether the window number is in the WindowServer's on-screen
+        /// list; nil when the list was not sampled.
+        var onScreen: Bool?
         /// `NSStatusItem.length` (the composite's fixed width).
         var length: CGFloat
         /// Per probe point: did the hit test resolve to the item's own window?
         var hits: [Bool]
+
+        init(frame: CGRect?, screenFrame: CGRect?, isVisible: Bool, occluded: Bool,
+             onScreen: Bool? = nil, length: CGFloat, hits: [Bool]) {
+            self.frame = frame
+            self.screenFrame = screenFrame
+            self.isVisible = isVisible
+            self.occluded = occluded
+            self.onScreen = onScreen
+            self.length = length
+            self.hits = hits
+        }
     }
 
     enum Verdict: Hashable {
@@ -51,23 +76,26 @@ enum GroupExposure {
 
     nonisolated static func verdict(_ o: Observation) -> Verdict {
         guard let frame = o.frame, let screen = o.screenFrame else { return .unknown }
-        // Positive proof first: a hit test that resolves to our own window
-        // means pixels of this item are on screen where we expect them.
+        // A hit test that resolves to our own window is proof: pixels of
+        // this item are on screen where we expect them. A miss proves nothing.
         if o.hits.contains(true) { return .exposed }
-        // Never laid out.
-        if frame.height < 2 { return .hidden }
+        // Not laid out yet (the first paint after launch reports h = 0).
+        if frame.height < 2 { return .unknown }
         // Off either edge of the screen, or parked below the bar band.
         if frame.maxX > screen.maxX + 4 || frame.minX < screen.minX - 4 { return .hidden }
         if frame.maxY < screen.maxY - barBand { return .hidden }
         // A stub: the window is far narrower than the item's fixed length.
         if o.length > 0, frame.width + 1 < o.length * 0.5 { return .hidden }
         if !o.isVisible { return .hidden }
-        // Plausible frame, but no probe ran (no screen at probe time).
-        if o.hits.isEmpty { return .unknown }
-        // Every probe resolved to some other window while the frame looks
-        // right: covered or overflow-hidden. The tracker's hysteresis
-        // absorbs a menu tracking session or a display mid-change.
-        return .hidden
+        // Ordered out: the WindowServer does not list the window on screen.
+        if o.onScreen == false { return .hidden }
+        // The WindowServer sees some pixel of it: exposed.
+        if !o.occluded { return .exposed }
+        // A plausible, ordered-in frame that the WindowServer reports fully
+        // occluded (a full-screen app hiding the bar, a covering window, or
+        // an overflow that keeps the frame): not confirmed either way until
+        // the field data says occlusion is trustworthy for status windows.
+        return .unknown
     }
 }
 
