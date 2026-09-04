@@ -36,7 +36,7 @@ B as specified still fails the strip. Changes, in priority order:
 
 `assembleComposites` pins `statusItem.length` so a repaint cannot relayout the bar (1296–1298, 1380–1384). The brief grows the active block from 24 pt idle to ~34 pt armed; the in-progress `FleetBlockGeometry.affixSlotWidth = 36` still adds that 36 pt **only while `armed`**. Arming is exactly when the bar is fullest and Codex is closest to clipping.
 
-**Do this instead:** always reserve the affix slot (active block is 24 + 36 = 60 pt whether idle or armed), **or** — better, cheaper — draw `›Mem✓` in the unused **label row of the fleet block**. Dots only occupy the top ~10 pt of a 22 pt tile (`createFleetDots`); the bottom 10 pt is empty today. That is ~60 pt of label space, no length jitter, no collision with the 3-letter active label.
+**Do this instead:** always reserve the affix slot (active block is 24 + 36 = 60 pt whether idle or armed), **or** — better, cheaper — draw `›Fjo✓` in the unused **label row of the fleet block**. Dots only occupy the top ~10 pt of a 22 pt tile (`createFleetDots`); the bottom 10 pt is empty today. That is ~60 pt of label space, no length jitter, no collision with the 3-letter active label.
 
 Idle → armed must not change `statusItem.length`. Verdict glyph flips (`·`/`✓`/`✕`) must not either.
 
@@ -87,7 +87,7 @@ Grok with one account: no fleet block. Correct.
 
 ### Option C
 
-Keep as a **paint style of the existing three items** (each group becomes `C  Rir 78·16 ●4 ▲11`, etc.), last rung, still three windows. Never `NSStatusBar.system.statusItem` create/destroy to fold them into one.
+Keep as a **paint style of the existing three items** (each group becomes `C  Atl 78·16 ●4 ▲11`, etc.), last rung, still three windows. Never `NSStatusBar.system.statusItem` create/destroy to fold them into one.
 
 ---
 
@@ -121,12 +121,12 @@ The in-progress `.excluded` (opt-out / free-plan CLI) is a good addition the bri
 
 | Case | Brief / current model | Reality |
 |---|---|---|
-| Suspected **active** account | Purple label on the active tile (good). Affix arms because `preflightMilestonePercentage` uses `effectiveSessionPercentage` (100). | Auto-switch **does not fire** (`autoSwitchTriggerUsage` strips the inferred stamp, `checkAutoSwitchIfNeeded` ~2932). The bar would say “the switch is coming → Mem” while the walk will not run. **Arm and `activeDigits` must key off `autoSwitchTriggerUsage` (measured), never `effectiveSessionPercentage`.** Digits of `100` on a suspected tile are a synthetic 100. |
+| Suspected **active** account | Purple label on the active tile (good). Affix arms because `preflightMilestonePercentage` uses `effectiveSessionPercentage` (100). | Auto-switch **does not fire** (`autoSwitchTriggerUsage` strips the inferred stamp, `checkAutoSwitchIfNeeded` ~2932). The bar would say “the switch is coming → Fjo” while the walk will not run. **Arm and `activeDigits` must key off `autoSwitchTriggerUsage` (measured), never `effectiveSessionPercentage`.** Digits of `100` on a suspected tile are a synthetic 100. |
 | Codex/Grok weekly-only | Session slot already shows weekly; `preflightMilestonePercentage` correctly keys weekly (H1 is fixed). Arming at 75 % weekly against a 99 % switch means the affix is up for a large fraction of the week. | Acceptable — that *is* the preflight window — but the affix must not imply a 5 h stall. Dashboard copy: “auto-switch at 99 % weekly”, not “at 95 %”. |
 | `unknown` as a valid switch target | `blocksSwitchTarget == false`; `hasSessionHeadroom` is `true` when `claudeUsage == nil`. | The walk may land on a never-fetched account. Keep the rule (the 180 s Claude re-fetch in the walk is the safety net) but **do not paint unknown as a green-adjacent filled grey** next to dead-hollow. |
 | Fable-maxed Claude | `isWeeklyMaxed` already includes Fable → `exhausted` / light-red label. Active tile **bars** still show session + all-models weekly, both possibly green. | Question 1 as the *auto-switch* asks it (“will a 99 % Fable fire a costly switch?”) is a red label on two green bars. The dashboard must show Fable as a first-class bar; the strip cannot, and should not grow a third bar. |
 
-### Affix (`›Mem✓`) — signal, if it does not move the item
+### Affix (`›Fjo✓`) — signal, if it does not move the item
 
 Question 2 is the second-most expensive wrong answer (dead login under the CLI; or a switch that never comes). The affix is the right channel. Changes:
 
@@ -135,7 +135,7 @@ Question 2 is the second-most expensive wrong answer (dead login under the CLI; 
 - **30 min TTL is wrong for weekly-only.** Codex 90 % → 99 % can be a day. TTL = “this keyed window” (until `preflightMilestoneBoundary`), not 1800 s. Claude 5 h windows can keep 30 min.
 - **`»` for queued** is worth the extra pixel. Do not drop it.
 - **`⇄` mid-switch** (in-progress) is good: a switch costs 10–15 % of every concurrent session and can last across a paint. Put it in the affix slot, do not add another channel.
-- Draw the 3-letter candidate in the verdict colour, the chevron in white. One colour for `›Mem✓` (current `createProviderSummaryTile`) makes a green `›Mem✓` look like Mem is active.
+- Draw the 3-letter candidate in the verdict colour, the chevron in white. One colour for `›Fjo✓` (current `createProviderSummaryTile`) makes a green `›Fjo✓` look like Fjo is active.
 
 Drop the trailing `·` for unverified — a grey chevron + name is enough. `·` at 8 pt is noise.
 
@@ -185,7 +185,7 @@ Do **not** sell “detach = dashboard window at zero cost” without noting: `de
 
 ### Wireframe problems (fix in Stage B, don’t paint them)
 
-- **380 pt is too narrow for the roster row as drawn** (`● Mem  bar 12  bar 70  Fable 99  Mon 09:41  ›`). Two-line rows: line 1 identity + chip + reset; line 2 the bars. Or drop Fable % from the row and keep it on the ACTIVE block + a red chip.
+- **380 pt is too narrow for the roster row as drawn** (`● Fjo  bar 12  bar 70  Fable 99  Mon 09:41  ›`). Two-line rows: line 1 identity + chip + reset; line 2 the bars. Or drop Fable % from the row and keep it on the ACTIVE block + a red chip.
 - **Provider tabs hide the fleet.** The point of a *fleet* board is all three groups. **Stacked sections with sticky headers**, default-scroll to the clicked provider. Tabs are a second click to see Codex while you are on Claude — the opposite of “one click away.”
 - **`NavigationStack` inside an `NSPopover` with a fixed `contentSize`.** Today’s popover is a single `PopoverContentView` sized 320×600. Pushing the classic view as a destination will not resize the popover; it will clip or scroll badly. Stage B should be an enum on one view (`roster` / `account(id)`), not a NavigationLink into the current body.
 - **`createContentViewController() -> NSHostingController<PopoverContentView>`** (~593) cannot grow a `DashboardView` without a type eraser (`NSViewController` / `AnyView`). Budget for that in the Stage B line count.
@@ -334,14 +334,14 @@ H7’s “wrap into a second Codex item” is also a create. Reject it.
 
 | Rank | Item | Why | Effort |
 |---|---|---|---|
-| 1 | **`NSStatusBarButton.toolTip` and `accessibilityTitle` per group.** The brief says “dot tooltip is not possible.” Per-dot is not; **per-item is** (`button.toolTip = "Claude: Rir 78 % → Mem verified. 4 ready, 12 exhausted, 1 dead"`). VoiceOver today gets a nameless image. Highest-value line of Stage A after the dots themselves. | S |
+| 1 | **`NSStatusBarButton.toolTip` and `accessibilityTitle` per group.** The brief says “dot tooltip is not possible.” Per-dot is not; **per-item is** (`button.toolTip = "Claude: Atl 78 % → Fjo verified. 4 ready, 12 exhausted, 1 dead"`). VoiceOver today gets a nameless image. Highest-value line of Stage A after the dots themselves. | S |
 | 2 | **Arm / digits on measured usage** (`autoSwitchTriggerUsage`), never `effectiveSessionPercentage`. Otherwise the bar prints a synthetic 100 and announces a switch the walk will not do. | S |
 | 3 | **Affix width always reserved, or affix in the fleet label row.** Length jitter at 75 % is an overflow bug. | S |
 | 4 | **Right-aligned / column-major dots; weekly-only = one row.** Otherwise “rightmost = next to burn” is a lie the first time Claude has >10 others, i.e. today. | S |
 | 5 | **`groupPaintOrder` vs `groupSegments`.** Without it Stage A breaks the popover navigator the tests exist to protect. | S |
 | 6 | **`›—` even when not armed**, if eligible others = 0. Live Codex is this shape. | S |
 | 7 | **Fable bar on the dashboard ACTIVE block; weekly-only rows without a fake session bar.** The strip cannot show Fable; the click-away surface must. | M |
-| 8 | **Right-click / long-press menu on the group item:** “Switch to Mem (costs ~10–15 % of running sessions)”, “Open dashboard”, “Open Settings”. The expensive action should not require parsing a 380 pt board. `NSStatusItem.menu` is the AppKit seam; watch the same-button-dismiss interaction. | M |
+| 8 | **Right-click / long-press menu on the group item:** “Switch to Fjo (costs ~10–15 % of running sessions)”, “Open dashboard”, “Open Settings”. The expensive action should not require parsing a 380 pt board. `NSStatusItem.menu` is the AppKit seam; watch the same-button-dismiss interaction. | M |
 | 9 | **Confirm of “Make active…” must go through `activateProfileDetailed`** and show `credentialsRefused` as “login dead — /login then Sync”, not a silent stay. | M |
 | 10 | **Header-rescue and suspected provenance on the dashboard.** | M |
 | 11 | **Manual-pin and opt-out chips.** Otherwise the dashboard disagrees with the next sweep. | M |

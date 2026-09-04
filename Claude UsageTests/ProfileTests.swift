@@ -77,8 +77,8 @@ final class ProfileTests: XCTestCase {
     }
 
     func testUnhydratedCodexProfileClassifiesByMetadata() {
-        XCTAssertEqual(Profile(name: "Cod", codexEmail: "c@x.com").providerKind, .codex)
-        XCTAssertEqual(Profile(name: "Cod", codexAccountSyncedAt: Date()).providerKind, .codex)
+        XCTAssertEqual(Profile(name: "Kestrel", codexEmail: "c@x.com").providerKind, .codex)
+        XCTAssertEqual(Profile(name: "Kestrel", codexAccountSyncedAt: Date()).providerKind, .codex)
     }
 
     func testUnhydratedClaudeProfileStaysInClaudePartition() {

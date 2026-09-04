@@ -300,7 +300,7 @@ tokens in place is the repair, and creating a second profile beside it would
 leave an empty or broken one to clean up; only a profile holding a WORKING
 account sends the login to a new profile named by a typed label. The isolated
 home is the profile's remembered `codexHomePath` when it has one, else one named
-after the profile (`loginHome` — `xFenrir(dev)` → `~/.codex-accounts/xfenrir-dev`);
+after the profile (`loginHome` — `Juniper (dev)` → `~/.codex-accounts/juniper-dev`);
 reusing it revokes only that profile's own dead grant, and a remembered path
 equal to the default home is refused rather than reused. The duplicate guard runs
 BEFORE any profile is created and excludes the destination, so re-logging the
@@ -472,7 +472,7 @@ through two detectors:
     red > suspected purple > active cyan) and the popover explains; a fake
     100% caused a costly manual switch (~10-15% of every concurrent session's
     quota re-reading context), while a FROZEN measured value under-reported
-    ('Commits' displayed 67% for 22 blind minutes at a real 100%,
+    ('Harbor' displayed 67% for 22 blind minutes at a real 100%,
     2026-08-12). `projectSessionPercentage` extrapolates from the last
     measured samples (needs ≥2 points ≥25s apart, rising ≥0.2pp/min, same
     session window; clamps at 100); the ACTIVE account's projection crossing
@@ -504,13 +504,13 @@ hour): `registerBurstBackoff` backs that profile's usage fetch off
 exponentially (2min doubling to an 8min cap for background profiles;
 the ACTIVE account retries EVERY SWEEP — 30s cap — because its usage moves
 fastest exactly when the shared IP is busiest, and exhausted accounts DO
-answer usage reads ('Memori' returned 200 at a real 100%), so reading
+answer usage reads ('Fjord' returned 200 at a real 100%), so reading
 through the noise is safe; in-memory, cleared by the first successful
 fetch; a manual popover refresh expires the wait but keeps the streak).
 
 **Blind active account → Messages-API header rescue (2026-08-13 incident)**:
-retrying `oauth/usage` through the 429 noise is not enough. 'BBR'
-(06:36→06:59) and 'Outlook' (12:41→13:40) were burned from a fresh window to
+retrying `oauth/usage` through the 429 noise is not enough. 'Iris'
+(06:36→06:59) and 'Kite' (12:41→13:40) were burned from a fresh window to
 a hard 100% session limit by ~30 parallel CLI sessions while the widget's
 gating number for those accounts never even reached the 25% preflight
 milestone (log-proven: not one `Preflight[…]`/`AutoSwitch:` line in the 6

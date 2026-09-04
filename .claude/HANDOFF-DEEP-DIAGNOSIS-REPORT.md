@@ -438,13 +438,13 @@ Every finding from the composite council round was traced to code on the branch 
 - Scene census (heap, mid-soak): **9 NSStatusBarWindows** (3 group items x 3 variant
   scenes - structural) and **13 CAContexts**, flat; one documented post-hydration
   rebuild at launch (1 -> 3 group items).
-- App-level errors: only one expected `Rate limit exceeded` for profile 'BBR' (the
+- App-level errors: only one expected `Rate limit exceeded` for profile 'Iris' (the
   429 burst-backoff path doing its job); everything else in the stream was OS-daemon
   noise.
 - Deployed-bar screenshot: group order Codex -> Grok -> Claude left-to-right (Claude
   rightmost per policy); within-group order is the exact REVERSE of the addendum-5
-  build that was running - Claude reads `201 jsk Sta BBR Goo Com 202 Mem Out Ai Las`
-  (rightmost = soonest weekly reset), Codex reads `Cod | Dex`. All 11 Claude tiles
+  build that was running - Claude reads `Qua Del Gra Iri Bea Har Rid Fjo Kit Ech Sum`
+  (rightmost = soonest weekly reset), Codex reads `Kes | Osp`. All 11 Claude tiles
   visible, no overflow clipping at deployment time. Active-account cyan labels render.
 - No clicks occurred during the soak (owner away), so popover click-routing and the
   group navigator remain compile/logic/lab-verified only - they head the
@@ -478,7 +478,7 @@ Every finding from the composite council round was traced to code on the branch 
 ## Addendum 8 — composite-click misroute ROOT-CAUSED and fixed; group re-click dismisses (2026-07-30, Fable sibling 3)
 
 Mission: resolve the owner's two morning reports on the deployed PR #23 build —
-S1 "Google is active but if I click it, it now opens Commits" and S2 "if a group
+S1 "Beacon is active but if I click it, it now opens Harbor" and S2 "if a group
 is open and I click again on the group, it should close it" — from first
 principles, without inheriting the prior sessions' hypotheses.
 
@@ -495,9 +495,9 @@ built on:
 - 148 == compositeWidth/2. The Claude group had 11 selected tiles ≈ 26.9pt each
   (~296pt total). Reconstructing the paint order from the owner's live
   `profiles_v3` (soonest weekly reset rightmost) gives left→right:
-  2010, jskxkxjssh, Stanford, BBR, Google, **Commits**, 2026, Memori, Outlook,
-  Ai, Last. The button's CENTER (5.5 tile-widths) falls in tile index 5 —
-  **'Commits'**. Every click "opened Commits" because every click was resolved
+  Quarry, Delta, Granite, Iris, Beacon, **Harbor**, Ridge, Fjord, Kite,
+  Echo, Summit. The button's CENTER (5.5 tile-widths) falls in tile index 5 —
+  **'Harbor'**. Every click "opened Harbor" because every click was resolved
   at the button's center, regardless of where the owner clicked.
 - WHY the event lies: each production click is immediately preceded in the log by
   FrontBoard delivering **`NSMenuBarNavigateAction` to
@@ -575,11 +575,11 @@ built on:
 - Lab (this branch, `com.claudeusagewidget.lab2`, CUW_LAB_TILES=11 + CLICKPROBE):
   static mapping still exact and contiguous —
   `ClickProbe sweep claude: width=199 Lab Claude 8[0-25] … Lab Claude 1[176-199]`,
-  grok `[0-24]`, codex `Cod 2[0-25] Cod 1[26-49]`. The probe now also logs the
+  grok `[0-24]`, codex `Kes 2[0-25] Kes 1[26-49]`. The probe now also logs the
   pointer-based pipeline (`pointerX=…→name`) next to the legacy event-based one, so
   the next real lab click shows both side by side.
 - The reconstruction was cross-checked against addendum 7's deployed-bar screenshot:
-  `201 jsk Sta BBR Goo Com 202 Mem Out Ai Las` — 'Com' is tile 6 of 11, dead center,
+  `Qua Del Gra Iri Bea Har Rid Fjo Kit Ech Sum` — 'Har' is tile 6 of 11, dead center,
   exactly where a synthesized-center event resolves.
 
 ### Merge + deployment
@@ -615,8 +615,8 @@ built on:
 
 ### Hand-validation list for the owner (2 minutes)
 
-1. Click the GOOGLE tile (or any specific tile) — the popover must open on that
-   account, not 'Commits'. Try left/middle/right tiles of the Claude group.
+1. Click the BEACON tile (or any specific tile) — the popover must open on that
+   account, not 'Harbor'. Try left/middle/right tiles of the Claude group.
 2. With a group's popover open, click that group again — it must CLOSE (owner spec:
    same-group click = dismiss; switching accounts with the popover open is the
    navigator's ‹ › job).
@@ -637,9 +637,9 @@ built on:
 ### Addendum 8.1 — live falsification of the swallow-arming gate; PR #24 (2026-07-30, ~13:15)
 
 The owner's hand-validation confirmed HALF of addendum 8: the misroute is fixed —
-the live trace shows rawX varying per click and resolving correctly (123→Google,
-14→2010, 190→Memori, 39→jskxkxjssh, 94→BBR…). But every same-tile re-click still
-closed AND re-opened (owner report; trace 13:06:41→13:06:45 'Google' pair with no
+the live trace shows rawX varying per click and resolving correctly (123→Beacon,
+14→Quarry, 190→Fjord, 39→Delta, 94→Iris…). But every same-tile re-click still
+closed AND re-opened (owner report; trace 13:06:41→13:06:45 'Beacon' pair with no
 dismiss/swallow lines).
 
 Diagnosis from the trace: at action time the popover was already auto-closed and
@@ -804,9 +804,9 @@ correlator. The skeptic's 2x2 design is in the workflow archive.
    from future storm data. Main thread sampled HEALTHY throughout — the lag
    is OS event delivery, not app handling.
 2. **"Doesn't update" was mostly correct behavior + one real defect.**
-   Outlook's 429 cadence is the burst backoff working as designed (usage at
-   most ~3min stale, verified live at 93%/fresh); Cod's 503s are server-side.
-   The defect: profile 'Ai' holds a CLI login whose refresh token is REVOKED
+   Kite's 429 cadence is the burst backoff working as designed (usage at
+   most ~3min stale, verified live at 93%/fresh); Kestrel's 503s are server-side.
+   The defect: profile 'Echo' holds a CLI login whose refresh token is REVOKED
    (dead-flagged) — it passed the sweep filter (expired-with-refresh counts
    as usable by design), burned a background-rotation slot + threw a
    misleading "Missing credentials" error every ~5min for SIX DAYS, painting
@@ -826,7 +826,7 @@ clicks (the dominant wedge-mode click) lose their per-group provider anchor.
 Free experiment first if ever revisited: deselect Grok+Codex for one storm
 episode = 1 item/3 scenes with zero code. Follow-up candidates left open:
 tile-level staleness cue (~15min threshold); session-key-only profiles would
-reproduce the 'Ai' loop (fetch path never consults claudeSessionKey — latent,
+reproduce the 'Echo' loop (fetch path never consults claudeSessionKey — latent,
 no such profile exists today).
 
 ## Addendum 12 (2026-08-07) — the 6h notification floor over-suppressed; hybrid policy (45-min floor + 20-min cumulative override); display-wake gating discovered
@@ -872,7 +872,7 @@ Dead-login sweep-skip line promoted to .default (the .info blind spot:
 
 **22h build-health verification (all of yesterday's fixes)**: coalescer
 zero false suppressions (and zero bursts to suppress — multi-delivery
-didn't recur); 'Ai' SELF-HEALED at 00:45 (successful token refresh —
+didn't recur); 'Echo' SELF-HEALED at 00:45 (successful token refresh —
 dead-flag cleared by design) and its error loop is gone; popover cycles
 textbook; zero window accretion (every census exactly NSStatusBarWindow×9);
 zero composite rebuilds. Repaint-cadence lever assessed and REJECTED:
@@ -907,7 +907,7 @@ re-forming? 4-agent workflow verdict:
   48-96% CPU during live episodes.
 - **Ten victim hosts log-verified at tonight's 20:41 ignition** (zero
   interaction, 12s after display-on): MenuBarAgent, ControlCenter,
-  ChatGPTHelper, Wispr Flow, Tailscale, Granola ×2, Google Drive,
+  ChatGPTHelper, Wispr Flow, Tailscale, Granola ×2, Beacon Drive,
   GeminiAppLauncher, Docker Desktop + this app. Reusable Apple-triage
   fingerprint: "synchronize timed out for 675cdf6a" (same CA context id,
   10:15-20:20).

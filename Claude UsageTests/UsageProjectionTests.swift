@@ -4,7 +4,7 @@
 //
 //  Tests for the suspected-state burn-rate projection — the honest answer to
 //  "the tile said 67% while my sessions hit the hard limit" (2026-08-12:
-//  'Commits' sat 22 min blind behind burst 429s while parallel sessions
+//  'Harbor' sat 22 min blind behind burst 429s while parallel sessions
 //  burned it 67%→100%). While reads fail, the display advances along the
 //  MEASURED burn rate instead of freezing; it must never invent motion for
 //  idle accounts, never survive a session-window rollover, and never exceed
@@ -37,7 +37,7 @@ final class UsageProjectionTests: XCTestCase {
     }
 
     func testProjectionClampsAtHundred() {
-        // The Commits shape: fast burn, long blindness — the estimate parks
+        // The Harbor shape: fast burn, long blindness — the estimate parks
         // at 100, it does not run past it.
         let projected = MenuBarManager.projectSessionPercentage(
             history: history([(1500, 60), (1320, 67)]),

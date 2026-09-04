@@ -80,49 +80,49 @@ final class ActiveSelectorMenuTests: XCTestCase {
     // MARK: - Frame 1: healthy
 
     func testHealthyFrameHasHeaderOwnerEvidenceActionsAndFooter() {
-        let owner = claude("dRir", usage(session: 78, weekly: 16, fable: 16, age: 28))
-        let next = claude("dJormun", usage(session: 12, weekly: 70, fable: 90, age: 180, weeklyResetIn: 86400))
-        let other = claude("Memori", usage(session: 40, weekly: 55))
-        let maxed = claude("Commits", usage(session: 10, weekly: 99.5))
+        let owner = claude("Atlas", usage(session: 78, weekly: 16, fable: 16, age: 28))
+        let next = claude("Cedar", usage(session: 12, weekly: 70, fable: 90, age: 180, weeklyResetIn: 86400))
+        let other = claude("Fjord", usage(session: 40, weekly: 55))
+        let maxed = claude("Harbor", usage(session: 10, weekly: 99.5))
         let probedAt = now.addingTimeInterval(-720)
         let sel = selections([owner, next, other, maxed], active: [owner.id],
-                             next: [.claude: PredictedCandidate(id: next.id, label: "dJo", queued: false, queueHeadBlocked: false)],
+                             next: [.claude: PredictedCandidate(id: next.id, label: "Ced", queued: false, queueHeadBlocked: false)],
                              verdicts: [next.id: PreflightVerdict(isLive: true, at: probedAt, kind: .probed)])
         let out = rows(sel)
 
         XCTAssertEqual(out[0].kind, .header)
         XCTAssertEqual(out[0].title, "ACTIVE FOR CLAUDE")
         let ownerRow = out[1]
-        XCTAssertEqual(ownerRow.title, "dRir")
+        XCTAssertEqual(ownerRow.title, "Atlas")
         XCTAssertEqual(ownerRow.glyphTint, .cyan)
         XCTAssertTrue(ownerRow.detail?.contains("S 78 · W 16 · F 16") == true, ownerRow.detail ?? "")
         XCTAssertTrue(ownerRow.detail?.contains("measured 28 s ago") == true, "provenance + age on the owner row")
         XCTAssertFalse(ownerRow.enabled)
 
         let evidence = out[2]
-        XCTAssertEqual(evidence.title, "next → dJormun")
+        XCTAssertEqual(evidence.title, "next → Cedar")
         XCTAssertTrue(evidence.detail?.contains("ranked · ✓ verified 12 m ago · headroom 3 m ago") == true, evidence.detail ?? "")
         XCTAssertEqual(out[3].kind, .separator, "status above, actions below (S3)")
 
-        let switchNext = out.first { $0.title == "Switch Claude to next (dJormun)…" }!
+        let switchNext = out.first { $0.title == "Switch Claude to next (Cedar)…" }!
         XCTAssertEqual(switchNext.action, .switchTo(next.id, .claude))
         XCTAssertTrue(switchNext.enabled)
         XCTAssertTrue(switchNext.isPrimary, "the one action a user reaches for first is bold")
 
         let submenu = out.first { $0.title == "Switch Claude to" }!
-        XCTAssertEqual(titles(submenu.submenu), ["dJormun", "Memori", "", "Commits"], "eligible, separator, blocked")
+        XCTAssertEqual(titles(submenu.submenu), ["Cedar", "Fjord", "", "Harbor"], "eligible, separator, blocked")
         if let blocked = submenu.submenu.last {
             XCTAssertFalse(blocked.enabled)
             XCTAssertTrue(blocked.detail?.hasPrefix("weekly maxed") == true, blocked.detail ?? "")
         }
 
         let queue = out.first { $0.title == "Queue next" }!
-        XCTAssertEqual(titles(queue.submenu), ["dJormun", "Memori"])
+        XCTAssertEqual(titles(queue.submenu), ["Cedar", "Fjord"])
     }
 
     func testFooterOrderAndNoCountsSentenceWhenHealthy() {
-        let owner = claude("dRir", usage(session: 78))
-        let other = claude("dJormun", usage(session: 12))
+        let owner = claude("Atlas", usage(session: 78))
+        let other = claude("Cedar", usage(session: 12))
         let out = rows(selections([owner, other], active: [owner.id], next: predicted(other)))
         XCTAssertEqual(Array(titles(out).suffix(6)),
                        ["", "Auto-switch · 95 % session / 99 % weekly", "Active & Auto-switch…", "Accounts…", "Dashboard…", "Token usage…"])
@@ -133,26 +133,26 @@ final class ActiveSelectorMenuTests: XCTestCase {
     }
 
     func testEligibleRowCarriesAnOptionAlternateThatQueues() {
-        let owner = claude("dRir", usage(session: 78))
-        let other = claude("dJormun", usage(session: 12))
+        let owner = claude("Atlas", usage(session: 78))
+        let other = claude("Cedar", usage(session: 12))
         let out = rows(selections([owner, other], active: [owner.id], next: predicted(other)))
         let submenu = out.first { $0.title == "Switch Claude to" }!
         let row = submenu.submenu[0]
         XCTAssertEqual(row.action, .switchTo(other.id, .claude))
-        XCTAssertEqual(row.alternate?.title, "Queue dJormun next")
+        XCTAssertEqual(row.alternate?.title, "Queue Cedar next")
         XCTAssertEqual(row.alternate?.action, .queueNext(other.id))
     }
 
     // MARK: - Frame 2: no candidate, dead logins
 
     func testNoCandidateFrameShowsRedEvidenceCountsAndRepair() {
-        let owner = codex("xFernando", usage(weekly: 95, sessionWindow: false))
-        let dead1 = codex("xFenrir", usage(weekly: 10, sessionWindow: false))
-        let dead2 = codex("xFho", usage(weekly: 10, sessionWindow: false))
-        let maxed = codex("xFme", usage(weekly: 99.5, sessionWindow: false))
+        let owner = codex("Marlin", usage(weekly: 95, sessionWindow: false))
+        let dead1 = codex("Juniper", usage(weekly: 10, sessionWindow: false))
+        let dead2 = codex("Petrel", usage(weekly: 10, sessionWindow: false))
+        let maxed = codex("Tern", usage(weekly: 99.5, sessionWindow: false))
         let sel = selections([owner, dead1, dead2, maxed], active: [owner.id], dead: [dead1.id, dead2.id])
         let out = rows(sel)
-        let owners = out.first { $0.title == "xFernando" }!
+        let owners = out.first { $0.title == "Marlin" }!
         XCTAssertTrue(owners.detail?.contains("W 95 · fires at 99 %") == true, owners.detail ?? "")
         XCTAssertTrue(titles(out).contains("4 accounts · 1 eligible · 2 dead"), "one line (S2): " + titles(out).joined(separator: " | "))
         let evidence = out.first { $0.glyph == "→" }!
@@ -165,12 +165,12 @@ final class ActiveSelectorMenuTests: XCTestCase {
     }
 
     func testDeadCandidateRowIsEnabledAsARepair() {
-        let owner = claude("dRir", usage(session: 78))
-        let ok = claude("dJormun", usage(session: 12))
-        let dead = claude("Ai", usage(session: 20))
+        let owner = claude("Atlas", usage(session: 78))
+        let ok = claude("Cedar", usage(session: 12))
+        let dead = claude("Echo", usage(session: 20))
         let out = rows(selections([owner, ok, dead], active: [owner.id], dead: [dead.id]))
         let submenu = out.first { $0.title == "Switch Claude to" }!
-        let deadRow = submenu.submenu.first { $0.title == "Ai" }!
+        let deadRow = submenu.submenu.first { $0.title == "Echo" }!
         XCTAssertTrue(deadRow.enabled)
         XCTAssertEqual(deadRow.action, .repairDead(dead.id, .claude))
         XCTAssertEqual(deadRow.detail, "login dead — Repair…")
@@ -180,8 +180,8 @@ final class ActiveSelectorMenuTests: XCTestCase {
 
     func testSingleAccountAndNoOwnerRows() {
         let sole = grok("Grok", usage(weekly: 12, sessionWindow: false))
-        let a = claude("dRir", usage(session: 10))
-        let b = claude("dJormun", usage(session: 12))
+        let a = claude("Atlas", usage(session: 10))
+        let b = claude("Cedar", usage(session: 12))
         let out = rows(selections([a, b, sole], active: [sole.id]))
         XCTAssertEqual(out[1].title, "No active Claude login chosen")
         XCTAssertTrue(titles(out).contains("Switch Claude to"))
@@ -193,8 +193,8 @@ final class ActiveSelectorMenuTests: XCTestCase {
     func testSuspectedOwnerShowsLastMeasuredAndPurpleBadge() {
         var u = usage(session: 74, weekly: 30, age: 720, suspected: true)
         u.projectedSessionPercentage = 81
-        let owner = claude("Outlook", u)
-        let other = claude("dJormun", usage(session: 12))
+        let owner = claude("Kite", u)
+        let other = claude("Cedar", usage(session: 12))
         let sel = selections([owner, other], active: [owner.id], next: predicted(other))
         let ownerRow = rows(sel)[1]
         XCTAssertEqual(ownerRow.titleTint, .purple)
@@ -204,8 +204,8 @@ final class ActiveSelectorMenuTests: XCTestCase {
     }
 
     func testDegradedBannerComesFirstAndSwitchingDisablesActions() {
-        let owner = claude("dRir", usage(session: 78))
-        let other = claude("dJormun", usage(session: 12))
+        let owner = claude("Atlas", usage(session: 78))
+        let other = claude("Cedar", usage(session: 12))
         let sel = selections([owner, other], active: [owner.id], next: predicted(other), switching: true)
         let out = rows(sel, degraded: true)
         XCTAssertEqual(out[0].kind, .banner)
@@ -217,10 +217,10 @@ final class ActiveSelectorMenuTests: XCTestCase {
     }
 
     func testExternalChangeRowAndResetsRow() {
-        let owner = codex("xFernando", usage(weekly: 40, sessionWindow: false, resets: 2))
-        let other = codex("xFho", usage(weekly: 10, sessionWindow: false))
-        let out = rows(selections([owner, other], active: [owner.id], next: predicted(other)), external: [.codex: "xFme"])
-        XCTAssertEqual(out[2].title, "Active for Codex changed outside the app: now xFme")
+        let owner = codex("Marlin", usage(weekly: 40, sessionWindow: false, resets: 2))
+        let other = codex("Petrel", usage(weekly: 10, sessionWindow: false))
+        let out = rows(selections([owner, other], active: [owner.id], next: predicted(other)), external: [.codex: "Tern"])
+        XCTAssertEqual(out[2].title, "Active for Codex changed outside the app: now Tern")
         XCTAssertEqual(out[2].titleTint, .cyan)
         XCTAssertEqual(out[3].title, "Usage limit resets: 2 available")
         let none = rows(selections([codex("a", usage(weekly: 40, sessionWindow: false)), other], active: []))
@@ -228,13 +228,13 @@ final class ActiveSelectorMenuTests: XCTestCase {
     }
 
     func testBadgePrecedenceRedOverPurpleOverAmber() {
-        let suspected = claude("Outlook", usage(session: 74, suspected: true))
-        let deadOwner = codex("xFernando", usage(weekly: 40, sessionWindow: false))
-        let other = codex("xFho", usage(weekly: 10, sessionWindow: false))
-        let sel = selections([suspected, claude("dJormun", usage(session: 12)), deadOwner, other],
+        let suspected = claude("Kite", usage(session: 74, suspected: true))
+        let deadOwner = codex("Marlin", usage(weekly: 40, sessionWindow: false))
+        let other = codex("Petrel", usage(weekly: 10, sessionWindow: false))
+        let sel = selections([suspected, claude("Cedar", usage(session: 12)), deadOwner, other],
                              active: [suspected.id, deadOwner.id], dead: [deadOwner.id])
         XCTAssertEqual(Model.badge(selections: sel, preferencesDegraded: true), .red)
-        let a = claude("dRir", usage(session: 10)), b = claude("dJormun", usage(session: 12))
+        let a = claude("Atlas", usage(session: 10)), b = claude("Cedar", usage(session: 12))
         let healthy = selections([a, b], active: [a.id], next: predicted(b))
         XCTAssertNil(Model.badge(selections: healthy, preferencesDegraded: false))
     }
@@ -242,13 +242,13 @@ final class ActiveSelectorMenuTests: XCTestCase {
     // MARK: - Frame 0: tooltip
 
     func testTooltipNamesEveryOwnerAndTheFleetCounts() {
-        let owner = claude("dRir", usage(session: 78), account: "a")
-        let twin = claude("Google", usage(session: 78), account: "a")
-        let dead = claude("Ai", usage(session: 5))
-        let codexOwner = codex("xFernando", usage(weekly: 95, sessionWindow: false))
+        let owner = claude("Atlas", usage(session: 78), account: "a")
+        let twin = claude("Beacon", usage(session: 78), account: "a")
+        let dead = claude("Echo", usage(session: 5))
+        let codexOwner = codex("Marlin", usage(weekly: 95, sessionWindow: false))
         let sel = selections([owner, twin, dead, codexOwner], active: [owner.id, codexOwner.id], dead: [dead.id])
         let tooltip = Model.tooltip(selections: sel)
-        XCTAssertTrue(tooltip.hasPrefix("Active: Claude dRir 78 % · Codex xFernando 95 % — 4 profiles / 3 accounts · 1 dead · 2 duplicate rows"), tooltip)
+        XCTAssertTrue(tooltip.hasPrefix("Active: Claude Atlas 78 % · Codex Marlin 95 % — 4 profiles / 3 accounts · 1 dead · 2 duplicate rows"), tooltip)
         XCTAssertTrue(tooltip.hasSuffix(DesignLegend.line), "the shared legend rides on the tooltip (S7/G2)")
         XCTAssertTrue(Model.tooltip(selections: sel, badge: .red).hasPrefix("Needs attention"), "badge meaning first (I2)")
     }
@@ -256,26 +256,26 @@ final class ActiveSelectorMenuTests: XCTestCase {
     // MARK: - Frame 9: confirmation
 
     func testConfirmationStatesTheCostTheEvidenceAndWhatTheOwnerKeeps() {
-        let owner = claude("dRir", usage(session: 78, weekly: 16))
-        let next = claude("dJormun", usage(session: 12, weekly: 70, fable: 99))
+        let owner = claude("Atlas", usage(session: 78, weekly: 16))
+        let next = claude("Cedar", usage(session: 12, weekly: 70, fable: 99))
         let sel = selections([owner, next], active: [owner.id],
                              verdicts: [next.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-720), kind: .probed)])[0]
         let candidate = sel.candidates[0]
         let c = Model.confirmation(provider: .claude, candidate: candidate, owner: sel.owner, now: now)
-        XCTAssertEqual(c.title, "Switch the Claude Code login to dJormun?")
-        XCTAssertTrue(c.body.hasPrefix("From dRir (78 % session · resets in"), "both sides named first: " + c.body)
-        XCTAssertTrue(c.body.contains(") to dJormun (12 % session · resets in"), c.body)
-        XCTAssertTrue(c.body.contains("Every running Claude Code session re-reads its context on the new account (≈10–15 % of dJormun's window)."), c.body)
-        XCTAssertTrue(c.body.contains("dJormun: S 12 % · W 70 % · F 99 % — login verified 12 m ago."), c.body)
-        XCTAssertTrue(c.body.contains("dRir keeps 22 % of its session for another"), c.body)
+        XCTAssertEqual(c.title, "Switch the Claude Code login to Cedar?")
+        XCTAssertTrue(c.body.hasPrefix("From Atlas (78 % session · resets in"), "both sides named first: " + c.body)
+        XCTAssertTrue(c.body.contains(") to Cedar (12 % session · resets in"), c.body)
+        XCTAssertTrue(c.body.contains("Every running Claude Code session re-reads its context on the new account (≈10–15 % of Cedar's window)."), c.body)
+        XCTAssertTrue(c.body.contains("Cedar: S 12 % · W 70 % · F 99 % — login verified 12 m ago."), c.body)
+        XCTAssertTrue(c.body.contains("Atlas keeps 22 % of its session for another"), c.body)
         XCTAssertFalse(c.risky)
         XCTAssertTrue(c.switchAllowed)
         XCTAssertEqual(c.confirmButton, "Switch now")
     }
 
     func testConfirmationForADeadCandidateDisablesTheSwitch() {
-        let owner = claude("dRir", usage(session: 78))
-        let dead = claude("Ai", usage(session: 20))
+        let owner = claude("Atlas", usage(session: 78))
+        let dead = claude("Echo", usage(session: 20))
         let sel = selections([owner, dead], active: [owner.id], dead: [dead.id])[0]
         let c = Model.confirmation(provider: .claude, candidate: sel.candidates[0], owner: sel.owner, now: now)
         XCTAssertFalse(c.switchAllowed, "a dead login never gets an enabled Switch button")
@@ -285,13 +285,13 @@ final class ActiveSelectorMenuTests: XCTestCase {
     }
 
     func testConfirmationForAnUnverifiedCandidateIsRisky() {
-        let owner = codex("xFernando", usage(weekly: 95, sessionWindow: false))
-        let next = codex("xFho", usage(weekly: 10, sessionWindow: false))
+        let owner = codex("Marlin", usage(weekly: 95, sessionWindow: false))
+        let next = codex("Petrel", usage(weekly: 10, sessionWindow: false))
         let sel = selections([owner, next], active: [owner.id])[0]
         let c = Model.confirmation(provider: .codex, candidate: sel.candidates[0], owner: sel.owner, now: now)
-        XCTAssertEqual(c.title, "Switch the Codex CLI login to xFho?")
+        XCTAssertEqual(c.title, "Switch the Codex CLI login to Petrel?")
         XCTAssertTrue(c.body.contains("its login has not been verified recently — the switch may be refused"), c.body)
-        XCTAssertTrue(c.body.contains("xFernando is at 95 % of its weekly window."), c.body)
+        XCTAssertTrue(c.body.contains("Marlin is at 95 % of its weekly window."), c.body)
         XCTAssertTrue(c.risky)
     }
 

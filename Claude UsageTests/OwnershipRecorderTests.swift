@@ -16,13 +16,13 @@ final class OwnershipRecorderTests: XCTestCase {
     private var ledger: TelemetryLedger!
     private var recorder: OwnershipRecorder!
 
-    private let dRir = UUID(), dJormun = UUID(), xFenrir = UUID(), grok = UUID(), twinA = UUID(), twinB = UUID()
+    private let atlas = UUID(), cedar = UUID(), juniper = UUID(), grok = UUID(), twinA = UUID(), twinB = UUID()
 
     private var roster: [ProfileSummary] {
         [
-            ProfileSummary(id: dRir, name: "dRir", provider: .claude, accountStamp: "acct-rir"),
-            ProfileSummary(id: dJormun, name: "dJormun", provider: .claude, accountStamp: "acct-jor"),
-            ProfileSummary(id: xFenrir, name: "xFenrir(dev)", provider: .codex, accountStamp: "codex-acct"),
+            ProfileSummary(id: atlas, name: "Atlas", provider: .claude, accountStamp: "acct-atl"),
+            ProfileSummary(id: cedar, name: "Cedar", provider: .claude, accountStamp: "acct-ced"),
+            ProfileSummary(id: juniper, name: "Juniper (dev)", provider: .codex, accountStamp: "codex-acct"),
             ProfileSummary(id: grok, name: "GROK", provider: .grok, accountStamp: "owner@x"),
             ProfileSummary(id: twinA, name: "Twin", provider: .claude, accountStamp: nil),
             ProfileSummary(id: twinB, name: "Twin", provider: .codex, accountStamp: nil),
@@ -48,28 +48,28 @@ final class OwnershipRecorderTests: XCTestCase {
 
     func testSeedMapsUniqueNamesSkipsFocusOnlyDuplicatesAndUnknowns() {
         let ring = [
-            SwitchEvent(at: at(30), from: "dRir", to: "dJormun", trigger: .auto, reason: "session 96 % ≥ 95 %"),
-            SwitchEvent(at: at(10), from: "dJormun", to: "dRir", trigger: .manual, reason: nil),
-            SwitchEvent(at: at(20), from: "dRir", to: "dLeo", trigger: .manual, reason: "focus only — dead login, login NOT applied, CLI unchanged"),
-            SwitchEvent(at: at(25), from: "dRir", to: "Twin", trigger: .manual, reason: nil),
-            SwitchEvent(at: at(26), from: "dRir", to: "Renamed", trigger: .manual, reason: nil),
-            SwitchEvent(at: at(40), from: "GROK", to: "xFenrir(dev)", trigger: .queued, reason: nil),
+            SwitchEvent(at: at(30), from: "Atlas", to: "Cedar", trigger: .auto, reason: "session 96 % ≥ 95 %"),
+            SwitchEvent(at: at(10), from: "Cedar", to: "Atlas", trigger: .manual, reason: nil),
+            SwitchEvent(at: at(20), from: "Atlas", to: "Lark", trigger: .manual, reason: "focus only — dead login, login NOT applied, CLI unchanged"),
+            SwitchEvent(at: at(25), from: "Atlas", to: "Twin", trigger: .manual, reason: nil),
+            SwitchEvent(at: at(26), from: "Atlas", to: "Renamed", trigger: .manual, reason: nil),
+            SwitchEvent(at: at(40), from: "GROK", to: "Juniper (dev)", trigger: .queued, reason: nil),
         ]
         let records = OwnershipRecorder.seedRecords(ring: ring, roster: roster)
         XCTAssertEqual(records.map(\.at), [at(10), at(30), at(40)], "sorted by time; focus-only, duplicate and unknown names dropped")
-        XCTAssertEqual(records.map(\.profileId), [dRir, dJormun, xFenrir])
+        XCTAssertEqual(records.map(\.profileId), [atlas, cedar, juniper])
         XCTAssertEqual(records.map(\.provider), [.claude, .claude, .codex])
-        XCTAssertEqual(records[0].previousProfileId, dJormun)
-        XCTAssertEqual(records[1].previousProfileId, dRir)
+        XCTAssertEqual(records[0].previousProfileId, cedar)
+        XCTAssertEqual(records[1].previousProfileId, atlas)
         // Cross-provider "from" (a Grok name before a Codex switch) is not a previous Codex owner.
         XCTAssertNil(records[2].previousProfileId)
         XCTAssertEqual(records.map(\.basis), [.seededFromRing, .seededFromRing, .seededFromRing])
         XCTAssertEqual(records.map(\.cause), ["manual", "auto", "queued"])
-        XCTAssertEqual(records[0].accountStamp, "acct-rir")
+        XCTAssertEqual(records[0].accountStamp, "acct-atl")
     }
 
     func testSeedRunsOnce() throws {
-        let ring = [SwitchEvent(at: at(10), from: "dJormun", to: "dRir", trigger: .manual, reason: nil)]
+        let ring = [SwitchEvent(at: at(10), from: "Cedar", to: "Atlas", trigger: .manual, reason: nil)]
         XCTAssertEqual(try recorder.seedIfNeeded(ring: ring, roster: roster), 1)
         XCTAssertEqual(try recorder.seedIfNeeded(ring: ring, roster: roster), 0)
         XCTAssertEqual(try ledger.ownership().count, 1)
@@ -80,55 +80,55 @@ final class OwnershipRecorderTests: XCTestCase {
 
     private func snapshot(_ time: TimeInterval, claude: UUID?, codex: UUID? = nil, switching: Bool = false) -> OwnerSnapshot {
         var owners: [TelemetryProvider: OwnerIdentity] = [:]
-        if let claude { owners[.claude] = OwnerIdentity(profileId: claude, name: claude == dRir ? "dRir" : "dJormun", accountStamp: "stamp") }
-        if let codex { owners[.codex] = OwnerIdentity(profileId: codex, name: "xFenrir(dev)", accountStamp: "codex-acct") }
+        if let claude { owners[.claude] = OwnerIdentity(profileId: claude, name: claude == atlas ? "Atlas" : "Cedar", accountStamp: "stamp") }
+        if let codex { owners[.codex] = OwnerIdentity(profileId: codex, name: "Juniper (dev)", accountStamp: "codex-acct") }
         return OwnerSnapshot(capturedAt: at(time), owners: owners, isSwitching: switching)
     }
 
     func testTickRecordsChangesThenHeartbeatsOnlyAfterTheInterval() throws {
-        let first = try recorder.record(snapshot: snapshot(100, claude: dRir, codex: xFenrir))
+        let first = try recorder.record(snapshot: snapshot(100, claude: atlas, codex: juniper))
         XCTAssertEqual(Set(first.map(\.provider)), [.claude, .codex], "first sighting of each owner is recorded; Grok has no owner and no row")
         XCTAssertEqual(first.map(\.basis), [.observedAtTick, .observedAtTick])
 
-        XCTAssertTrue(try recorder.record(snapshot: snapshot(400, claude: dRir, codex: xFenrir)).isEmpty, "unchanged, too soon for a heartbeat")
+        XCTAssertTrue(try recorder.record(snapshot: snapshot(400, claude: atlas, codex: juniper)).isEmpty, "unchanged, too soon for a heartbeat")
 
-        let changed = try recorder.record(snapshot: snapshot(700, claude: dJormun, codex: xFenrir))
+        let changed = try recorder.record(snapshot: snapshot(700, claude: cedar, codex: juniper))
         XCTAssertEqual(changed.count, 1)
         XCTAssertEqual(changed[0].provider, .claude)
-        XCTAssertEqual(changed[0].profileId, dJormun)
-        XCTAssertEqual(changed[0].previousProfileId, dRir)
+        XCTAssertEqual(changed[0].profileId, cedar)
+        XCTAssertEqual(changed[0].previousProfileId, atlas)
 
-        let beats = try recorder.record(snapshot: snapshot(100 + 3_600, claude: dJormun, codex: xFenrir))
+        let beats = try recorder.record(snapshot: snapshot(100 + 3_600, claude: cedar, codex: juniper))
         XCTAssertEqual(beats.map(\.provider), [.codex], "Codex is an hour old and heartbeats; Claude's last row is recent")
         XCTAssertEqual(beats[0].basis, .heartbeat)
-        XCTAssertEqual(beats[0].profileId, xFenrir)
+        XCTAssertEqual(beats[0].profileId, juniper)
 
         // 100 s after Codex's heartbeat: only the cleared Claude pointer is news.
-        let cleared = try recorder.record(snapshot: snapshot(3_800, claude: nil, codex: xFenrir))
+        let cleared = try recorder.record(snapshot: snapshot(3_800, claude: nil, codex: juniper))
         XCTAssertEqual(cleared.map(\.provider), [.claude])
         XCTAssertNil(cleared[0].profileId, "a cleared pointer is recorded as no owner")
-        XCTAssertEqual(cleared[0].previousProfileId, dJormun)
+        XCTAssertEqual(cleared[0].previousProfileId, cedar)
     }
 
     func testTickIsSkippedWhileSwitching() throws {
-        XCTAssertTrue(try recorder.record(snapshot: snapshot(100, claude: dRir, switching: true)).isEmpty)
+        XCTAssertTrue(try recorder.record(snapshot: snapshot(100, claude: atlas, switching: true)).isEmpty)
         XCTAssertEqual(try ledger.ownership().count, 0)
     }
 
     // MARK: - Notifications
 
     func testClaimAndExternalObservationAreRecordedWithTheirBasis() throws {
-        try recorder.recordClaim(provider: .claude, newOwner: dRir, previousOwner: nil, accountStamp: "acct-rir",
-                                 name: "dRir", cause: "activate", at: at(10))
-        try recorder.recordExternalChange(provider: .claude, newOwner: dRir, name: "dRir", at: at(20))
+        try recorder.recordClaim(provider: .claude, newOwner: atlas, previousOwner: nil, accountStamp: "acct-atl",
+                                 name: "Atlas", cause: "activate", at: at(10))
+        try recorder.recordExternalChange(provider: .claude, newOwner: atlas, name: "Atlas", at: at(20))
         XCTAssertEqual(try ledger.ownership(provider: .claude).count, 1, "an observation of the owner we already know adds nothing")
-        try recorder.recordExternalChange(provider: .claude, newOwner: dJormun, name: "dJormun", at: at(30))
+        try recorder.recordExternalChange(provider: .claude, newOwner: cedar, name: "Cedar", at: at(30))
         let rows = try ledger.ownership(provider: .claude)
         XCTAssertEqual(rows.map(\.basis), [.exactClaim, .externalObservation])
-        XCTAssertEqual(rows[1].previousProfileId, dRir)
+        XCTAssertEqual(rows[1].previousProfileId, atlas)
         XCTAssertEqual(rows[1].cause, "adoption")
         // A tick that agrees with the external observation stays quiet.
-        XCTAssertTrue(try recorder.record(snapshot: snapshot(40, claude: dJormun)).isEmpty)
+        XCTAssertTrue(try recorder.record(snapshot: snapshot(40, claude: cedar)).isEmpty)
     }
 
     func testProviderNameDecoding() {

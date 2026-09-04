@@ -30,7 +30,7 @@ For B:
 - Ten 4 pt dots at 6 pt center pitch occupy `4 + 9×6 = 58 pt`, not 54 pt.
 - Seventeen other Claude accounts balanced 9/8 occupy 52 pt.
 - Including the existing 1 pt composite padding on each edge, live Claude is therefore `24 + 3 + 52 + 2 = 81 pt`.
-- The Codex estimate of 39 pt is true only while no next-candidate string is present. An 8 pt `→Mem✓` is roughly 28–34 pt; `Q→Mem✓` is closer to 35–42 pt. Armed Codex therefore becomes roughly 58–71 pt.
+- The Codex estimate of 39 pt is true only while no next-candidate string is present. An 8 pt `→Fjo✓` is roughly 28–34 pt; `Q→Fjo✓` is closer to 35–42 pt. Armed Codex therefore becomes roughly 58–71 pt.
 - Grok is 26 pt in the current composite geometry, not 24 pt, because [`compositeLayout`](<Claude Usage/MenuBar/StatusBarUIManager.swift:504>) adds two edge points.
 - A credible total for B is therefore about **175–200 pt before inter-item/system spacing**, still an excellent reduction from 600 pt.
 
@@ -43,7 +43,7 @@ Keep the existing active image pixel-for-pixel and compose a right-hand informat
 ```text
 ┌────────┬──────────────────────┐
 │ active │  fleet dots, 1–2 rows│
-│ 24×22  │  →Mem✓ / Q→Mem?      │
+│ 24×22  │  →Fjo✓ / Q→Fjo?      │
 └────────┴──────────────────────┘
           3 pt gutter
 ```
@@ -122,14 +122,14 @@ But preserve orthogonal facts in shape:
 
 A 4 pt hollow gray circle is too easy to confuse with unknown and too quiet for “requires `/login`.” Dead should be visibly actionable.
 
-### `›Mem✓`
+### `›Fjo✓`
 
 **Keep the next-candidate concept; change its semantics and notation.**
 
 Use:
 
-- `→Mem` — ranked candidate;
-- `Q→Mem` — queued candidate;
+- `→Fjo` — ranked candidate;
+- `Q→Fjo` — queued candidate;
 - `✓` — definitive positive login evidence;
 - `?` — untested, expired verdict, or inconclusive network result;
 - `×` — definitively dead;
@@ -144,7 +144,7 @@ The candidate label’s tint should describe quota evidence:
 - gray: stale or no quota measurement;
 - red: no executable candidate.
 
-The suffix should describe login evidence. This allows `→Mem✓` with a gray candidate label: login verified, quota headroom stale.
+The suffix should describe login evidence. This allows `→Fjo✓` with a gray candidate label: login verified, quota headroom stale.
 
 Today’s code cannot truthfully issue the proposed checkmark:
 

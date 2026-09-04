@@ -137,7 +137,7 @@ Noise: the auto-switch policy paragraph on every open (one line + “Active & Au
         static let settingsWindow = NSSize(width: 720, height: 750)
 ```
 
-Sidebar today is 190 (`SettingsView.swift:209`). 230 for `● xFernando(dev)  95  Cx` plus a 7-icon bottom bar (Accounts / Active / Alerts / Display / Advanced / About / Quit) is overflow. **Widen to ~840** (roster ~260, detail ~580), **add `.resizable`**, and replace the 7-icon strip with **text rows** under the roster (System Settings pattern). 720 with a 200 pt roster only works if the bottom bar stays 2–3 items.
+Sidebar today is 190 (`SettingsView.swift:209`). 230 for `● Marlin (dev)  95  Cx` plus a 7-icon bottom bar (Accounts / Active / Alerts / Display / Advanced / About / Quit) is overflow. **Widen to ~840** (roster ~260, detail ~580), **add `.resizable`**, and replace the 7-icon strip with **text rows** under the roster (System Settings pattern). 720 with a 200 pt roster only works if the bottom bar stays 2–3 items.
 
 **Folding CLI/Codex bodies into Login:** they will keep working **if** roster selection is `viewProfile` (they already bind `activeProfile` and reload on its id — `CLIAccountView.swift:257`, `CodexAccountView.swift:272`). Device-code sheet is on the Settings window (`CodexAccountView.swift:275-286`) — stays open. `loginTarget` (`CodexLoginService.swift:129-131`) keys off the viewed profile; keep that. Pick the body by `providerKind`; don’t show both on a Claude row (`isProviderLocked` already hides the other — `CLIAccountView.swift:19-22`, `CodexAccountView.swift:25-28`).
 

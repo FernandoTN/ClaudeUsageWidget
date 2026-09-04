@@ -1974,7 +1974,7 @@ final class StatusBarUIManager {
         // ACTIVE account — the account the user is operating on — not a
         // positional fallback. `segments.last` here is the soonest-reset
         // tile, and every ambiguous open landed on that same account
-        // ("always opens Commits", owner report 2026-07-30).
+        // ("always opens Harbor", owner report 2026-07-30).
         guard let x = localX else {
             return groupActiveIds[provider] ?? segments.last?.profileId
         }
@@ -2401,7 +2401,7 @@ final class StatusBarUIManager {
             if let change = adopted.change {
                 // In words, with the shade and the governing reset, so the
                 // owner's scheme is verifiable from the log by pid:
-                // "Memori: weekly limit hit, reset more than a day away
+                // "Fjord: weekly limit hit, reset more than a day away
                 // (light red, reset in 3 d 2 h) — new measurement (own endpoint)".
                 LoggingService.shared.log(
                     "Fleet dot \(profile.name): \(change.from.map { Self.dotWords($0) } ?? "—") → "
@@ -2529,7 +2529,7 @@ final class StatusBarUIManager {
         }
     }
 
-    /// "Claude: dRir 78 % → dJormun ✓ · 4 ready · 1 low · 11 exhausted · 1 dead".
+    /// "Claude: Atlas 78 % → Cedar ✓ · 4 ready · 1 low · 11 exhausted · 1 dead".
     private static func summaryTooltip(
         _ summary: ProviderSummary,
         activeName: String?,

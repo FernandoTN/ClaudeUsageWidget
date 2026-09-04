@@ -261,7 +261,7 @@ final class CodexHomeImportTests: XCTestCase {
 
         XCTAssertEqual(slug("work"), "work")
         XCTAssertEqual(slug("  Work Account  "), "work-account")
-        XCTAssertEqual(slug("Cod/Dex"), "cod-dex")
+        XCTAssertEqual(slug("Kestrel/Osprey"), "kestrel-osprey")
         XCTAssertEqual(slug("a.b"), "a-b")
         // Traversal cannot survive: `/` and `.` are separators, not characters.
         XCTAssertEqual(slug("../../etc"), "etc")
@@ -272,7 +272,7 @@ final class CodexHomeImportTests: XCTestCase {
         XCTAssertEqual(slug(String(repeating: "x", count: 80))?.count, 32, "capped")
 
         // Every accepted slug stays a single component directly under the root.
-        for label in ["work", "Cod/Dex", "../../etc", "a b c"] {
+        for label in ["work", "Kestrel/Osprey", "../../etc", "a b c"] {
             let name = try! XCTUnwrap(slug(label))
             let home = CodexLoginService.home(forSlug: name)
             XCTAssertEqual(home.deletingLastPathComponent().path,
@@ -343,9 +343,9 @@ final class CodexHomeImportTests: XCTestCase {
     func testLoginTargetsTheViewedProfileUnlessItHoldsALiveAccount() {
         let target = CodexLoginService.loginTarget
 
-        // No Codex account yet (the `xFenrir(dev)` case).
+        // No Codex account yet (the `Juniper (dev)` case).
         XCTAssertEqual(target(false, false), .viewedProfile)
-        // Account present but flagged dead (the `Cod` / `Dex` case) — replacing
+        // Account present but flagged dead (the `Kestrel` / `Osprey` case) — replacing
         // those tokens in place IS the repair.
         XCTAssertEqual(target(true, true), .viewedProfile)
         // A working account: a profile holds exactly one, so this login needs
@@ -355,26 +355,26 @@ final class CodexHomeImportTests: XCTestCase {
         // The folder is named after the profile, and a remembered home is
         // reused so a re-login does not mint a directory per attempt — the only
         // grant it revokes is that profile's own dead one.
-        let fresh = try? XCTUnwrap(CodexLoginService.loginHome(existingHomePath: nil, profileName: "xFenrir(dev)"))
-        XCTAssertEqual(fresh?.lastPathComponent, "xfenrir-dev")
+        let fresh = try? XCTUnwrap(CodexLoginService.loginHome(existingHomePath: nil, profileName: "Juniper (dev)"))
+        XCTAssertEqual(fresh?.lastPathComponent, "juniper-dev")
         XCTAssertEqual(fresh?.deletingLastPathComponent().path, CodexUsageService.isolatedHomesRoot.path)
 
         XCTAssertEqual(
-            CodexLoginService.loginHome(existingHomePath: "/Users/someone/.codex-accounts/cod", profileName: "Cod")?.path,
-            "/Users/someone/.codex-accounts/cod",
+            CodexLoginService.loginHome(existingHomePath: "/Users/someone/.codex-accounts/kestrel", profileName: "Kestrel")?.path,
+            "/Users/someone/.codex-accounts/kestrel",
             "a re-login reuses the home the profile already knows"
         )
         // A remembered path is not a licence to log into the default home.
         XCTAssertNil(CodexLoginService.loginHome(
             existingHomePath: CodexUsageService.defaultCodexHome.path,
-            profileName: "Cod"
+            profileName: "Kestrel"
         ))
         // A name with nothing usable in it cannot name a folder.
         XCTAssertNil(CodexLoginService.loginHome(existingHomePath: nil, profileName: "///"))
     }
 
     /// Re-logging an account into the profile that already holds it is the
-    /// REPAIR, not a duplicate — `Cod` and `Dex` hold dead tokens for the very
+    /// REPAIR, not a duplicate — `Kestrel` and `Osprey` hold dead tokens for the very
     /// accounts their owner signs into again. A guard that excluded nothing
     /// would name the viewed profile itself as the holder and abort the one
     /// operation the user came for. Any OTHER holder still refuses, by name.
@@ -385,13 +385,13 @@ final class CodexHomeImportTests: XCTestCase {
         // The live shape: the profile holds this account already, its tokens
         // are dead, and its home is remembered from the first login.
         let cod = Profile(
-            name: "Cod",
+            name: "Kestrel",
             codexCredentialsJSON: json,
             codexEmail: "cod@example.com",
             codexAccountId: "acct-cod",
             codexHomePath: home.path
         )
-        let dex = Profile(name: "Dex", codexAccountId: "acct-dex")
+        let dex = Profile(name: "Osprey", codexAccountId: "acct-dex")
         let roster = [cod, dex]
 
         // Excluding the destination — what the sheet passes — sees no holder.
@@ -408,14 +408,14 @@ final class CodexHomeImportTests: XCTestCase {
         XCTAssertEqual(repaired.codexAccountId, "acct-cod")
         XCTAssertEqual(repaired.codexHomePath, home.path, "the remembered home is reused")
 
-        // The same login into a DIFFERENT profile is still refused, naming Cod.
+        // The same login into a DIFFERENT profile is still refused, naming Kestrel.
         XCTAssertThrowsError(
             try service.importedRoster(from: json, homePath: home.path, into: dex.id, profiles: roster)
         ) { error in
             guard case CodexError.accountAlreadySynced(let profileName) = error else {
                 return XCTFail("expected accountAlreadySynced, got \(error)")
             }
-            XCTAssertEqual(profileName, "Cod")
+            XCTAssertEqual(profileName, "Kestrel")
         }
 
         // The destination-excluding branch is only reachable because a profile

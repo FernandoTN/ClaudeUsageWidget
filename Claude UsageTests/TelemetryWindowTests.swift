@@ -90,11 +90,11 @@ final class TelemetryWindowTests: XCTestCase {
     func testBucketsCarryTheirOwnBreakdownForTheClickPopover() {
         let now = TelemetryFrameHarness.Fixture.now
         let fleet = TelemetryFrameHarness.report(.fleet, .days7, input: TelemetryFrameHarness.Fixture.input(now: now), now: now)
-        let bucket = fleet.buckets[2]  // four days ago: dRir's, and a default-home Codex day
+        let bucket = fleet.buckets[2]  // four days ago: Atlas's, and a default-home Codex day
         XCTAssertEqual(bucket.byModel.values.reduce(0) { $0 + $1.inputClass }, bucket.total.inputClass)
         XCTAssertEqual(bucket.byAccount.values.reduce(0) { $0 + $1.inputClass }, bucket.total.inputClass)
         XCTAssertTrue(bucket.byModel.keys.contains { $0.id == "claude-opus-5" })
-        XCTAssertTrue(bucket.byAccount.keys.contains { $0.label == "dRir" }, "days before the switch belong to dRir")
+        XCTAssertTrue(bucket.byAccount.keys.contains { $0.label == "Atlas" }, "days before the switch belong to Atlas")
         XCTAssertTrue(bucket.byAccount.keys.contains { $0.id == "unattributed:codex" })
     }
     #endif
@@ -119,14 +119,14 @@ final class TelemetryWindowTests: XCTestCase {
         XCTAssertEqual(claude.count, 3)
         XCTAssertEqual(claude.rows.first?.scope, .provider(.claude))
         let names = claude.rows.dropFirst().map(\.title)
-        XCTAssertEqual(names.first, "dRir", "busiest account first")
-        XCTAssertTrue(names.contains("dLeo"))
-        XCTAssertEqual(claude.rows.first { $0.title == "dLeo" }?.total, nil, "no activity → no number, never a zero with confidence")
-        XCTAssertEqual(claude.rows.first { $0.title == "dJormun" }?.isOwner, true)
+        XCTAssertEqual(names.first, "Atlas", "busiest account first")
+        XCTAssertTrue(names.contains("Lark"))
+        XCTAssertEqual(claude.rows.first { $0.title == "Lark" }?.total, nil, "no activity → no number, never a zero with confidence")
+        XCTAssertEqual(claude.rows.first { $0.title == "Cedar" }?.isOwner, true)
         let codex = sections[2]
         XCTAssertEqual(codex.rows.last?.scope, .unattributed(.codex), "the default home before the Codex log is unattributed")
         XCTAssertGreaterThan(codex.rows.last?.total ?? 0, 0)
-        XCTAssertEqual(codex.rows.first { $0.title == "xFenrir(dev)" }?.total.map { $0 > 0 }, true, "isolated home attributes by path")
+        XCTAssertEqual(codex.rows.first { $0.title == "Juniper (dev)" }?.total.map { $0 > 0 }, true, "isolated home attributes by path")
         XCTAssertEqual(sections[3].rows.count, 2, "Grok: the provider row and its sole account; no Unattributed row")
     }
 
@@ -144,7 +144,7 @@ final class TelemetryWindowTests: XCTestCase {
         XCTAssertNil(fleetOutlier.outliers, "Claude dominates the fleet total; a 35 B Codex day is not 20× the fleet median")
         let codexOutlier = TelemetryFrameHarness.report(.provider(.codex), .days30, input: outlierInput, now: now)
         XCTAssertNotNil(codexOutlier.outliers, "in the Codex scope the same day is clipped")
-        let empty = TelemetryFrameHarness.report(.account(TelemetryFrameHarness.Fixture.dLeo), .days7, input: input, now: now)
+        let empty = TelemetryFrameHarness.report(.account(TelemetryFrameHarness.Fixture.lark), .days7, input: input, now: now)
         XCTAssertTrue(empty.totals.isEmpty)
 
         if let dir = ProcessInfo.processInfo.environment["CUW_RENDER_FRAMES"], !dir.isEmpty {

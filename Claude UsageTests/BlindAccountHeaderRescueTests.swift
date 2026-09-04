@@ -2,7 +2,7 @@
 //  BlindAccountHeaderRescueTests.swift
 //  Claude UsageTests
 //
-//  2026-08-13 incident ('BBR' 06:36→06:59, 'Outlook' 12:41→13:40): ~30
+//  2026-08-13 incident ('Iris' 06:36→06:59, 'Kite' 12:41→13:40): ~30
 //  parallel CLI sessions burned the ACTIVE account from a fresh window to a
 //  hard 100% session limit, and the widget never switched. Its own
 //  `oauth/usage` endpoint refused most reads for exactly that account (HTTP
@@ -219,58 +219,58 @@ final class BlindAccountHeaderRescueTests: XCTestCase {
         // in the same history ring. Treating the Codex switch as "not
         // attributable" dropped the Claude exhaustion event entirely.
         let history = [
-            event(30, from: "BBR", to: "Cod"),          // event happened before this
-            event(20, from: "Cod", to: "Dex"),          // Codex → skip
-            event(10, from: "Outlook", to: "Commits")
+            event(30, from: "Iris", to: "Kestrel"),          // event happened before this
+            event(20, from: "Kestrel", to: "Osprey"),          // Codex → skip
+            event(10, from: "Kite", to: "Harbor")
         ]
         XCTAssertEqual(
             MenuBarManager.rateLimitEventOwnerName(
                 history: history,
                 eventTime: now.addingTimeInterval(-25 * 60),
-                claudeProfileNames: ["BBR", "Outlook", "Commits"]
+                claudeProfileNames: ["Iris", "Kite", "Harbor"]
             ),
-            "Outlook"
+            "Kite"
         )
     }
 
     func testAttributionPicksTheFirstClaudeSwitchAfterTheEvent() {
         let history = [
-            event(40, from: "Memori", to: "BBR"),
-            event(20, from: "BBR", to: "Stanford"),
-            event(5, from: "Stanford", to: "2026")
+            event(40, from: "Fjord", to: "Iris"),
+            event(20, from: "Iris", to: "Granite"),
+            event(5, from: "Granite", to: "Ridge")
         ]
         XCTAssertEqual(
             MenuBarManager.rateLimitEventOwnerName(
                 history: history,
                 eventTime: now.addingTimeInterval(-21 * 60),
-                claudeProfileNames: ["Memori", "BBR", "Stanford", "2026"]
+                claudeProfileNames: ["Fjord", "Iris", "Granite", "Ridge"]
             ),
-            "BBR",
+            "Iris",
             "the account that owned the CLI login when its sessions died"
         )
     }
 
     func testNoSwitchAfterTheEventFallsBackToTheCurrentOwner() {
-        let history = [event(40, from: "Memori", to: "BBR")]
+        let history = [event(40, from: "Fjord", to: "Iris")]
         XCTAssertNil(MenuBarManager.rateLimitEventOwnerName(
             history: history,
             eventTime: now.addingTimeInterval(-60),
-            claudeProfileNames: ["Memori", "BBR"]
+            claudeProfileNames: ["Fjord", "Iris"]
         ))
     }
 
     func testUnsortedHistoryStillPicksTheEarliestQualifyingSwitch() {
         let history = [
-            event(5, from: "Stanford", to: "2026"),
-            event(20, from: "BBR", to: "Stanford")
+            event(5, from: "Granite", to: "Ridge"),
+            event(20, from: "Iris", to: "Granite")
         ]
         XCTAssertEqual(
             MenuBarManager.rateLimitEventOwnerName(
                 history: history,
                 eventTime: now.addingTimeInterval(-25 * 60),
-                claudeProfileNames: ["BBR", "Stanford", "2026"]
+                claudeProfileNames: ["Iris", "Granite", "Ridge"]
             ),
-            "BBR"
+            "Iris"
         )
     }
 }

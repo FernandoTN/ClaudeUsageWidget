@@ -49,7 +49,7 @@ Keeping `activeProfileId` as Viewing is acceptable **only** after the three unsa
 
 (c) `NSAlert` from a menu action in an accessory app: `runModal` works but (1) the panel opens behind the frontmost app unless `NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])` first — `bringWindowToForeground` (MenuBarManager:3899-3913) exists for this; never flip activation policy; (2) **`runModal` spins `NSModalPanelRunLoopMode`; the sweep timer is `Timer.scheduledTimer` in `.default` mode (566-575, 983-989) and does not fire while the alert is up** — an alert left open stops the auto-switch clock. Use a non-modal confirmation, or at minimum schedule the timer in `.common`. Drop the "Don't ask again" (D3) and `activeSelectorConfirm_v1`: the ruling wants the cost visible on every manual switch. Also align #63's `CodexActivationOffer.activate` — it calls `activateProfile(userInitiated: true)` with no cost sentence.
 
-(d) Omits: the in-flight state `⇄` (`isSwitchingProfile`, rows disabled); the manual pin (`autoSwitchedProfileIds`); provenance on the owner row when the value is a header rescue; #64's `needsAccountRelogin` caption on `⧉` rows. Over-shows: the auto-switch doctrine row (one line); "View dRir" for the owner only — drop it (Viewing is the inspector's job). S2b as the same builder filtered — cheap. S1 deferred — right.
+(d) Omits: the in-flight state `⇄` (`isSwitchingProfile`, rows disabled); the manual pin (`autoSwitchedProfileIds`); provenance on the owner row when the value is a header rescue; #64's `needsAccountRelogin` caption on `⧉` rows. Over-shows: the auto-switch doctrine row (one line); "View Atlas" for the owner only — drop it (Viewing is the inspector's job). S2b as the same builder filtered — cheap. S1 deferred — right.
 
 ## 3. Inspector (§2.2)
 
@@ -72,7 +72,7 @@ Top level: fine. Key map verified against SharedDataStore, ProfileStore, the dea
 
 Still-activating "viewing" paths: `deleteProfile` (ProfileManager:224); hotkey `switchToNextProfile` (MenuBarManager:3916-3930, cross-provider — walk `paintedGroupMembers(for:)` like `cycleGroup`); `ProfileSwitcherCompact` (PopoverContentView:514-517); Settings sidebar picker (SettingsView:275-285) — **stage 1 relabels it "Viewing" but leaves it activating; rewire in the same PR**; `CodexActivationOffer` (#63) activates without cost confirmation; **single-profile display mode** (`getSelectedProfiles()` returns `[activeProfile]`; the single refresh path fetches via `getAuthentication` and runs `checkAutoSwitchIfNeeded` on the viewed profile) — define single mode; Grok focus-as-active (845-853); wizard write without claim; `.profileManuallyActivated` posted for focus-only outcomes (708).
 
-**D5:** right for user switches; wrong for auto switches while the user works in the inspector. Refine: follow on user-initiated; on auto, follow only when Viewing was the outgoing owner **and** no Settings window is key / no sheet is up; otherwise stay and let the header say "Active for Claude: dJormun (changed 12 s ago)".
+**D5:** right for user switches; wrong for auto switches while the user works in the inspector. Refine: follow on user-initiated; on auto, follow only when Viewing was the outgoing owner **and** no Settings window is key / no sheet is up; otherwise stay and let the header say "Active for Claude: Cedar (changed 12 s ago)".
 
 ## 7. Staging (§8) and seams
 
