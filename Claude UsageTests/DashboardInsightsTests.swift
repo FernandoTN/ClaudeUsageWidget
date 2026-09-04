@@ -46,7 +46,7 @@ final class DashboardInsightsTests: XCTestCase {
         let affirmed = FleetInsights.Incident(at: now.addingTimeInterval(-60), profileId: nil, name: "A", provider: .claude, kind: .affirmedStamp(until: now.addingTimeInterval(2400)), detail: "retry-after 2918 s")
         XCTAssertEqual(InsightsFormatting.incident(affirmed, now: now), "1 m ago · 429 with Retry-After, 40 min left")
         let dead = FleetInsights.WhyNot(id: UUID(), name: "Ai", provider: .claude, status: .blocked(.dead), evidence: "dead login", verdictText: "× login dead 2 h ago", evidenceAge: 7200)
-        XCTAssertEqual(InsightsFormatting.whyNot(dead), "× login dead 2 h ago", "the verdict already says dead")
+        XCTAssertEqual(InsightsFormatting.whyNot(dead), "login dead 2 h ago", "the row glyph carries the status; the verdict says dead once")
         let flat = FleetInsights.Burn(id: UUID(), name: "A", provider: .claude, ratePerMinute: nil, samples: [], projectedCrossing: nil)
         XCTAssertEqual(InsightsFormatting.burn(flat, now: now), "flat")
         let rising = FleetInsights.Burn(id: UUID(), name: "A", provider: .claude, ratePerMinute: 2.06, samples: [], projectedCrossing: now.addingTimeInterval(8 * 60))

@@ -253,7 +253,9 @@ enum InsightsFormatting {
     static func whyNot(_ why: FleetInsights.WhyNot) -> String {
         var parts: [String] = []
         if let verdict = why.verdictText {
-            parts.append(verdict)
+            // The row's own glyph already carries the status; the verdict text starts with the same glyph.
+            parts.append(verdict.hasPrefix("\(DesignGlyph.dead) ") || verdict.hasPrefix("\(DesignGlyph.verified) ")
+                         ? String(verdict.dropFirst(2)) : verdict)
         } else if let age = why.evidenceAge {
             parts.append(why.evidence)
             parts.append("insights.evidence_age".localized(with: DashboardFormatting.duration(age)))
