@@ -105,6 +105,9 @@ enum SettingsKeyRegistry {
     ].map { RegisteredKey($0, .legacyConstants, .legacyUnread) }
 
     static let miscKeys: [RegisteredKey] = [
+        // Menu-bar redesign: the one-time move of an untouched config to the
+        // redesigned default layout (owner decision 2026-09-04).
+        RegisteredKey("menuBarLayoutDefault_v1", .misc, .migrationFlag),
         RegisteredKey("debugTileLayout", .misc, .external),
         RegisteredKey("debugGroupExposure", .misc, .external),
         RegisteredKey("NSQuitAlwaysKeepsWindows", .misc, .external),

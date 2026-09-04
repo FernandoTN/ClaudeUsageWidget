@@ -459,8 +459,14 @@ struct MultiProfileDisplayConfig: Codable, Equatable, Hashable {
         clickSurface = try? container.decodeIfPresent(ClickSurface.self, forKey: .clickSurface)
     }
 
+    /// Owner decision 2026-09-04 (menu-bar redesign decision card, question
+    /// 3): the default bar layout is "Active + dots", and with no explicit
+    /// click surface the click opens the fleet dashboard. A config saved
+    /// WITHOUT `barLayout` still decodes to `.everyAccount` (compatibility);
+    /// `MenuBarManager.migratedDefaultLayout` moves an untouched legacy
+    /// config over once, after which the pickers are the user's.
     static var `default`: MultiProfileDisplayConfig {
-        MultiProfileDisplayConfig()
+        MultiProfileDisplayConfig(barLayout: .fleetDots)
     }
 }
 
