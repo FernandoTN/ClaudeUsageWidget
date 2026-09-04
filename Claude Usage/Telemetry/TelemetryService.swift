@@ -31,9 +31,6 @@ final class TelemetryService {
     }
 
     static let steadyInterval: TimeInterval = 300
-    /// The pointer-claim seam's notification (fixes session, in flight).
-    /// Referenced by name so this module compiles before that branch lands.
-    static let providerOwnerClaimed = Notification.Name("providerOwnerClaimed")
 
     private let queue = DispatchQueue(label: "com.claudeusagewidget.telemetry", qos: .utility)
     private let engine = TelemetryEngine()
@@ -47,7 +44,8 @@ final class TelemetryService {
     /// loaded. Idempotent. Never runs under XCTest.
     func start(profileManager: ProfileManager = .shared,
                sharedData: SharedDataStore = .shared,
-               ledgerURL: URL = TelemetryService.defaultLedgerURL) {
+               ledgerURL: URL = TelemetryService.defaultLedgerURL,
+               roots: TelemetrySourceRoots = .live()) {
         guard !started else { return }
         started = true
 
@@ -63,25 +61,35 @@ final class TelemetryService {
         .sink { [weak self] _ in self?.publishSnapshot(from: profileManager) }
         .store(in: &cancellables)
 
+        // The pointer-claim seam (#89): posted only when a pointer's value changes.
         NotificationCenter.default.addObserver(self, selector: #selector(ownerClaimed(_:)),
-                                               name: Self.providerOwnerClaimed, object: nil)
+                                               name: .providerOwnerClaimed, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(ownerChangedExternally(_:)),
                                                name: .providerOwnerChangedExternally, object: nil)
 
         let ring = sharedData.loadSwitchHistory()
         let roster = Self.roster(from: profileManager.profiles)
         let engine = self.engine
+        let queue = self.queue
         queue.async {
-            engine.open(ledgerURL: ledgerURL, ring: ring, roster: roster)
-            engine.tick()
+            engine.open(ledgerURL: ledgerURL, ring: ring, roster: roster, roots: roots)
+            engine.tick(queue: queue)
         }
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + Self.steadyInterval, repeating: Self.steadyInterval, leeway: .seconds(15))
-        timer.setEventHandler { engine.tick() }
+        timer.setEventHandler { engine.tick(queue: queue) }
         timer.resume()
         self.timer = timer
         LoggingService.shared.log("Telemetry: started (ledger \(ledgerURL.path))")
+    }
+
+    /// Runs a slice now (the window's "Refresh now"); catch-up continues on the
+    /// queue while a bound is hit.
+    func refreshNow() {
+        let engine = self.engine
+        let queue = self.queue
+        queue.async { engine.tick(queue: queue) }
     }
 
     // MARK: - Snapshots (main actor → queue)
@@ -170,14 +178,21 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
     let snapshotBox = OwnerSnapshotBox()
     private(set) var ledger: TelemetryLedger?
     private(set) var recorder: OwnershipRecorder?
+    private(set) var indexer: TelemetryIndexer?
+    /// Catch-up: while a slice hits a bound, the next one is queued this soon
+    /// instead of waiting for the steady timer (the first 27 GB would take
+    /// hours at 200 files per five minutes).
+    static let catchUpDelay: TimeInterval = 0.25
+    private var catchUpQueued = false
 
-    func open(ledgerURL: URL, ring: [SwitchEvent], roster: [ProfileSummary]) {
+    func open(ledgerURL: URL, ring: [SwitchEvent], roster: [ProfileSummary], roots: TelemetrySourceRoots) {
         do {
             let ledger = try TelemetryLedger(url: ledgerURL)
             let recorder = OwnershipRecorder(ledger: ledger)
             let seeded = try recorder.seedIfNeeded(ring: ring, roster: roster)
             self.ledger = ledger
             self.recorder = recorder
+            self.indexer = TelemetryIndexer(ledger: ledger, roots: roots)
             if seeded > 0 {
                 telemetryLog.info("seeded \(seeded) ownership rows from the switch ring")
             }
@@ -186,16 +201,30 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
         }
     }
 
-    func tick() {
-        guard let recorder, let snapshot = snapshotBox.get() else { return }
-        do {
-            let appended = try recorder.record(snapshot: snapshot)
-            if !appended.isEmpty {
-                let summary = appended.map { "\($0.provider.rawValue)→\($0.name ?? "none")" }.joined(separator: ", ")
-                telemetryLog.info("ownership +\(appended.count) (\(summary))")
+    func tick(queue: DispatchQueue) {
+        catchUpQueued = false
+        if let recorder, let snapshot = snapshotBox.get() {
+            do {
+                let appended = try recorder.record(snapshot: snapshot)
+                if !appended.isEmpty {
+                    let summary = appended.map { "\($0.provider.rawValue)→\($0.name ?? "none")" }.joined(separator: ", ")
+                    telemetryLog.info("ownership +\(appended.count) (\(summary, privacy: .public))")
+                }
+            } catch {
+                telemetryLog.error("ownership write failed — \(String(describing: error))")
             }
-        } catch {
-            telemetryLog.error("ownership write failed — \(String(describing: error))")
+        }
+        guard let indexer else { return }
+        let report = indexer.runSlice()
+        if report.filesScanned > 0 {
+            telemetryLog.info("slice: \(report.filesScanned) files, \(report.bytesRead) B, +\(report.eventsUpserted) events, backlog \(report.backlogFiles) files / \(report.backlogBytes) B, \(String(format: "%.2f", report.duration), privacy: .public) s")
+        }
+        if report.hitBound, !catchUpQueued {
+            catchUpQueued = true
+            queue.asyncAfter(deadline: .now() + Self.catchUpDelay) { [weak self] in
+                guard let self else { return }
+                self.tick(queue: queue)
+            }
         }
     }
 

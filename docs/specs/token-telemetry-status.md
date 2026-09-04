@@ -33,12 +33,56 @@ pass can run without live screenshots.
 | 21:01 | Check-in brief delivered to the owner via SendUserFile (render) |
 | 21:03 / 21:04 | Codex review in (24 min) · Grok review in (12 min); both "approve with revisions" |
 | 21:10 | Spec revised: SQLite ledger, in-flight Claude upsert, Codex component deltas (ignore the total remainder), Grok eventId dedup, catch-up scheduling, ownership log in stage 1 with claim-seam/backstop/heartbeat/strict seed, gap rule, Coverage KPI, per-provider `dataThrough`, outlier break, markers switches-only by default, six stages; consult log §8 |
-| 21:12 | Branch pushed; draft PR opened for stage 0 |
+| 21:12 | Branch pushed; draft PR #81 opened for stage 0 |
+| 21:15–21:20 | Stage 1a built: `Telemetry/TelemetryEvent`, `TelemetryLedger` (system SQLite), `OwnershipRecorder`, `TelemetryService`; AppDelegate start hook. 16 tests; full suite 429 / 0; PR #87 |
+| 21:25 | Fixes session landed the claim seam `.providerOwnerClaimed` (#89, `1353cfd`) exactly as requested |
+| 21:20–21:35 | Stage 1b built: `JSONLFraming`, three readers, `TelemetryIndexer`, catch-up ticks. Bugs found by the tests before any real data: a byte-bounded file re-queued with its stale cursor (would never progress), a line longer than the byte budget stalling forever, `/private/var` symlink garbling the Claude file id, Grok's `_meta` living inside `params` |
+| 21:35–21:45 | Real-corpus verification (opt-in test): the test host was killed at ~4 min — autorelease growth from 1.8 M parsed lines; per-line and per-file pools added |
+| 21:47–21:55 | Verification rerun: 15,402 files, 28.16 GB, 53 slices, 467 s; matches the census (§ below); 6.1 B Codex tokens sat before a rollout's first `turn_context` → "unknown" units now take the file's first model (`reassignUnknownModel`) |
+| 22:00 | #81 (stage 0) squash-merged as `2237730`; #87 (stage 1a, merged tree 455 / 0) squash-merged as `b73c776`; both shas sent to the fixes session with a request to deploy after 1b |
+| 22:05 | Stage 1b merged with main (three add/add conflicts from the squash, resolved to the 1b versions); full suite 475 / 0 (1 opt-in skipped); PR #98 retargeted to main |
 
-## Stage 0 — research + proposal (branch `feat/token-telemetry-research`)
+## Stage 0 — research + proposal (MERGED `2237730`, #81)
 
 Deliverables: research doc, spec (revised after consults), this status doc,
 consult brief + two reviews, check-in brief, census/prototype tools.
+
+## Stage 1a — ledger + ownership (MERGED `b73c776`, #87)
+
+`Telemetry/TelemetryEvent.swift`, `TelemetryLedger.swift` (SQLite, 0700/0600,
+WAL; unique unit key; events never regress to a smaller output; markers,
+cursors, ownership, health, meta), `OwnershipRecorder.swift` (exactClaim /
+externalObservation / observedAtTick / heartbeat / strict ring seed),
+`TelemetryService.swift` (serial `.utility` queue, DispatchSource timer,
+`OwnerSnapshotBox`, `os.Logger` category `telemetry`); one call in
+`AppDelegate.applicationDidFinishLaunching` (skipped under XCTest).
+Tests: `TelemetryLedgerTests` (11), `OwnershipRecorderTests` (6).
+
+## Stage 1b — readers + indexer (PR #98)
+
+`JSONLFraming`, `ClaudeTranscriptReader`, `CodexRolloutReader`,
+`GrokUpdatesReader`, `TelemetryIndexer` (+ `TelemetrySourceRoots.live()` via
+`Constants.ClaudePaths.projectsDirectory`, `CodexUsageService.defaultCodexHome`
++ `isolatedHomesRoot`, `~/.grok/sessions`), catch-up scheduling in
+`TelemetryEngine.tick`, `TelemetryService.refreshNow()`. Tests:
+`TelemetryReadersTests` (9), `TelemetryIndexerTests` (9),
+`TelemetryCorpusVerificationTests` (opt-in, `TEST_RUNNER_CUW_TELEMETRY_VERIFY=1`).
+
+Real-corpus verification vs the census (2026-09-03 21:50 PDT):
+
+| | Indexer | Census | Note |
+|---|---|---|---|
+| Claude units | 861,739 | 861,785 | a few message ids appear in two files and now collapse (global unique key) |
+| Claude cache reads / output | 251.57 B / 677.06 M | 251.45 B / 677.14 M | new data since the census; 12,444 units in flight (the last message of every file) |
+| Codex input incl. cached / output | 54.25 B / 181.3 M | 54.23 B / 181.3 M | 398,567 deltas; "unknown" model 6.1 B before the reassignment fix |
+| Grok input incl. cached / output | 932.9 M / 21.38 M | 931.2 M / 21.35 M | 1,159 turns |
+| Rate-limit markers | 2,228 | 2,228 | exact |
+| Malformed / unknown / unreadable | 0 / 0 / 0 | — | |
+
+First full pass in one process: 467 s for 28.2 GB (SQLite upserts + JSON
+parsing; the prototype's 50 s was read + prefilter only). In the app it runs as
+catch-up slices at `.utility`, so expect ~15–20 min of background work after
+the first deploy, then tens of MB per tick.
 
 ## Decisions so far
 
@@ -61,7 +105,15 @@ consult brief + two reviews, check-in brief, census/prototype tools.
 - Stages: 1a ledger + ownership · 1b readers + scheduler · 2 report model ·
   3a window shell (+ DEBUG frame harness) · 3b chart · 4 attribution polish.
 
+## Next
+
+Stage 2 (report model: bucketing, attribution resolver, shares, price table,
+coverage, outlier rule, per-provider provenance), then 3a (window shell +
+DEBUG frame harness `CUW_RENDER_FRAMES`), 3b (chart), 4 (attribution polish).
+The fixes session deploys after 1b so the ledger starts accumulating.
+
 ## Open questions
 
 Spec §6. The one change since the brief went out: markers default to
-switches only (the brief recommended switches + rate-limit stops).
+switches only (the brief recommended switches + rate-limit stops). No owner
+reply yet; proceeding on the recommendations.

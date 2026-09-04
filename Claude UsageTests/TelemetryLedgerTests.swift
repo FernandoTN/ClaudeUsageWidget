@@ -66,6 +66,17 @@ final class TelemetryLedgerTests: XCTestCase {
         XCTAssertNil(try ledger.eventTimeSpan(provider: .grok))
     }
 
+    func testReassignUnknownModelTouchesOnlyThatFilesUnknownUnits() throws {
+        var a = event("r1#1", provider: .codex, model: "unknown"); a.fileId = "r1"
+        var b = event("r1#2", provider: .codex, model: "gpt-5.5"); b.fileId = "r1"
+        var c = event("r2#1", provider: .codex, model: "unknown"); c.fileId = "r2"
+        try ledger.upsert([a, b, c])
+        try ledger.reassignUnknownModel(fileId: "r1", to: "gpt-5.6-sol")
+        let rows = try ledger.events(from: .distantPast, to: .distantFuture)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: rows.map { ($0.unitId, $0.model) }),
+                       ["r1#1": "gpt-5.6-sol", "r1#2": "gpt-5.5", "r2#1": "unknown"])
+    }
+
     func testMarkersIgnoreDuplicates() throws {
         let marker = TelemetryMarker(markerId: "k1", provider: .claude, kind: .rateLimit,
                                      at: Date(timeIntervalSince1970: 50), session: "s1", detail: "resets 10:50pm")
