@@ -32,6 +32,9 @@ class GrokUsageService {
     enum GrokError: Error {
         case invalidJSON
         case noCredentials
+        /// The profile carries no Grok credentials to apply (the Codex twin's
+        /// `noProfileCredentials`).
+        case noProfileCredentials
         case tokenRefreshFailed(status: Int)
         case usageFetchFailed(status: Int)
     }
@@ -47,9 +50,57 @@ class GrokUsageService {
         try? String(contentsOf: authFileURL, encoding: .utf8)
     }
 
+    /// Writes credentials JSON to ~/.grok/auth.json (0600, atomically, like the
+    /// CLI's own file). Creates the directory first — the Codex twin does, and a
+    /// machine where the grok CLI has never run has no `~/.grok` to write into.
     private func writeAuthFile(_ json: String) throws {
+        let dir = authFileURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
         try json.write(to: authFileURL, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authFileURL.path)
+    }
+
+    // MARK: - Applying a profile to the CLI
+
+    /// Hands the profile's stored Grok login to the `grok` CLI by rewriting
+    /// ~/.grok/auth.json — the twin of `CodexUsageService.applyProfileCredentials`,
+    /// and what makes a Grok profile switch reach the CLI instead of only moving
+    /// the focus.
+    ///
+    /// The OUTGOING owner's rotated file is adopted by the caller BEFORE this
+    /// runs (`adoptAuthFileIfSameAccount`, same-account-only, exactly as the
+    /// Codex side does it in `ProfileManager.activateProfileDetailed`): the CLI
+    /// refreshes its token in place, so overwriting the file without adopting
+    /// first loses the outgoing account's rotated refresh token — the
+    /// "refresh token was revoked" failure on the way back.
+    func applyProfileCredentials(_ profileId: UUID) throws {
+        let profiles = ProfileStore.shared.loadProfiles()
+        guard let profile = profiles.first(where: { $0.id == profileId }),
+              let json = profile.grokCredentialsJSON else {
+            throw GrokError.noProfileCredentials
+        }
+        try writeAuthFile(json)
+        LoggingService.shared.log("Grok: Applied profile credentials to auth.json for \(profileId)")
+    }
+
+    /// True when `profile` holds the SAME xAI account as `authFileJSON`.
+    ///
+    /// `user_id` is the authoritative id but lives in the Keychain-only
+    /// credentials blob, so a launch that runs before hydration cannot read it.
+    /// The persisted, non-secret `grokEmail` stamp is the fallback — the same
+    /// role `Profile.codexAccountId` plays for Codex.
+    func profileMatchesAuthFile(_ profile: Profile, authFileJSON: String) -> Bool {
+        if let stored = profile.grokCredentialsJSON,
+           let storedUserId = extractUserId(from: stored),
+           let fileUserId = extractUserId(from: authFileJSON) {
+            return storedUserId == fileUserId
+        }
+        if let email = profile.grokEmail, let fileEmail = extractEmail(from: authFileJSON) {
+            return email.caseInsensitiveCompare(fileEmail) == .orderedSame
+        }
+        return false
     }
 
     // MARK: - Credential parsing
@@ -215,7 +266,16 @@ class GrokUsageService {
               status == 400 || status == 401 || status == 403 else {
             return
         }
-        guard !reloginNotifiedProfiles.contains(profileId) else { return }
+        notifyReloginNeeded(for: profileId)
+    }
+
+    /// Tells the user (once) that a profile's saved Grok login is dead. Also
+    /// called by the activation gate that refuses to hand the CLI a dead login
+    /// (the Codex twin). `force` bypasses the dedup for USER-initiated actions;
+    /// the dedup re-arms as soon as adoption or a successful refresh brings
+    /// working credentials back.
+    func notifyReloginNeeded(for profileId: UUID, force: Bool = false) {
+        guard force || !reloginNotifiedProfiles.contains(profileId) else { return }
         reloginNotifiedProfiles.insert(profileId)
         let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "Grok"
         NotificationManager.shared.sendGrokReloginNotification(profileName: name)

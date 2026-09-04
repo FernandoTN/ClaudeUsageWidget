@@ -28,6 +28,11 @@ class ProfileManager: ObservableObject {
     /// influences only the other Codex account and vice versa.
     @Published private(set) var activeClaudeProfileId: UUID?
     @Published private(set) var activeCodexProfileId: UUID?
+    /// The Grok half of the same idea: who owns ~/.grok/auth.json. Nil means the
+    /// app has never handed that file to a profile, which is how every install
+    /// predating this pointer starts — `activeAccountIds(among:)` then falls
+    /// back to the focused-or-sole rule that was the whole answer before.
+    @Published private(set) var activeGrokProfileId: UUID?
 
     /// Mirrors `ProfileStore.preferencesDegraded` for SwiftUI. True while macOS's
     /// preferences daemon is refusing reads and the store is serving cached values;
@@ -146,6 +151,7 @@ class ProfileManager: ObservableObject {
 
         activeClaudeProfileId = profileStore.loadActiveClaudeProfileId()
         activeCodexProfileId = profileStore.loadActiveCodexProfileId()
+        activeGrokProfileId = profileStore.loadActiveGrokProfileId()
     }
 
     // MARK: - Profile Operations
@@ -328,11 +334,12 @@ class ProfileManager: ObservableObject {
     struct ProviderOwnership: Equatable {
         var claude: UUID?
         var codex: UUID?
-        /// Grok has no shared-login pointer: nothing in the app writes
-        /// `~/.grok/auth.json`, so a Grok login is never handed to a CLI and can
-        /// never be owned by another profile (CLAUDE.md, "Grok accounts"). It is
-        /// carried here so the seam is visible — and already handled — the day
-        /// Grok gains one.
+        /// Grok's owner of `~/.grok/auth.json`. Nil is NOT "no pointer exists"
+        /// any more — it is "the app has never applied a Grok login on this
+        /// install", which is the state every pre-pointer install starts in and
+        /// the reason the Grok arm of `needsProviderApply` keys off the
+        /// pointer's EXISTENCE rather than off whose it is: with nothing ever
+        /// applied, no profile can be somebody else's non-owner.
         var grok: UUID?
 
         init(claude: UUID? = nil, codex: UUID? = nil, grok: UUID? = nil) {
@@ -344,7 +351,11 @@ class ProfileManager: ObservableObject {
 
     /// The pointers as they stand right now.
     var currentProviderOwnership: ProviderOwnership {
-        ProviderOwnership(claude: activeClaudeProfileId, codex: activeCodexProfileId)
+        ProviderOwnership(
+            claude: activeClaudeProfileId,
+            codex: activeCodexProfileId,
+            grok: activeGrokProfileId
+        )
     }
 
     /// The provider logins `profile` CARRIES but does NOT own — i.e. the work an
@@ -387,9 +398,41 @@ class ProfileManager: ObservableObject {
         switch provider {
         case .claude: ownerId = activeClaudeProfileId
         case .codex: ownerId = activeCodexProfileId
-        case .grok: ownerId = nil
+        case .grok: ownerId = activeGrokProfileId
         }
         return ownerId.flatMap { owner in profiles.first(where: { $0.id == owner })?.name }
+    }
+
+    // MARK: - Focus Without Activation
+
+    /// Moves the FOCUS to `id` and nothing else.
+    ///
+    /// `activeProfile` is only the focused profile — which account each CLI is
+    /// signed into is the separate question the three provider pointers answer —
+    /// so a caller that wants to LOOK at a profile does not need, and must not
+    /// pay for, an activation. This sets `activeProfile`, persists
+    /// `activeProfileId`, and publishes; it never touches credentials, never
+    /// moves a provider pointer, never records a `SwitchEvent`, never bumps
+    /// `lastUsedAt`, and never posts `.profileManuallyActivated` (that mark tells
+    /// the auto-switch to stop rotating away from a deliberately chosen account —
+    /// viewing is not choosing).
+    ///
+    /// The publish IS the notification: `activeProfile` is `@Published` and
+    /// `MenuBarManager.observeProfileChanges` subscribes to `$activeProfile`, so
+    /// the menu bar, popover and Settings follow exactly as they do when the
+    /// focus-only branch of `activateProfileDetailed` moves it.
+    ///
+    /// Returns false — changing nothing — when no profile carries that id.
+    @discardableResult
+    func viewProfile(_ id: UUID) -> Bool {
+        guard let profile = profiles.first(where: { $0.id == id }) else {
+            LoggingService.shared.log("ProfileManager: cannot view unknown profile \(id)")
+            return false
+        }
+        activeProfile = profile
+        profileStore.saveActiveProfileId(id)
+        LoggingService.shared.log("👁 Viewing profile '\(profile.name)' (focus only — no login was applied)")
+        return true
     }
 
     /// Returns false when the switch could not take over a provider login the
@@ -528,6 +571,20 @@ class ProfileManager: ObservableObject {
             applyPendingOverlay(to: &profiles)
         }
 
+        // 3. Grok side: exactly the Codex shape. ~/.grok/auth.json is about to be
+        //    replaced, and the `grok` CLI refreshes its token IN that file, so
+        //    the outgoing account's rotated refresh token must be adopted back
+        //    into its profile before the overwrite — otherwise switching away and
+        //    back hands the CLI a consumed refresh token.
+        if target?.grokCredentialsJSON != nil,
+           let outgoingId = resolveOutgoingGrokOwner(), outgoingId != id {
+            await runOffMainActor {
+                GrokUsageService.shared.adoptAuthFileIfSameAccount(for: outgoingId)
+            }
+            profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
+        }
+
         // Get the updated target profile from the reloaded data
         guard var updatedProfile = profiles.first(where: { $0.id == id }) else {
             LoggingService.shared.log("Profile not found after reload: \(id)")
@@ -659,6 +716,52 @@ class ProfileManager: ObservableObject {
             }
         }
 
+        // Apply the profile's Grok account (if any) to ~/.grok/auth.json so the
+        // `grok` CLI switches accounts along with the app — the same three beats
+        // as the two providers above: refresh, gate, apply-and-claim.
+        if updatedProfile.grokCredentialsJSON != nil, applyScope.contains(.grok) {
+            if await GrokUsageService.shared.ensureFreshCredentials(
+                for: id, freshFor: Self.grokApplyFreshnessWindow
+            ) {
+                profiles = profileStore.loadProfiles()
+                applyPendingOverlay(to: &profiles)
+                if let refreshed = profiles.first(where: { $0.id == id }) {
+                    updatedProfile = refreshed
+                }
+                LoggingService.shared.log("✓ Refreshed stale Grok token for '\(updatedProfile.name)' before applying")
+            }
+        }
+
+        if applyScope.contains(.grok), let grokJSON = updatedProfile.grokCredentialsJSON {
+            // GATE: the Claude rule, not the Codex one. A Grok access token lives
+            // ~6h and carries a real `expires_at`, so expiry IS evidence here (the
+            // Codex side needs a liveness probe precisely because its ~10-day token
+            // is not). Still expired after the refresh above means the refresh
+            // token is revoked or consumed; writing it would replace a working
+            // login in auth.json with one no `grok` session can use.
+            let grokService = GrokUsageService.shared
+            if grokService.isTokenExpired(grokJSON) || grokService.isLoginMarkedDead(id) {
+                refusedProviders.append(.grok)
+                grokService.notifyReloginNeeded(for: id, force: false)
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' Grok login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
+            } else {
+                let targetProfileId = updatedProfile.id
+                let targetProfileName = updatedProfile.name
+                await runOffMainActor {
+                    do {
+                        try GrokUsageService.shared.applyProfileCredentials(targetProfileId)
+                        LoggingService.shared.log("✓ Applied Grok credentials for: \(targetProfileName)")
+                    } catch {
+                        LoggingService.shared.logError("Failed to apply Grok credentials (non-fatal)", error: error)
+                    }
+                }
+                // Same rule as the other two: the pointer follows the apply with
+                // no awaits in between.
+                activeGrokProfileId = id
+                profileStore.saveActiveGrokProfileId(id)
+            }
+        }
+
         // An AUTOMATIC gated switch must leave the FOCUS unchanged too, not just
         // the shared login: the auto-switch walk and the retry sweeps treat a
         // refusal as "nothing happened", and flipping activeProfile onto a dead
@@ -743,20 +846,25 @@ class ProfileManager: ObservableObject {
     enum RefusedProvider: String {
         case claude
         case codex
+        case grok
 
         /// How the provider is named to the user.
         var displayName: String {
             switch self {
             case .claude: return "Claude Code"
             case .codex: return "Codex"
+            case .grok: return "Grok"
             }
         }
 
-        /// Where the in-app repair lives, for the notice's instruction.
+        /// Where the in-app repair lives, for the notice's instruction. Grok has
+        /// no in-app login screen — the repair is a CLI login followed by a Sync,
+        /// which is what its re-login notification already tells the user.
         var repairLocation: String {
             switch self {
             case .claude: return "Settings → CLI Account"
             case .codex: return "Settings → Codex Account"
+            case .grok: return "a `grok login` in Terminal, then Sync"
             }
         }
 
@@ -792,6 +900,7 @@ class ProfileManager: ObservableObject {
             switch provider {
             case .claude: ownerId = activeClaudeProfileId
             case .codex: ownerId = activeCodexProfileId
+            case .grok: ownerId = activeGrokProfileId
             }
             return ownerId.flatMap { id in profiles.first(where: { $0.id == id })?.name }
         }
@@ -825,18 +934,56 @@ class ProfileManager: ObservableObject {
         LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Codex login")
     }
 
-    /// True if the profile owns its provider's shared CLI login — the Claude Code
-    /// Keychain item or ~/.codex/auth.json. One Claude and one Codex account are
-    /// active at any time, so up to TWO profiles carry the "Active" badge; the
-    /// focused profile is a separate concept and gets no badge of its own.
-    func isProviderActive(_ profile: Profile) -> Bool {
-        profile.id == activeClaudeProfileId || profile.id == activeCodexProfileId
+    /// Records `profileId` as the owner of ~/.grok/auth.json. Call right after
+    /// syncing that file INTO the profile, or right after applying the profile
+    /// TO it (see the two above — same contract, same reason).
+    func claimActiveGrokOwnership(_ profileId: UUID) {
+        activeGrokProfileId = profileId
+        profileStore.saveActiveGrokProfileId(profileId)
+        LoggingService.shared.log("ProfileManager: '\(profiles.first(where: { $0.id == profileId })?.name ?? "?")' claimed the active Grok login")
     }
 
-    /// Every account the UI marks as ACTIVE: the Claude and Codex profiles that
-    /// own their provider's shared CLI login, plus Grok's active account — Grok
-    /// has no shared-login pointer, so the FOCUSED Grok profile counts, and a
-    /// sole Grok profile is trivially the active one.
+    /// How much remaining validity an activation demands of a Grok token before
+    /// handing it to the CLI. Deliberately NOT the Codex side's 24 hours: a Grok
+    /// access token lives about six hours, so a 24-hour bar would force a
+    /// redemption — and rotate the refresh-token family — on every single
+    /// activation. Fifteen minutes is long enough that the CLI never inherits a
+    /// token about to die mid-command, and short enough to leave a healthy token
+    /// alone.
+    private static let grokApplyFreshnessWindow: TimeInterval = 15 * 60
+
+    /// Who owns ~/.grok/auth.json right now, for the pre-switch adoption. Same
+    /// precedence as the Codex twin: the FILE's own account first (it is the
+    /// CLI's current login, so it outranks any bookkeeping), then the persisted
+    /// pointer, then the focused profile if it carries a Grok login at all.
+    private func resolveOutgoingGrokOwner() -> UUID? {
+        let service = GrokUsageService.shared
+        if let fileJSON = service.readAuthFile(),
+           let owner = profiles.first(where: { service.profileMatchesAuthFile($0, authFileJSON: fileJSON) }) {
+            return owner.id
+        }
+        if let pointer = activeGrokProfileId { return pointer }
+        if let focused = activeProfile, focused.grokCredentialsJSON != nil { return focused.id }
+        return nil
+    }
+
+    /// True if the profile owns its provider's shared CLI login — the Claude Code
+    /// Keychain item, ~/.codex/auth.json, or ~/.grok/auth.json. One account per
+    /// provider is active at any time, so up to THREE profiles carry the "Active"
+    /// badge; the focused profile is a separate concept and gets no badge of its
+    /// own. Grok contributes only once its pointer is set (an install where no
+    /// Grok login has ever been applied has no owner to name).
+    func isProviderActive(_ profile: Profile) -> Bool {
+        profile.id == activeClaudeProfileId
+            || profile.id == activeCodexProfileId
+            || profile.id == activeGrokProfileId
+    }
+
+    /// Every account the UI marks as ACTIVE: the profiles that own their
+    /// provider's shared CLI login. Grok now has a pointer of its own, and it
+    /// wins when it is set; with no pointer — an install where the app has never
+    /// applied a Grok login — the old inference stands, so the FOCUSED Grok
+    /// profile counts and a sole Grok profile is trivially the active one.
     ///
     /// One definition, two consumers: the menu-bar tile's cyan label
     /// (`StatusBarUIManager.paintTiles`) and the popover's "Active" badge /
@@ -844,11 +991,18 @@ class ProfileManager: ObservableObject {
     /// cyan while the popover called it inactive.
     func activeAccountIds(among profiles: [Profile]) -> Set<UUID> {
         var ids = Set([activeClaudeProfileId, activeCodexProfileId].compactMap { $0 })
-        let groks = profiles.filter { $0.providerKind == .grok }
-        if let focused = activeProfile, focused.providerKind == .grok {
-            ids.insert(focused.id)
-        } else if groks.count == 1, let sole = groks.first {
-            ids.insert(sole.id)
+        if let grokOwner = activeGrokProfileId {
+            // A real pointer beats every inference: it records a login this app
+            // actually wrote to ~/.grok/auth.json, which is the same evidence the
+            // other two pointers carry.
+            ids.insert(grokOwner)
+        } else {
+            let groks = profiles.filter { $0.providerKind == .grok }
+            if let focused = activeProfile, focused.providerKind == .grok {
+                ids.insert(focused.id)
+            } else if groks.count == 1, let sole = groks.first {
+                ids.insert(sole.id)
+            }
         }
         return ids
     }
@@ -1469,7 +1623,33 @@ class ProfileManager: ObservableObject {
         }
         profileStore.saveActiveCodexProfileId(activeCodexProfileId)
 
-        LoggingService.shared.log("ProfileManager: active Claude=\(profiles.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none"), active Codex=\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")")
+        // Grok, resolved the way Codex is: ~/.grok/auth.json IS the grok CLI's
+        // current login, so whenever its account matches a profile, that profile
+        // owns the shared login regardless of what the pointer says.
+        //
+        // What deliberately does NOT happen here is the Codex side's
+        // exactly-one-profile inference. A sole Codex profile is evidence
+        // because the app has always written auth.json for Codex; for Grok it is
+        // not — until this pointer shipped, nothing in the app ever wrote
+        // ~/.grok/auth.json, so "one Grok profile" says nothing about who the
+        // CLI is logged in as. With no match the pointer stays unset and
+        // `activeAccountIds(among:)` falls back to the focused-or-sole rule that
+        // was the entire answer before.
+        let grokService = GrokUsageService.shared
+        if let fileJSON = grokService.readAuthFile(),
+           let owner = profiles.first(where: { grokService.profileMatchesAuthFile($0, authFileJSON: fileJSON) }) {
+            activeGrokProfileId = owner.id
+        } else if absenceIsEvidence,
+                  let id = activeGrokProfileId,
+                  profiles.first(where: { $0.id == id })?.grokCredentialsJSON == nil {
+            // The recorded owner no longer holds a Grok login (removed, or the
+            // profile is gone). Same absence rule as the two above: only a
+            // completed hydration makes nil credentials mean anything.
+            activeGrokProfileId = nil
+        }
+        profileStore.saveActiveGrokProfileId(activeGrokProfileId)
+
+        LoggingService.shared.log("ProfileManager: active Claude=\(profiles.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none"), active Codex=\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none"), active Grok=\(profiles.first(where: { $0.id == activeGrokProfileId })?.name ?? "none")")
     }
 
     /// Verifies WHO the shared Claude Code login actually belongs to (via the
