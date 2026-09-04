@@ -1157,7 +1157,7 @@
 "insights.capacity_empty" = "Nothing measured.";
 "insights.capacity_line" = "%@ · %.1f accounts of headroom";
 "insights.why_not" = "Why not the others";
-"insights.own_ago" = "own measurement %@ ago";
+"insights.own_ago" = "own measurement %@";
 "insights.never_own" = "never measured through its own endpoint";
 "insights.shown_from_cache" = "shown from the CLI cache";
 "insights.header_rescues" = "%d header rescues in the last hour";

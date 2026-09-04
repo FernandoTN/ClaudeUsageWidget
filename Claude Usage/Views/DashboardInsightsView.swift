@@ -105,7 +105,7 @@ struct DashboardInsightsView: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(glyph).font(.system(size: 9)).foregroundColor(tint).frame(width: 10)
             Text(title).font(.system(size: 9.5, weight: .semibold)).lineLimit(1)
-            Text(detail).font(.system(size: 8.5)).foregroundColor(.secondary).monospacedDigit().lineLimit(1).truncationMode(.tail)
+            Text(detail).font(.system(size: 8.5)).foregroundColor(.secondary).monospacedDigit().lineLimit(2).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
     }
@@ -182,7 +182,7 @@ enum InsightsFormatting {
     static func blind(_ spot: FleetInsights.BlindSpot, now: Date) -> String {
         var parts: [String] = []
         if let since = spot.sinceOwnMeasurement {
-            parts.append("insights.own_ago".localized(with: DashboardFormatting.duration(since)))
+            parts.append("insights.own_ago".localized(with: DashboardFormatting.age(now.addingTimeInterval(-since), now: now)))
         } else {
             parts.append("insights.never_own".localized)
         }
@@ -236,8 +236,11 @@ enum InsightsFormatting {
 
     static func whyNot(_ why: FleetInsights.WhyNot) -> String {
         var parts = [why.evidence]
-        if let verdict = why.verdictText { parts.append(verdict) }
-        if let age = why.evidenceAge { parts.append("insights.evidence_age".localized(with: DashboardFormatting.duration(age))) }
+        if let verdict = why.verdictText {
+            parts.append(verdict)
+        } else if let age = why.evidenceAge {
+            parts.append("insights.evidence_age".localized(with: DashboardFormatting.duration(age)))
+        }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 

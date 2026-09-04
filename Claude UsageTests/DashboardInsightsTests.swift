@@ -28,21 +28,21 @@ final class DashboardInsightsTests: XCTestCase {
 
     func testBlindSpotTextNamesEveryPieceOfEvidence() {
         let fine = FleetInsights.BlindSpot(id: UUID(), name: "A", provider: .claude, sinceOwnMeasurement: 30, provenance: .ownEndpoint, headerRescuesLastHour: 0, backoff: nil, isBlind: false)
-        XCTAssertEqual(InsightsFormatting.blind(fine, now: now), "own measurement 30s ago")
+        XCTAssertEqual(InsightsFormatting.blind(fine, now: now), "own measurement 30 s ago")
         let blind = FleetInsights.BlindSpot(id: UUID(), name: "B", provider: .codex, sinceOwnMeasurement: nil, provenance: .cliCache, headerRescuesLastHour: 2,
                                             backoff: FleetInsights.Backoff(until: now.addingTimeInterval(120), streak: 3), isBlind: true)
-        XCTAssertEqual(InsightsFormatting.blind(blind, now: now), "never measured through its own endpoint · shown from the CLI cache · 2 header rescues in the last hour · backing off 2m (streak 3)")
+        XCTAssertEqual(InsightsFormatting.blind(blind, now: now), "never measured through its own endpoint · shown from the CLI cache · 2 header rescues in the last hour · backing off 2 min (streak 3)")
     }
 
     func testSwitchAndBurnDetails() {
         let legacy = FleetInsights.SwitchRow(at: now.addingTimeInterval(-3600), from: "A", to: "B", trigger: .manual, reason: nil, provider: .claude, isLegacy: true, fromHeadroom: nil)
-        XCTAssertEqual(InsightsFormatting.switchDetail(legacy, now: now), "1h ago · manual · recorded before Viewing was split from Active")
+        XCTAssertEqual(InsightsFormatting.switchDetail(legacy, now: now), "1 h ago · manual · recorded before Viewing was split from Active")
         let auto = FleetInsights.SwitchRow(at: now.addingTimeInterval(-60), from: "A", to: "B", trigger: .auto, reason: "session 96 %", provider: .claude, isLegacy: false, fromHeadroom: 4.4)
-        XCTAssertEqual(InsightsFormatting.switchDetail(auto, now: now), "1m ago · auto-switch · 4 % headroom left · session 96 %")
+        XCTAssertEqual(InsightsFormatting.switchDetail(auto, now: now), "1 m ago · auto-switch · 4 % headroom left · session 96 %")
         let flat = FleetInsights.Burn(id: UUID(), name: "A", provider: .claude, ratePerMinute: nil, samples: [], projectedCrossing: nil)
         XCTAssertEqual(InsightsFormatting.burn(flat, now: now), "flat")
         let rising = FleetInsights.Burn(id: UUID(), name: "A", provider: .claude, ratePerMinute: 2.06, samples: [], projectedCrossing: now.addingTimeInterval(8 * 60))
-        XCTAssertEqual(InsightsFormatting.burn(rising, now: now), "+2.1 pp/min · crosses the threshold in 8m")
+        XCTAssertEqual(InsightsFormatting.burn(rising, now: now), "+2.1 pp/min · crosses the threshold in 8 min")
     }
 
     func testFixtureCoversEverySection() {
