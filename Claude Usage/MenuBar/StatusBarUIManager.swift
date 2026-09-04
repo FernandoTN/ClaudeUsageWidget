@@ -1793,6 +1793,38 @@ final class StatusBarUIManager {
         scheduleExposureProbe(reason: "order repair")
     }
 
+    /// "weekly limit hit, reset more than a day away (light red, reset in 3 d 2 h)".
+    nonisolated static func dotWords(_ readiness: AccountReadiness, usage: ClaudeUsage? = nil, now: Date = Date()) -> String {
+        let shade: String
+        switch readiness {
+        case .ready: shade = "bright green"
+        case .readyLight: shade = "light green"
+        case .sessionHit: shade = "bright orange"
+        case .sessionHitLight: shade = "faded orange"
+        case .weeklyHitSoon: shade = "bright red"
+        case .weeklyHit: shade = "light red"
+        case .suspected: shade = "purple"
+        case .unknown, .excluded: shade = "grey"
+        case .dead: shade = "×"
+        }
+        var detail = shade
+        if let usage, readiness.isAtLimit {
+            var resets: [Date] = []
+            if readiness.isSessionHit, usage.sessionResetTime > now { resets.append(usage.sessionResetTime) }
+            if readiness.isWeeklyHit {
+                if usage.weeklyResetTime > now { resets.append(usage.weeklyResetTime) }
+                if let fable = usage.fableWeeklyResetTime, fable > now { resets.append(fable) }
+            }
+            if let soonest = resets.min() {
+                let total = Int(soonest.timeIntervalSince(now))
+                let hours = total / 3600
+                let minutes = (total % 3600) / 60
+                detail += hours >= 24 ? ", reset in \(hours / 24) d \(hours % 24) h" : ", reset in \(hours) h \(minutes) m"
+            }
+        }
+        return "\(readiness.legendWord) (\(detail))"
+    }
+
     // MARK: - Provider-group exposure (menu-bar overflow, stage C0)
 
     /// Provider groups CONFIRMED hidden by the menu bar (two consecutive
@@ -2026,8 +2058,13 @@ final class StatusBarUIManager {
             )
             readiness[profile.id] = adopted.readiness
             if let change = adopted.change {
+                // In words, with the shade and the governing reset, so the
+                // owner's scheme is verifiable from the log by pid:
+                // "Memori: weekly limit hit, reset more than a day away
+                // (light red, reset in 3 d 2 h) — new measurement (own endpoint)".
                 LoggingService.shared.log(
-                    "Fleet dot \(profile.name): \(change.from.map { "\($0)" } ?? "—") → \(change.to) — \(change.reason)")
+                    "Fleet dot \(profile.name): \(change.from.map { Self.dotWords($0) } ?? "—") → "
+                        + "\(Self.dotWords(change.to, usage: profile.claudeUsage, now: now)) — \(change.reason)")
             }
             if AccountReadiness.isStale(profile.claudeUsage, thresholds: dotThresholds, now: now) {
                 stale.insert(profile.id)
