@@ -27,6 +27,12 @@ struct DashboardActions {
     var makeActive: (UUID) async -> ProfileManager.ActivationOutcome
     var queueNext: (UUID) -> Void
     var removeFromQueue: (UUID) -> Void
+    /// Open the ⇄ selector menu on one provider's section
+    /// (`Notification.Name.activeSelectorRequested`).
+    var openActiveSelector: (Profile.ProviderKind) -> Void = { _ in }
+    /// Open the token-usage window for one account, or the fleet (nil)
+    /// (`Notification.Name.telemetryWindowRequested`).
+    var openTokenUsage: (UUID?, Profile.ProviderKind?) -> Void = { _, _ in }
 }
 
 // MARK: - Store
@@ -151,6 +157,39 @@ enum DashboardFormatting {
         }
     }
 
+    /// The section's second line — the Viewing / Active-for vocabulary
+    /// (docs/specs/ux-revamp.md R3), read from the same selection the ⇄
+    /// menu shows, so the two surfaces can never disagree about who is
+    /// active. "Viewing dJormun · Active for Claude: dRir", or just the
+    /// owner when the focus is on another provider, or "No active Claude
+    /// login"; "· pinned" when the user chose the owner and the auto-switch
+    /// will not move it.
+    static func sectionCaption(_ section: ProviderSection) -> String {
+        let ownerName = section.selection?.owner?.name ?? section.active?.name
+        var line: String
+        if let selection = section.selection, let viewingId = selection.viewing,
+           let viewingName = viewingId == selection.owner?.id
+               ? selection.owner?.name
+               : section.roster.first(where: { $0.id == viewingId })?.name {
+            line = ActiveVocabulary.viewingLine(viewing: viewingName, provider: section.provider, owner: ownerName)
+        } else if let ownerName {
+            line = "\(ActiveVocabulary.activeFor(section.provider)): \(ownerName)"
+        } else {
+            line = ActiveVocabulary.noActiveLogin(section.provider)
+        }
+        if section.selection?.owner?.isManuallyPinned == true { line += " · pinned" }
+        return line
+    }
+
+    /// "ROSTER · 17 · soonest weekly reset first · 7 eligible now".
+    static func rosterHeader(_ section: ProviderSection) -> String {
+        var line = "ROSTER · \(section.roster.count) · soonest weekly reset first"
+        if let counts = section.selection?.counts {
+            line += " · \(counts.autoSwitchEligible) eligible now"
+        }
+        return line
+    }
+
     static func title(_ provider: Profile.ProviderKind) -> String {
         switch provider {
         case .claude: return "Claude"
@@ -265,6 +304,8 @@ struct DashboardView: View {
                     }
                 }
                 .disabled(isRefreshing)
+                HeaderIconButton(icon: "chart.bar.xaxis", fontSize: 11) { actions.openTokenUsage(nil, nil) }
+                    .help("popover.token_usage".localized)
                 HeaderIconButton(icon: "gearshape.fill", fontSize: 12) { actions.openSettings(nil) }
             }
         }
@@ -316,17 +357,36 @@ struct DashboardView: View {
 
     private func sectionView(_ section: ProviderSection) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(DashboardFormatting.title(section.provider).uppercased())
-                    .font(.system(size: 10, weight: .bold))
-                Text(section.active.map { "active: \($0.name)" } ?? "no active login")
-                    .font(.system(size: 10))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(DashboardFormatting.title(section.provider).uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                    Spacer()
+                    if let counts = section.selection?.counts {
+                        // The bar's glyph alphabet (● ◐ ○ ▲ × – †); the
+                        // sentence behind it on hover.
+                        Text(counts.strip)
+                            .font(.system(size: 8.5, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .help(ActiveVocabulary.countsSentence(counts))
+                    }
+                    Button { actions.openActiveSelector(section.provider) } label: {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help(ActiveVocabulary.makeActive(section.provider))
+                }
+                Text(DashboardFormatting.sectionCaption(section))
+                    .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
-                Spacer()
+                    .lineLimit(1)
                 if let active = section.active, !active.sameAccountAs.isEmpty {
                     Text("same account as \(active.sameAccountAs.joined(separator: ", "))")
                         .font(.system(size: 9))
                         .foregroundColor(.orange)
+                        .lineLimit(1)
                 }
             }
             .padding(.horizontal, 14)
@@ -342,7 +402,7 @@ struct DashboardView: View {
 
             if !section.roster.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("ROSTER · \(section.roster.count) · soonest weekly reset first")
+                    Text(DashboardFormatting.rosterHeader(section))
                         .font(.system(size: 8.5, weight: .semibold))
                         .foregroundColor(.secondary)
                         .padding(.horizontal, 14)
@@ -488,8 +548,14 @@ struct DashboardView: View {
                             .foregroundColor(row.readiness.dashboardColor)
                             .frame(width: 10)
                         Text(row.name).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
+                        if row.isNext {
+                            Text("next").font(.system(size: 8, weight: .bold)).foregroundColor(.accentColor)
+                        }
                         if let position = row.queuePosition {
                             Text("queued #\(position)").font(.system(size: 8)).foregroundColor(.accentColor)
+                        }
+                        if row.needsRelogin {
+                            Text("re-login needed").font(.system(size: 8)).foregroundColor(.orange)
                         }
                         if !row.sameAccountAs.isEmpty {
                             Text("same account as \(row.sameAccountAs.joined(separator: ", "))")
@@ -525,7 +591,7 @@ struct DashboardView: View {
             }
             .buttonStyle(.plain)
             .contextMenu {
-                Button("Make active…") { pendingSwitch = row.id; switchNote = nil }
+                Button(ActiveVocabulary.makeActive(section.provider)) { pendingSwitch = row.id; switchNote = nil }
                 if row.queuePosition == nil {
                     Button("Queue next") { actions.queueNext(row.id) }
                 } else {
@@ -534,6 +600,7 @@ struct DashboardView: View {
                 if let repair = row.repair {
                     Button(repairTitle(repair)) { actions.openSettings(repair.settingsSectionRawValue ?? "manageProfiles") }
                 }
+                Button("popover.token_usage".localized) { actions.openTokenUsage(row.id, section.provider) }
                 Button("Open in Settings") { actions.openSettings("manageProfiles") }
             }
 

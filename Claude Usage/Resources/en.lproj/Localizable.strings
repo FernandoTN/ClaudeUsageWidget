@@ -607,6 +607,7 @@
 /* MARK: - Popover/Menu Bar */
 /* ==================== */
 "popover.manage_profiles" = "Manage Profiles";
+"popover.token_usage" = "Token usage…";
 "popover.no_profile" = "No Profile";
 "popover.profiles_count" = "%d profiles";
 "popover.profile_count_singular" = "1 profile";

@@ -654,6 +654,15 @@ class MenuBarManager: NSObject, ObservableObject {
                     SharedDataStore.shared.saveAutoSwitchQueue(
                         SharedDataStore.shared.loadAutoSwitchQueue().filter { $0 != id })
                     self?.rebuildDashboardSnapshot()
+                },
+                openActiveSelector: { provider in
+                    // The ⇄ selector item (UX revamp stage 1b) observes this
+                    // and opens its menu scrolled to the provider's section.
+                    NotificationCenter.default.post(name: .activeSelectorRequested, object: provider)
+                },
+                openTokenUsage: { [weak self] id, provider in
+                    self?.closePopoverOrWindow()
+                    Self.requestTokenUsageWindow(profileId: id, provider: provider)
                 }
             )
             return NSHostingController(rootView: DashboardView(store: dashboardStore, actions: actions))
@@ -674,10 +683,25 @@ class MenuBarManager: NSObject, ObservableObject {
             onManageProfiles: { [weak self] in
                 self?.closePopoverOrWindow()
                 self?.preferencesClicked(section: .manageProfiles)
+            },
+            onTokenUsage: { [weak self] id, provider in
+                self?.closePopoverOrWindow()
+                Self.requestTokenUsageWindow(profileId: id, provider: provider)
             }
         )
 
         return NSHostingController(rootView: contentView)
+    }
+
+    /// Ask the token-usage window (owned under `Telemetry/`) to open for one
+    /// account, or the fleet when `profileId` is nil. Contract:
+    /// object = the profile id, userInfo["provider"] = the provider kind.
+    private static func requestTokenUsageWindow(profileId: UUID?, provider: Profile.ProviderKind?) {
+        NotificationCenter.default.post(
+            name: .telemetryWindowRequested,
+            object: profileId,
+            userInfo: provider.map { ["provider": $0] }
+        )
     }
 
     /// Show a DIFFERENT account's usage in the already-open popover, without
@@ -3711,9 +3735,12 @@ private func observeCredentialChanges() {
             queue: SharedDataStore.shared.loadAutoSwitchQueue(),
             history: SharedDataStore.shared.loadSwitchHistory(),
             hiddenProviders: statusBarUIManager?.hiddenProviders ?? [],
-            // Same Anthropic account behind several profiles (#60): the
-            // dashboard shows them as one quota with the member names.
-            duplicateGroups: profileManager.duplicateClaudeAccountGroups
+            // Same account behind several profiles (#60): the dashboard shows
+            // them as one quota with the member names. Claude groups come from
+            // the manager's published rule, Codex groups from `codexAccountId`.
+            duplicateGroups: FleetCounts.duplicateGroups(in: profiles, published: profileManager.duplicateClaudeAccountGroups),
+            manuallyPinned: autoSwitchedProfileIds,
+            needsRelogin: profileManager.profilesNeedingAccountRelogin
         ))
     }
 
