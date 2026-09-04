@@ -378,6 +378,59 @@ final class CodexHomeImportTests: XCTestCase {
         XCTAssertNil(CodexLoginService.loginHome(existingHomePath: nil, profileName: "///"))
     }
 
+    /// Re-logging an account into the profile that already holds it is the
+    /// REPAIR, not a duplicate — `Cod` and `Dex` hold dead tokens for the very
+    /// accounts their owner signs into again. A guard that excluded nothing
+    /// would name the viewed profile itself as the holder and abort the one
+    /// operation the user came for. Any OTHER holder still refuses, by name.
+    func testReLoggingTheSameAccountIntoItsOwnProfileIsARepairNotADuplicate() throws {
+        let home = try makeHome(accountId: "acct-cod", email: "cod@example.com")
+        let json = try XCTUnwrap(service.readAuthFile(inHome: home))
+
+        // The live shape: the profile holds this account already, its tokens
+        // are dead, and its home is remembered from the first login.
+        let cod = Profile(
+            name: "Cod",
+            codexCredentialsJSON: json,
+            codexEmail: "cod@example.com",
+            codexAccountId: "acct-cod",
+            codexHomePath: home.path
+        )
+        let dex = Profile(name: "Dex", codexAccountId: "acct-dex")
+        let roster = [cod, dex]
+
+        // Excluding the destination — what the sheet passes — sees no holder.
+        XCTAssertNil(CodexUsageService.duplicateAccountHolder(
+            accountId: "acct-cod", target: cod.id, profiles: roster,
+            accountIdOf: { self.service.accountId(of: $0) }
+        ), "the profile's own account must not read as a duplicate of itself")
+
+        // So the import succeeds and replaces the dead tokens in place.
+        let repaired = try XCTUnwrap(
+            try service.importedRoster(from: json, homePath: home.path, into: cod.id, profiles: roster)
+                .first { $0.id == cod.id }
+        )
+        XCTAssertEqual(repaired.codexAccountId, "acct-cod")
+        XCTAssertEqual(repaired.codexHomePath, home.path, "the remembered home is reused")
+
+        // The same login into a DIFFERENT profile is still refused, naming Cod.
+        XCTAssertThrowsError(
+            try service.importedRoster(from: json, homePath: home.path, into: dex.id, profiles: roster)
+        ) { error in
+            guard case CodexError.accountAlreadySynced(let profileName) = error else {
+                return XCTFail("expected accountAlreadySynced, got \(error)")
+            }
+            XCTAssertEqual(profileName, "Cod")
+        }
+
+        // The destination-excluding branch is only reachable because a profile
+        // with a DEAD account is the destination in the first place.
+        XCTAssertEqual(
+            CodexLoginService.loginTarget(carriesCodexAccount: true, loginIsDead: true),
+            .viewedProfile
+        )
+    }
+
     /// The post-login path is the import path: whatever the CLI wrote into the
     /// isolated home goes through the same parser, the same duplicate guard and
     /// the same stamps.
