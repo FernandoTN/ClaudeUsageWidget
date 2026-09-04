@@ -193,4 +193,9 @@ final class WeeklyOnlyNotificationTests: XCTestCase {
             profiles: [empty],
             hasClaudeCLILogin: false, hasCodexCLILogin: true, hasGrokCLILogin: false))
     }
+
+    func testNotificationsAreSuppressedUnderXCTest() {
+        XCTAssertTrue(NotificationManager.isRunningUnderXCTest, "the suite runs inside the XCTest host")
+        NotificationManager.shared.sendAutoSwitchNotification(fromProfile: "Fixture A", toProfile: "Fixture B")
+    }
 }

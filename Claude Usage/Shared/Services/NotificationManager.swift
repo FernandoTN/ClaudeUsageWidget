@@ -27,6 +27,19 @@ class NotificationManager {
 
     private init() {}
 
+    /// True inside the XCTest host, which launches the real app around the
+    /// suite: fixture profiles ("DeadLogin", re-login prompts, threshold
+    /// alerts) must never reach the user's Notification Center.
+    nonisolated static let isRunningUnderXCTest: Bool =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || NSClassFromString("XCTestCase") != nil
+
+    /// The single seam every notification goes through.
+    private func deliver(_ request: UNNotificationRequest, _ completion: @escaping (Error?) -> Void) {
+        if Self.isRunningUnderXCTest { completion(nil); return }
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: completion)
+    }
+
     /// Sends a notification when approaching usage limits (legacy method)
     func sendUsageAlert(type: AlertType, percentage: Double, resetTime: Date?) {
         // Check if notifications are enabled for the active profile
@@ -66,7 +79,7 @@ class NotificationManager {
             trigger: nil // Show immediately
         )
 
-        UNUserNotificationCenter.current().add(request) { [weak self] error in
+        deliver(request) { [weak self] error in
             if error == nil {
                 // Mark this notification as sent
                 var updated = self?.sentNotifications ?? []
@@ -90,7 +103,7 @@ class NotificationManager {
             trigger: nil // Show immediately
         )
 
-        UNUserNotificationCenter.current().add(request) { _ in
+        deliver(request) { _ in
             // Notification sent
         }
     }
@@ -114,7 +127,7 @@ class NotificationManager {
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
         // Add the notification request
-        center.add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to show success notification: \(error)")
             }
@@ -294,7 +307,7 @@ class NotificationManager {
             trigger: nil // Show immediately
         )
 
-        UNUserNotificationCenter.current().add(request) { [weak self] error in
+        deliver(request) { [weak self] error in
             if error == nil {
                 // Play custom system sound after notification is delivered
                 if let name = customSoundName {
@@ -330,7 +343,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send auto-switch notification: \(error)")
             }
@@ -354,7 +367,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send inferred-throttle notification: \(error)")
             }
@@ -381,7 +394,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send projected-exhaustion notification: \(error)")
             }
@@ -403,7 +416,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Claude re-login notification: \(error)")
             }
@@ -435,7 +448,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Codex re-login notification: \(error)")
             }
@@ -474,7 +487,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send focus-without-login notification: \(error)")
             }
@@ -496,7 +509,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Grok re-login notification: \(error)")
             }
@@ -525,7 +538,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send duplicate-account notification: \(error)")
             }
@@ -549,7 +562,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        UNUserNotificationCenter.current().add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send preferences-degraded notification: \(error)")
             }
@@ -591,7 +604,7 @@ class NotificationManager {
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
 
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-        center.add(request) { error in
+        deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to schedule session key expiry notification: \(error)")
             }
