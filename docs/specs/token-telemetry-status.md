@@ -235,11 +235,31 @@ path for report and export. Frames added: fleet-7d-ratelimits,
 provider-claude-ratelimits. Tests: `TelemetryExportTests` (6). Design
 passes 44–48.
 
+Stage 4a merged as `7a74fed` (#120; approved from the frames, T26 confirmed
+fixed) and deployed 23:29:01 PDT (pid 23312): the new ownership info line
+logged the first claim at 23:29:05, first incremental slice at 23:29:07,
+ledger 288 MB / WAL 0, RSS 161 MB.
+
+## Stage 4b — the stack switch
+
+`TelemetryStack.sidechain` (Main vs subagents) beside the existing
+originator stack; `TelemetryStack.options(for:provider:)` and
+`title(provider:)` decide what a scope offers and what it is called
+(Project for Claude and Grok, Originator for Codex, Source across the
+fleet). The window model holds `stack` (resets with the scope) and passes
+it to the scoped query and the export; a pure-SwiftUI pill beside the
+chart title opens a popover of the options. Ranked parts of one provider
+wear its hue at lightness steps. Frames added: provider-claude-sidechain,
+provider-codex-originator. Tests in `TelemetryExportTests` (+1). Design
+passes 49–50.
+
 ## Next
 
-Stage 4b (by-originator / main-vs-subagent stacks; minute compaction of
-raw events older than 90 days — lossless for the report), then the fixes
-session's punch
+Stage 4c (minute compaction of raw events older than 90 days — lossless
+for the report: a `minutes` table keyed by provider / minute / model /
+source / sidechain / session, a per-file watermark so a replay after
+compaction is dropped, in-flight rows untouched, one day per transaction
+under a 2 s budget, at most one pass a day), then the fixes session's punch
 list on the shell (typography, sidebar density, footer actions) once its
 pixel pass lands.
 

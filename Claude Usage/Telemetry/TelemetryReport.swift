@@ -249,7 +249,7 @@ nonisolated enum TelemetryReportBuilder {
             switch stack {
             case .provider: key = providerKey(marker.provider)
             case .account: key = accountKey(for: attribution, provider: marker.provider, roster: names)
-            case .model, .kind, .originator: key = nil
+            case .model, .kind, .originator, .sidechain: key = nil
             }
             if let key { buckets[index].rateLimitsBySeries[keptSet.contains(key) ? key : .other, default: 0] += 1 }
         }
@@ -413,6 +413,10 @@ nonisolated enum TelemetryReportBuilder {
         case .originator:
             let source = row.aggregate.source ?? "unknown"
             return SeriesKey(id: "\(row.aggregate.provider.rawValue):\(source)", label: source, provider: row.aggregate.provider)
+        case .sidechain:
+            return row.aggregate.sidechain
+                ? SeriesKey(id: "\(row.aggregate.provider.rawValue):subagents", label: "Subagents", provider: row.aggregate.provider)
+                : SeriesKey(id: "\(row.aggregate.provider.rawValue):main", label: "Main", provider: row.aggregate.provider)
         }
     }
 

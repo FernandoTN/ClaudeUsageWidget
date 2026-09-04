@@ -63,6 +63,38 @@ nonisolated enum TelemetryMetric: String, Sendable, CaseIterable {
 
 nonisolated enum TelemetryStack: String, Sendable, CaseIterable {
     case provider, model, account, kind, originator
+    /// Main session vs subagents (Claude's sidechain flag).
+    case sidechain
+
+    /// The stacks a scope can offer (spec §3.2 frame 4: a provider offers
+    /// *by originator* and *main vs subagents*); `.kind` is the By-kind
+    /// metric's own stack and never a choice here.
+    static func options(for scope: TelemetryScope, provider: TelemetryProvider?) -> [TelemetryStack] {
+        switch scope {
+        case .fleet: return [.provider, .account, .originator]
+        case .provider(let p): return p == .claude ? [.model, .account, .originator, .sidechain] : [.model, .account, .originator]
+        case .account: return provider == .claude ? [.model, .originator, .sidechain] : [.model, .originator]
+        case .unattributed: return [.model, .originator]
+        }
+    }
+
+    /// "Model" / "Account" / "Project" (Claude and Grok log the cwd) /
+    /// "Originator" (Codex: exec, vscode, cli, guardian) / "Source" (mixed).
+    func title(provider: TelemetryProvider?) -> String {
+        switch self {
+        case .provider: return "Provider"
+        case .model: return "Model"
+        case .account: return "Account"
+        case .kind: return "Kind"
+        case .sidechain: return "Main vs subagents"
+        case .originator:
+            switch provider {
+            case .claude, .grok: return "Project"
+            case .codex: return "Originator"
+            case nil: return "Source"
+            }
+        }
+    }
 }
 
 nonisolated struct TelemetryQuery: Sendable, Equatable {

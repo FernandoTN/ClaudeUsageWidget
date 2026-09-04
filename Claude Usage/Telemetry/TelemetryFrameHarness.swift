@@ -34,13 +34,15 @@ enum TelemetryFrameHarness {
         func frame(_ name: String, scope: TelemetryScope, window: TelemetryWindow = .days7, metric: TelemetryMetric = .inputClass,
                    report: TelemetryReport?, status: IndexingStatus = status, paused: Bool = false, title: String? = nil,
                    mode: TelemetryChartMode? = nil, hover: Int? = nil, isolated: SeriesKey? = nil, notes: Bool = false, share: Bool = false,
-                   rateLimits: Bool = false, height: CGFloat = size.height) {
+                   rateLimits: Bool = false, stack: TelemetryStack? = nil, height: CGFloat = size.height) {
+            let scopeProvider = scope.provider ?? Fixture.sidebarProfiles.first { .account($0.id) == scope }?.provider
             let view = TelemetryFrameView(
                 sections: sections, selection: .constant(scope), report: report, status: status, isLoading: false, isPaused: paused,
                 // (bindings are constant: the harness renders one state per frame)
                 scopeTitle: title ?? scopeTitle(scope), window: .constant(window), metric: .constant(metric),
                 chartMode: .constant(mode ?? (scope == .fleet ? .split : .stacked)), caveatsExpanded: .constant(notes),
-                showRateLimits: .constant(rateLimits),
+                showRateLimits: .constant(rateLimits), stack: .constant(stack),
+                stackOptions: TelemetryStack.options(for: scope, provider: scopeProvider), scopeProvider: scopeProvider,
                 owners: Set(Fixture.sidebarProfiles.filter(\.isOwner).map(\.id)), actions: TelemetryActions(),
                 initialHover: hover, initialIsolated: isolated, initialShare: share, interactive: false)
             emit(view, name: "telemetry-\(name)", to: dir, index: &index, height: height)
@@ -53,6 +55,8 @@ enum TelemetryFrameHarness {
         frame("fleet-by-kind-share", scope: .fleet, metric: .inputByKind, report: report(.fleet, .days7, metric: .inputByKind, input: input, now: now), share: true)
         frame("fleet-7d-ratelimits", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), rateLimits: true)
         frame("provider-claude-ratelimits", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now), rateLimits: true)
+        frame("provider-claude-sidechain", scope: .provider(.claude), report: report(.provider(.claude), .days7, stack: .sidechain, input: input, now: now), stack: .sidechain)
+        frame("provider-codex-originator", scope: .provider(.codex), report: report(.provider(.codex), .days7, stack: .originator, input: input, now: now), stack: .originator)
         frame("fleet-7d-stacked", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), mode: .stacked)
         frame("fleet-7d-hover", scope: .fleet, report: report(.fleet, .days7, input: input, now: now), hover: 5)
         frame("provider-claude-isolated", scope: .provider(.claude), report: report(.provider(.claude), .days7, input: input, now: now),
@@ -82,8 +86,9 @@ enum TelemetryFrameHarness {
     }
 
     static func report(_ scope: TelemetryScope, _ window: TelemetryWindow, metric: TelemetryMetric = .inputClass,
-                       input: TelemetryReportBuilder.Input, now: Date) -> TelemetryReport {
-        TelemetryReportBuilder.build(query: TelemetryQuery(scope: scope, window: window, metric: metric, now: now, calendar: Fixture.calendar), input: input)
+                       stack: TelemetryStack? = nil, input: TelemetryReportBuilder.Input, now: Date) -> TelemetryReport {
+        TelemetryReportBuilder.build(query: TelemetryQuery(scope: scope, window: window, metric: metric, stack: stack, now: now,
+                                                           calendar: Fixture.calendar), input: input)
     }
 
     private static func scopeTitle(_ scope: TelemetryScope) -> String {

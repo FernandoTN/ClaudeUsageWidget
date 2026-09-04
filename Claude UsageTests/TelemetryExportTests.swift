@@ -10,6 +10,10 @@
 import XCTest
 @testable import Claude_Usage
 
+private extension TelemetryQuery {
+    func with(stack: TelemetryStack) -> TelemetryQuery { var copy = self; copy.stack = stack; return copy }
+}
+
 final class TelemetryExportTests: XCTestCase {
     private let a = UUID(), b = UUID(), x = UUID()
     private var calendar: Calendar {
@@ -128,6 +132,25 @@ final class TelemetryExportTests: XCTestCase {
         let claude = TelemetryReportBuilder.build(query: query(.provider(.claude)), input: input(markers: markers))
         XCTAssertEqual(claude.buckets.map(\.rateLimitCount).reduce(0, +), 1)
         XCTAssertTrue(claude.buckets.allSatisfy { $0.rateLimitsBySeries.isEmpty })
+    }
+
+    func testSidechainAndOriginatorStacksSplitOneProvidersRows() {
+        let claude = TelemetryReportBuilder.build(query: query(.provider(.claude)).with(stack: .sidechain), input: input())
+        XCTAssertEqual(Set(claude.seriesOrder.map(\.label)), ["Main", "Subagents"])
+        XCTAssertEqual(claude.buckets.reduce(0) { $0 + ($1.series.first { $0.key.label == "Subagents" }?.value.units ?? 0) }, 1)
+        let codex = TelemetryReportBuilder.build(query: query(.provider(.codex)).with(stack: .originator), input: input())
+        XCTAssertEqual(codex.seriesOrder.map(\.label), [".codex"])
+        XCTAssertEqual(codex.seriesOrder.first?.provider, .codex, "a source series keeps its provider for the palette")
+        let fleet = TelemetryReportBuilder.build(query: query(.fleet).with(stack: .originator), input: input())
+        XCTAssertEqual(Set(fleet.seriesOrder.map(\.label)), ["cli", ".codex", "ClaudeUsageWidget"])
+        // The stack menu offers what the scope can show; By kind is never a choice.
+        XCTAssertEqual(TelemetryStack.options(for: .provider(.claude), provider: .claude), [.model, .account, .originator, .sidechain])
+        XCTAssertEqual(TelemetryStack.options(for: .provider(.codex), provider: .codex), [.model, .account, .originator])
+        XCTAssertEqual(TelemetryStack.options(for: .account(a), provider: .claude), [.model, .originator, .sidechain])
+        XCTAssertEqual(TelemetryStack.options(for: .fleet, provider: nil), [.provider, .account, .originator])
+        XCTAssertEqual(TelemetryStack.originator.title(provider: .codex), "Originator")
+        XCTAssertEqual(TelemetryStack.originator.title(provider: .claude), "Project")
+        XCTAssertEqual(TelemetryStack.originator.title(provider: nil), "Source")
     }
 
     func testDenseAxisKeepsEveryDateBesideAMonthBoundary() {
