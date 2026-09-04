@@ -461,4 +461,27 @@ class SharedDataStore {
         return queue
     }
 
+    // MARK: - ⇄ Active-account selector (docs/specs/ux-revamp.md §2.1)
+
+    private enum SelectorKeys {
+        /// `{ "enabled": Bool }` — a dictionary so later fields (e.g. a
+        /// per-provider mode) can be added without a second key.
+        static let item = "activeSelectorItem_v1"
+    }
+
+    /// Whether the ⇄ selector status item is shown. Absent = shown (the item is
+    /// what the owner asked for; hiding is the opt-out). Single-shot write,
+    /// journaled like every other settings toggle.
+    func loadActiveSelectorItemEnabled() -> Bool {
+        guard let dict = defaults.dictionary(forKey: SelectorKeys.item),
+              let enabled = dict["enabled"] as? Bool else { return true }
+        return enabled
+    }
+
+    func saveActiveSelectorItemEnabled(_ enabled: Bool) {
+        var dict = defaults.dictionary(forKey: SelectorKeys.item) ?? [:]
+        dict["enabled"] = enabled
+        writeSingleShot(dict, forKey: SelectorKeys.item)
+    }
+
 }

@@ -15,6 +15,9 @@ struct ManageProfilesView: View {
     @State private var autoSwitchThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
     @State private var autoSwitchWeeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
     @State private var switchQueue: [UUID] = SharedDataStore.shared.loadAutoSwitchQueue()
+    /// The ⇄ active-account selector's visibility (docs/specs/ux-revamp.md
+    /// §2.1). Lives here until the Display page exists (stage 3c).
+    @State private var selectorEnabled = SharedDataStore.shared.loadActiveSelectorItemEnabled()
 
     private func providerLabel(_ profile: Profile) -> String {
         profile.providerKind == .claude ? "Claude"
@@ -315,6 +318,27 @@ struct ManageProfilesView: View {
                 }
 
                 // Auto-Switch Profile Section
+                // The ⇄ selector: one status item next to the system icons that
+                // shows who is Active for Claude / Codex / Grok and switches it
+                // behind a confirmation. Hiding it never changes what a CLI uses.
+                SettingsSectionCard(
+                    title: "selector.setting_title".localized,
+                    subtitle: "selector.setting_subtitle".localized
+                ) {
+                    SettingToggle(
+                        title: "selector.setting_toggle".localized,
+                        description: "selector.setting_toggle_desc".localized,
+                        isOn: Binding(
+                            get: { selectorEnabled },
+                            set: { enabled in
+                                selectorEnabled = enabled
+                                SharedDataStore.shared.saveActiveSelectorItemEnabled(enabled)
+                                NotificationCenter.default.post(name: .activeSelectorVisibilityChanged, object: nil)
+                            }
+                        )
+                    )
+                }
+
                 SettingsSectionCard(
                     title: "auto_switch.title".localized,
                     subtitle: "auto_switch.subtitle".localized

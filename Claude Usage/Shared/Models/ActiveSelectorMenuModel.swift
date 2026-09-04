@@ -1,0 +1,392 @@
+//
+//  ActiveSelectorMenuModel.swift
+//  Claude Usage
+//
+//  The pure model behind the ⇄ selector's menu, badge, tooltip and switch
+//  confirmation (docs/specs/ux-revamp.md §2.1, design pass §12.1). Every row
+//  is a plain value — title, detail, glyph, tint, enabled, action — so the
+//  frames can be tested without AppKit; `ActiveSelectorItem` maps rows to
+//  `NSMenuItem`s one-to-one and adds nothing of its own.
+//
+
+import Foundation
+
+enum ActiveSelectorMenuModel {
+    /// Colour roles; the AppKit layer maps them to system colours so light and
+    /// dark menus both work.
+    enum Tint: Hashable { case cyan, green, orange, red, purple, secondary }
+
+    /// The item's attention badge, by precedence (frame 0).
+    enum Badge: Hashable {
+        case red     // no executable candidate, or a dead active login
+        case purple  // an active account is suspected / blind
+        case amber   // cfprefsd degraded
+    }
+
+    /// What a row does when chosen. `nil` rows are informational (disabled).
+    enum Action: Hashable {
+        case switchTo(UUID, Profile.ProviderKind)
+        case queueNext(UUID)
+        case editQueue
+        case repairDead(UUID, Profile.ProviderKind)
+        case openActiveSettings
+        case openAccounts
+        case openDashboard
+        case openTelemetry
+    }
+
+    struct Row: Hashable {
+        enum Kind: Hashable { case header, banner, info, action, separator }
+        var kind: Kind
+        var title: String
+        /// Secondary text drawn after the title (monospaced digits when it is numbers).
+        var detail: String? = nil
+        var glyph: String? = nil
+        var glyphTint: Tint? = nil
+        var titleTint: Tint? = nil
+        var enabled: Bool = true
+        var action: Action? = nil
+        /// Rows of a submenu (the "Switch X to ▸" and "Queue next ▸" lists).
+        var submenu: [Row] = []
+        /// The ⌥ alternate of this row, shown in its place while Option is held.
+        var alternate: Row? { alternateTitle.map { Row(kind: .action, title: $0, glyph: glyph, glyphTint: glyphTint, action: alternateAction) } }
+        var alternateTitle: String? = nil
+        var alternateAction: Action? = nil
+
+        static let separator = Row(kind: .separator, title: "")
+    }
+
+    // MARK: - Rows
+
+    /// - Parameters:
+    ///   - externalChanges: provider → new owner name for owners that changed
+    ///     outside the app since the menu was last opened (frame 8).
+    static func rows(
+        selections: [ProviderActiveSelection],
+        preferencesDegraded: Bool,
+        externalChanges: [Profile.ProviderKind: String],
+        switching: (provider: Profile.ProviderKind, target: String)?,
+        now: Date
+    ) -> [Row] {
+        var rows: [Row] = []
+        if preferencesDegraded {
+            rows.append(Row(kind: .banner, title: "selector.degraded".localized, glyph: "⚠", glyphTint: .orange, titleTint: .orange, enabled: false))
+        }
+        let anySwitching = switching != nil || selections.contains { $0.isSwitching }
+
+        for selection in selections {
+            let provider = selection.provider
+            rows.append(Row(kind: .header, title: ActiveVocabulary.activeFor(provider).uppercased(), enabled: false))
+
+            if let owner = selection.owner {
+                rows.append(ownerRow(owner, provider: provider, now: now))
+            } else {
+                rows.append(Row(kind: .info, title: "selector.no_owner_chosen".localized(with: ActiveVocabulary.providerName(provider)),
+                                glyph: "○", glyphTint: .secondary, titleTint: .secondary, enabled: false))
+            }
+            if let newOwner = externalChanges[provider] {
+                rows.append(Row(kind: .banner, title: ActiveVocabulary.changedOutside(provider, newOwner: newOwner),
+                                glyph: "↺", glyphTint: .cyan, titleTint: .cyan, enabled: false))
+            }
+            if let owner = selection.owner, provider == .codex, let resets = owner.resetCreditsAvailable, resets > 0 {
+                rows.append(Row(kind: .info, title: "selector.resets_available".localized(with: resets), glyph: "↻", glyphTint: .secondary, enabled: false))
+            }
+
+            let deadCount = selection.counts.count(.dead)
+            let needsSentence = deadCount > 0 || selection.counts.duplicateProfiles > 0 || selection.alert == .noCandidate
+            if needsSentence, selection.candidates.count + (selection.owner == nil ? 0 : 1) > 1 {
+                rows.append(Row(kind: .info, title: ActiveVocabulary.countsSentence(selection.counts), titleTint: .secondary, enabled: false))
+            }
+
+            if let switching, switching.provider == provider {
+                rows.append(Row(kind: .banner, title: "selector.switching".localized(with: ActiveVocabulary.providerName(provider), switching.target),
+                                glyph: "⇄", glyphTint: .cyan, titleTint: .cyan, enabled: false))
+            }
+
+            if selection.candidates.isEmpty {
+                rows.append(Row(kind: .info, title: "selector.single_account".localized, titleTint: .secondary, enabled: false))
+                continue
+            }
+
+            // Evidence row: the next candidate and what is known about it.
+            rows.append(evidenceRow(selection, now: now))
+
+            let eligible = selection.eligibleCandidates
+            if let next = selection.next, let nextRow = selection.candidates.first(where: { $0.id == next.id }), nextRow.status == .eligible {
+                rows.append(Row(kind: .action,
+                                title: "selector.switch_to_next".localized(with: ActiveVocabulary.providerName(provider), nextRow.name),
+                                enabled: !anySwitching, action: .switchTo(nextRow.id, provider)))
+            }
+            rows.append(Row(kind: .action, title: "selector.switch_to".localized(with: ActiveVocabulary.providerName(provider)),
+                            enabled: !anySwitching,
+                            submenu: candidateRows(selection, now: now, switching: anySwitching)))
+            if !eligible.isEmpty {
+                rows.append(Row(kind: .action, title: "selector.queue_next".localized, enabled: !anySwitching,
+                                submenu: eligible.map { candidate in
+                                    Row(kind: .action, title: candidate.name, detail: gaugeText(candidate.gauges),
+                                        glyph: glyph(for: candidate.readiness), glyphTint: tint(for: candidate.readiness),
+                                        enabled: !anySwitching, action: .queueNext(candidate.id))
+                                }))
+            }
+            if !selection.queue.isEmpty {
+                rows.append(Row(kind: .action,
+                                title: "selector.queue_line".localized(with: selection.queue.map(\.name).joined(separator: " › ")),
+                                glyph: "≡", glyphTint: .secondary, action: .editQueue))
+            }
+            if deadCount > 0, let firstDead = selection.candidates.first(where: { $0.readiness == .dead }) {
+                rows.append(Row(kind: .action,
+                                title: deadCount == 1
+                                    ? "selector.repair_one".localized(with: ActiveVocabulary.providerName(provider))
+                                    : "selector.repair_many".localized(with: deadCount, ActiveVocabulary.providerName(provider)),
+                                glyph: "×", glyphTint: .orange, action: .repairDead(firstDead.id, provider)))
+            }
+        }
+
+        rows.append(.separator)
+        if let policy = selections.first?.autoSwitch {
+            rows.append(Row(kind: .info,
+                            title: policy.enabled
+                                ? "selector.policy_on".localized(with: Int(policy.sessionThreshold), Int(policy.weeklyThreshold))
+                                : "selector.policy_off".localized,
+                            titleTint: .secondary, enabled: false))
+        }
+        rows.append(Row(kind: .action, title: "selector.open_active_settings".localized, action: .openActiveSettings))
+        rows.append(Row(kind: .action, title: "selector.open_accounts".localized, action: .openAccounts))
+        rows.append(Row(kind: .action, title: "selector.open_dashboard".localized, action: .openDashboard))
+        rows.append(Row(kind: .action, title: "selector.open_telemetry".localized, action: .openTelemetry))
+        return rows
+    }
+
+    private static func ownerRow(_ owner: OwnerRow, provider: Profile.ProviderKind, now: Date) -> Row {
+        var details: [String] = []
+        var tint: Tint? = nil
+        if let caveat = owner.suspected {
+            var text = "selector.last_measured".localized(with: Int(caveat.lastMeasured.rounded()), DashboardFormatting.age(caveat.measuredAt, now: now))
+            if let projected = caveat.projected {
+                text += " " + "selector.projection".localized(with: Int(projected.rounded()))
+            }
+            details.append(text)
+            tint = .purple
+        } else {
+            details.append(gaugeText(owner.gauges))
+            if let weekly = owner.gauges.first(where: { $0.kind == .weekly }), !owner.gauges.contains(where: { $0.kind == .session }) {
+                details.append("selector.fires_at".localized(with: Int(weekly.threshold)))
+            }
+        }
+        if let measurement = owner.measurement {
+            details.append(DashboardFormatting.provenance(measurement, now: now))
+        }
+        if owner.isManuallyPinned { details.append("selector.pinned".localized) }
+        if !owner.sameAccountAs.isEmpty {
+            details.append("selector.same_account".localized(with: owner.sameAccountAs.joined(separator: ", ")))
+        }
+        return Row(kind: .info, title: owner.name, detail: details.joined(separator: " · "),
+                   glyph: glyph(for: owner.readiness), glyphTint: .cyan, titleTint: tint, enabled: false)
+    }
+
+    private static func evidenceRow(_ selection: ProviderActiveSelection, now: Date) -> Row {
+        guard let next = selection.next, let row = selection.candidates.first(where: { $0.id == next.id }) else {
+            let dead = selection.counts.count(.dead)
+            let total = selection.counts.profiles
+            let reason = dead > 0
+                ? "selector.no_candidate_dead".localized(with: dead, total)
+                : "selector.no_candidate".localized
+            return Row(kind: .info, title: reason, glyph: "→", glyphTint: .red, titleTint: .red, enabled: false)
+        }
+        var parts: [String] = []
+        parts.append(next.queued ? "selector.queued".localized : (next.queueHeadBlocked ? "selector.ranked_blocked_head".localized : "selector.ranked".localized))
+        switch next.verdict {
+        case .verified:
+            parts.append("✓ " + verdictKindText(row.verdictKind) + (row.verdictAt.map { " " + DashboardFormatting.age($0, now: now) } ?? ""))
+        case .unverified:
+            parts.append("? " + verdictKindText(row.verdictKind))
+        case .dead:
+            parts.append("× " + "selector.verdict_dead".localized)
+        }
+        if let measurement = row.measurement {
+            parts.append("selector.headroom_age".localized(with: DashboardFormatting.age(measurement.measuredAt, now: now)))
+        }
+        return Row(kind: .info, title: "selector.next".localized(with: row.name), detail: parts.joined(separator: " · "),
+                   glyph: "→", glyphTint: tint(for: next.verdict), enabled: false)
+    }
+
+    private static func candidateRows(_ selection: ProviderActiveSelection, now: Date, switching: Bool) -> [Row] {
+        var out: [Row] = []
+        let provider = selection.provider
+        for candidate in selection.eligibleCandidates {
+            var detail = gaugeText(candidate.gauges)
+            switch candidate.verdict {
+            case .verified: detail += " · ✓ " + verdictKindText(candidate.verdictKind) + (candidate.verdictAt.map { " " + DashboardFormatting.age($0, now: now) } ?? "")
+            case .unverified: detail += " · ? " + verdictKindText(candidate.verdictKind)
+            case .dead: detail += " · × " + "selector.verdict_dead".localized
+            }
+            if let position = candidate.queuePosition { detail += " · " + "selector.queued_position".localized(with: position) }
+            out.append(Row(kind: .action, title: candidate.name, detail: detail,
+                           glyph: glyph(for: candidate.readiness), glyphTint: tint(for: candidate.readiness),
+                           enabled: !switching, action: .switchTo(candidate.id, provider),
+                           alternateTitle: "selector.queue_alternate".localized(with: candidate.name),
+                           alternateAction: .queueNext(candidate.id)))
+        }
+        let blocked = selection.blockedCandidates
+        if !out.isEmpty, !blocked.isEmpty { out.append(.separator) }
+        for candidate in blocked {
+            let reason: String
+            var enabled = false
+            var action: Action? = nil
+            switch candidate.status {
+            case .eligible:
+                continue
+            case .blocked(let readiness):
+                switch readiness {
+                case .dead:
+                    reason = "selector.login_dead".localized
+                    enabled = !switching
+                    action = .repairDead(candidate.id, provider)
+                case .suspected:
+                    reason = "selector.suspected".localized
+                case .exhausted:
+                    reason = exhaustedReason(candidate, now: now)
+                default:
+                    reason = DashboardFormatting.chip(.unmeasured, now: now)
+                }
+            case .duplicateOfOwner(let ownerName):
+                reason = "selector.same_account".localized(with: ownerName)
+                    + (candidate.needsRelogin ? " · " + "selector.relogin_needed".localized : "")
+            case .excluded(let why):
+                reason = why == .freePlan ? "selector.excluded_free".localized : "selector.excluded_toggle".localized
+            }
+            out.append(Row(kind: .action, title: candidate.name, detail: reason,
+                           glyph: glyph(for: candidate.readiness), glyphTint: tint(for: candidate.readiness),
+                           enabled: enabled, action: action))
+        }
+        return out
+    }
+
+    private static func exhaustedReason(_ candidate: CandidateRow, now: Date) -> String {
+        if let session = candidate.gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold,
+           let reset = session.resetAt, reset > now {
+            return "selector.session_exhausted".localized(with: reset.timeRemainingString(from: now))
+        }
+        if let fable = candidate.gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold {
+            return "selector.fable_maxed".localized
+        }
+        if let weekly = candidate.gauges.first(where: { $0.kind == .weekly }), let reset = weekly.resetAt, reset > now {
+            return "selector.weekly_maxed".localized(with: reset.timeRemainingString(from: now))
+        }
+        return "selector.exhausted".localized
+    }
+
+    // MARK: - Pieces
+
+    static func gaugeText(_ gauges: [WindowGauge]) -> String {
+        gauges.map { gauge in
+            let letter: String
+            switch gauge.kind {
+            case .session: letter = "S"
+            case .weekly: letter = "W"
+            case .fable: letter = "F"
+            }
+            return "\(letter) \(Int(gauge.percentage.rounded())) %"
+        }.joined(separator: " · ")
+    }
+
+    static func glyph(for readiness: AccountReadiness) -> String {
+        FleetCounts.stripGlyphs.first { $0.0 == readiness }?.1 ?? "○"
+    }
+
+    static func tint(for readiness: AccountReadiness) -> Tint {
+        switch readiness {
+        case .ready: return .green
+        case .low: return .orange
+        case .unknown: return .secondary
+        case .suspected: return .purple
+        case .exhausted: return .red
+        case .excluded: return .secondary
+        case .dead: return .orange
+        }
+    }
+
+    static func tint(for verdict: NextCandidate.Verdict) -> Tint {
+        switch verdict {
+        case .verified: return .green
+        case .unverified: return .secondary
+        case .dead: return .red
+        }
+    }
+
+    static func verdictKindText(_ kind: PreflightVerdict.Kind?) -> String {
+        switch kind {
+        case .probed: return "selector.verdict_probed".localized
+        case .refreshed: return "selector.verdict_refreshed".localized
+        case .ownsLogin: return "selector.verdict_owns_login".localized
+        case .switched: return "selector.verdict_switched".localized
+        case .expiryOnly: return "selector.verdict_expiry_only".localized
+        case nil: return "selector.verdict_unverified".localized
+        }
+    }
+
+    // MARK: - Badge and tooltip (frame 0)
+
+    static func badge(selections: [ProviderActiveSelection], preferencesDegraded: Bool) -> Badge? {
+        if selections.contains(where: { $0.alert == .noCandidate || $0.owner?.readiness == .dead }) { return .red }
+        if selections.contains(where: { $0.owner?.suspected != nil }) { return .purple }
+        if preferencesDegraded { return .amber }
+        return nil
+    }
+
+    /// "Active: Claude dRir 78 % · Codex xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates"
+    static func tooltip(selections: [ProviderActiveSelection]) -> String {
+        let owners = selections.map { selection -> String in
+            let name = ActiveVocabulary.providerName(selection.provider)
+            guard let owner = selection.owner else { return "\(name) —" }
+            let pct = owner.keyedPercentage.map { " \(Int($0.rounded())) %" } ?? ""
+            return "\(name) \(owner.name)\(pct)"
+        }
+        let profiles = selections.reduce(0) { $0 + $1.counts.profiles }
+        let accounts = selections.reduce(0) { $0 + $1.counts.distinctAccounts }
+        let dead = selections.reduce(0) { $0 + $1.counts.count(.dead) }
+        let duplicates = selections.reduce(0) { $0 + $1.counts.duplicateProfiles }
+        var summary = "selector.tooltip_counts".localized(with: profiles, accounts)
+        if dead > 0 { summary += " · " + "counts.dead".localized(with: dead) }
+        if duplicates > 0 { summary += " · " + "counts.duplicates".localized(with: duplicates) }
+        return "selector.tooltip".localized(with: owners.joined(separator: " · "), summary)
+    }
+
+    // MARK: - Confirmation (frame 9)
+
+    struct Confirmation: Hashable {
+        var title: String
+        var body: String
+        /// True when the candidate's login is unverified / the switch may be refused.
+        var risky: Bool
+        var confirmButton: String { "selector.confirm_switch".localized }
+        var cancelButton: String { "common.cancel".localized }
+    }
+
+    static func confirmation(provider: Profile.ProviderKind, candidate: CandidateRow, owner: OwnerRow?, now: Date) -> Confirmation {
+        let cli = ActiveVocabulary.cliName(provider)
+        var body = "selector.confirm_cost".localized(with: cli, candidate.name)
+        var facts = gaugeText(candidate.gauges)
+        switch candidate.verdict {
+        case .verified:
+            facts += " — " + "selector.confirm_verified".localized(with: verdictKindText(candidate.verdictKind),
+                                                                   candidate.verdictAt.map { DashboardFormatting.age($0, now: now) } ?? "")
+        case .unverified, .dead:
+            facts += " — " + "selector.confirm_unverified".localized
+        }
+        body += "\n" + candidate.name + ": " + facts + "."
+        if let owner {
+            if let session = owner.gauges.first(where: { $0.kind == .session }), let reset = session.resetAt, reset > now {
+                body += "\n" + "selector.confirm_owner_keeps".localized(
+                    with: owner.name, max(0, Int((100 - session.percentage).rounded())), reset.timeRemainingString(from: now))
+            } else if let weekly = owner.gauges.first(where: { $0.kind == .weekly }) {
+                body += "\n" + "selector.confirm_owner_weekly".localized(with: owner.name, Int(weekly.percentage.rounded()))
+            }
+        }
+        return Confirmation(
+            title: "selector.confirm_title".localized(with: cli, candidate.name),
+            body: body,
+            risky: candidate.verdict != .verified
+        )
+    }
+}

@@ -69,6 +69,11 @@ extension Notification.Name {
     /// refresh that profile rather than wait for the next sweep.
     static let codexResetActivated = Notification.Name("codexResetActivated")
 
+    /// Posted when the user toggles the ⇄ active-account selector in Settings;
+    /// the item reads `SharedDataStore.loadActiveSelectorItemEnabled()` and
+    /// shows or hides itself (never recreated — see ActiveSelectorItem).
+    static let activeSelectorVisibilityChanged = Notification.Name("activeSelectorVisibilityChanged")
+
     /// Posted to open the token-usage telemetry window (the telemetry
     /// session's surface). object = the profile `UUID` to open filtered to one
     /// account, or nil for the fleet view; userInfo may carry

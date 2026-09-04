@@ -131,6 +131,9 @@ struct OwnerRow: Hashable {
     var isManuallyPinned: Bool
     /// Other profiles that hold the SAME account (one quota).
     var sameAccountAs: [String]
+    /// Codex only: usage-limit reset credits the usage payload reported
+    /// (nil = none / unknown — indistinguishable on the wire, spec §4.1).
+    var resetCreditsAvailable: Int? = nil
 }
 
 /// One account the user could switch the provider to, and why (not).
@@ -376,7 +379,8 @@ struct ProviderActiveSelection: Hashable {
             measurement: DashboardSnapshot.measurement(for: usage), suspected: caveat,
             keyedPercentage: usage.map { ProviderSummary.keyedDisplayPercentage($0) },
             etaToThreshold: firing.flatMap { DashboardSnapshot.etaToThreshold($0, now: now) },
-            isManuallyPinned: pinned, sameAccountAs: sameAccountAs
+            isManuallyPinned: pinned, sameAccountAs: sameAccountAs,
+            resetCreditsAvailable: profile.providerKind == .codex ? usage?.codexResetCreditsAvailable : nil
         )
     }
 
