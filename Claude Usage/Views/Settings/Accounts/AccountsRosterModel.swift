@@ -147,9 +147,10 @@ enum AccountsRosterModel {
     static func percentageText(_ gauges: [WindowGauge], readiness: AccountReadiness) -> String {
         guard !gauges.isEmpty else { return "—" }
         if readiness == .exhausted {
-            if let session = gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold { return "S!" }
-            if let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return "F!" }
-            if let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return "W!" }
+            // The legend's exhausted glyph + the window that is maxed (R2-2).
+            if let session = gauges.first(where: { $0.kind == .session }), session.percentage >= session.threshold { return DesignGlyph.exhausted + " S" }
+            if let fable = gauges.first(where: { $0.kind == .fable }), fable.percentage >= fable.threshold { return DesignGlyph.exhausted + " F" }
+            if let weekly = gauges.first(where: { $0.kind == .weekly }), weekly.percentage >= weekly.threshold { return DesignGlyph.exhausted + " W" }
         }
         guard let keyed = gauges.first(where: { $0.kind == .session }) ?? gauges.first(where: { $0.kind == .weekly }) else { return "—" }
         return "\(keyed.kind == .session ? "S" : "W") \(Int(keyed.percentage.rounded()))"

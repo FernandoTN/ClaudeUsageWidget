@@ -50,6 +50,10 @@ enum DesignFrameHarness {
             emit(AccountAlertsTab(profile: profile).padding(16), width: 560, name: "accounts-alerts", to: dir, index: &index)
             emit(AccountMonitoringTab(profile: profile).padding(16), width: 560, name: "accounts-monitoring", to: dir, index: &index)
         }
+        for selection in sel {
+            emit(ActiveProviderCard(selection: selection, isEnabled: true) { _ in }.padding(16), width: 560,
+                 name: "active-card-\(ActiveVocabulary.providerName(selection.provider).lowercased())", to: dir, index: &index)
+        }
         for (state, name) in [("claude", "dRir"), ("codex", "xFernando(dev)"), ("grok", "Grok")] {
             if let profile = Fixture.profiles.first(where: { $0.name == name }) {
                 emit(AccountLoginTab(profile: profile).padding(16), width: 560, name: "accounts-login-\(state)", to: dir, index: &index)
@@ -102,23 +106,23 @@ enum DesignFrameHarness {
                     claudeAccountEmail: email, claudeUsage: u, includeInAutoSwitch: autoSwitch)
         }
         static let profiles: [Profile] = [
-            claude("dRir", usage(session: 78, weekly: 16, fable: 16), email: "fer…@gmail.com", account: "acct-1"),
-            claude("dJormun", usage(session: 12, weekly: 70, fable: 90, age: 180), email: "jor…@…"),
+            claude("dRir", usage(session: 78, weekly: 16, fable: 16), email: "fernando@gmail.com", account: "acct-1"),
+            claude("dJormun", usage(session: 12, weekly: 70, fable: 90, age: 180), email: "jormun@example.com"),
             claude("Memori", usage(session: 40, weekly: 55), email: "fernando@mymemori.app"),
-            claude("Commits", usage(session: 10, weekly: 99.5), email: "com…@…"),
-            claude("BBR", usage(session: 99, weekly: 40), email: "bbr…@…"),
-            claude("Ai", usage(session: 20), email: "ai…@…"),
-            claude("Google", usage(session: 78, weekly: 16, fable: 16), email: "fer…@gmail.com", account: "acct-1"),
-            claude("Outlook", usage(session: 74, weekly: 30, age: 720, suspected: true, projected: 81), email: "out…@outlook.com"),
-            claude("Hotmail", nil, email: "hot…@hotmail.com"),
-            claude("Stanford", usage(session: 93, weekly: 20), email: "…@alumni.stanford.edu"),
-            Profile(name: "xFernando(dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "fer…@…", codexAccountId: "c-1",
+            claude("Commits", usage(session: 10, weekly: 99.5), email: "commits@example.com"),
+            claude("BBR", usage(session: 99, weekly: 40), email: "bbr@example.com"),
+            claude("Ai", usage(session: 20), email: "ai@example.com"),
+            claude("Google", usage(session: 78, weekly: 16, fable: 16), email: "fernando@gmail.com", account: "acct-1"),
+            claude("Outlook", usage(session: 74, weekly: 30, age: 720, suspected: true, projected: 81), email: "outlook@outlook.com"),
+            claude("Hotmail", nil, email: "hotmail@hotmail.com"),
+            claude("Stanford", usage(session: 93, weekly: 20), email: "fernando@alumni.stanford.edu"),
+            Profile(name: "xFernando(dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "fernando@example.dev", codexAccountId: "c-1",
                     claudeUsage: usage(weekly: 95, sessionWindow: false, resets: 2)),
-            Profile(name: "xFenrir(dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "fen…@…", codexAccountId: "c-2",
+            Profile(name: "xFenrir(dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "fenrir@example.dev", codexAccountId: "c-2",
                     claudeUsage: usage(weekly: 10, sessionWindow: false)),
             Profile(name: "xFho", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "fer@hotmail.com", codexAccountId: "c-3",
                     claudeUsage: usage(weekly: 10, sessionWindow: false)),
-            Profile(name: "Grok", grokCredentialsJSON: "{\"k\":{\"key\":\"x\"}}", grokEmail: "grok…@x.ai",
+            Profile(name: "Grok", grokCredentialsJSON: "{\"k\":{\"key\":\"x\"}}", grokEmail: "grok@x.ai",
                     claudeUsage: usage(weekly: 12, sessionWindow: false)),
         ]
         static func selections(degraded: Bool, now: Date) -> [ProviderActiveSelection] {

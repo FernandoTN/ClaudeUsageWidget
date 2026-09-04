@@ -172,9 +172,12 @@ struct AccountsSectionHeader: View {
                 Spacer()
                 Text(section.subtitle).font(.system(size: 9.5)).foregroundColor(.secondary)
             }
-            Text(section.strip)
-                .font(.system(size: 10, design: .monospaced))
+            // Words, not glyphs (owner ruling 2026-09-04); the legend is on hover only.
+            Text(ActiveVocabulary.countsWords(section.counts))
+                .font(.system(size: 10))
                 .foregroundColor(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .help(ActiveVocabulary.countsSentence(section.counts) + "\n" + DesignLegend.line)
         }
         .padding(.vertical, 2)
@@ -206,7 +209,7 @@ struct AccountsRosterRow: View {
             Spacer(minLength: 4)
             Text(row.percentageText)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(row.percentageText.hasSuffix("!") ? DesignRole.caution.color : (row.readiness == .suspected ? DesignRole.suspected.color : .primary))
+                .foregroundColor(row.percentageText.hasPrefix(DesignGlyph.exhausted) ? DesignRole.caution.color : (row.readiness == .suspected ? DesignRole.suspected.color : .primary))
                 .help(row.readiness == .suspected ? "accounts.suspected_help".localized : "")
             if let mark = row.badge.mark {
                 if row.badge.isActive {
@@ -232,7 +235,7 @@ struct AccountsRosterRow: View {
     private var markColor: Color {
         switch row.badge {
         case .activeFor: return DesignRole.active.color
-        case .queued: return DesignRole.action.color
+        case .queued: return DesignRole.informational.color
         case .next(let verdict): return verdict == .verified ? DesignRole.ready.color : (verdict == .dead ? DesignRole.blocking.color : DesignRole.informational.color)
         case .duplicate, .excluded, .none: return DesignRole.informational.color
         }
