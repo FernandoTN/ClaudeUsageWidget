@@ -54,20 +54,26 @@ final class DashboardViewTests: XCTestCase {
                                 verdict: .verified, verdictAt: now.addingTimeInterval(-720),
                                 quotaMeasuredAt: now.addingTimeInterval(-180))
         XCTAssertEqual(DashboardFormatting.next(verified, now: now),
-                       "ranked · ✓ proven 12 m ago · headroom 3 m ago")
+                       "ranked · ✓ verified 12 m ago · headroom measured 3 m ago")
         let blocked = NextCard(candidateId: id, name: "x", source: .rankedBehindBlockedQueueHead, readiness: .ready,
                                verdict: .unverified, verdictAt: nil, quotaMeasuredAt: nil)
-        XCTAssertEqual(DashboardFormatting.next(blocked, now: now), "ranked, queue head blocked · ? unverified")
+        XCTAssertEqual(DashboardFormatting.next(blocked, now: now), "ranked, queue head blocked · not verified")
         let dead = NextCard(candidateId: id, name: "x", source: .queued, readiness: .dead,
                             verdict: .dead, verdictAt: now, quotaMeasuredAt: nil)
         XCTAssertEqual(DashboardFormatting.next(dead, now: now), "queued · × dead")
+        XCTAssertEqual(
+            DashboardFormatting.switchQuestion(provider: .claude, from: "dRir", fromHeadline: "78 % session · resets in 2h 59m",
+                                               to: "dJormun", toHeadline: "0 % session · resets in 4h"),
+            "Switch the Claude login from dRir (78 % session · resets in 2h 59m) to dJormun (0 % session · resets in 4h)?")
+        XCTAssertEqual(DashboardFormatting.switchQuestion(provider: .codex, from: nil, fromHeadline: nil, to: "Cod", toHeadline: nil),
+                       "Switch the Codex login to Cod?")
     }
 
     func testSwitchOutcomeNotesNeverReadAsASilentNoOp() {
-        XCTAssertEqual(DashboardFormatting.outcome(.activated, name: "Mem"), "Switched to Mem.")
-        XCTAssertTrue(DashboardFormatting.outcome(.credentialsRefused, name: "Ai").contains("login is dead"))
-        XCTAssertTrue(DashboardFormatting.outcome(.switchInFlight, name: "Ai").contains("in progress"))
-        XCTAssertEqual(DashboardFormatting.outcome(.alreadyActive, name: "Mem"), "Mem is already active.")
+        XCTAssertEqual(DashboardFormatting.outcome(.activated, name: "Mem", provider: .claude), "Active for Claude: Mem ✓ · just now")
+        XCTAssertTrue(DashboardFormatting.outcome(.credentialsRefused, name: "Ai", provider: .claude).contains("login is dead"))
+        XCTAssertTrue(DashboardFormatting.outcome(.switchInFlight, name: "Ai", provider: .claude).contains("in progress"))
+        XCTAssertEqual(DashboardFormatting.outcome(.alreadyActive, name: "Mem", provider: .claude), "Mem is already active.")
         XCTAssertTrue(DashboardFormatting.switchCost(.claude).contains("10–15 %"))
     }
 
