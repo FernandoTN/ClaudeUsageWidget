@@ -260,12 +260,14 @@ final class ProfileViewingAndGrokPointerTests: XCTestCase {
 
     // MARK: - The Grok pointer: what reads it
 
-    /// `activeAccountIds` is the ONE definition the menu-bar tint and the
-    /// popover's Active badge share. A real pointer is evidence — a login this
-    /// app wrote to auth.json — so it outranks the focused-or-sole inference
-    /// that was the whole answer before; with no pointer, that inference is
-    /// unchanged.
-    func testActiveAccountIdsPrefersTheGrokPointerOverTheFocusedOrSoleRule() {
+    /// `activeAccountIds` is the ONE definition the menu-bar tint, the popover's
+    /// Active badge and — since focus stopped conferring authority — the
+    /// auto-switch trigger's membership test all share. A real pointer is
+    /// evidence: a login this app wrote to auth.json. With no pointer and two
+    /// Grok accounts to choose between there is NO evidence, and the focus is
+    /// not allowed to stand in for it (it used to: whichever Grok profile the
+    /// user was looking at drew the Active tint and could fire a switch).
+    func testActiveAccountIdsPrefersTheGrokPointerAndNeverTheFocus() {
         var owner = Profile(id: UUID(), name: "GROK owner")
         owner.grokCredentialsJSON = liveGrokCredentialsJSON(userId: "user-1")
         var other = Profile(id: UUID(), name: "GROK other")
@@ -282,8 +284,10 @@ final class ProfileViewingAndGrokPointerTests: XCTestCase {
         manager.loadProfiles()
         manager.profiles = profiles
         manager.activeProfile = profiles.first(where: { $0.id == other.id })
-        XCTAssertTrue(manager.activeAccountIds(among: profiles).contains(other.id),
-                      "with no pointer the focused Grok profile is still the active one")
+        XCTAssertFalse(manager.activeAccountIds(among: profiles).contains(other.id),
+                       "with no pointer and two Grok logins the app does not know who owns auth.json — the focused one must not be assumed")
+        XCTAssertFalse(manager.activeAccountIds(among: profiles).contains(owner.id),
+                       "and neither may the previous owner be assumed once its pointer is gone")
     }
 
     /// The wiring this seam exists for: a focused profile that carries a Grok

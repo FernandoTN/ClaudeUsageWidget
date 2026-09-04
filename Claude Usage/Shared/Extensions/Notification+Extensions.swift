@@ -14,6 +14,14 @@ extension Notification.Name {
     /// Posted when credentials are added, removed, or changed (Claude.ai or API Console)
     static let credentialsChanged = Notification.Name("credentialsChanged")
 
+    /// Posted when a provider's ACTIVE account changed outside the app — a
+    /// `/login` in the terminal (or a `codex login` in an isolated home) that an
+    /// adoption pass routed to the matching profile. The view deliberately does
+    /// NOT follow such a change, so the UI needs this to be able to say it
+    /// happened. object = the new owner's profile UUID; userInfo carries
+    /// "provider" (the `Profile.ProviderKind` case name) and "ownerName".
+    static let providerOwnerChangedExternally = Notification.Name("providerOwnerChangedExternally")
+
     /// Posted when the setup wizard should be shown manually (for testing)
     static let showSetupWizard = Notification.Name("showSetupWizard")
 

@@ -15,12 +15,39 @@ class ClaudeAPIService {
 
     // MARK: - Authentication
 
+    /// Whether the profile being VIEWED may be measured with the shared Claude
+    /// Code Keychain login.
+    ///
+    /// That item always holds the ACTIVE account's token, so reading it for any
+    /// other profile paints one account's usage under another account's name —
+    /// the user reads a number that belongs to somebody else and plans around
+    /// it. Only the owner may use it, and with no owner known (nil pointer,
+    /// several credentialed profiles) nobody may: an unknown owner is not a
+    /// licence to guess.
+    nonisolated static func mayUseSharedKeychainLogin(focusedId: UUID?, claudeOwnerId: UUID?) -> Bool {
+        guard let focusedId, let claudeOwnerId else { return false }
+        return focusedId == claudeOwnerId
+    }
+
     /// Gets the best available authentication method with fallback support
-    /// Priority: 1) saved CLI OAuth → 2) system Keychain CLI OAuth
+    /// Priority: 1) saved CLI OAuth → 2) system Keychain CLI OAuth, and the
+    /// second one ONLY for the profile that owns the shared login (see
+    /// `mayUseSharedKeychainLogin`).
     /// Async so the system Keychain fallback can shell out to `security` OFF the main
     /// thread (see the CLAUDE.md rule about Keychain reads on the main thread).
     private func getAuthentication() async throws -> AuthenticationType {
-        guard let activeProfile = ProfileManager.shared.activeProfile else {
+        let (activeProfileOptional, isClaudeOwner) = await MainActor.run { () -> (Profile?, Bool) in
+            let manager = ProfileManager.shared
+            let focused = manager.activeProfile
+            return (
+                focused,
+                Self.mayUseSharedKeychainLogin(
+                    focusedId: focused?.id,
+                    claudeOwnerId: manager.providerOwnerId(for: .claude)
+                )
+            )
+        }
+        guard let activeProfile = activeProfileOptional else {
             LoggingService.shared.logError("ClaudeAPIService.getAuthentication: No active profile")
             throw AppError.sessionKeyNotFound()
         }
@@ -36,7 +63,15 @@ class ClaudeAPIService {
             }
         }
 
-        // Fall back to reading CLI credentials directly from system Keychain
+        // Fall back to reading CLI credentials directly from the system
+        // Keychain — but only for the profile that OWNS that login. A viewed
+        // non-owner used to land here whenever its own token was missing or
+        // expired and be shown the owner's usage under its own name.
+        guard isClaudeOwner else {
+            LoggingService.shared.log("ClaudeAPIService: '\(activeProfile.name)' does not own the shared CLI login — refusing to measure it with somebody else's token")
+            throw AppError.sessionKeyNotFound()
+        }
+
         do {
             if let systemCredentials = try await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain() {
                 LoggingService.shared.log("ClaudeAPIService: Found CLI credentials in system Keychain")

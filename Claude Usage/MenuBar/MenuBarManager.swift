@@ -174,6 +174,18 @@ class MenuBarManager: NSObject, ObservableObject {
             cleanup()
         }
 
+        // The view-pinning predicate for automatic switches. ProfileManager
+        // decides whether a sweep-driven switch may move the view; only this
+        // class knows whether the user is working inside the Settings window,
+        // so it supplies the answer rather than reaching for AppKit down there.
+        profileManager.viewIsPinnedByOpenUI = { [weak self] in
+            guard let self else { return false }
+            if let settings = self.settingsWindow, settings.isKeyWindow || settings.attachedSheet != nil {
+                return true
+            }
+            return NSApp.keyWindow?.attachedSheet != nil
+        }
+
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
 
@@ -566,10 +578,12 @@ class MenuBarManager: NSObject, ObservableObject {
         refreshTimer?.invalidate()
         refreshTimer = nil
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refreshUsage()
         }
-        refreshTimer?.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        timer.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        RunLoop.main.add(timer, forMode: .common)  // keeps sweeping while an NSMenu is tracking
+        refreshTimer = timer
 
         LoggingService.shared.log("Updated refresh interval to \(interval)s")
     }
@@ -980,11 +994,13 @@ class MenuBarManager: NSObject, ObservableObject {
 
     private func startAutoRefresh() {
         let interval = profileManager.activeProfile?.refreshInterval ?? 30.0
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.lastAutoRefreshTime = Date()
             self?.refreshUsage()
         }
-        refreshTimer?.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        timer.tolerance = interval * 0.1  // 10% tolerance for energy efficiency
+        RunLoop.main.add(timer, forMode: .common)  // keeps sweeping while an NSMenu is tracking
+        refreshTimer = timer
         LoggingService.shared.log("Started auto-refresh with interval: \(interval)s")
     }
 
@@ -1347,7 +1363,16 @@ private func observeCredentialChanges() {
         // observed 2026-08-11: 'Memori' sat 33 min stale while its real
         // session usage hit 100%. Codex/Grok hit different hosts and refresh
         // every sweep (never counted against the Claude budget).
-        let priorityIds = Set([profileManager.activeProfile?.id, profileManager.activeClaudeProfileId].compactMap { $0 })
+        // DISPLAY + OWNER priority, deliberately: the account on screen is the
+        // one whose number the user is reading, and the Claude OWNER is the one
+        // the CLI is burning. This is a FETCH-BUDGET ranking, never an
+        // "is this the active account" test — nothing downstream of it applies
+        // a credential or fires a switch, so including the focus is safe here
+        // and only here.
+        let priorityIds = Set([
+            profileManager.activeProfile?.id,
+            profileManager.providerOwnerId(for: .claude)
+        ].compactMap { $0 })
         let priorityClaudeCount = allSelected.filter { $0.providerKind == .claude && priorityIds.contains($0.id) }.count
         let rotationBudget = max(1, 2 - priorityClaudeCount)
         let backgroundClaude = allSelected.filter { $0.providerKind == .claude && !priorityIds.contains($0.id) }
@@ -1538,7 +1563,10 @@ private func observeCredentialChanges() {
                         self.profileManager.stageClaudeUsage(newUsage, for: profile.id)
                         LoggingService.shared.log("MenuBarManager: Saved usage for profile '\(profile.name)' - session: \(newUsage.sessionPercentage)%", type: .info)
 
-                        // If this is the active profile, also update the manager's usage
+                        // DISPLAY ONLY: `usage` is the headline number the
+                        // popover and single-profile mode show, so it follows the
+                        // profile being VIEWED. No credential and no switch hangs
+                        // off it, which is why the focus is the right test here.
                         if profile.id == self.profileManager.activeProfile?.id {
                             self.usage = newUsage
                         }
@@ -1570,9 +1598,10 @@ private func observeCredentialChanges() {
                         // the threshold those seconds are when parallel sessions hit
                         // the hard limit. Idempotent with the end-of-sweep check
                         // (autoSwitchedProfileIds de-dupes the trigger).
-                        if profile.id == self.profileManager.activeProfile?.id
-                            || profile.id == self.profileManager.activeClaudeProfileId
-                            || profile.id == self.profileManager.activeCodexProfileId {
+                        // OWNERS ONLY (see `mayTriggerAutoSwitch`): a
+                        // merely-viewed account at 96 % must not rotate the CLI
+                        // away from the owner that still has headroom.
+                        if self.mayTriggerAutoSwitch(profile.id) {
                             self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
                         }
                     } catch {
@@ -1587,6 +1616,8 @@ private func observeCredentialChanges() {
                         if appError.code == .apiRateLimited,
                            let rescued = await self.probeUsageViaMessageHeaders(for: profile) {
                             self.profileManager.stageClaudeUsage(rescued, for: profile.id)
+                            // DISPLAY ONLY — the headline number follows the
+                            // VIEWED profile (see the sibling assignment above).
                             if profile.id == self.profileManager.activeProfile?.id {
                                 self.usage = rescued
                             }
@@ -1621,9 +1652,7 @@ private func observeCredentialChanges() {
                         // see 100% instead of trusting the stale cache — and check
                         // the switch NOW if this account is one actually in use.
                         if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: profile) {
-                            if profile.id == self.profileManager.activeProfile?.id
-                                || profile.id == self.profileManager.activeClaudeProfileId
-                                || profile.id == self.profileManager.activeCodexProfileId {
+                            if self.mayTriggerAutoSwitch(profile.id) {
                                 self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
                             }
                         } else if appError.code == .apiRateLimited {
@@ -1635,8 +1664,7 @@ private func observeCredentialChanges() {
                             // retry-after:0 incident — see the inferred-throttle
                             // section).
                             self.registerBurstBackoff(for: profile, retryAfter: appError.retryAfterSeconds)
-                            let isActiveAccount = profile.id == self.profileManager.activeProfile?.id
-                                || profile.id == self.profileManager.activeClaudeProfileId
+                            let isActiveAccount = self.profileManager.isProviderOwner(profile.id)
                             if profile.providerKind == .claude,
                                let streak = self.burstBackoffs[profile.id]?.streak,
                                Self.shouldInferAccountThrottle(
@@ -1690,19 +1718,16 @@ private func observeCredentialChanges() {
             }
             self.hasCredentialError = sweepCredentialError
 
-            // Check auto-switch for each provider's active account (both are "in
-            // use" at any time: the Claude account the CLI is logged into and the
-            // Codex account owning auth.json — either hitting its limit should
-            // rotate within its own provider group).
-            var checkedIds = Set<UUID>()
-            let idsToCheck = [
-                self.profileManager.activeProfile?.id,
-                self.profileManager.activeClaudeProfileId,
-                self.profileManager.activeCodexProfileId
-            ].compactMap { $0 }
+            // Check auto-switch for each provider's OWNER — the accounts that
+            // are "in use" at any time: the Claude account the CLI is logged
+            // into, the Codex account owning auth.json, and now the Grok one
+            // too. Each hitting its limit rotates within its own provider
+            // group. The FOCUSED profile is deliberately not in this set: it is
+            // whatever the user is looking at, and looking at an exhausted
+            // account must not switch a CLI off the account it is signed into.
+            let idsToCheck = self.profileManager.activeAccountIds(among: self.profileManager.profiles)
 
-            for profileId in idsToCheck where !checkedIds.contains(profileId) {
-                checkedIds.insert(profileId)
+            for profileId in idsToCheck {
                 if let candidate = self.profileManager.profiles.first(where: { $0.id == profileId }),
                    let candidateUsage = candidate.claudeUsage {
                     self.checkAutoSwitchIfNeeded(usage: candidateUsage, currentProfile: candidate)
@@ -1774,7 +1799,7 @@ private func observeCredentialChanges() {
         // holds the active CLAUDE account's login, so this fallback is only correct
         // for that profile. Using it for another profile would display the active
         // account's usage under that profile's name.
-        if profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id),
+        if profileManager.isProviderOwner(profile.id, of: .claude),
            let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
            !ClaudeCodeSyncService.shared.isTokenExpired(systemCredentials),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: systemCredentials) {
@@ -1962,8 +1987,16 @@ private func observeCredentialChanges() {
                         settings: profile.notificationSettings
                     )
 
-                    // Check if auto-switch should trigger
-                    self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                    // Check if auto-switch should trigger. This path FETCHES for
+                    // the VIEWED profile — that is what single-profile mode
+                    // displays, and it stays keyed on the view — but the trigger
+                    // is owner-only, so a merely-viewed account cannot rotate
+                    // somebody else's login. (`checkAutoSwitchIfNeeded` guards
+                    // the same way; this one keeps the rule visible where the
+                    // call is made.)
+                    if self.mayTriggerAutoSwitch(profile.id) {
+                        self.checkAutoSwitchIfNeeded(usage: newUsage, currentProfile: profile)
+                    }
                 }
 
                 // Record success for circuit breaker
@@ -2159,13 +2192,16 @@ private func observeCredentialChanges() {
                 self.backgroundFetchAttempts[profile.id] = Date()
             }
 
-            let isActiveAccount = profile.id == self.profileManager.activeProfile?.id
-                || profile.id == self.profileManager.activeClaudeProfileId
-                || profile.id == self.profileManager.activeCodexProfileId
+            // Gates the auto-switch below, so it is an OWNER test: a manual
+            // refresh on the account the user is merely viewing must report its
+            // numbers, not rotate a CLI login.
+            let isActiveAccount = self.mayTriggerAutoSwitch(profile.id)
 
             do {
                 let newUsage = try await self.fetchUsageForProfile(profile)
                 self.profileManager.stageClaudeUsage(newUsage, for: profile.id)
+                // DISPLAY ONLY: the headline number belongs to the profile being
+                // VIEWED, which is exactly what the focus names.
                 if profile.id == self.profileManager.activeProfile?.id {
                     self.usage = newUsage
                 }
@@ -2276,7 +2312,7 @@ private func observeCredentialChanges() {
         // "Active" here means: this profile owns the Claude Code CLI Keychain login
         // (tracked separately from the focused profile — the focus may be on a
         // Codex profile while this Claude account is still the CLI's login).
-        let isActiveClaude = profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+        let isActiveClaude = profileManager.isProviderOwner(profile.id, of: .claude)
         let changed = await syncService.ensureFreshCredentials(
             for: profile.id,
             adoptSystemKeychain: isActiveClaude,
@@ -2393,20 +2429,21 @@ private func observeCredentialChanges() {
     private func shouldSkipFetchForDeadLogin(_ profile: Profile, exemptProviderActive: Bool = true) -> Bool {
         switch profile.providerKind {
         case .claude:
-            let exempt = exemptProviderActive
-                && profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+            let exempt = exemptProviderActive && profileManager.isProviderOwner(profile.id, of: .claude)
             return ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id)
                 && !profile.hasValidCLIOAuth
                 && !exempt
         case .codex:
             guard CodexUsageService.shared.isLoginMarkedDead(profile.id) else { return false }
-            let exempt = exemptProviderActive && profile.id == profileManager.activeCodexProfileId
+            let exempt = exemptProviderActive && profileManager.isProviderOwner(profile.id, of: .codex)
             return !exempt && (authBackoffs[profile.id]?.until).map { $0 > Date() } ?? false
         case .grok:
             guard GrokUsageService.shared.isLoginMarkedDead(profile.id) else { return false }
-            // Grok has no shared-login pointer yet — the focused profile is the
-            // closest equivalent of "the account in use".
-            let exempt = exemptProviderActive && profile.id == profileManager.activeProfile?.id
+            // Grok has a pointer of its own now, so the exemption is the same
+            // owner test as the other two. It used to read the FOCUS, which
+            // exempted whichever Grok account the user happened to be looking at
+            // and left the real owner's dead login skipped.
+            let exempt = exemptProviderActive && profileManager.isProviderOwner(profile.id, of: .grok)
             return !exempt && (authBackoffs[profile.id]?.until).map { $0 > Date() } ?? false
         }
     }
@@ -2426,9 +2463,7 @@ private func observeCredentialChanges() {
 
     private func registerAuthBackoff(for profile: Profile) {
         let streak = (authBackoffs[profile.id]?.streak ?? 0) + 1
-        let isActiveAccount = profile.id == profileManager.activeProfile?.id
-            || profile.id == profileManager.activeClaudeProfileId
-            || profile.id == profileManager.activeCodexProfileId
+        let isActiveAccount = profileManager.isProviderOwner(profile.id)
         let interval = Self.authBackoffInterval(streak: streak, isActiveAccount: isActiveAccount)
         authBackoffs[profile.id] = BurstBackoff(until: Date().addingTimeInterval(interval), streak: streak)
         LoggingService.shared.log("MenuBarManager: '\(profile.name)' usage fetch was rejected (401/expired, active: \(isActiveAccount)) — backing off for \(clampedInt(interval))s (streak \(streak))")
@@ -2524,7 +2559,7 @@ private func observeCredentialChanges() {
         usage.projectedSessionPercentage = projected
         profileManager.saveClaudeUsage(usage, for: profile.id)
 
-        let isActiveClaude = profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+        let isActiveClaude = profileManager.isProviderOwner(profile.id, of: .claude)
         if isActiveClaude,
            projected >= SharedDataStore.shared.loadAutoSwitchThreshold(),
            !projectionNotifiedIds.contains(profile.id) {
@@ -2590,7 +2625,7 @@ private func observeCredentialChanges() {
         ) {
             return profileManager.profiles.first(where: { $0.name == ownerName })
         }
-        let activeId = profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id
+        let activeId = profileManager.providerOwnerId(for: .claude)
         return profileManager.profiles.first(where: { $0.id == activeId })
     }
 
@@ -2629,8 +2664,7 @@ private func observeCredentialChanges() {
         usage.lastUpdated = event.at
         profileManager.saveClaudeUsage(usage, for: profile.id)
         LoggingService.shared.log("MenuBarManager: transcript rate-limit event — '\(profile.name)' hit its session limit at \(event.at), resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)")")
-        if profile.id == profileManager.activeProfile?.id
-            || profile.id == profileManager.activeClaudeProfileId {
+        if mayTriggerAutoSwitch(profile.id) {
             checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
         }
     }
@@ -2667,8 +2701,7 @@ private func observeCredentialChanges() {
         inferredThrottleNotifiedIds.remove(profile.id)
         projectionNotifiedIds.remove(profile.id)
         LoggingService.shared.log("MenuBarManager: adopted CLI cached usage for '\(profile.name)' — session \(Int(sessionPercent))% fetched \(Int(-cache.fetchedAt.timeIntervalSinceNow))s ago (zero-cost)", type: .info)
-        if profile.id == profileManager.activeProfile?.id
-            || profile.id == profileManager.activeClaudeProfileId {
+        if mayTriggerAutoSwitch(profile.id) {
             checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
         }
     }
@@ -2722,7 +2755,7 @@ private func observeCredentialChanges() {
     /// even reached the 25% preflight milestone and the 95% switch never fired.
     private func probeUsageViaMessageHeaders(for profile: Profile) async -> ClaudeUsage? {
         let isActiveClaudeAccount = profile.providerKind == .claude
-            && profile.id == (profileManager.activeClaudeProfileId ?? profileManager.activeProfile?.id)
+            && profileManager.isProviderOwner(profile.id, of: .claude)
         guard Self.shouldProbeMessageHeaders(
             isActiveClaudeAccount: isActiveClaudeAccount,
             cached: profile.claudeUsage,
@@ -2790,9 +2823,7 @@ private func observeCredentialChanges() {
 
     private func registerBurstBackoff(for profile: Profile, retryAfter: TimeInterval? = nil) {
         let streak = (burstBackoffs[profile.id]?.streak ?? 0) + 1
-        let isActiveAccount = profile.id == profileManager.activeProfile?.id
-            || profile.id == profileManager.activeClaudeProfileId
-            || profile.id == profileManager.activeCodexProfileId
+        let isActiveAccount = profileManager.isProviderOwner(profile.id)
         let cap = Self.burstBackoffCap(
             isActiveAccount: isActiveAccount,
             isSuspected: profile.claudeUsage?.isSuspectedRateLimited ?? false
@@ -2918,9 +2949,7 @@ private func observeCredentialChanges() {
     /// `autoSwitchTriggerUsage`) — the user decides whether displacing every
     /// running session's prompt cache is worth it. Tell them once per episode.
     private func notifyInferredThrottleIfNeeded(_ profile: Profile) {
-        let isActiveAccount = profile.id == profileManager.activeProfile?.id
-            || profile.id == profileManager.activeClaudeProfileId
-            || profile.id == profileManager.activeCodexProfileId
+        let isActiveAccount = profileManager.isProviderOwner(profile.id)
         guard isActiveAccount, !inferredThrottleNotifiedIds.contains(profile.id) else { return }
         inferredThrottleNotifiedIds.insert(profile.id)
         NotificationManager.shared.sendInferredThrottleNotification(profileName: profile.name)
@@ -2995,6 +3024,27 @@ private func observeCredentialChanges() {
 
     // MARK: - Auto-Switch Profile on Session Limit
 
+    /// Whether a usage reading for `profileId` is allowed to trigger a switch
+    /// AWAY from that account.
+    ///
+    /// Only a PROVIDER OWNER may: a switch rewrites a shared CLI login, and an
+    /// account no CLI is signed into has no session to rescue. The account the
+    /// user happens to be VIEWING is not that test — with viewing free to land
+    /// anywhere, a glance at a non-owner sitting at 96 % session would rotate
+    /// the CLI off the owner that still has headroom, burning every running
+    /// session's prompt cache (~10-15 % of quota) to solve a problem nobody had.
+    ///
+    /// One predicate, read by every call site AND by the trigger's own guard,
+    /// so a new caller that forgets the filter is still refused.
+    func mayTriggerAutoSwitch(_ profileId: UUID) -> Bool {
+        Self.mayTriggerAutoSwitch(profileId, in: profileManager)
+    }
+
+    /// The rule itself, reachable without a live menu bar.
+    static func mayTriggerAutoSwitch(_ profileId: UUID, in profileManager: ProfileManager) -> Bool {
+        profileManager.isProviderOwner(profileId)
+    }
+
     /// Checks if the current profile crossed an auto-switch threshold (session
     /// default 95%, weekly/Fable default 99% — Settings → Profiles →
     /// Auto-Switch) and switches to the next available one. Firing BELOW 100%
@@ -3003,6 +3053,22 @@ private func observeCredentialChanges() {
     /// catches up. The weekly threshold is tighter because forfeited weekly
     /// quota does not come back until the weekly reset.
     private func checkAutoSwitchIfNeeded(usage: ClaudeUsage, currentProfile: Profile) {
+        // GUARD: only a PROVIDER OWNER may trigger a switch away from itself.
+        //
+        // This is the backstop for the whole "focus is never authority" rule.
+        // Every caller above filters on ownership, but the filter is the kind of
+        // thing a new call site forgets — and the cost of forgetting is not a
+        // cosmetic one: a profile the user is merely LOOKING at, sitting at 96 %
+        // session because its own sessions burned it days ago, would rotate the
+        // shared CLI login off the account that is actually signed in and still
+        // has headroom, invalidating every running session's prompt cache
+        // (~10-15 % of quota) to solve a problem nobody had. An account whose
+        // exhaustion nothing is currently spending is not a reason to switch.
+        guard mayTriggerAutoSwitch(currentProfile.id) else {
+            LoggingService.shared.log("AutoSwitch: '\(currentProfile.name)' is not a provider owner — no CLI is signed into it, so its usage cannot trigger a switch", type: .info)
+            return
+        }
+
         // Switch-away decisions never see an inferred throttle stamp — only
         // measured percentages or a server-affirmed (long Retry-After) stamp
         // may displace the active account (see autoSwitchTriggerUsage; the
@@ -3355,8 +3421,7 @@ private func observeCredentialChanges() {
             // kept fresh by the CLI itself. Do NOT refresh it here — rotating its
             // refresh token without syncing the shared login would leave the CLI
             // holding a consumed token (the exact failure this preflight prevents).
-            if candidate.id == profileManager.activeClaudeProfileId
-                || candidate.id == profileManager.activeCodexProfileId {
+            if profileManager.isProviderOwner(candidate.id) {
                 LoggingService.shared.log("Preflight[\(Int(milestone))%]: next candidate '\(candidate.name)' already owns its provider login — OK")
                 preflightVerdicts[candidate.id] = PreflightVerdict(isLive: true, at: Date(), kind: .ownsLogin)
                 return
@@ -3469,7 +3534,8 @@ private func observeCredentialChanges() {
     /// duplicate, and empty for Codex/Grok (their duplicate guard runs at sync
     /// time, on `account_id`).
     private func blockedClaudeAccountUUIDs(alsoBlockingAccountOf current: Profile?) -> Set<String> {
-        let active = profileManager.profiles.first(where: { $0.id == profileManager.activeClaudeProfileId })
+        let activeId = profileManager.providerOwnerId(for: .claude)
+        let active = profileManager.profiles.first(where: { $0.id == activeId })
         return Set([active?.claudeAccountUUID, current?.claudeAccountUUID]
             .compactMap { $0 }
             .filter { !$0.isEmpty })
