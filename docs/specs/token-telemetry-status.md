@@ -318,8 +318,11 @@ remains; none of the 43 files is in an isolated home, so the 4d re-index
 never meets a compacted file. Scripts: `~/.claude/jobs/35d51d44/tmp/
 verify-compaction.sh`, `verify-compaction-2.sh`.
 
-Stage 4 is closed. The orchestrator is running the final frame-by-frame
-pass on `6a5eab2`; telemetry items arrive as T28+.
+Stage 4 is closed. The orchestrator's final frame-by-frame pass on
+`6a5eab2` (all three surfaces) found nothing new for telemetry — the
+expanded notes, legend isolation, Split axis with ⇄ markers, dark chart,
+rate-limit overlay and stack pill all hold; no T28. Deployed as pid 54481.
+Nothing further is queued until the owner reviews the window live.
 
 ## Next
 
