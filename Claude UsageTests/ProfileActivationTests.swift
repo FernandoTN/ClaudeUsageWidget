@@ -15,6 +15,12 @@
 //  A USER-initiated switch now moves the focus and leaves every provider-active
 //  pointer with its current owner; the AUTOMATIC path is unchanged.
 //
+//  The other half of the same defect lives here too: once the focus has moved
+//  that way, the profile is FOCUSED BUT NOT THE OWNER of its login, and the
+//  click that should finish the switch after an in-app repair used to be
+//  answered "already active" with nothing applied. `alreadyActive` now requires
+//  ownership as well as focus (`ProfileManager.needsProviderApply`).
+//
 //  Isolation: same UserDefaults save/restore pattern as
 //  ProfileStoreUsagePatchTests — `profiles_v3` and the three active-profile
 //  pointers are restored in tearDown, synthetic Keychain credentials are
@@ -38,6 +44,13 @@ final class ProfileActivationTests: XCTestCase {
     private var savedActiveProfileId: String?
     private var savedManagerProfiles: [Profile] = []
     private var savedActiveProfile: Profile?
+    /// The provider-active pointers are singleton state that outlives a test —
+    /// and the ownership tests below move them — so they are restored through
+    /// the store's own setters, which also reset its last-known-good shadow
+    /// (restoring the raw defaults key alone would leave the shadow serving the
+    /// test's value on the next absent read).
+    private var savedActiveClaudeProfileId: UUID?
+    private var savedActiveCodexProfileId: UUID?
     private var testProfileIDs: [UUID] = []
 
     // MARK: - Lifecycle
@@ -48,6 +61,8 @@ final class ProfileActivationTests: XCTestCase {
         savedActiveProfileId = defaults.string(forKey: activeProfileKey)
         savedManagerProfiles = manager.profiles
         savedActiveProfile = manager.activeProfile
+        savedActiveClaudeProfileId = manager.activeClaudeProfileId
+        savedActiveCodexProfileId = manager.activeCodexProfileId
         manager.flushPendingUsage()
         testProfileIDs = []
     }
@@ -70,6 +85,8 @@ final class ProfileActivationTests: XCTestCase {
         } else {
             defaults.removeObject(forKey: activeProfileKey)
         }
+        store.saveActiveClaudeProfileId(savedActiveClaudeProfileId)
+        store.saveActiveCodexProfileId(savedActiveCodexProfileId)
         if savedProfilesData != nil {
             manager.loadProfiles()
         } else {
@@ -175,5 +192,114 @@ final class ProfileActivationTests: XCTestCase {
     /// Same rule at the enum level, which is what the Bool wrapper reads.
     func testFocusOnlyOutcomeIsNotALandedActivation() {
         XCTAssertFalse(ProfileManager.ActivationOutcome.focusedWithoutApplying.didActivate)
+    }
+
+    // MARK: - Focused, but not the owner of its login
+
+    /// The second half of the same defect. A focus-only switch leaves the
+    /// profile FOCUSED while somebody else still owns the CLI login; the user
+    /// then repairs the login in Settings and clicks the profile again. That
+    /// click used to hit `alreadyActive` and apply nothing — the repaired
+    /// profile could never become the CLI's account.
+    ///
+    /// Here the repaired login is still dead, which is the outcome a test can
+    /// assert end to end: the activation must run the gate again (not
+    /// short-circuit) and report the refusal, leaving the pointer put. A LIVE
+    /// login is deliberately NOT exercised end to end — the apply path writes
+    /// the developer's real `~/.claude/.credentials.json` and system Keychain
+    /// item (and the Codex path probes the network), which no test may do; the
+    /// decision that governs it is covered as a pure function below.
+    func testClickingAFocusedProfileThatDoesNotOwnItsLoginIsNotAlreadyActive() async {
+        let ids = seedFocusedPlusDeadLoginProfile()
+        // Put the focus on the dead profile, exactly as the focus-only switch
+        // leaves it, while the Claude pointer stays with the other profile.
+        manager.activeProfile = manager.profiles.first(where: { $0.id == ids.dead })
+        store.saveActiveProfileId(ids.dead)
+        manager.claimActiveClaudeOwnership(ids.focused)
+
+        let outcome = await manager.activateProfileDetailed(ids.dead, userInitiated: true)
+
+        XCTAssertEqual(outcome, .focusedWithoutApplying,
+                       "a focused profile that does not own its login must run the apply path, not short-circuit")
+        XCTAssertNotEqual(outcome, .alreadyActive)
+        XCTAssertEqual(manager.activeClaudeProfileId, ids.focused,
+                       "the login is still dead, so the provider pointer must not move")
+    }
+
+    /// The true no-op still is one: focused AND the owner of the login it
+    /// carries. Nothing is applied and no pointer moves.
+    func testClickingAFocusedProfileThatOwnsItsLoginIsAlreadyActive() async {
+        let ids = seedFocusedPlusDeadLoginProfile()
+        manager.activeProfile = manager.profiles.first(where: { $0.id == ids.dead })
+        store.saveActiveProfileId(ids.dead)
+        manager.claimActiveClaudeOwnership(ids.dead)
+        let lastUsedBefore = manager.profiles.first(where: { $0.id == ids.dead })?.lastUsedAt
+
+        let outcome = await manager.activateProfileDetailed(ids.dead, userInitiated: true)
+
+        XCTAssertEqual(outcome, .alreadyActive)
+        XCTAssertEqual(manager.activeClaudeProfileId, ids.dead)
+        XCTAssertEqual(manager.profiles.first(where: { $0.id == ids.dead })?.lastUsedAt, lastUsedBefore,
+                       "a genuine no-op must not write the profile back")
+    }
+
+    // MARK: - The decision itself
+
+    /// The pure helper the early return now consults. A carried login counts as
+    /// work whenever the provider pointer is somebody else's — or nobody's,
+    /// since applying is what claims it.
+    func testNeedsProviderApplyNamesTheSharedLoginsTheProfileDoesNotOwn() {
+        let id = UUID()
+        let other = UUID()
+        var profile = Profile(id: id, name: "Mixed")
+        profile.cliCredentialsJSON = deadCredentialsJSON()
+        profile.codexCredentialsJSON = #"{"tokens":{"access_token":"x"}}"#
+
+        XCTAssertEqual(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init(claude: other, codex: other)),
+            [.claude, .codex]
+        )
+        XCTAssertEqual(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init(claude: id, codex: other)),
+            [.codex],
+            "a provider it already owns is not work"
+        )
+        XCTAssertTrue(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init(claude: id, codex: id)).isEmpty,
+            "owning every login it carries is the only genuine already-active case"
+        )
+        XCTAssertEqual(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init()),
+            [.claude, .codex],
+            "an unset pointer is nobody's — the apply is what claims it"
+        )
+        XCTAssertTrue(
+            ProfileManager.needsProviderApply(profile: Profile(id: id, name: "Empty"), pointers: .init()).isEmpty,
+            "a profile carrying no provider login has nothing to apply"
+        )
+    }
+
+    /// Grok is the third provider but has no shared CLI login: nothing writes
+    /// ~/.grok/auth.json, so a focused Grok profile is fully active and must
+    /// never be dragged through the apply path on every click. The pointer
+    /// field exists for the day that changes, and is honoured when set.
+    func testNeedsProviderApplyTreatsGrokAsHavingNoSharedLogin() {
+        let id = UUID()
+        let other = UUID()
+        var profile = Profile(id: id, name: "GROK")
+        profile.grokCredentialsJSON = #"{"https://x.ai::cli":{"key":"x"}}"#
+
+        XCTAssertTrue(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init()).isEmpty,
+            "no Grok pointer exists, so a Grok login can never be owned by somebody else"
+        )
+        XCTAssertEqual(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init(grok: other)),
+            [.grok],
+            "once a Grok pointer exists the same ownership rule applies"
+        )
+        XCTAssertTrue(
+            ProfileManager.needsProviderApply(profile: profile, pointers: .init(grok: id)).isEmpty
+        )
     }
 }

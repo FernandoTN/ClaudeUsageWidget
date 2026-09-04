@@ -44,6 +44,11 @@ struct CodexLoginSheet: View {
     /// Which field was just copied, for the momentary confirmation.
     @State private var copied: CopiedField?
 
+    /// Set once the login has landed in a profile that can be made the CLI's
+    /// account right here. Nil for every other outcome, so the sheet closes as
+    /// it always did.
+    @State private var signedInProfile: Profile?
+
     private enum CopiedField: Equatable { case link, code }
 
     private var mode: CodexLoginService.Mode { useBrowserFlow ? .browser : .deviceCode }
@@ -78,6 +83,14 @@ struct CodexLoginSheet: View {
     }
 
     var body: some View {
+        if let signedInProfile {
+            CodexActivationOffer(profile: signedInProfile) { dismiss() }
+        } else {
+            loginForm
+        }
+    }
+
+    private var loginForm: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             Text("codex.login.title".localized)
                 .font(DesignTokens.Typography.sectionTitle)
@@ -346,7 +359,15 @@ struct CodexLoginSheet: View {
             do {
                 try CodexUsageService.shared.importFromCodexHome(home, into: destination)
                 onFinished()
-                dismiss()
+                // The login is stored, but the `codex` CLI is still signed in as
+                // whoever owns auth.json — repairing a dead login leaves exactly
+                // that gap. Offer to close it here instead of sending the user
+                // back to the menu to click the profile they are already on.
+                if let offer = CodexActivationOffer.destination(destination) {
+                    signedInProfile = offer
+                } else {
+                    dismiss()
+                }
             } catch {
                 problem = error.localizedDescription
                 LoggingService.shared.logError("CodexAccountView: import after login failed - \(error.localizedDescription)")
@@ -373,6 +394,9 @@ struct CodexHomeImportSheet: View {
     @State private var duplicateHolder: String?
     @State private var problem: String?
     @State private var isImporting = false
+    /// Set once the import has landed in a profile that can be made the CLI's
+    /// account right here (see `CodexActivationOffer`).
+    @State private var signedInProfile: Profile?
     /// Serial number of the latest inspect, so a slow read for an
     /// already-replaced path cannot overwrite a newer result. A reference box
     /// because the completion closure must see the CURRENT value, not the copy
@@ -386,6 +410,14 @@ struct CodexHomeImportSheet: View {
     }
 
     var body: some View {
+        if let signedInProfile {
+            CodexActivationOffer(profile: signedInProfile) { dismiss() }
+        } else {
+            importForm
+        }
+    }
+
+    private var importForm: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
             Text("codex.import_title".localized)
                 .font(DesignTokens.Typography.sectionTitle)
@@ -538,11 +570,121 @@ struct CodexHomeImportSheet: View {
                 switch result {
                 case .success:
                     onImported()
-                    dismiss()
+                    // Same gap the login flow leaves: the account is stored but
+                    // ~/.codex/auth.json still holds somebody else's login.
+                    if let offer = CodexActivationOffer.destination(target) {
+                        signedInProfile = offer
+                    } else {
+                        dismiss()
+                    }
                 case .failure(let error):
                     problem = error.localizedDescription
                     LoggingService.shared.logError("CodexAccountView: import failed - \(error.localizedDescription)")
                 }
+            }
+        }
+    }
+}
+
+/// The last step of an in-app Codex repair: the account is signed in and stored
+/// on the profile, but `~/.codex/auth.json` still holds whoever owned it before,
+/// so the `codex` CLI has not moved.
+///
+/// Why it is offered here rather than left to the menu: the profile a repair
+/// happens on is the FOCUSED one (both sheets operate on `activeProfile`), and
+/// clicking a focused profile used to be answered "already active" with nothing
+/// applied — the user could not finish the switch at all. `ProfileManager`
+/// now completes it, and this button is the same call from where the repair
+/// already is. Declining is a normal outcome: the stored login is safe either
+/// way, and the hint repeats how to apply it later.
+struct CodexActivationOffer: View {
+    let profile: Profile
+    /// Called when the user is done, whichever button they pressed.
+    let onDone: () -> Void
+
+    @State private var isActivating = false
+    @State private var problem: String?
+
+    /// The profile to offer activation for, or nil when there is nothing to
+    /// offer: activation is only worth a button when the destination is the
+    /// FOCUSED profile (a login sent to a brand-new profile is not) and it does
+    /// not already own the Codex login.
+    @MainActor
+    static func destination(_ profileId: UUID) -> Profile? {
+        let manager = ProfileManager.shared
+        guard manager.activeProfile?.id == profileId,
+              manager.activeCodexProfileId != profileId else { return nil }
+        return manager.profiles.first(where: { $0.id == profileId })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
+            Text("codex.activate.title".localized)
+                .font(DesignTokens.Typography.sectionTitle)
+
+            HStack(alignment: .top, spacing: DesignTokens.Spacing.small) {
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundColor(.green)
+                Text("codex.activate.prompt".localized(with: profile.name))
+                    .font(DesignTokens.Typography.body)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // The same sentence the sheet shows before the login, kept for the
+            // Not-now path: declining here is not a dead end.
+            Text("codex.login.activate_after".localized)
+                .font(DesignTokens.Typography.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let problem {
+                HStack(alignment: .top, spacing: DesignTokens.Spacing.small) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(problem)
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundColor(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(DesignTokens.Spacing.iconText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.red.opacity(0.08))
+                .cornerRadius(DesignTokens.Radius.small)
+            }
+
+            HStack(spacing: DesignTokens.Spacing.small) {
+                Spacer()
+                if isActivating {
+                    ProgressView().scaleEffect(0.6)
+                }
+                Button("codex.activate.later".localized, action: onDone)
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isActivating)
+                Button("codex.activate.now".localized, action: activate)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isActivating)
+            }
+        }
+        .padding()
+        .frame(width: 520)
+    }
+
+    private func activate() {
+        guard !isActivating else { return }
+        isActivating = true
+        problem = nil
+        Task {
+            let landed = await ProfileManager.shared.activateProfile(profile.id, userInitiated: true)
+            isActivating = false
+            if landed {
+                onDone()
+            } else {
+                // The liveness gate refused the fresh login, or another switch
+                // held the semaphore. Say so rather than dismissing on a switch
+                // that did not happen — the stored login is untouched either way.
+                problem = "codex.activate.failed".localized
+                LoggingService.shared.log("CodexActivationOffer: activation of '\(profile.name)' did not land")
             }
         }
     }
