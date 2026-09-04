@@ -1964,6 +1964,8 @@ final class StatusBarUIManager {
     /// `tileImages` pipeline: a summary stored under the active id would leave
     /// the previous active's block alive across a switch until pruned.
     private var summaryImages: [Profile.ProviderKind: NSImage] = [:]
+    /// What every dot showed last paint (hysteresis, owner round B3).
+    private var fleetDotMemory = FleetDotMemory()
     private var summaryAnchor: [Profile.ProviderKind: UUID] = [:]
     private var summaryMemberOrder: [Profile.ProviderKind: [UUID]] = [:]
     private var summarySeq: [Profile.ProviderKind: Int] = [:]
@@ -1975,6 +1977,7 @@ final class StatusBarUIManager {
         summaryMemberOrder.removeAll()
         summarySeq.removeAll()
         lastSummaryKey.removeAll()
+        fleetDotMemory = FleetDotMemory()
     }
 
     /// Paints ONE summary tile per provider group: the provider-active
@@ -1996,21 +1999,41 @@ final class StatusBarUIManager {
         let activeIds = ProfileManager.shared.activeAccountIds(among: profiles)
         let byId = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
 
-        // Readiness for every profile of every painted provider.
+        // Readiness for every profile of every painted provider — through the
+        // dot memory, so a dot changes colour only on server-affirmed
+        // evidence (owner round 2026-09-04, B3), with one log line per change.
+        // Dimming waits ten minutes (the active tile's own threshold): at
+        // three, background accounts fetched every few minutes blinked.
         var readiness: [UUID: AccountReadiness] = [:]
         var stale: Set<UUID> = []
+        var dotThresholds = thresholds
+        dotThresholds.staleAfter = ProviderSummary.activeStaleAfter
+        var painted: Set<UUID> = []
         for profile in profiles where groupItems[profile.providerKind] != nil {
-            readiness[profile.id] = AccountReadiness.classify(
+            painted.insert(profile.id)
+            let isLoginDead = context?.isLoginDead(profile) ?? false
+            let isExcluded = context?.isExcluded(profile) ?? false
+            let candidate = AccountReadiness.classify(
                 usage: profile.claudeUsage,
-                isLoginDead: context?.isLoginDead(profile) ?? false,
-                isExcluded: context?.isExcluded(profile) ?? false,
+                isLoginDead: isLoginDead,
+                isExcluded: isExcluded,
                 thresholds: thresholds,
                 now: now
             )
-            if AccountReadiness.isStale(profile.claudeUsage, thresholds: thresholds, now: now) {
+            let adopted = fleetDotMemory.adopt(
+                id: profile.id, candidate: candidate, usage: profile.claudeUsage,
+                isLoginDead: isLoginDead, isExcluded: isExcluded, now: now
+            )
+            readiness[profile.id] = adopted.readiness
+            if let change = adopted.change {
+                LoggingService.shared.log(
+                    "Fleet dot \(profile.name): \(change.from.map { "\($0)" } ?? "—") → \(change.to) — \(change.reason)")
+            }
+            if AccountReadiness.isStale(profile.claudeUsage, thresholds: dotThresholds, now: now) {
                 stale.insert(profile.id)
             }
         }
+        fleetDotMemory.forget(except: painted)
 
         // The active tiles come from the unchanged per-tile pipeline (render
         // keys, style renderers). A deselected owner is painted anyway.

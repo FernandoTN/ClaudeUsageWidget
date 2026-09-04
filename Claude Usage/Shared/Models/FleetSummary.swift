@@ -54,6 +54,104 @@ enum AccountReadiness: Int, Hashable, CaseIterable, Comparable {
     }
 }
 
+/// What each dot showed last time, so a dot changes colour only on
+/// server-affirmed evidence (owner round 2026-09-04, B3: dots flipped
+/// between sweeps). A change is adopted when the account was measured
+/// again (any provenance), its login died or revived, a server-affirmed
+/// limit stamp appeared or expired, a window reset passed, or the account
+/// was excluded / included; an INFERRED throttle (a suspicion, not a
+/// measurement) has to persist for `suspectedDebounce` before it turns a
+/// dot purple, and everything else — the mere passage of time — keeps the
+/// dot as it was. Every adoption returns a reason for the log.
+struct FleetDotMemory {
+    nonisolated static let suspectedDebounce: TimeInterval = 60
+
+    struct Shown: Hashable {
+        var readiness: AccountReadiness
+        var measuredAt: Date?
+        var sessionResetAt: Date?
+        var weeklyResetAt: Date?
+        var dead: Bool
+        var excluded: Bool
+        var affirmedStamp: Bool
+    }
+
+    struct Change: Hashable {
+        var from: AccountReadiness?
+        var to: AccountReadiness
+        var reason: String
+    }
+
+    private(set) var shown: [UUID: Shown] = [:]
+    private var suspectedSince: [UUID: Date] = [:]
+
+    nonisolated init() {}
+
+    /// The readiness to draw for `id`, and the change record when it changed.
+    nonisolated mutating func adopt(
+        id: UUID,
+        candidate: AccountReadiness,
+        usage: ClaudeUsage?,
+        isLoginDead: Bool,
+        isExcluded: Bool,
+        now: Date
+    ) -> (readiness: AccountReadiness, change: Change?) {
+        let affirmedStamp = (usage?.rateLimitedUntil.map { $0 > now } ?? false) && usage?.rateLimitedInferred != true
+        let next = Shown(
+            readiness: candidate, measuredAt: usage?.lastUpdated,
+            sessionResetAt: usage?.sessionResetTime, weeklyResetAt: usage?.weeklyResetTime,
+            dead: isLoginDead, excluded: isExcluded, affirmedStamp: affirmedStamp
+        )
+        guard let previous = shown[id] else {
+            shown[id] = next
+            return (candidate, Change(from: nil, to: candidate, reason: "first paint"))
+        }
+        if candidate == previous.readiness {
+            shown[id] = next
+            suspectedSince[id] = nil
+            return (candidate, nil)
+        }
+        var reason: String?
+        if previous.dead != isLoginDead {
+            reason = isLoginDead ? "login dead" : "login revived"
+        } else if previous.excluded != isExcluded {
+            reason = isExcluded ? "excluded from auto-switch" : "included in auto-switch"
+        } else if previous.affirmedStamp != affirmedStamp {
+            reason = affirmedStamp ? "server-affirmed limit stamp" : "limit stamp expired"
+        } else if let measuredAt = usage?.lastUpdated, measuredAt != previous.measuredAt {
+            let source: String
+            switch usage?.provenance {
+            case .headerRescue?: source = "API headers"
+            case .cliCache?: source = "CLI cache"
+            default: source = "own endpoint"
+            }
+            reason = "new measurement (\(source))"
+        } else if let reset = previous.sessionResetAt, reset <= now, (usage?.sessionResetTime ?? reset) != reset || candidate != .exhausted {
+            reason = "session window reset"
+        } else if let reset = previous.weeklyResetAt, reset <= now {
+            reason = "weekly window reset"
+        } else if candidate == .suspected {
+            let since = suspectedSince[id] ?? now
+            suspectedSince[id] = since
+            if now.timeIntervalSince(since) >= Self.suspectedDebounce {
+                reason = "inferred throttle persisted \(Int(now.timeIntervalSince(since))) s"
+            }
+        }
+        guard let reason else {
+            // Nothing server-affirmed changed: keep what the dot showed.
+            return (previous.readiness, nil)
+        }
+        shown[id] = next
+        suspectedSince[id] = nil
+        return (candidate, Change(from: previous.readiness, to: candidate, reason: reason))
+    }
+
+    nonisolated mutating func forget(except keep: Set<UUID>) {
+        shown = shown.filter { keep.contains($0.key) }
+        suspectedSince = suspectedSince.filter { keep.contains($0.key) }
+    }
+}
+
 /// The thresholds readiness is judged against. `session`/`weekly` are the
 /// auto-switch's own switch thresholds, so "ready" on the bar means exactly
 /// "the auto-switch would accept this account".
@@ -400,12 +498,18 @@ struct ProviderSummary: Hashable {
 /// counts and the mark; `FleetSummaryTests.testReservedWidthsCoverTheRealFonts`
 /// re-measures them on every run).
 enum FleetBlockGeometry {
-    nonisolated static let dotDiameter: CGFloat = 4
-    nonisolated static let dotPitch: CGFloat = 6
+    /// 5 pt dots at a 7 pt pitch (owner round 2026-09-04, B1: 4 pt dots at
+    /// 6 pt were illegible for 18 accounts); two rows of seven fill the
+    /// 22 pt bar with the candidate row underneath (2 × 7 + 7 = 21).
+    nonisolated static let dotDiameter: CGFloat = 5
+    nonisolated static let dotPitch: CGFloat = 7
     nonisolated static let dotsPerRow = 10
-    nonisolated static let rowPitch: CGFloat = 6
-    /// Provider mark column at the block's left edge (Cl / Cx / Gk at 6 pt;
-    /// `Gk` measures 8.5 pt).
+    nonisolated static let rowPitch: CGFloat = 7
+    /// Rosters of this many other accounts or more use two rows.
+    nonisolated static let twoRowsFrom = 4
+    /// Provider mark column at the block's left edge: the mark (Cl / Cx / Gk
+    /// at 6 pt; `Gk` measures 8.5 pt) over the provider's TOTAL account
+    /// count, so "5 accounts, 4 dots" reads as "the fifth is the tile".
     nonisolated static let markWidth: CGFloat = 10
     /// Gap between the active tile and the fleet block.
     nonisolated static let gap: CGFloat = 3
@@ -427,13 +531,14 @@ enum FleetBlockGeometry {
     /// roster is larger than the grid (`+17` at 6 pt is 11 pt wide).
     nonisolated static let overflowColumns = 2
 
-    /// Columns × rows for `count` dots: one row up to ten accounts, else two
-    /// rows balanced (17 → 9 columns). The renderer fills COLUMN-major from
-    /// the RIGHT edge, so the rightmost column always holds the soonest
-    /// weekly resets — "rightmost = next to burn" survives the wrap.
+    /// Columns × rows for `count` dots: one row up to three accounts, else
+    /// two rows balanced (4 → 2 × 2, 18 → 9 × 2), capped at `dotsPerRow`
+    /// columns. The renderer fills COLUMN-major from the RIGHT edge, so the
+    /// rightmost column always holds the soonest weekly resets — "rightmost
+    /// = next to burn" survives the wrap.
     nonisolated static func dotGrid(count: Int) -> (columns: Int, rows: Int) {
         guard count > 0 else { return (0, 0) }
-        let rows = count > dotsPerRow ? 2 : 1
+        let rows = count >= twoRowsFrom ? 2 : 1
         return ((count + rows - 1) / rows, rows)
     }
 
@@ -474,13 +579,11 @@ enum FleetBlockGeometry {
     }
 
     /// Height of the fleet block beside an active tile of `activeHeight`:
-    /// the active tile's own height whenever the block fits in it (one dot
-    /// row, or counts — 6 pt row + 7 pt candidate row = 15.5 pt), so the dot
-    /// row sits ON the tile's bar and the candidate row ON its label row;
-    /// two dot rows need the full 22 pt Claude tile height.
+    /// always the full 22 pt bar height — the mark column carries the
+    /// account count under the mark (two 7 pt rows) and two dot rows plus
+    /// the candidate row need 21 pt.
     nonisolated static func blockHeight(activeHeight: CGFloat, memberCount: Int, layout: MenuBarLayout) -> CGFloat {
-        let rows = layout == .fleetDots ? dotGrid(count: shownDotCount(memberCount: memberCount)).rows : 1
-        return rows > 1 ? max(activeHeight, 22) : max(activeHeight, 16)
+        max(activeHeight, 22)
     }
 
     /// Total summary-tile width: active tile + gap + fleet block.

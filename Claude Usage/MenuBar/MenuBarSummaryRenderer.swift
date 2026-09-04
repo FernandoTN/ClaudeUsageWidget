@@ -83,14 +83,14 @@ extension MenuBarIconRenderer {
         defer { image.unlockFocus() }
         opaqueEventShapeBackdrop(in: image)
 
-        // Provider mark, a badge centred on the block's height so it labels
-        // the whole block — dots and candidate row — rather than sitting
-        // top-left beside the first dot row (round 1, B1).
-        let markSize = (Self.providerMark(summary.provider) as NSString).size(withAttributes: [.font: Self.markFont])
-        (Self.providerMark(summary.provider) as NSString).draw(
-            at: NSPoint(x: 0, y: ((height - markSize.height) / 2).rounded()),
-            withAttributes: [.font: Self.markFont, .foregroundColor: Self.dimText]
-        )
+        // Provider mark over the provider's TOTAL account count (owner round
+        // 2026-09-04, B1: "5 accounts but only 4 showing" — the fifth is the
+        // active tile). Two 6 pt rows in the mark column, top-aligned with
+        // the dot rows.
+        let markAttributes: [NSAttributedString.Key: Any] = [.font: Self.markFont, .foregroundColor: Self.dimText]
+        (Self.providerMark(summary.provider) as NSString).draw(at: NSPoint(x: 0, y: height - 7), withAttributes: markAttributes)
+        ("\(summary.members.count + (summary.activeId == nil ? 0 : 1))" as NSString).draw(
+            at: NSPoint(x: 0, y: height - 14), withAttributes: markAttributes)
 
         // The matrix is RIGHT-aligned inside the block: the soonest weekly
         // reset sits at the block's right edge, exactly where the
@@ -157,8 +157,10 @@ extension MenuBarIconRenderer {
             // dead marks beside it (round 1, B3). `+17` at 6 pt is 11 pt.
             let x = max(originX, leftmostX - CGFloat(FleetBlockGeometry.overflowColumns) * FleetBlockGeometry.dotPitch
                         - FleetBlockGeometry.overflowGap)
+            // On the TOP row: the bottom row of the mark column now carries
+            // the account count, and "25 +6" read as one number.
             ("+\(overflow)" as NSString).draw(
-                at: NSPoint(x: x, y: top - d - CGFloat(grid.rows - 1) * FleetBlockGeometry.rowPitch - 1.5),
+                at: NSPoint(x: x, y: top - d - 1.5),
                 withAttributes: [.font: Self.markFont, .foregroundColor: Self.dimText.withAlphaComponent(0.7)]
             )
         }
