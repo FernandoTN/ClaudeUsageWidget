@@ -321,6 +321,77 @@ class ProfileManager: ObservableObject {
         }
     }
 
+    // MARK: - Focus vs Ownership
+
+    /// Who currently owns each provider's shared CLI login, as one value, so the
+    /// decision below is a pure function of state a test can construct.
+    struct ProviderOwnership: Equatable {
+        var claude: UUID?
+        var codex: UUID?
+        /// Grok has no shared-login pointer: nothing in the app writes
+        /// `~/.grok/auth.json`, so a Grok login is never handed to a CLI and can
+        /// never be owned by another profile (CLAUDE.md, "Grok accounts"). It is
+        /// carried here so the seam is visible — and already handled — the day
+        /// Grok gains one.
+        var grok: UUID?
+
+        init(claude: UUID? = nil, codex: UUID? = nil, grok: UUID? = nil) {
+            self.claude = claude
+            self.codex = codex
+            self.grok = grok
+        }
+    }
+
+    /// The pointers as they stand right now.
+    var currentProviderOwnership: ProviderOwnership {
+        ProviderOwnership(claude: activeClaudeProfileId, codex: activeCodexProfileId)
+    }
+
+    /// The provider logins `profile` CARRIES but does NOT own — i.e. the work an
+    /// activation still has to do for a profile that is already focused.
+    ///
+    /// A nil pointer for a shared-login provider means nobody owns that login,
+    /// so applying it is exactly right: the apply claims the pointer. A nil
+    /// pointer for Grok means something else entirely — that provider has no
+    /// shared login at all — which is why Grok is decided by the pointer's
+    /// existence rather than by whose it is.
+    static func needsProviderApply(profile: Profile, pointers: ProviderOwnership) -> [Profile.ProviderKind] {
+        Profile.ProviderKind.allCases.filter { provider in
+            switch provider {
+            case .claude:
+                return profile.cliCredentialsJSON != nil && pointers.claude != profile.id
+            case .codex:
+                return profile.codexCredentialsJSON != nil && pointers.codex != profile.id
+            case .grok:
+                return profile.grokCredentialsJSON != nil
+                    && pointers.grok != nil
+                    && pointers.grok != profile.id
+            }
+        }
+    }
+
+    /// How a provider set is named in the ownership-repair log line.
+    private static func providerNames(_ providers: [Profile.ProviderKind]) -> String {
+        providers.map { provider in
+            switch provider {
+            case .claude: return "Claude Code"
+            case .codex: return "Codex"
+            case .grok: return "Grok"
+            }
+        }.joined(separator: " + ")
+    }
+
+    /// Name of the profile that currently owns `provider`'s shared CLI login.
+    private func currentOwnerName(of provider: Profile.ProviderKind) -> String? {
+        let ownerId: UUID?
+        switch provider {
+        case .claude: ownerId = activeClaudeProfileId
+        case .codex: ownerId = activeCodexProfileId
+        case .grok: ownerId = nil
+        }
+        return ownerId.flatMap { owner in profiles.first(where: { $0.id == owner })?.name }
+    }
+
     /// Returns false when the switch could not take over a provider login the
     /// profile carries (dead credentials were NOT applied — see the gates below),
     /// so callers like the auto-switch can try a different candidate.
@@ -353,7 +424,24 @@ class ProfileManager: ObservableObject {
             return .profileNotFound
         }
 
-        if activeProfile?.id == id {
+        // BEING FOCUSED IS NOT BEING ACTIVE. `activeProfile` is only the focus;
+        // `activeClaudeProfileId` / `activeCodexProfileId` say who owns each
+        // shared CLI login, and the two differ routinely — most sharply right
+        // after an in-app repair. A user clicks a profile whose login is dead,
+        // the gate moves the FOCUS without applying it (`focusedWithoutApplying`),
+        // they sign that profile back in from Settings (which operates on the
+        // focused profile), and then click it again to hand the new login to
+        // the CLI. That click used to hit this early return: "already active",
+        // nothing applied, the CLI still signed in as somebody else, and no way
+        // to finish the switch by clicking (reported live 2026-09-03).
+        //
+        // So a focused profile short-circuits only when it also OWNS every
+        // provider login it carries. Otherwise the normal apply path runs for
+        // the providers it does not own — same liveness gate, same outgoing
+        // adoption, same pointer moves, same refusal.
+        let isFocused = activeProfile?.id == id
+        let unownedProviders = Self.needsProviderApply(profile: profile, pointers: currentProviderOwnership)
+        if isFocused && unownedProviders.isEmpty {
             LoggingService.shared.log("Profile already active: \(profile.name)")
             return .alreadyActive
         }
@@ -361,11 +449,34 @@ class ProfileManager: ObservableObject {
         switchingSemaphore = true
         isSwitchingProfile = true
 
-        // Captured before any state changes — the history record needs the
-        // OUTGOING account, and activeProfile is rewritten mid-switch.
-        let outgoingNameForHistory = activeProfile?.name
+        // Which provider logins this activation may hand to a CLI. A normal
+        // switch applies every provider the target carries (the `!= nil` checks
+        // below decide that); an ownership repair applies ONLY the unowned ones
+        // — re-applying a login the profile already owns would refresh and
+        // rotate the token family out from under the CLI that is live on it,
+        // for no gain (the same reasoning that keeps `preflightCandidates` off
+        // a candidate that owns its provider's shared login).
+        let applyScope: Set<Profile.ProviderKind> = isFocused
+            ? Set(unownedProviders)
+            : Set(Profile.ProviderKind.allCases)
 
-        LoggingService.shared.log("Switching to profile: \(profile.name)")
+        // Captured before any state changes — the history record needs the
+        // OUTGOING account, and activeProfile is rewritten mid-switch. On an
+        // ownership repair the focus is not moving, so the account being left
+        // is the one that owns the login, not the focused profile (which is the
+        // target itself — a from == to record would read as a no-op).
+        let outgoingNameForHistory = isFocused
+            ? (unownedProviders.compactMap { currentOwnerName(of: $0) }.first ?? activeProfile?.name)
+            : activeProfile?.name
+
+        if isFocused {
+            LoggingService.shared.log(
+                "Profile '\(profile.name)' is focused but does not own its "
+                + "\(Self.providerNames(unownedProviders)) login — applying now"
+            )
+        } else {
+            LoggingService.shared.log("Switching to profile: \(profile.name)")
+        }
 
         // Provider-scoped handoff: activating a profile only replaces the shared
         // login state of the providers THAT PROFILE carries. Switching to a Codex
@@ -434,7 +545,7 @@ class ProfileManager: ObservableObject {
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
 
-        if updatedProfile.cliCredentialsJSON != nil {
+        if updatedProfile.cliCredentialsJSON != nil, applyScope.contains(.claude) {
             // If the target's OAuth token went stale while it was inactive, refresh it
             // FIRST so the CLI is handed a usable login instead of an expired token.
             // Never adopt from the system Keychain here — at this point it still holds
@@ -450,7 +561,7 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        if let cliJSON = updatedProfile.cliCredentialsJSON {
+        if applyScope.contains(.claude), let cliJSON = updatedProfile.cliCredentialsJSON {
             // GATE: never hand the CLI a dead login. If the token is still expired
             // after the refresh attempt above, its refresh token is revoked or
             // consumed — writing it would replace the WORKING outgoing login with
@@ -495,13 +606,13 @@ class ProfileManager: ObservableObject {
                 // background so future adoptions stay account-matched.
                 Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: id) }
             }
-        } else {
+        } else if updatedProfile.cliCredentialsJSON == nil {
             LoggingService.shared.log("⚠️ Profile '\(updatedProfile.name)' has no CLI credentials JSON")
         }
 
         // Apply the profile's Codex account (if any) to ~/.codex/auth.json so the
         // `codex` CLI switches accounts along with the app.
-        if updatedProfile.codexCredentialsJSON != nil {
+        if updatedProfile.codexCredentialsJSON != nil, applyScope.contains(.codex) {
             // Validate/refresh the stored tokens BEFORE handing them to the CLI
             // (parity with the Claude flow above). The stored copy may be days old;
             // requiring 24h of remaining validity means the CLI won't have to
@@ -611,7 +722,13 @@ class ProfileManager: ObservableObject {
         ))
 
         if focusOnly {
-            LoggingService.shared.log("👁 Focus moved to '\(updatedProfile.name)' WITHOUT applying its dead \(RefusedProvider.summary(refusedProviders)) login — the CLI keeps its current account")
+            // On an ownership repair the focus was already here, so saying it
+            // "moved" would misreport the one fact the line exists to report.
+            if isFocused {
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' is focused but its dead \(RefusedProvider.summary(refusedProviders)) login was NOT applied — the CLI keeps its current account")
+            } else {
+                LoggingService.shared.log("👁 Focus moved to '\(updatedProfile.name)' WITHOUT applying its dead \(RefusedProvider.summary(refusedProviders)) login — the CLI keeps its current account")
+            }
             notifyFocusedWithoutApplying(profile: updatedProfile, refused: refusedProviders)
             return .focusedWithoutApplying
         }

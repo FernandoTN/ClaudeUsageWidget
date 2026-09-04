@@ -277,6 +277,11 @@
 "codex.login.error_timeout" = "The sign-in did not finish in time. Nothing was changed.";
 "codex.login.error_exit" = "The codex CLI exited with status %d.";
 "codex.login.error_no_auth_file" = "The codex CLI finished but wrote no login, so there was nothing to import.";
+"codex.activate.title" = "Account signed in";
+"codex.activate.prompt" = "“%@” is signed in. Make it the active Codex account now?";
+"codex.activate.now" = "Activate";
+"codex.activate.later" = "Not now";
+"codex.activate.failed" = "The codex CLI was not switched — the new login was refused or another switch was in progress. The account is still saved on this profile.";
 "codex.cli_hazard" = "Running `codex login` in a terminal revokes the account currently applied to ~/.codex. Use the button above (or CODEX_HOME=~/.codex-accounts/<name> codex login) to add an account without logging the current one out.";
 "codex.sync_instructions" = "Log in with the `codex` CLI first, then sync. The app copies ~/.codex/auth.json into this profile.";
 "codex.locked_claude_profile" = "This profile already holds a Claude account. Codex accounts live on their own profiles — create a new profile and sync the Codex CLI there.";
