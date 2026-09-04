@@ -148,15 +148,15 @@ final class FleetSummaryTests: XCTestCase {
         let queued = build(members: [a, active], active: active, readiness: [:], keyed: 10,
                            next: candidate(a, queued: true, verdict: .unverified), activeMeasured: now)
         XCTAssertTrue(queued.armed, "a queued hand-off is shown regardless of usage")
-        XCTAssertEqual(queued.affix, "Q→Mem")
-        XCTAssertEqual(queued.verdictGlyph, "?")
+        XCTAssertEqual(queued.affix, "→Mem", "the queue state is the arrow's colour, not a letter")
+        XCTAssertNil(queued.verdictGlyph, "unverified shows no glyph — the missing check is the information")
     }
 
     func testBlockedQueueHeadNoCandidateAndSwitchingAffixes() {
         let a = UUID(), active = UUID()
         let fallback = build(members: [a, active], active: active, readiness: [:], keyed: 80,
                              next: candidate(a, blocked: true, verdict: .dead), activeMeasured: now)
-        XCTAssertEqual(fallback.affix, "Q→Mem", "same prefix as queued — the renderer paints the Q red")
+        XCTAssertEqual(fallback.affix, "→Mem", "same affix — the renderer paints the arrow red")
         XCTAssertEqual(fallback.verdictGlyph, "×")
         XCTAssertEqual(fallback.alert, .noCandidate, "a dead next candidate is no candidate")
 
@@ -220,8 +220,9 @@ final class FleetSummaryTests: XCTestCase {
         let small = build(members: Array(ids.prefix(20)), active: nil, readiness: [:], keyed: nil, next: nil)
         XCTAssertEqual(small.dotMembers().overflow, 0)
         XCTAssertEqual(small.dotMembers().shown.count, 20)
-        // 18 dots in 9 columns + 2 reserved columns for "+N" = 11 columns.
-        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 25), 64)
+        // 18 dots in 9 columns + 2 reserved columns for "+N" = 11 columns,
+        // plus the gap between "+N" and the matrix (round 1, B3).
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 25), 64 + FleetBlockGeometry.overflowGap)
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 40, layout: .fleetDots),
                        FleetBlockGeometry.fleetWidth(memberCount: 25, layout: .fleetDots),
                        "fixed once the roster overflows the grid")
@@ -261,9 +262,16 @@ final class FleetSummaryTests: XCTestCase {
             (s as NSString).size(withAttributes: [.font: font]).width
         }
         let affix = FleetBlockFonts.affix
-        for widest in ["99Q→WWW✓", "99Q→WWW?", "99Q→WWW×", "99→WWW✓", "→—", "⇄"] {
-            XCTAssertLessThanOrEqual(width(widest, affix), FleetBlockGeometry.affixWidth,
-                                     "\(widest) must fit the reserved candidate row")
+        // The row is drawn as segments with `candidateGap` between digits,
+        // arrow + name, and the glyph (round 1, B2).
+        let gaps = 2 * FleetBlockGeometry.candidateGap
+        for (digits, name, glyph) in [("99", "WWW", "✓"), ("99", "WWW", "×"), ("99", "WWW", "")] {
+            let total = width(digits, affix) + width("→" + name, affix) + width(glyph, affix) + gaps
+            XCTAssertLessThanOrEqual(total, FleetBlockGeometry.affixWidth,
+                                     "\(digits) →\(name) \(glyph) must fit the reserved candidate row")
+        }
+        for alone in ["→—", "⇄"] {
+            XCTAssertLessThanOrEqual(width(alone, affix), FleetBlockGeometry.affixWidth)
         }
         XCTAssertLessThanOrEqual(width("●99 ◐99 ▲99 ×99", FleetBlockFonts.counts) + 3 * 2,
                                  FleetBlockGeometry.countsWidth)
@@ -271,8 +279,8 @@ final class FleetSummaryTests: XCTestCase {
             XCTAssertLessThanOrEqual(width(mark, FleetBlockFonts.mark) + 1, FleetBlockGeometry.markWidth)
         }
         XCTAssertLessThanOrEqual(width("+99", FleetBlockFonts.mark),
-                                 CGFloat(FleetBlockGeometry.overflowColumns) * FleetBlockGeometry.dotPitch + 1,
-                                 "+N must fit its two reserved columns")
+                                 CGFloat(FleetBlockGeometry.overflowColumns) * FleetBlockGeometry.dotPitch + FleetBlockGeometry.overflowGap,
+                                 "+N must fit its two reserved columns and the gap")
     }
 
     // MARK: - Config compatibility

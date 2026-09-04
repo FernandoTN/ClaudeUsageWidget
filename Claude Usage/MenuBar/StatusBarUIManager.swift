@@ -2065,7 +2065,9 @@ final class StatusBarUIManager {
         for (state, label) in order where counts[state, default: 0] > 0 {
             parts.append("\(counts[state]!) \(label)")
         }
-        return parts.joined(separator: " · ")
+        // The words behind the glyphs (round 1, B4/G2): the tooltip is where
+        // the bar spells out what a 22 pt strip can only encode.
+        return parts.joined(separator: " · ") + "\n" + DesignLegend.line
     }
 
     /// The active block for a provider with NO active login right now:
