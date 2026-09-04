@@ -139,11 +139,43 @@ Measured on an online copy of the live ledger (1,261,884 events): migration
 5.6 s including `VACUUM`, 716 MB → 302 MB (239 B/event); last-24 h minute
 aggregates 6,997 rows.
 
+## Stage 2 deploy (fixes session, 22:15 PDT, pid 43841)
+
+Migration on the live ledger 683 MB → 287 MB; first incremental slice 8 s
+after launch; main thread untouched; RSS 164 MB idle. Follow-ups folded into
+3a: the WAL sat at the 64 MB cap because the checkpoint was keyed to a bounded
+catch-up — now after any slice that wrote, and right after the migration's
+VACUUM; the migration logs its duration and sizes.
+
+## Stage 3a — window shell (PR pending)
+
+`Telemetry/TelemetryWindowController.swift` (one reusable titled window with
+a hidden titlebar, created on first show, observer installed at launch by
+`TelemetryService.start()`, frame persisted in ledger meta, foregrounded via
+`MenuBarManager.bringWindowToForeground`), `TelemetryWindowModel.swift`
+(scope / window / metric, Fleet report → sidebar, reloads only while
+visible, `.telemetryLedgerUpdated` throttled, `scope(from:)` for the
+notification's object + userInfo forms), `TelemetryView.swift` (pure-SwiftUI
+sidebar and segmented controls, KPI tiles, static stacked columns with the
+7-bucket mean and ⇄ markers, by-model / by-account tables with the
+`ActiveVocabulary.activeFor` badge, footer with Refresh now / Pause indexing
+/ Copy numbers, indexing / empty / degraded / paused states),
+`TelemetryFormatting.swift` (compact numbers, USD, deltas; the data-viz
+palette as the module's only literal colours), `TelemetryFrameHarness.swift`
+(DEBUG; 13 states × light/dark to `telemetry-<state>-<light|dark>@2x.png` +
+the shared `index.md` section), `TelemetryService` report/status API. Strings
+under `telemetry.*` in `Localizable.strings`. Tests: `TelemetryWindowTests`
+(4, renders the frames with `TEST_RUNNER_CUW_RENDER_FRAMES`). Design passes
+17–25 recorded in the spec §5. Full suite 502 / 0 (2 opt-ins skipped).
+
 ## Next
 
-3a (window shell + DEBUG frame harness `CUW_RENDER_FRAMES`), 3b (chart),
-4 (attribution polish, markers, minute-compaction of raw events older than
-90 days — lossless for the report).
+3b (the chart proper: Canvas columns with hover crosshair + tooltip, Split
+small multiples as the Fleet default, bucket click → breakdown, legend
+isolate, hatched partial bucket, collapsed switch markers), 4 (attribution
+polish, Switches table, rate-limit overlay opt-in, by-kind / by-originator /
+main-vs-subagent stacks, minute-compaction of raw events older than 90 days —
+lossless for the report, export).
 
 ## Open questions
 

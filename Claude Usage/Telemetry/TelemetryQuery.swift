@@ -19,7 +19,7 @@ nonisolated enum TelemetryWindow: String, Codable, Sendable, CaseIterable {
         case .today: return "Today"
         case .days7: return "7 days"
         case .days30: return "30 days"
-        case .allIndexed: return "All indexed"
+        case .allIndexed: return "All"
         }
     }
 }

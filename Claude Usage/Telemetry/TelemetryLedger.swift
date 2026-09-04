@@ -27,6 +27,7 @@
 //
 
 import Foundation
+import os
 import SQLite3
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -100,7 +101,11 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         try exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
         try exec("CREATE TABLE IF NOT EXISTS strings (id INTEGER PRIMARY KEY, value TEXT NOT NULL UNIQUE);")
         let version = meta("schemaVersion")
+        var migrationStart: Date?
+        var sizeBefore: Int64 = 0
         if version == "1" {
+            migrationStart = Date()
+            sizeBefore = storageBytes()
             try migrateV1ToV2()
         }
         try exec(Self.eventsDDL)
@@ -129,9 +134,13 @@ nonisolated final class TelemetryLedger: @unchecked Sendable {
         if version == nil {
             try setMeta("schemaVersion", String(Self.schemaVersion))
         }
-        if version == "1" {
-            // Outside the migration transaction: hand the freed pages back.
+        if let migrationStart {
+            // Outside the migration transaction: hand the freed pages back, then
+            // fold the VACUUM's WAL pages into the main file.
             try? exec("VACUUM")
+            checkpoint()
+            let elapsed = Date().timeIntervalSince(migrationStart)
+            telemetryLog.info("ledger schema v1→v2 migrated in \(String(format: "%.1f", elapsed), privacy: .public) s, size \(sizeBefore) → \(self.storageBytes()) B")
         }
     }
 

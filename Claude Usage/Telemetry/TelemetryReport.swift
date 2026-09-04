@@ -344,7 +344,7 @@ nonisolated enum TelemetryReportBuilder {
             let share = totals.units > 0 ? Int((Double(totals.sidechainUnits) / Double(totals.units) * 100).rounded()) : 0
             return NativeCount(label: "messages", value: totals.units, detail: "\(share) % from subagents")
         case .codex:
-            return NativeCount(label: "sessions", value: codexSessions ?? 0, detail: "\(totals.units) counter deltas")
+            return NativeCount(label: "sessions", value: codexSessions ?? 0, detail: "\(TelemetryFormatting.compact(totals.units)) counter deltas")
         case .grok:
             return NativeCount(label: "completed turns", value: totals.units, detail: "cancelled turns are not logged")
         case nil:

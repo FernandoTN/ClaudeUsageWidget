@@ -20,6 +20,12 @@ import os
 /// isolated, and a hop per log line would defeat the point of the queue.
 nonisolated let telemetryLog = Logger(subsystem: "com.claudeusagewidget.app", category: "telemetry")
 
+extension Notification.Name {
+    /// Posted on the main queue after a slice wrote events or a catch-up run
+    /// ended, so an open window can reload. No payload.
+    static let telemetryLedgerUpdated = Notification.Name("telemetryLedgerUpdated")
+}
+
 final class TelemetryService {
     static let shared = TelemetryService()
 
@@ -81,6 +87,9 @@ final class TelemetryService {
         timer.setEventHandler { engine.tick(queue: queue) }
         timer.resume()
         self.timer = timer
+        // The window observer must exist from launch: the entry points already
+        // post, and a lazily created controller would drop the first click.
+        TelemetryWindowController.shared.installObserver()
         LoggingService.shared.log("Telemetry: started (ledger \(ledgerURL.path))")
     }
 
@@ -90,6 +99,37 @@ final class TelemetryService {
         let engine = self.engine
         let queue = self.queue
         queue.async { engine.tick(queue: queue) }
+    }
+
+    /// Pauses the file walk (ownership recording continues).
+    func setPaused(_ paused: Bool) {
+        let engine = self.engine
+        queue.async { engine.paused = paused }
+    }
+
+    /// Builds a report on the telemetry queue and delivers it on the main queue
+    /// with the indexer's status. `roster` is captured on the main actor.
+    func loadReport(query: TelemetryQuery, roster: [ProfileSummary],
+                    completion: @escaping (TelemetryReport?, IndexingStatus) -> Void) {
+        let engine = self.engine
+        queue.async {
+            let report = engine.buildReport(query: query, roster: roster)
+            let status = engine.indexingStatus()
+            DispatchQueue.main.async { completion(report, status) }
+        }
+    }
+
+    func meta(_ key: String, completion: @escaping (String?) -> Void) {
+        let engine = self.engine
+        queue.async {
+            let value = engine.ledger?.meta(key)
+            DispatchQueue.main.async { completion(value) }
+        }
+    }
+
+    func setMeta(_ key: String, _ value: String) {
+        let engine = self.engine
+        queue.async { try? engine.ledger?.setMeta(key, value) }
     }
 
     // MARK: - Snapshots (main actor → queue)
@@ -186,11 +226,17 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
     static let catchUpDelay: TimeInterval = 0.25
     private var catchUpQueued = false
 
+    /// Set from the window's "Pause indexing"; ownership keeps recording.
+    var paused = false
+
     func open(ledgerURL: URL, ring: [SwitchEvent], roster: [ProfileSummary], roots: TelemetrySourceRoots) {
         do {
             let ledger = try TelemetryLedger(url: ledgerURL)
             let recorder = OwnershipRecorder(ledger: ledger)
             let seeded = try recorder.seedIfNeeded(ring: ring, roster: roster)
+            if ledger.meta("firstIndexedAt") == nil {
+                try ledger.setMeta("firstIndexedAt", String(Date().timeIntervalSince1970))
+            }
             self.ledger = ledger
             self.recorder = recorder
             self.indexer = TelemetryIndexer(ledger: ledger, roots: roots)
@@ -200,6 +246,53 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
         } catch {
             telemetryLog.error("ledger unavailable — \(String(describing: error))")
         }
+    }
+
+    /// The report for one query, built entirely on the telemetry queue.
+    func buildReport(query: TelemetryQuery, roster: [ProfileSummary]) -> TelemetryReport? {
+        guard let ledger else { return nil }
+        do {
+            var query = query
+            if query.window == .allIndexed, query.earliestIndexed == nil {
+                query.earliestIndexed = try ledger.eventTimeSpan()?.from
+            }
+            let range = query.range()
+            let aggregates = try ledger.aggregateMinutes(from: range.start, to: range.end)
+            let previous = try ledger.aggregateMinutes(from: range.previousStart, to: range.previousEnd)
+            let ownership = try ledger.ownership()
+            let health = try TelemetryProvider.allCases.map { try ledger.health(provider: $0) }
+            let codexSessions: Int?
+            switch query.scope {
+            case .fleet, .provider(.codex), .unattributed(.codex):
+                codexSessions = try ledger.distinctSessions(provider: .codex, from: range.start, to: range.end)
+            default:
+                codexSessions = nil
+            }
+            let firstIndexed = ledger.meta("firstIndexedAt").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+            let input = TelemetryReportBuilder.Input(aggregates: aggregates, previousAggregates: previous, ownership: ownership,
+                                                     roster: roster, health: health, codexSessions: codexSessions,
+                                                     prices: .shipped, firstIndexedAt: firstIndexed)
+            return TelemetryReportBuilder.build(query: query, input: input)
+        } catch {
+            telemetryLog.error("report failed — \(String(describing: error))")
+            return nil
+        }
+    }
+
+    func indexingStatus() -> IndexingStatus {
+        guard let ledger else { return IndexingStatus() }
+        var status = IndexingStatus(ledgerAvailable: true, isCatchingUp: catchingUp, isPaused: paused)
+        for provider in TelemetryProvider.allCases {
+            guard let health = try? ledger.health(provider: provider) else { continue }
+            status.filesSeen += health.filesSeen
+            status.backlogFiles += health.backlogFiles
+            status.backlogBytes += health.backlogBytes
+            if let through = health.dataThrough { status.dataThrough[provider] = through }
+            if let scanned = health.scannedAt, status.scannedAt.map({ scanned > $0 }) ?? true { status.scannedAt = scanned }
+        }
+        status.eventCount = (try? ledger.eventCount()) ?? 0
+        status.storageBytes = ledger.storageBytes()
+        return status
     }
 
     func tick(queue: DispatchQueue) {
@@ -215,10 +308,13 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
                 telemetryLog.error("ownership write failed — \(String(describing: error))")
             }
         }
-        guard let indexer else { return }
+        guard let indexer, !paused else { return }
         let report = indexer.runSlice()
         if report.filesScanned > 0 {
             telemetryLog.info("slice: \(report.filesScanned) files, \(report.bytesRead) B, +\(report.eventsUpserted) events, backlog \(report.backlogFiles) files / \(report.backlogBytes) B, \(String(format: "%.2f", report.duration), privacy: .public) s")
+        }
+        if report.eventsUpserted > 0 || (catchingUp && !report.hitBound) {
+            DispatchQueue.main.async { NotificationCenter.default.post(name: .telemetryLedgerUpdated, object: nil) }
         }
         if report.hitBound, !catchUpQueued {
             catchUpQueued = true
@@ -227,11 +323,14 @@ nonisolated final class TelemetryEngine: @unchecked Sendable {
                 guard let self else { return }
                 self.tick(queue: queue)
             }
-        } else if catchingUp, !report.hitBound {
-            // The catch-up run is over: fold the WAL back into the main file.
-            catchingUp = false
-            ledger?.checkpoint()
-            telemetryLog.info("catch-up complete; ledger \(self.ledger?.storageBytes() ?? 0) B on disk")
+        } else if !report.hitBound {
+            // A run ended (a bounded catch-up or a plain tick that wrote): fold
+            // the WAL back into the main file rather than let it sit at the cap.
+            if catchingUp {
+                catchingUp = false
+                telemetryLog.info("catch-up complete; ledger \(self.ledger?.storageBytes() ?? 0) B on disk")
+            }
+            if report.filesScanned > 0 { ledger?.checkpoint() }
         }
     }
     private var catchingUp = false
