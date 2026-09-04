@@ -620,12 +620,15 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 5) {
             Text("Switch the \(DashboardFormatting.title(section.provider)) login to \(row.name)?")
                 .font(.system(size: 10, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
             Text(DashboardFormatting.switchCost(section.provider))
                 .font(.system(size: 9))
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if row.readiness == .dead {
                 Text("This login is dead; the switch will be refused. Log in again first.")
                     .font(.system(size: 9)).foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
                 Button("Switch") {
