@@ -31,6 +31,23 @@ class MenuBarManager: NSObject, ObservableObject {
     /// and the dashboard read it (docs/specs/menubar-redesign.md §4).
     @Published private(set) var preflightVerdicts: [UUID: PreflightVerdict] = [:]
 
+    // MARK: - ⇄ Active-account selector (UX revamp stage 1b)
+
+    /// The per-provider ACTIVE selector (docs/specs/ux-revamp.md §2.1). Created
+    /// once in `setup()` BEFORE the provider groups so it lands rightmost and
+    /// survives their rebuilds; owned here, never by StatusBarUIManager; never
+    /// torn down (`cleanup()` leaves it; the setting toggles `isVisible`).
+    private var activeSelector: ActiveSelectorItem?
+
+    /// Read-only handle for the exposure probe (redesign stage C), so a hidden
+    /// selector shows up in the same `Menu bar exposure` log line.
+    var activeSelectorStatusItem: NSStatusItem? { activeSelector?.statusItem }
+
+    /// Accounts the user activated by hand while over a threshold — the
+    /// auto-switch will not leave them until they regain headroom. Read-only
+    /// mirror of `autoSwitchedProfileIds` for the selector and the dashboard.
+    var manuallyPinnedProfileIds: Set<UUID> { autoSwitchedProfileIds }
+
     /// What the fleet dashboard observes: its snapshot — rebuilt ONCE per
     /// paint while a dashboard is showing (`rebuildDashboardSnapshot`), never
     /// row by row — and the provider group whose tile was clicked (the
@@ -188,6 +205,11 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
+
+        // The ⇄ selector item goes first: each later status item lands LEFT
+        // of the existing ones, so creating it before the provider groups
+        // keeps it rightmost across every group rebuild (spec §2.1).
+        installActiveSelectorIfNeeded()
 
         // Initialize status bar UI manager
         statusBarUIManager = StatusBarUIManager()
@@ -3717,6 +3739,61 @@ private func observeCredentialChanges() {
 
     /// Everything the fleet-summary layouts need beyond profiles + config.
     /// Nil for the per-account layout so none of this work happens for it.
+    /// The per-provider selection the ⇄ menu and its badge render: the same
+    /// readiness / candidate / verdict context the tiles and the dashboard use,
+    /// built once per call and handed down — never cached across sweeps.
+    func buildActiveSelections() -> [ProviderActiveSelection] {
+        let profiles = profileManager.profiles
+        var painted: [Profile.ProviderKind: [UUID]] = [:]
+        for provider in Profile.ProviderKind.allCases {
+            let order = statusBarUIManager?.paintedGroupMembers(for: provider, among: profiles) ?? []
+            if !order.isEmpty { painted[provider] = order }
+        }
+        return ProviderActiveSelection.build(ProviderActiveSelection.Inputs(
+            profiles: profiles,
+            activeIds: profileManager.activeAccountIds(among: profiles),
+            focusedId: profileManager.activeProfile?.id,
+            paintedOrder: painted,
+            context: makeFleetSummaryContext(),
+            queue: SharedDataStore.shared.loadAutoSwitchQueue(),
+            duplicateGroups: FleetCounts.duplicateGroups(
+                in: profiles, published: profileManager.duplicateClaudeAccountGroups),
+            manuallyPinned: autoSwitchedProfileIds,
+            needsRelogin: profileManager.profilesNeedingAccountRelogin,
+            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled()
+        ))
+    }
+
+    /// Creates the ⇄ item exactly once; `setup()` re-entry reuses it.
+    private func installActiveSelectorIfNeeded() {
+        guard activeSelector == nil else { return }
+        activeSelector = ActiveSelectorItem(actions: ActiveSelectorItem.Actions(
+            selections: { [weak self] in self?.buildActiveSelections() ?? [] },
+            preferencesDegraded: { [weak self] in self?.profileManager.preferencesDegraded ?? false },
+            makeActive: { [weak self] id in
+                guard let self else { return .profileNotFound }
+                // The one activation seam: dead-login gate, adoption, switch
+                // record, notifications — never a second path.
+                let outcome = await self.profileManager.activateProfileDetailed(id, userInitiated: true)
+                self.rebuildDashboardSnapshot()
+                return outcome
+            },
+            queueNext: { [weak self] id in
+                let rest = SharedDataStore.shared.loadAutoSwitchQueue().filter { $0 != id }
+                SharedDataStore.shared.saveAutoSwitchQueue([id] + rest)
+                self?.rebuildDashboardSnapshot()
+            },
+            viewAndOpenSettings: { [weak self] id, section in
+                guard let self else { return }
+                if let id { self.profileManager.viewProfile(id) }
+                self.preferencesClicked(section: section)
+            },
+            openDashboard: { [weak self] in self?.togglePopover(nil) },
+            openTelemetry: { NotificationCenter.default.post(name: .telemetryWindowRequested, object: nil) }
+        ))
+        LoggingService.shared.log("MenuBarManager: ⇄ active-account selector installed (visible: \(activeSelector?.isVisible == true))")
+    }
+
     private func fleetSummaryContext(for config: MultiProfileDisplayConfig) -> FleetSummaryContext? {
         guard config.barLayout.isFleetSummary else { return nil }
         return makeFleetSummaryContext()
@@ -3752,7 +3829,7 @@ private func observeCredentialChanges() {
 
     /// The readiness / candidate / verdict context both the fleet tiles and
     /// the dashboard read.
-    private func makeFleetSummaryContext() -> FleetSummaryContext {
+    func makeFleetSummaryContext() -> FleetSummaryContext {
         var next: [Profile.ProviderKind: PredictedCandidate] = [:]
         for provider in Profile.ProviderKind.allCases {
             if let candidate = predictedNextCandidate(for: provider) {
@@ -4167,6 +4244,7 @@ extension MenuBarManager: StatusBarUIManagerDelegate {
         // rendered TIFF data actually changes — so even if setting button.image
         // triggers effectiveAppearance KVO, the cycle stops immediately.
         updateAllStatusBarIcons()
+        activeSelector?.statusBarAppearanceDidChange()
     }
 }
 

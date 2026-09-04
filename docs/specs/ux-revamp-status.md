@@ -29,6 +29,8 @@ messaged to it. Never `/Applications` or the running process.
 | 21:10 | Owner (via the fixes session): "use your best judgment and go with your recommendations"; design bar: "go frame by frame and 100× make it better" — per-surface design passes recorded per stage. A token-usage telemetry sibling introduced itself; window-plumbing ownership agreed (redesign session owns a future `WindowCoordinator`; telemetry and Settings are registered kinds) |
 | 21:20 | Reset seams merged (#69, `9d86552`); focus-authority merged (#70, `96c9aa5`: `providerOwnerId(for:among:)`, owner guard in `checkAutoSwitchIfNeeded`, R7 pinned-view veto, `.providerOwnerChangedExternally`, delete → view, `.common` timers); popover survives focus change (#71, `cee4c07`) |
 | 21:30 | #68 squash-merged (`80949d2`). Stage 1a built on the merged tree: Release build OK, 393 tests / 0 failures; draft PR opened |
+| 21:40 | Stage 1a #72 squash-merged (`a8f3a60`), deployed by the fixes session at 20:39 PDT (24 profiles / 23 tiles, healthy). Redesign session's B2.1 (#75, `0d762a8`) consumes the 1a models: dashboard header vocabulary, counts strip, view-only name menu, ⇄ link, "Token usage…" entries |
+| 21:50 | Stage 1b: frame-by-frame design pass recorded (spec §12.1); `ActiveSelectorMenuModel` (pure rows / badge / tooltip / confirmation), `ActiveSelectorItem` (fixed 24 pt item created once in `setup()` before the groups, `NSMenu` built in `menuNeedsUpdate`, never-suppressible `NSAlert`, outcomes in place, app activated before every alert), `activeSelectorItem_v1` setting + toggle in Manage Profiles, `buildActiveSelections()` / `activeSelectorStatusItem` / `manuallyPinnedProfileIds` on `MenuBarManager`, `makeFleetSummaryContext` internal, wizard identity stamp after its claim; 14 tests |
 
 ## Ownership (agreed in writing)
 
@@ -67,8 +69,8 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 |---|---|---|---|
 | 0 spec | `feat/ux-revamp-spec` | #68 | **merged** `80949d2` |
 | F (fixes session) | `fix/focus-is-never-authority`, reset seams | #70, #69 | **merged** `96c9aa5`, `9d86552` |
-| 1a models + picker/hotkey rewire + wizard ownership claim (#28) | `feat/ux-revamp-1a-models` | draft | built on `96c9aa5`+`80949d2`; 393/0 |
-| 1b selector | `feat/ux-revamp-1b-selector` | — | after 1a |
+| 1a models + picker/hotkey rewire + wizard ownership claim (#28) | `feat/ux-revamp-1a-models` | #72 | **merged** `a8f3a60`, deployed 20:39 |
+| 1b ⇄ selector item + menu + confirmation + setting | `feat/ux-revamp-1b-selector` | draft | built on `0d762a8` (B2.1); design pass spec §12.1 |
 | 2a / 2b / 2c inspector | — | — | after F |
 | 3a / 3b / 3c / 3d Settings | — | — | after 2 |
 | 4a / 4b insights, 4.1 resets | — | — | after 3 / the reset seams |
@@ -77,8 +79,9 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 
 - Owner check-in answers (spec §9) — the owner said to proceed on the
   recommendations; the page stays open for notes.
-- `.providerOwnerChangedExternally` (#70) is posted but unconsumed — the ⇄
-  selector / inspector consume it (stage 1b: one banner per episode).
+- `.providerOwnerChangedExternally` (#70) is consumed by the ⇄ selector (stage
+  1b: one banner row per episode, cleared when the menu is next opened); the
+  inspector shows it too in stage 2a.
 - B2.1 (redesign session): dashboard header vocabulary, popover name menu →
   `viewProfile`, `FleetCounts.Provider` in the header, the selector link.
 - Telemetry sibling: launch points agreed (⇄ footer "Token usage…", dashboard

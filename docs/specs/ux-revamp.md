@@ -906,3 +906,106 @@ the gaps outside this endeavour with a recommendation.
 | **Grouping by org / identity** | 2a filter | filter by email domain / org uuid |
 | **Duplicate resolution** across providers (pick canonical, merge, archive) | later | after archive exists |
 | **Codex/Grok duplicate groups** published like Claude's | fixes session | `FleetCounts` derives Codex groups from stamps meanwhile |
+
+---
+
+## 12. Design passes (frame by frame, per surface)
+
+The owner's bar (2026-09-03, 21:10): "go frame by frame and 100× make it better".
+Every surface gets a recorded pass before its PR is marked ready: hierarchy,
+density, typography, every state, keyboard access, light + dark. Frames are
+numbered so a review can point at one.
+
+### 12.1 The ⇄ selector (stage 1b)
+
+**Item (frame 0 — rest).** 24 × 22 pt fixed. SF `arrow.triangle.2.circlepath`,
+15 pt medium, drawn as a template image so the bar's own appearance tints it
+(white on a dark bar, black on a light one) — no custom tint at rest, so it reads
+as a system control, not a status light. Attention badge: a 5 pt dot at the
+bottom-right corner, drawn only when something needs a human, one colour by
+precedence: **red** (a provider has no executable candidate, or its active
+login is dead) > **purple** (an active account is suspected / blind) > **amber**
+(cfprefsd degraded — the same fact the banner carries). When a badge is drawn the
+image is composed non-template with the glyph in the button's effective
+`labelColor`, and repainted on `statusBarAppearanceDidChange` like the tiles.
+Tooltip = accessibility label = one sentence: "Active: Claude dRir 78 % · Codex
+xFernando 95 % · Grok 12 % — 23 profiles / 22 accounts · 3 dead · 2 duplicates".
+Hidden (`isVisible = false`) when the setting is off; never removed.
+
+**Menu typography.** Native `NSMenu` (13 pt system). Section headers are disabled
+rows in 11 pt semibold small caps, secondary colour: "ACTIVE FOR CLAUDE". Owner and
+candidate rows are attributed titles: readiness glyph (● ◐ ○ ◒ ▲ – × ⧉) tinted by
+its system colour, name in 13 pt semibold, gauges in 12 pt monospaced-digit
+regular ("S 78 % · W 16 % · F 16 %"), evidence in 11 pt secondary. Rows stay
+under 380 pt; nothing wraps. Dark/light: system colours only
+(`systemGreen/Orange/Red/Purple/Cyan`, `secondaryLabelColor`).
+
+**Frame 1 — healthy.** Per provider: header; owner row (disabled; ● cyan-marked
+name, gauges, provenance + age "measured 28 s ago" / "via API headers · 3 m ago",
+"pinned by you" when manually activated); evidence row (disabled; "next →
+dJormun · ✓ proven 12 m ago · headroom 3 m ago" — verdict kind and quota age are
+two facts); "Switch Claude to next (dJormun)…"; submenu "Switch Claude to ▸"
+(eligible rows in rank order, a separator, then blocked / duplicate / excluded
+rows disabled with their reason; ⌥ turns an eligible row into "Queue X next");
+submenu "Queue next ▸" (eligible rows; explicit path, ⌥ is not the only one); a
+disabled queue row "Queue: Memori › 2026" when the queue has entries for this
+provider, with "Edit queue…" beside it. Footer: "Auto-switch on · 95 % session /
+99 % weekly" (disabled) + "Active & Auto-switch…"; "Accounts…", "Dashboard…",
+"Token usage…". Counts sentence appears as a disabled row under the owner only
+when something is dead, duplicated or has no candidate (frame 2) — a healthy
+group does not need to be told it is healthy.
+
+**Frame 2 — Codex with no candidate and dead logins.** Owner row "W 95 % · fires at
+99 %"; the counts sentence ("4 Codex profiles, 4 accounts: 1 ready, 1 low, 2 dead
+· 1 eligible now"); evidence row in red: "next → — nobody with headroom (2 of 4
+dead)"; "Repair 2 dead Codex logins…" (views the first dead profile, opens
+Settings › Codex Account); "Usage limit resets: 2 available" as a disabled row
+when the usage payload carries a count (nil → no row; §4.1 adds Details and the
+redeem action in stage 4.1). Item badge red.
+
+**Frame 3 — Grok, one account.** Owner row + "single account" muted. No actions.
+
+**Frame 4 — no owner known.** "No active Claude login chosen" (muted) in the
+owner's place; candidates as usual; "Switch Claude to next…" still offered.
+
+**Frame 5 — suspected / blind owner.** Owner gauges replaced by purple "last
+measured 74 % · 12 m ago" + "(projection 81 %)" when a projection exists; never a
+live-looking number, never 100. Item badge purple.
+
+**Frame 6 — cfprefsd degraded.** First row of the menu, amber: "macOS
+preferences unavailable — values may be cached". Item badge amber (if nothing
+red or purple outranks it).
+
+**Frame 7 — switch in flight.** Every action row disabled; a row "⇄ switching
+Claude → dJormun…" under the provider being switched. Re-opening the menu after
+the switch shows the new owner.
+
+**Frame 8 — changed outside the app.** A row under the owner, cyan: "Active for
+Claude changed outside the app: now dLeo", shown until the menu has been opened
+once after the event (one per episode; `.providerOwnerChangedExternally`).
+
+**Frame 9 — confirmation.** `NSAlert`, app activated first, never suppressible:
+"Switch the Claude Code login to dJormun?" / "Every running Claude Code session
+re-reads its context on the new account (≈10–15 % of dJormun's 5-hour window).
+dJormun: session 12 %, weekly 70 %, Fable 99 % — login verified 12 m ago (usage
+probe). dRir keeps 22 % of its session until 14:02." Unverified candidate: adds
+"Its login has not been verified recently — the switch may be refused."
+Buttons: Cancel (default is Cancel — switching is the costly action), Switch now.
+
+**Frame 10 — outcomes.** Success: nothing modal — the tile label moves and the
+next menu open shows the new owner. Refused (dead login): alert "Not switched —
+dJormun's Claude login is dead. The CLI keeps dRir." with "Repair in Accounts"
+(views dJormun, opens the Login page) and OK. In flight: "Another switch is in
+progress — try again in a moment." Already active: cannot happen (owner row is
+disabled). Every alert re-activates the app first (the click's grant has expired
+after the `await`).
+
+**Keyboard / accessibility.** Arrow keys, type-select, Return, Escape — native.
+⌥ swaps "Switch to X…" ↔ "Queue X next" in place. The item's accessibility label
+is the tooltip sentence; every row's title is the whole fact, so VoiceOver needs
+no extra labels. Disabled rows carry their reason in the title, not in a tooltip.
+
+**Rejected in this pass.** A percentage badge on the item (the fleet tiles already
+show the active account); a menu section per account (25 rows in the top level —
+the submenu keeps the top level under 22 rows); a "View X" row (Viewing belongs to
+the inspector); a suppressible confirmation (owner ruling; two of three reviews).

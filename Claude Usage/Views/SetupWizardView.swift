@@ -119,6 +119,10 @@ struct SetupWizardView: View {
             // pointer stayed behind and the first switch re-adopted the login
             // into whichever profile the pointer named (focus-authority list #28).
             ProfileManager.shared.claimActiveClaudeOwnership(profileId)
+            // Learn WHOSE login was just synced (the CLI Account page does the
+            // same after its Sync) so adoption stays account-matched from the
+            // first sweep instead of waiting for the sweep-end identity pass.
+            Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: profileId, force: true) }
             NotificationCenter.default.post(name: .credentialsChanged, object: nil)
             dismiss()
         } catch {
