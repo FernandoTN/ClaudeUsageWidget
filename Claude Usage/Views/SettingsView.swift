@@ -266,11 +266,18 @@ struct ProfileSectionContainer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Profile Switcher
+            // Viewing picker — which account these pages SHOW. Picking a name
+            // here only views it (`viewProfile`): it never applies a login,
+            // never records a switch, never runs the dead-login gate. Switching
+            // what a CLI uses is a separate, confirmed action ("Make active for
+            // <provider>…", docs/specs/ux-revamp.md §1). Until the UX revamp
+            // this picker activated — every profile you looked at became the
+            // CLI's account, which is the confusion the model change ends.
             VStack(alignment: .leading, spacing: 4) {
-                Text("section.active_profile".localized)
+                Text(ActiveVocabulary.viewing)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundColor(.secondary)
+                    .help("section.viewing_desc".localized)
 
                 Picker("", selection: Binding(
                     // Stable sentinel fallback: minting `UUID()` per body
@@ -278,9 +285,7 @@ struct ProfileSectionContainer: View {
                     // selection — an invalidation on every render.
                     get: { profileManager.activeProfile?.id ?? UUID(uuid: UUID_NULL) },
                     set: { newId in
-                        Task {
-                            await profileManager.activateProfile(newId, userInitiated: true)
-                        }
+                        profileManager.viewProfile(newId)
                     }
                 )) {
                     ForEach(profileManager.profiles) { profile in

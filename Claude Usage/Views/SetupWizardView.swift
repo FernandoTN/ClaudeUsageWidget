@@ -113,6 +113,12 @@ struct SetupWizardView: View {
 
         do {
             try ClaudeCodeSyncService.shared.syncToProfile(profileId)
+            // The profile now holds a copy of the Claude Code CLI's current
+            // login, so it OWNS the shared login from here on — same claim the
+            // CLI Account page makes after its Sync. Without it the Claude
+            // pointer stayed behind and the first switch re-adopted the login
+            // into whichever profile the pointer named (focus-authority list #28).
+            ProfileManager.shared.claimActiveClaudeOwnership(profileId)
             NotificationCenter.default.post(name: .credentialsChanged, object: nil)
             dismiss()
         } catch {

@@ -3978,20 +3978,29 @@ private func observeCredentialChanges() {
         window.orderFrontRegardless()
     }
 
+    /// The "next account" hotkey VIEWS the next account of the viewed
+    /// provider group, in the bar's painted order (left → right, wrapping) —
+    /// it never switches a CLI (docs/specs/ux-revamp.md D7). The old version
+    /// ACTIVATED the next profile in array order across providers, so a
+    /// keypress could hand a Claude session a Codex login (audit M7).
     private func switchToNextProfile() {
-        let profiles = profileManager.profiles
-        guard profiles.count > 1,
-              let currentId = profileManager.activeProfile?.id,
-              let currentIndex = profiles.firstIndex(where: { $0.id == currentId }) else {
-            return
+        guard let current = profileManager.activeProfile else { return }
+        let provider = current.providerKind
+        // Painted order when the group is on the bar and includes the viewed
+        // account; otherwise the same ranking the bar would paint, over every
+        // account of the provider (selected or not), so an unselected viewed
+        // account still has a "next".
+        var order = paintedGroupMembers(for: provider)
+        if !order.contains(current.id) {
+            order = StatusBarUIManager.compositePaintOrder(
+                StatusBarUIManager.multiProfileCreationOrder(
+                    for: profileManager.profiles, now: Date(), includeUnselected: true)
+                    .filter { $0.providerKind == provider }
+                    .map(\.id)
+            )
         }
-
-        let nextIndex = (profiles.index(after: currentIndex)) % profiles.count
-        let nextProfile = profiles[nextIndex]
-
-        Task {
-            await profileManager.activateProfile(nextProfile.id, userInitiated: true)
-        }
+        guard let next = ViewingNavigation.next(after: current.id, in: order) else { return }
+        profileManager.viewProfile(next)
     }
 
     @objc private func quitClicked() {
