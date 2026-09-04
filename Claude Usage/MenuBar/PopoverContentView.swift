@@ -64,8 +64,14 @@ struct PopoverContentView: View {
     let onManageProfiles: () -> Void
     /// Open the token-usage window for the viewed account (nil = fleet).
     var onTokenUsage: (UUID?, Profile.ProviderKind?) -> Void = { _, _ in }
+    /// Make an account active for its provider — the one activation seam
+    /// (`activateProfileDetailed(_:userInitiated: true)`), outcome reported.
+    var onMakeActive: (UUID) async -> ProfileManager.ActivationOutcome = { _ in .profileNotFound }
 
     @State private var isRefreshing = false
+    @State private var pendingSwitch: UUID?
+    @State private var switchNote: String?
+    @State private var noteFor: UUID?
     @StateObject private var profileManager = ProfileManager.shared
 
     private func profileInitials(for name: String) -> String {
@@ -137,6 +143,67 @@ struct PopoverContentView: View {
         let current = members.firstIndex(where: { $0.id == manager.clickedProfileId }) ?? 0
         let next = ((current + delta) % members.count + members.count) % members.count
         manager.viewProfile(members[next].id)
+    }
+
+    @ViewBuilder
+    private func makeActiveRow(_ profile: Profile) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if pendingSwitch == profile.id {
+                Text("Switch the \(ActiveVocabulary.providerName(profile.providerKind)) login to \(profile.name)?")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(DashboardFormatting.switchCost(profile.providerKind))
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                if ProfileCredentialStatusCache.hasDeadLogin(profile) {
+                    Text("This login is dead; the switch will be refused. Log in again first.")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                }
+                HStack(spacing: 8) {
+                    Button("Switch") {
+                        let id = profile.id
+                        let name = profile.name
+                        pendingSwitch = nil
+                        Task { @MainActor in
+                            let outcome = await onMakeActive(id)
+                            switchNote = DashboardFormatting.outcome(outcome, name: name)
+                            noteFor = id
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    Button("common.cancel".localized) { pendingSwitch = nil }
+                        .keyboardShortcut(.cancelAction)
+                }
+                .controlSize(.small)
+            } else {
+                Button {
+                    pendingSwitch = profile.id
+                    switchNote = nil
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(ActiveVocabulary.makeActive(profile.providerKind))
+                            .font(.system(size: 10, weight: .semibold))
+                        Spacer()
+                    }
+                    .foregroundColor(.accentColor)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if let note = switchNote, noteFor == profile.id {
+                    Text(note)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(pendingSwitch == profile.id ? Color.orange.opacity(0.10) : Color.primary.opacity(0.03))
+        )
     }
 
     /// Name of the VIEWED profile if its last fetch hit a credential error, nil
@@ -295,6 +362,25 @@ struct PopoverContentView: View {
                 )
                 .padding(.horizontal, 10)
                 .padding(.top, 4)
+            }
+
+            // Make the VIEWED account active for its provider: the classic
+            // popover's one switch path now that the name menu only views
+            // (docs/specs/ux-revamp.md D6 — focus is never authority). Two
+            // steps with the cost stated, through the one activation seam;
+            // the popover stays open (#71) so the outcome is read here.
+            if let viewed = viewedProfile {
+                if PopoverSwitchRule.canMakeActive(viewed, activeIds: activeAccountIds) {
+                    makeActiveRow(viewed)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 6)
+                } else if let note = switchNote, noteFor == viewed.id {
+                    Text(note)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 4)
+                }
             }
 
             // Grok account note — only the weekly bar is meaningful (SuperGrok
@@ -486,6 +572,20 @@ struct GroupNavigator: View {
 }
 
 // MARK: - Native Divider
+
+/// When the classic popover offers "Make active for <provider>…" on the
+/// viewed account: never for the provider's current owner, and only for an
+/// account that carries a login the activation could apply.
+enum PopoverSwitchRule {
+    nonisolated static func canMakeActive(_ profile: Profile, activeIds: Set<UUID>) -> Bool {
+        guard !activeIds.contains(profile.id) else { return false }
+        switch profile.providerKind {
+        case .claude: return profile.hasCliAccount
+        case .codex: return profile.hasCodexAccount
+        case .grok: return profile.isGrokOnlyProfile
+        }
+    }
+}
 
 struct PopoverDivider: View {
     var body: some View {

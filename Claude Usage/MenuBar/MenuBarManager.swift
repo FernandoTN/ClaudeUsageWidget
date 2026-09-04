@@ -687,6 +687,12 @@ class MenuBarManager: NSObject, ObservableObject {
             onTokenUsage: { [weak self] id, provider in
                 self?.closePopoverOrWindow()
                 Self.requestTokenUsageWindow(profileId: id, provider: provider)
+            },
+            onMakeActive: { [weak self] id in
+                guard let self else { return .profileNotFound }
+                // The one activation seam — dead-login gate, adoption, switch
+                // record, notifications; the same call the dashboard makes.
+                return await self.profileManager.activateProfileDetailed(id, userInitiated: true)
             }
         )
 
