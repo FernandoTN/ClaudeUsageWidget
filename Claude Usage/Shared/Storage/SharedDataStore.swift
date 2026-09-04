@@ -74,6 +74,7 @@ class SharedDataStore {
     private var lastKnownGoodSwitchHistory: [SwitchEvent]?
     private var lastKnownGoodMeasuredSessionHistory: [UUID: [(at: Date, pct: Double)]]?
     private var lastKnownGoodAutoSwitchQueue: [UUID]?
+    private var lastKnownGoodFleetAlertDefaults: NotificationSettings?
 
     /// Keys already logged this degradation episode; cleared by the next live
     /// read of that key so a later episode speaks up again.
@@ -100,6 +101,7 @@ class SharedDataStore {
         lastKnownGoodSwitchHistory = nil
         lastKnownGoodMeasuredSessionHistory = nil
         lastKnownGoodAutoSwitchQueue = nil
+        lastKnownGoodFleetAlertDefaults = nil
         nilReadLoggedKeys.removeAll()
     }
 
@@ -459,6 +461,42 @@ class SharedDataStore {
         lastKnownGoodAutoSwitchQueue = queue
         noteLiveRead(QueueKeys.queue)
         return queue
+    }
+
+    // MARK: - Fleet alert defaults (docs/specs/ux-revamp.md §5.2, D11)
+
+    private enum FleetAlertKeys {
+        /// `NotificationSettings` as JSON. Every profile whose
+        /// `followsFleetAlertDefaults` is true resolves to this value.
+        static let defaults = "fleetAlertDefaults_v1"
+    }
+
+    /// True once the key has been written — the Alerts page seeds it on first
+    /// open (`FleetAlerts.seed`); until then reads answer the type defaults.
+    func hasFleetAlertDefaults() -> Bool {
+        defaults.data(forKey: FleetAlertKeys.defaults) != nil
+    }
+
+    func saveFleetAlertDefaults(_ settings: NotificationSettings) {
+        guard let data = try? JSONEncoder().encode(settings) else { return }
+        writeSingleShot(data, forKey: FleetAlertKeys.defaults)
+        lastKnownGoodFleetAlertDefaults = settings
+    }
+
+    /// A nil read after a good one is served from the shadow: defaulting would
+    /// silently re-enable every threshold the owner turned off fleet-wide.
+    func loadFleetAlertDefaults() -> NotificationSettings {
+        guard let data = defaults.data(forKey: FleetAlertKeys.defaults),
+              let settings = try? JSONDecoder().decode(NotificationSettings.self, from: data) else {
+            if let cached = lastKnownGoodFleetAlertDefaults {
+                logNilReadOnce(FleetAlertKeys.defaults)
+                return cached
+            }
+            return NotificationSettings()
+        }
+        lastKnownGoodFleetAlertDefaults = settings
+        noteLiveRead(FleetAlertKeys.defaults)
+        return settings
     }
 
     // MARK: - ⇄ Active-account selector (docs/specs/ux-revamp.md §2.1)

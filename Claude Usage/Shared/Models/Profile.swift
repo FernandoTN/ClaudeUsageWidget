@@ -107,6 +107,14 @@ struct Profile: Codable, Identifiable, Equatable {
         set { includeInAutoSwitch = newValue }
     }
 
+    // MARK: - Alerts: fleet defaults or own settings
+    /// Whether alerts come from the fleet defaults (`fleetAlertDefaults_v1`)
+    /// instead of this profile's `notificationSettings`. Optional so profiles
+    /// saved before the flag existed decode as nil, which
+    /// `followsFleetAlertDefaults` resolves: untouched defaults follow the
+    /// fleet, customized settings keep their override (spec §5.2).
+    var usesFleetAlertDefaults: Bool?
+
     // MARK: - Metadata
     var createdAt: Date
     var lastUsedAt: Date
@@ -143,6 +151,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case isSelectedForDisplay
         case menuBarLabel
         case includeInAutoSwitch
+        case usesFleetAlertDefaults
         case createdAt
         case lastUsedAt
         // EXCLUDED (Keychain-only): claudeSessionKey, apiSessionKey, cliCredentialsJSON,
@@ -180,6 +189,7 @@ struct Profile: Codable, Identifiable, Equatable {
         isSelectedForDisplay: Bool = true,
         menuBarLabel: String? = nil,
         includeInAutoSwitch: Bool? = nil,
+        usesFleetAlertDefaults: Bool? = true,
         createdAt: Date = Date(),
         lastUsedAt: Date = Date()
     ) {
@@ -213,6 +223,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.isSelectedForDisplay = isSelectedForDisplay
         self.menuBarLabel = menuBarLabel
         self.includeInAutoSwitch = includeInAutoSwitch
+        self.usesFleetAlertDefaults = usesFleetAlertDefaults
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt
     }

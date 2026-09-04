@@ -254,20 +254,6 @@ class NotificationManager {
         previousWeeklyBoundaries[profileName] = boundary
     }
 
-    /// Checks usage and sends appropriate alerts (legacy, for backwards compatibility)
-    func checkAndNotify(usage: ClaudeUsage) {
-        // Use the active profile's notification settings
-        let settings = ProfileManager.shared.activeProfile?.notificationSettings
-            ?? NotificationSettings(enabled: false)
-
-        guard settings.enabled else {
-            return
-        }
-
-        let profileName = ProfileManager.shared.activeProfile?.name ?? "Default"
-        checkAndNotify(usage: usage, profileName: profileName, settings: settings)
-    }
-
     /// Sends a profile-specific usage alert
     private func sendProfileAlert(profileName: String, type: AlertType, percentage: Double, thresholdLevel: Int? = nil, resetTime: Date?, soundName: String = "default") {
         // Use the configured threshold level (not current percentage) to prevent duplicate notifications

@@ -1742,7 +1742,7 @@ private func observeCredentialChanges() {
                         NotificationManager.shared.checkAndNotify(
                             usage: newUsage,
                             profileName: profile.name,
-                            settings: profile.notificationSettings
+                            settings: profile.effectiveNotificationSettings(fleet: SharedDataStore.shared.loadFleetAlertDefaults())
                         )
 
                         // Check auto-switch NOW for the accounts actually in use
@@ -2137,7 +2137,7 @@ private func observeCredentialChanges() {
                     NotificationManager.shared.checkAndNotify(
                         usage: newUsage,
                         profileName: profile.name,
-                        settings: profile.notificationSettings
+                        settings: profile.effectiveNotificationSettings(fleet: SharedDataStore.shared.loadFleetAlertDefaults())
                     )
 
                     // Check if auto-switch should trigger. This path FETCHES for
