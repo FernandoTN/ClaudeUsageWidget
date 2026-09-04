@@ -94,9 +94,16 @@ enum ActiveVocabulary {
     /// in readiness order, zero counts omitted; the glyph legend moves to hover.
     static func countsWords(_ counts: FleetCounts.Provider) -> String {
         var parts: [String] = []
-        let keys: [(AccountReadiness, String)] = AccountReadiness.legendOrder.map { ($0, ActiveVocabulary.countsKey($0)) }
-        for (readiness, key) in keys where counts.count(readiness) > 0 {
-            parts.append(key.localized(with: counts.count(readiness)))
+        // One line at the sidebar's width: each light/bright pair merges by
+        // hue (the dot itself carries the nuance); `countsSentence` keeps all six.
+        let hues: [([AccountReadiness], String)] = [
+            ([.ready, .readyLight], "counts.ready"), ([.unknown], "counts.unknown"), ([.suspected], "counts.suspected"),
+            ([.sessionHit, .sessionHitLight], "counts.session_hit_short"), ([.weeklyHitSoon, .weeklyHit], "counts.weekly_hit_short"),
+            ([.excluded], "counts.excluded"), ([.dead], "counts.dead"),
+        ]
+        for (states, key) in hues {
+            let n = states.reduce(0) { $0 + counts.count($1) }
+            if n > 0 { parts.append(key.localized(with: n)) }
         }
         if counts.duplicateProfiles > 0 { parts.append("counts.duplicates_short".localized(with: counts.duplicateProfiles)) }
         // A count never wraps away from its word; the line breaks only at the separators.

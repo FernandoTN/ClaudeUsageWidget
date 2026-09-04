@@ -197,4 +197,13 @@ final class AccountsRosterModelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Constants.WindowSizes.settingsWindow.width, Constants.WindowSizes.settingsMinimum.width)
         XCTAssertGreaterThanOrEqual(Constants.WindowSizes.settingsMinimum.width, 720, "every legacy page's 520 pt content still fits")
     }
+
+    func testCensusWordsMergeEachLightAndBrightPairByHue() {
+        let counts = FleetCounts.Provider(provider: .claude, profiles: 9, distinctAccounts: 9, identifiedAccounts: 9,
+                                          byReadiness: [.ready: 2, .readyLight: 3, .sessionHit: 1, .sessionHitLight: 1, .weeklyHitSoon: 1, .weeklyHit: 1],
+                                          excludedByToggle: 0, freePlan: 0, stale: 0, duplicateProfiles: 0, duplicateGroups: [], needsRelogin: 0,
+                                          queued: 0, onBar: 0, pinned: 0, loginLive: 9, capacityRemaining: 0)
+        XCTAssertEqual(ActiveVocabulary.countsWords(counts).replacingOccurrences(of: "\u{00A0}", with: " "), "5 ready · 2 session hit · 2 weekly hit",
+                       "the dot carries light vs bright; the one-line census merges by hue")
+    }
 }

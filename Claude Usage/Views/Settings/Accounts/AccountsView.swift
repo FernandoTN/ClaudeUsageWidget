@@ -224,7 +224,8 @@ struct AccountsRosterRow: View {
             Spacer(minLength: 4)
             Text(row.percentageText)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(row.percentageText.hasPrefix(DesignGlyph.exhausted) ? DesignRole.caution.color : (row.readiness == .suspected ? DesignRole.suspected.color : .primary))
+                .foregroundColor(row.percentageText.hasPrefix(DesignGlyph.weeklyHit) || row.percentageText.hasPrefix(DesignGlyph.sessionHit)
+                                 ? row.readiness.role.color : (row.readiness == .suspected ? DesignRole.suspected.color : .primary))
                 .help(row.readiness == .suspected ? "accounts.suspected_help".localized : "")
             if let mark = row.badge.mark {
                 if case .activeFor(let provider) = row.badge {
