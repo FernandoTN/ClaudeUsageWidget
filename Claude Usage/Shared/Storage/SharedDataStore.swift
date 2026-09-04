@@ -91,10 +91,47 @@ class SharedDataStore {
         nilReadLoggedKeys.remove(key)
     }
 
+    /// Clears the in-process last-known-good shadow. Test-only, and the twin of
+    /// `ProfileStore.resetPreferencesResilienceStateForTesting`: this store is a
+    /// singleton that outlives a test case, so a shadow one test filled answers
+    /// the next test's deliberately-absent key and reads as a stale value.
+    func resetPreferencesResilienceStateForTesting() {
+        lastKnownGoodAutoSwitchEnabled = nil
+        lastKnownGoodSwitchHistory = nil
+        lastKnownGoodMeasuredSessionHistory = nil
+        lastKnownGoodAutoSwitchQueue = nil
+        nilReadLoggedKeys.removeAll()
+    }
+
+    // MARK: - Single-shot writes
+    //
+    // The read-side shadow above only covers half the failure. On 2026-09-03
+    // cfprefsd REJECTED this app's writes for two minutes while every read
+    // stayed healthy: `measuredSessionHistory_v1`, rewritten every sweep,
+    // healed itself the moment the episode ended, while `switchHistory_v1`,
+    // `autoSwitchQueue` and every settings toggle written since were still
+    // stale on disk an hour later with nothing reporting it. Every write below
+    // that fires ONCE — on a switch, on a settings change — is verified and
+    // re-asserted by `PreferenceWriteJournal` (audit C3). The per-sweep keys
+    // keep writing straight through: they are their own re-assertion.
+
+    private func writeSingleShot(_ value: Any?, forKey key: String) {
+        PreferenceWriteJournal.shared.write(value, forKey: key, in: defaults, owner: .sharedDataStore)
+    }
+
+    /// Checks this store's single-shot keys against the preferences store and
+    /// rewrites any that are not there. Called once per sweep — the check is
+    /// deferred because there is no oracle at write time (see
+    /// `PlistPreferenceStoreSnapshot`).
+    @discardableResult
+    func reassertPendingWrites() -> Int {
+        PreferenceWriteJournal.shared.runWriteCheck(owner: .sharedDataStore)
+    }
+
     // MARK: - Setup State
 
     func saveHasCompletedSetup(_ completed: Bool) {
-        defaults.set(completed, forKey: Keys.hasCompletedSetup)
+        writeSingleShot(completed, forKey: Keys.hasCompletedSetup)
     }
 
     func hasCompletedSetup() -> Bool {
@@ -121,13 +158,13 @@ class SharedDataStore {
     }
 
     func markWizardShown() {
-        defaults.set(true, forKey: Keys.hasShownWizardOnce)
+        writeSingleShot(true, forKey: Keys.hasShownWizardOnce)
     }
 
     // MARK: - Debug Settings
 
     func saveDebugAPILoggingEnabled(_ enabled: Bool) {
-        defaults.set(enabled, forKey: Keys.debugAPILoggingEnabled)
+        writeSingleShot(enabled, forKey: Keys.debugAPILoggingEnabled)
     }
 
     func loadDebugAPILoggingEnabled() -> Bool {
@@ -149,10 +186,10 @@ class SharedDataStore {
         let key = shortcutKey(for: action)
         if let combo = combo {
             if let data = try? JSONEncoder().encode(combo) {
-                defaults.set(data, forKey: key)
+                writeSingleShot(data, forKey: key)
             }
         } else {
-            defaults.removeObject(forKey: key)
+            writeSingleShot(nil, forKey: key)
         }
     }
 
@@ -165,7 +202,7 @@ class SharedDataStore {
     // MARK: - Auto-Switch Profile
 
     func saveAutoSwitchProfileEnabled(_ enabled: Bool) {
-        defaults.set(enabled, forKey: Keys.autoSwitchProfileEnabled)
+        writeSingleShot(enabled, forKey: Keys.autoSwitchProfileEnabled)
         lastKnownGoodAutoSwitchEnabled = enabled
     }
 
@@ -203,7 +240,7 @@ class SharedDataStore {
     static let autoSwitchThresholdRange: ClosedRange<Double> = 80...100
 
     func saveAutoSwitchThreshold(_ threshold: Double) {
-        defaults.set(threshold, forKey: Keys.autoSwitchThreshold)
+        writeSingleShot(threshold, forKey: Keys.autoSwitchThreshold)
     }
 
     func loadAutoSwitchThreshold() -> Double {
@@ -216,7 +253,7 @@ class SharedDataStore {
     }
 
     func saveAutoSwitchWeeklyThreshold(_ threshold: Double) {
-        defaults.set(threshold, forKey: Keys.autoSwitchWeeklyThreshold)
+        writeSingleShot(threshold, forKey: Keys.autoSwitchWeeklyThreshold)
     }
 
     func loadAutoSwitchWeeklyThreshold() -> Double {
@@ -229,7 +266,7 @@ class SharedDataStore {
     // MARK: - Popover Settings
 
     func savePopoverTimeDisplay(_ display: PopoverTimeDisplay) {
-        defaults.set(display.rawValue, forKey: Keys.popoverTimeDisplay)
+        writeSingleShot(display.rawValue, forKey: Keys.popoverTimeDisplay)
     }
 
     func loadPopoverTimeDisplay() -> PopoverTimeDisplay {
@@ -243,14 +280,14 @@ class SharedDataStore {
             let oldValue = defaults.bool(forKey: Keys.popoverShowRemainingTime)
             let migrated: PopoverTimeDisplay = oldValue ? .remainingTime : .resetTime
             savePopoverTimeDisplay(migrated)
-            defaults.removeObject(forKey: Keys.popoverShowRemainingTime)
+            writeSingleShot(nil, forKey: Keys.popoverShowRemainingTime)
             return migrated
         }
         return .resetTime
     }
 
     func saveTimeFormatPreference(_ format: TimeFormatPreference) {
-        defaults.set(format.rawValue, forKey: Keys.timeFormatPreference)
+        writeSingleShot(format.rawValue, forKey: Keys.timeFormatPreference)
     }
 
     func loadTimeFormatPreference() -> TimeFormatPreference {
@@ -305,7 +342,7 @@ class SharedDataStore {
             history.removeFirst(history.count - SwitchHistoryKeys.capacity)
         }
         if let data = try? JSONEncoder().encode(history) {
-            defaults.set(data, forKey: SwitchHistoryKeys.history)
+            writeSingleShot(data, forKey: SwitchHistoryKeys.history)
         }
         lastKnownGoodSwitchHistory = history
     }
@@ -320,7 +357,7 @@ class SharedDataStore {
         last.reason = reason ?? last.reason
         history[history.count - 1] = last
         if let data = try? JSONEncoder().encode(history) {
-            defaults.set(data, forKey: SwitchHistoryKeys.history)
+            writeSingleShot(data, forKey: SwitchHistoryKeys.history)
         }
         lastKnownGoodSwitchHistory = history
     }
@@ -403,7 +440,7 @@ class SharedDataStore {
     /// tried. Empty queue = default behavior (soonest weekly reset). Persisted
     /// so a queued handoff plan survives relaunches.
     func saveAutoSwitchQueue(_ queue: [UUID]) {
-        defaults.set(queue.map(\.uuidString), forKey: QueueKeys.queue)
+        writeSingleShot(queue.map(\.uuidString), forKey: QueueKeys.queue)
         lastKnownGoodAutoSwitchQueue = queue
     }
 

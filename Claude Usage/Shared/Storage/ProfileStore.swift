@@ -223,10 +223,24 @@ class ProfileStore {
     private var lastKnownGoodActiveClaudeProfileId: UUID??
     private var lastKnownGoodActiveCodexProfileId: UUID??
 
-    /// True while reads are coming back empty against a known-good shadow. Cleared by
-    /// the first read that agrees with the shadow again. Observers get
-    /// `.preferencesDegradedStateChanged` on each transition.
+    /// True while EITHER half of the daemon is misbehaving — reads coming back
+    /// empty against a known-good shadow, or a single-shot write that cfprefsd
+    /// accepted in-process and never persisted. Observers get
+    /// `.preferencesDegradedStateChanged` on each transition of the combined flag.
+    ///
+    /// The two halves are tracked separately because they do not overlap: during
+    /// the 2026-09-03 write-rejection episode every READ was fine, so a single
+    /// flag would have been cleared by the next `loadProfiles()` and the banner
+    /// would have flickered off while five keys were still stranded.
     private(set) var preferencesDegraded = false
+
+    /// Reads are being served from the shadow. Cleared by the first read that
+    /// agrees with the shadow again.
+    private var readDegraded = false
+
+    /// A single-shot write did not reach disk. Cleared by
+    /// `PreferenceWriteJournal` once every pending key has been re-asserted.
+    private var writeDegraded = false
 
     /// The app's own preferences plist, used ONLY as a read-only cold-launch fallback.
     /// `nil` under XCTest unless a test injects a path — suites must never read or
@@ -271,6 +285,9 @@ class ProfileStore {
         cachedPlistRoot = nil
         lastPlistFallbackAttempt = nil
         preferencesDegraded = false
+        readDegraded = false
+        writeDegraded = false
+        PreferenceWriteJournal.shared.resetForTesting()
     }
 
     /// Parses a preferences plist off disk. READ-ONLY — nothing here ever writes it.
@@ -338,20 +355,70 @@ class ProfileStore {
         return (mode, config)
     }
 
-    /// Enters (or stays in) a degraded episode, logging exactly once per episode.
+    /// Enters (or stays in) a READ degradation episode, logging exactly once.
     private func markPreferencesDegraded(_ reason: String) {
-        guard !preferencesDegraded else { return }
-        preferencesDegraded = true
+        guard !readDegraded else { return }
+        readDegraded = true
         LoggingService.shared.logError("ProfileStore: \(reason)")
+        publishDegradedState()
+    }
+
+    /// Leaves a read degradation episode after a read that agrees with the shadow.
+    private func clearPreferencesDegraded() {
+        guard readDegraded else { return }
+        readDegraded = false
+        LoggingService.shared.log("ProfileStore: preferences reads recovered — serving live values again")
+        publishDegradedState()
+    }
+
+    /// Enters a WRITE degradation episode: a single-shot key was accepted by the
+    /// CFPreferences client and never reached the daemon's store. Called by
+    /// `PreferenceWriteJournal`, which owns the pending values and re-asserts them.
+    func markPreferenceWriteRejected(key: String) {
+        guard !writeDegraded else { return }
+        writeDegraded = true
+        LoggingService.shared.logError(
+            "ProfileStore: preferences write rejected for '\(key)' — cfprefsd took the value in-process but did not persist it; re-asserting from memory every sweep"
+        )
+        publishDegradedState()
+    }
+
+    /// Leaves a write degradation episode once every pending key is on disk.
+    func clearPreferenceWriteRejected() {
+        guard writeDegraded else { return }
+        writeDegraded = false
+        LoggingService.shared.log("ProfileStore: preference writes are persisting again")
+        publishDegradedState()
+    }
+
+    /// Recomputes the combined flag and posts only on a real transition — the
+    /// two halves can enter and leave independently.
+    private func publishDegradedState() {
+        let combined = readDegraded || writeDegraded
+        guard combined != preferencesDegraded else { return }
+        preferencesDegraded = combined
         NotificationCenter.default.post(name: .preferencesDegradedStateChanged, object: nil)
     }
 
-    /// Leaves a degraded episode after a read that agrees with the shadow again.
-    private func clearPreferencesDegraded() {
-        guard preferencesDegraded else { return }
-        preferencesDegraded = false
-        LoggingService.shared.log("ProfileStore: preferences reads recovered — serving live values again")
-        NotificationCenter.default.post(name: .preferencesDegradedStateChanged, object: nil)
+    // MARK: - Single-shot writes
+    //
+    // Keys written ONCE, when something changes, rather than on every sweep. A
+    // cfprefsd write rejection strands exactly these (audit C3): the per-sweep
+    // keys rewrite themselves the moment the episode ends, these never do.
+    // `profiles_v3` is deliberately NOT routed here — it is a per-sweep key and
+    // its write path already carries the empty-overwrite guard.
+
+    private func writeSingleShot(_ value: Any?, forKey key: String) {
+        PreferenceWriteJournal.shared.write(value, forKey: key, in: defaults, owner: .profileStore)
+    }
+
+    /// Checks this store's single-shot keys against the preferences store and
+    /// rewrites any that are not there. Called once per sweep — the check is
+    /// deferred because there is no oracle at write time (see
+    /// `PlistPreferenceStoreSnapshot`).
+    @discardableResult
+    func reassertPendingWrites() -> Int {
+        PreferenceWriteJournal.shared.runWriteCheck(owner: .profileStore)
     }
 
     /// How many profiles this process believes exist, from the cheapest source that
@@ -1013,7 +1080,7 @@ class ProfileStore {
     }
 
     func saveActiveProfileId(_ id: UUID) {
-        defaults.set(id.uuidString, forKey: Keys.activeProfileId)
+        writeSingleShot(id.uuidString, forKey: Keys.activeProfileId)
         lastKnownGoodActiveProfileId = .some(id)
     }
 
@@ -1053,7 +1120,7 @@ class ProfileStore {
     // of one provider must never disturb the other provider's active account.
 
     func saveActiveClaudeProfileId(_ id: UUID?) {
-        defaults.set(id?.uuidString, forKey: Keys.activeClaudeProfileId)
+        writeSingleShot(id?.uuidString, forKey: Keys.activeClaudeProfileId)
         lastKnownGoodActiveClaudeProfileId = .some(id)
     }
 
@@ -1066,7 +1133,7 @@ class ProfileStore {
     }
 
     func saveActiveCodexProfileId(_ id: UUID?) {
-        defaults.set(id?.uuidString, forKey: Keys.activeCodexProfileId)
+        writeSingleShot(id?.uuidString, forKey: Keys.activeCodexProfileId)
         lastKnownGoodActiveCodexProfileId = .some(id)
     }
 
@@ -1079,7 +1146,7 @@ class ProfileStore {
     }
 
     func saveDisplayMode(_ mode: ProfileDisplayMode) {
-        defaults.set(mode.rawValue, forKey: Keys.displayMode)
+        writeSingleShot(mode.rawValue, forKey: Keys.displayMode)
         lastKnownGoodDisplayMode = mode
     }
 
@@ -1113,7 +1180,7 @@ class ProfileStore {
     func saveMultiProfileConfig(_ config: MultiProfileDisplayConfig) {
         do {
             let data = try JSONEncoder().encode(config)
-            defaults.set(data, forKey: Keys.multiProfileConfig)
+            writeSingleShot(data, forKey: Keys.multiProfileConfig)
             lastKnownGoodMultiProfileConfig = config
         } catch {
             LoggingService.shared.logStorageError("saveMultiProfileConfig", error: error)

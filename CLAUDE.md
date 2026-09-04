@@ -152,8 +152,28 @@ plists bloating `~/Library/Preferences`, since removed).
 4. **Degradation signal.** `ProfileStore.preferencesDegraded` posts
    `.preferencesDegradedStateChanged`; `ProfileManager` republishes it and fires one
    user notification per episode, and the popover shows a banner that outranks the
-   other status banners. The flag clears on the first read that agrees with the shadow.
-   The app never restarts cfprefsd itself.
+   other status banners. Reads and writes are tracked as separate halves: the read
+   half clears on the first read that agrees with the shadow, the write half on the
+   first sweep that finds every single-shot key in the store, and the banner shows
+   while either is open. The app never restarts cfprefsd itself.
+5. **Single-shot write check** (`PreferenceWriteJournal`, added for the 2026-09-03
+   episode). Writes fail INDEPENDENTLY of reads: cfprefsd rejected writes for two
+   minutes while every read stayed healthy, so the shadow above saw nothing. Keys
+   rewritten every sweep (`profiles_v3`, `measuredSessionHistory_v1`) healed
+   themselves; keys written ONCE — the three active-profile pointers,
+   `switchHistory_v1`, `autoSwitchQueue`, settings toggles — were still stale on disk
+   an hour later. Every such write is now remembered with its intended value and
+   checked once per sweep from `MenuBarManager.refreshUsage`; a key missing from the
+   store is rewritten on the spot and raises the banner on a second consecutive miss.
+   **There is no oracle at write time** — measured 2026-09-03, every in-process
+   read-back (`UserDefaults`, `CFPreferencesCopyAppValue`, `CFPreferencesCopyMultiple`,
+   a fresh `UserDefaults(suiteName:)`) returns the value the daemon threw away and
+   both synchronize calls return `true`, while the on-disk plist, the only source
+   that disagrees, lags a HEALTHY write by 2.5–10 s. Hence the deferred check and the
+   20 s flush grace; an immediate read-back reported 39 of 41 healthy writes as
+   rejected. The three `*DeadLogins_v1` sets still write straight to
+   `UserDefaults.standard` from their services and are NOT covered yet — route them
+   through the journal when those files are next touched.
 
 **Manual recovery (operator):**
 

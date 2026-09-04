@@ -1749,6 +1749,14 @@ private func observeCredentialChanges() {
     }
 
     func refreshUsage() {
+        // cfprefsd can accept a write in-process and never persist it — every
+        // in-process read-back reports success, so only the disk disagrees
+        // (audit C3, live 2026-09-03: five single-shot keys stranded for an
+        // hour). Rewrite anything still missing at the top of every sweep,
+        // before either mode's fetch path. A no-op with nothing pending.
+        ProfileStore.shared.reassertPendingWrites()
+        SharedDataStore.shared.reassertPendingWrites()
+
         // In multi-profile mode, refresh ALL selected profiles
         if profileManager.displayMode == .multi {
             refreshAllSelectedProfiles()
