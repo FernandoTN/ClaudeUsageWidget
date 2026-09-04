@@ -43,6 +43,13 @@ struct Profile: Codable, Identifiable, Equatable {
     /// Display metadata (non-secret, persisted normally).
     var codexEmail: String?
     var codexAccountSyncedAt: Date?
+    /// The OpenAI `account_id` behind this profile's Codex login. Non-secret (it
+    /// is an account handle, not a token) and persisted, so the duplicate-account
+    /// guard and the owner re-derivation can match a profile BEFORE the
+    /// background Keychain hydration fills `codexCredentialsJSON` in — an
+    /// unhydrated profile otherwise looks account-less and the same Codex
+    /// account gets synced into a second profile (two tiles, one quota).
+    var codexAccountId: String?
 
     // MARK: - Grok Account (xAI Grok CLI)
     /// Full contents of the account's ~/.grok/auth.json — Keychain-only, never
@@ -115,6 +122,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case claudeOrganizationUUID
         case codexEmail
         case codexAccountSyncedAt
+        case codexAccountId
         case grokEmail
         case grokAccountSyncedAt
         case claudeUsage
@@ -149,6 +157,7 @@ struct Profile: Codable, Identifiable, Equatable {
         codexCredentialsJSON: String? = nil,
         codexEmail: String? = nil,
         codexAccountSyncedAt: Date? = nil,
+        codexAccountId: String? = nil,
         grokCredentialsJSON: String? = nil,
         grokEmail: String? = nil,
         grokAccountSyncedAt: Date? = nil,
@@ -180,6 +189,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.codexCredentialsJSON = codexCredentialsJSON
         self.codexEmail = codexEmail
         self.codexAccountSyncedAt = codexAccountSyncedAt
+        self.codexAccountId = codexAccountId
         self.grokCredentialsJSON = grokCredentialsJSON
         self.grokEmail = grokEmail
         self.grokAccountSyncedAt = grokAccountSyncedAt
@@ -306,7 +316,7 @@ struct Profile: Codable, Identifiable, Equatable {
 
     /// True if this profile carries a Codex account.
     var carriesCodexAccount: Bool {
-        hasCodexAccount || codexEmail != nil || codexAccountSyncedAt != nil
+        hasCodexAccount || codexEmail != nil || codexAccountSyncedAt != nil || codexAccountId != nil
     }
 
     /// True if this profile carries a Grok account. The syncedAt stamp is

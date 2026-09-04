@@ -385,8 +385,14 @@ class ProfileManager: ObservableObject {
         // 2. Codex side: auth.json is about to be replaced — adopt the codex CLI's
         //    silent refreshes back into the outgoing Codex profile (account-matched,
         //    so a stale id can never mix accounts).
+        //    The outgoing owner is resolved the same way the launch repair does
+        //    — auth.json's account_id FIRST, the pointer second, the focused
+        //    profile last. A nil/stale pointer used to skip the adoption
+        //    entirely, and auth.json is then overwritten with the outgoing
+        //    account's rotated refresh token never persisted (the CLI's
+        //    "refresh token was revoked" after a later switch back).
         if target?.codexCredentialsJSON != nil,
-           let outgoingId = activeCodexProfileId, outgoingId != id {
+           let outgoingId = resolveOutgoingCodexOwner(), outgoingId != id {
             await runOffMainActor {
                 CodexUsageService.shared.adoptAuthFileIfSameAccount(for: outgoingId)
             }
@@ -432,7 +438,12 @@ class ProfileManager: ObservableObject {
             // credentials no session can use, bricking every running Claude Code
             // session with "login expired. Please run /login". Keep the outgoing
             // login in place and tell the user this account needs a manual /login.
-            if cliSyncService.isTokenExpired(cliJSON) {
+            // `isLoginMarkedDead` joins the expiry check: a flagged login is one
+            // the app has already told the user to re-`/login`, and handing it
+            // to the CLI is the failure this gate exists to prevent. The flag
+            // clears on any successful refresh, adoption or re-sync, so a
+            // revived account is not held out.
+            if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) {
                 deadLoginSkipped = true
                 cliSyncService.notifyReloginNeeded(for: id, force: userInitiated)
                 LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
@@ -482,14 +493,17 @@ class ProfileManager: ObservableObject {
                 LoggingService.shared.log("✓ Refreshed stale Codex token for '\(updatedProfile.name)' before applying")
             }
 
-            // GATE: same rule as the Claude side — a login that is expired even
-            // after the refresh attempt is dead, and writing it to auth.json would
-            // break the codex CLI until a manual `codex login`.
-            if let codexJSON = updatedProfile.codexCredentialsJSON,
-               CodexUsageService.shared.isTokenExpired(codexJSON) {
+            // GATE: same rule as the Claude side, but expiry cannot carry it —
+            // a Codex access token lives ~10 days, so a login revoked externally
+            // (another account's `codex login` on this machine) passes an expiry
+            // check for days while the codex CLI dies on it. The service asks the
+            // account's own usage endpoint instead: measured 200 → apply, 401/403
+            // → refuse, no answer → trust the dead flag (audit C2).
+            if updatedProfile.codexCredentialsJSON != nil,
+               !(await CodexUsageService.shared.isSafeToApplyLogin(for: id)) {
                 deadLoginSkipped = true
                 CodexUsageService.shared.notifyReloginNeeded(for: id, force: userInitiated)
-                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' Codex login is dead (expired, unrefreshable) — NOT applied, outgoing login kept")
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' Codex login failed its liveness check (expired, revoked, or refused by the account) — NOT applied, outgoing login kept")
             } else {
                 let targetProfileId = updatedProfile.id
                 let targetProfileName = updatedProfile.name
@@ -1059,9 +1073,7 @@ class ProfileManager: ObservableObject {
         let codexService = CodexUsageService.shared
         if let fileJSON = codexService.readAuthFile(),
            let fileAccount = codexService.extractAccountId(from: fileJSON),
-           let owner = profiles.first(where: {
-               $0.codexCredentialsJSON.flatMap(codexService.extractAccountId(from:)) == fileAccount
-           }) {
+           let owner = profiles.first(where: { codexService.accountId(of: $0) == fileAccount }) {
             activeCodexProfileId = owner.id
         } else {
             if absenceIsEvidence,
@@ -1209,6 +1221,83 @@ class ProfileManager: ObservableObject {
         return owner.name
     }
 
+    /// The profile that owns ~/.codex/auth.json right now, by the file's own
+    /// `account_id` — the only deterministic answer, since that file IS the
+    /// codex CLI's current login. Falls back to the persisted pointer, then to
+    /// the focused profile when it carries a Codex account (the Claude side has
+    /// had that last fallback all along; its absence here meant a nil pointer
+    /// silently skipped the outgoing adoption).
+    private func resolveOutgoingCodexOwner() -> UUID? {
+        if let ownerId = codexOwnerFromAuthFile()?.id { return ownerId }
+        if let pointer = activeCodexProfileId { return pointer }
+        if let focused = activeProfile, focused.codexCredentialsJSON != nil { return focused.id }
+        return nil
+    }
+
+    /// The profile whose Codex account matches ~/.codex/auth.json (credentials
+    /// first, persisted `codexAccountId` second so an unhydrated profile still
+    /// matches). No network — a file read and a JSON parse.
+    private func codexOwnerFromAuthFile() -> Profile? {
+        let service = CodexUsageService.shared
+        guard let fileJSON = service.readAuthFile(),
+              let fileAccount = service.extractAccountId(from: fileJSON) else { return nil }
+        return CodexUsageService.profileMatchingAccount(
+            fileAccount,
+            in: profiles,
+            accountIdOf: { service.accountId(of: $0) }
+        )
+    }
+
+    /// True while a Codex owner re-derivation pass is running (sweep end and
+    /// launch can both trigger one; overlapping passes would race their saves).
+    private var codexAdoptionInFlight = false
+
+    /// The Codex twin of `adoptSystemLoginByIdentity`, run at the END OF EVERY
+    /// SWEEP: re-derives who owns the shared codex login from auth.json's
+    /// `account_id` and adopts the file into that profile when it is fresher.
+    ///
+    /// Without it the owner was re-derived only at launch, so a CLI-side
+    /// `codex login` — the documented recovery for a dead login — flipped the
+    /// real login while the app kept watching the old owner: the revived
+    /// account stayed flagged dead, and the preflight refused to validate the
+    /// true owner "because it already owns the login" (audit H4). Adoption
+    /// clears the dead flag, so `codex login` alone now revives a profile.
+    @discardableResult
+    func adoptCodexLoginByAccountId() async -> String? {
+        // Never touch shared-login bookkeeping mid-switch (contamination window).
+        guard !isSwitchingProfile, !codexAdoptionInFlight else { return nil }
+        codexAdoptionInFlight = true
+        defer { codexAdoptionInFlight = false }
+
+        guard let owner = codexOwnerFromAuthFile() else { return nil }
+
+        if activeCodexProfileId != owner.id {
+            LoggingService.shared.log("ProfileManager: ⚠️ active Codex pointer repaired — auth.json's account belongs to '\(owner.name)', not '\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")'")
+            activeCodexProfileId = owner.id
+            profileStore.saveActiveCodexProfileId(owner.id)
+        }
+
+        // Adoption is account-matched and freshness-checked inside the service;
+        // a re-login for the same account writes a whole new token family, which
+        // is exactly what this picks up. It runs off the main actor because the
+        // profile save behind it touches the credential store.
+        let adopted: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: CodexUsageService.shared.adoptAuthFileIfSameAccount(for: owner.id))
+            }
+        }
+        if adopted {
+            profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
+            if let activeId = activeProfile?.id,
+               let updatedActive = profiles.first(where: { $0.id == activeId }) {
+                activeProfile = updatedActive
+            }
+            LoggingService.shared.log("ProfileManager: ✓ adopted the codex CLI's fresh login into '\(owner.name)' (account-matched)")
+        }
+        return owner.name
+    }
+
     /// If the user is logged into the codex CLI (~/.codex/auth.json exists) and no
     /// profile holds Codex credentials yet, create a dedicated Codex profile once.
     /// Additional Codex accounts are added manually: log into the other account with
@@ -1237,6 +1326,7 @@ class ProfileManager: ObservableObject {
             codexCredentialsJSON: authJSON,
             codexEmail: email,
             codexAccountSyncedAt: Date(),
+            codexAccountId: codexService.extractAccountId(from: authJSON),
             iconConfig: .default,
             refreshInterval: 60.0,
             checkOverageLimitEnabled: false,
