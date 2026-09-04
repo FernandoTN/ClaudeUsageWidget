@@ -149,12 +149,9 @@ nonisolated struct CodexResetCredits: Equatable {
 nonisolated enum CodexResetActivationOutcome: Equatable {
     /// A credit was consumed and eligible windows were cleared.
     ///
-    /// The wire field `windows_reset` is documented as a COUNT (`2`), not a
-    /// list of names. This array therefore carries real names only when the
-    /// backend sends strings; for the documented integer N it carries N
-    /// generic ordinal entries ("window 1", …) so `count` is exact and no
-    /// window name is invented. Render the count, not the labels.
-    case reset(windowsReset: [String])
+    /// `windowsReset` is HOW MANY windows the backend cleared — the wire field
+    /// is a count (`"windows_reset": 2`), and it never names them.
+    case reset(windowsReset: Int)
     /// No current window is eligible. **The credit was NOT spent** — the user
     /// can try again later.
     case nothingToReset
@@ -168,7 +165,7 @@ nonisolated enum CodexResetActivationOutcome: Equatable {
     /// Log-safe label — no ids, no tokens.
     var logLabel: String {
         switch self {
-        case .reset(let windows): return "reset (\(windows.count) window(s))"
+        case .reset(let windows): return "reset (\(windows) window(s))"
         case .nothingToReset: return "nothing_to_reset"
         case .noCredit: return "no_credit"
         case .alreadyRedeemed: return "already_redeemed"
@@ -195,6 +192,11 @@ nonisolated enum CodexResetCreditsError: LocalizedError, Equatable {
     /// zero credits — the refusal says nothing about the balance.
     case resetCreditsUnavailable(retryAfter: TimeInterval?)
     case noProfileCredentials
+    /// The profile's Codex login is an API key, not a ChatGPT login. Reset
+    /// credits are a ChatGPT-auth feature and the backend answers
+    /// "api key auth is not supported" — so this is refused locally rather
+    /// than spent on a request that cannot succeed.
+    case unsupportedForAPIKeyAuth
     /// Activation asked for while the account is not measured at its limit.
     case notMeasuredAtLimit(source: String)
     /// Activation asked for on a measurement older than the evidence window
@@ -210,6 +212,8 @@ nonisolated enum CodexResetCreditsError: LocalizedError, Equatable {
             return "Codex usage-limit resets are temporarily unavailable — the count is unknown, not zero.\(when)"
         case .noProfileCredentials:
             return "This profile has no synced Codex account."
+        case .unsupportedForAPIKeyAuth:
+            return "Usage-limit resets need a ChatGPT login — an API-key Codex account has none."
         case .notMeasuredAtLimit:
             return "A usage-limit reset is only offered when the account is measured at its limit."
         case .staleEvidence:
@@ -267,6 +271,40 @@ extension CodexUsageService {
     /// future stamp would otherwise never age out of the window above.
     nonisolated static let resetActivationEvidenceMaxSkew: TimeInterval = 60
 
+    // MARK: Auth mode
+
+    /// True when a stored `auth.json` holds an API key and no ChatGPT login.
+    ///
+    /// Reset credits are ChatGPT-auth only — the CLI's own client refuses with
+    /// "chatgpt authentication required for rate limit reset credits" /
+    /// "api key auth is not supported" — so both seams below refuse locally
+    /// rather than spend a request that cannot succeed. Reads shapes only; the
+    /// key's VALUE is never read, returned or logged.
+    nonisolated static func usesAPIKeyAuth(credentialsJSON: String) -> Bool {
+        guard let data = credentialsJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        let tokens = root["tokens"] as? [String: Any]
+        let hasChatGPTLogin = ((tokens?["access_token"] as? String) ?? "").isEmpty == false
+        guard !hasChatGPTLogin else { return false }
+        return ((root["OPENAI_API_KEY"] as? String) ?? "").isEmpty == false
+    }
+
+    /// The stored credentials for a profile, with the ChatGPT-auth
+    /// precondition already checked. Both seams start here so neither can
+    /// reach the network on an account the feature does not exist for.
+    private func chatGPTCredentials(for profileId: UUID) throws -> String {
+        guard let json = ProfileStore.shared.loadProfiles()
+            .first(where: { $0.id == profileId })?.codexCredentialsJSON else {
+            throw CodexResetCreditsError.noProfileCredentials
+        }
+        guard !Self.usesAPIKeyAuth(credentialsJSON: json) else {
+            throw CodexResetCreditsError.unsupportedForAPIKeyAuth
+        }
+        return json
+    }
+
     // MARK: Count (free — from the usage payload)
 
     /// Reads `rate_limit_reset_credits.available_count` out of a `wham/usage`
@@ -312,6 +350,10 @@ extension CodexUsageService {
            Self.resetCreditsCacheIsFresh(fetchedAt: cached.fetchedAt, now: Date(), force: force) {
             return cached
         }
+
+        // Before anything that costs time or a request: this feature exists
+        // only for ChatGPT-auth accounts.
+        _ = try chatGPTCredentials(for: profileId)
 
         let delay = Self.resetCreditsSpacingDelay(lastFetchAt: state.lastDetailFetchAt, now: Date())
         if delay > 0 {
@@ -413,6 +455,7 @@ extension CodexUsageService {
         evidence: CodexResetActivationEvidence
     ) async throws -> CodexResetActivationOutcome {
         if let refusal = Self.activationRefusal(evidence, now: Date()) { throw refusal }
+        _ = try chatGPTCredentials(for: profileId)
 
         _ = await ensureFreshCredentials(for: profileId)
 
@@ -498,7 +541,7 @@ extension CodexUsageService {
             return .unknown(code: "unreadable")
         }
         switch code {
-        case "reset": return .reset(windowsReset: windowsResetNames(json["windows_reset"]))
+        case "reset": return .reset(windowsReset: windowsResetCount(json["windows_reset"]))
         case "nothing_to_reset": return .nothingToReset
         case "no_credit": return .noCredit
         case "already_redeemed": return .alreadyRedeemed
@@ -506,18 +549,17 @@ extension CodexUsageService {
         }
     }
 
-    /// `windows_reset` is documented as an integer COUNT; strings are accepted
-    /// in case the backend ever names the windows. For the integer form the
-    /// entries are generic ordinals so `count` stays exact without inventing a
-    /// window name.
-    nonisolated static func windowsResetNames(_ raw: Any?) -> [String] {
-        if let names = raw as? [String] { return names }
-        if let mixed = raw as? [Any] { return mixed.compactMap { $0 as? String } }
-        if let number = raw as? Int, number > 0 { return (1...number).map { "window \($0)" } }
-        if let number = raw as? Double, number.isFinite, number >= 1, number <= 64 {
-            return (1...Int(number)).map { "window \($0)" }
+    /// How many windows `windows_reset` says were cleared. An integer on the
+    /// wire; a list is counted rather than rejected, and anything else — absent,
+    /// null, unparseable — is 0, which reads as "reset applied, count unknown"
+    /// and never as a claim about a number the payload did not carry.
+    nonisolated static func windowsResetCount(_ raw: Any?) -> Int {
+        if let count = raw as? Int { return max(0, count) }
+        if let list = raw as? [Any] { return list.count }
+        if let number = raw as? Double, number.isFinite, number >= 0, number <= Double(Int.max) {
+            return Int(number)
         }
-        return []
+        return 0
     }
 
     // MARK: Idempotency

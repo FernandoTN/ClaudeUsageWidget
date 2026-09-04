@@ -311,7 +311,7 @@ final class CodexResetCreditsTests: XCTestCase {
 
         XCTAssertEqual(
             outcome(#"{"code": "reset", "credit": {"id": "credit-1"}, "windows_reset": 2}"#),
-            .reset(windowsReset: ["window 1", "window 2"])
+            .reset(windowsReset: 2)
         )
         XCTAssertEqual(outcome(#"{"code": "nothing_to_reset"}"#), .nothingToReset)
         XCTAssertEqual(outcome(#"{"code": "no_credit"}"#), .noCredit)
@@ -321,11 +321,14 @@ final class CodexResetCreditsTests: XCTestCase {
         // An unreadable body is never optimistically reported as a reset.
         XCTAssertEqual(outcome("not json at all"), .unknown(code: "unreadable"))
 
-        // Named windows, if the backend ever sends them, are used verbatim.
+        // A list, if the backend ever sends one, is counted rather than refused.
         XCTAssertEqual(
             outcome(#"{"code": "reset", "windows_reset": ["primary", "secondary"]}"#),
-            .reset(windowsReset: ["primary", "secondary"])
+            .reset(windowsReset: 2)
         )
+        // A reset with no count is still a reset — 0 reads as "count unknown",
+        // never as a claim about a number the payload did not carry.
+        XCTAssertEqual(outcome(#"{"code": "reset"}"#), .reset(windowsReset: 0))
         XCTAssertEqual(outcome(#"{"code": "reset"}"#).logLabel, "reset (0 window(s))")
     }
 
@@ -378,5 +381,31 @@ final class CodexResetCreditsTests: XCTestCase {
         XCTAssertEqual(detail.httpMethod, "GET")
         XCTAssertNil(detail.httpBody)
         XCTAssertTrue((detail.allHTTPHeaderFields ?? [:]).keys.allSatisfy { !$0.lowercased().contains("luna") })
+    }
+
+    // MARK: - ChatGPT-auth precondition
+
+    /// Reset credits exist only for ChatGPT-auth accounts — the CLI's own
+    /// client answers "api key auth is not supported" — so an API-key login is
+    /// refused locally rather than spending a request that cannot succeed.
+    func testAPIKeyOnlyLoginIsRecognizedAndChatGPTLoginIsNot() {
+        XCTAssertTrue(CodexUsageService.usesAPIKeyAuth(
+            credentialsJSON: #"{"OPENAI_API_KEY": "sk-placeholder", "tokens": null}"#
+        ))
+        XCTAssertFalse(CodexUsageService.usesAPIKeyAuth(
+            credentialsJSON: #"{"OPENAI_API_KEY": null, "tokens": {"access_token": "h.p.s", "account_id": "acct-A"}}"#
+        ))
+        // A ChatGPT login WINS when both are present: the feature works there,
+        // and refusing on the mere presence of a key would disable it wrongly.
+        XCTAssertFalse(CodexUsageService.usesAPIKeyAuth(
+            credentialsJSON: #"{"OPENAI_API_KEY": "sk-placeholder", "tokens": {"access_token": "h.p.s"}}"#
+        ))
+        // Neither, or unreadable, is not an API-key verdict — the existing
+        // no-credentials error covers that case and says something truer.
+        XCTAssertFalse(CodexUsageService.usesAPIKeyAuth(credentialsJSON: #"{"tokens": {}}"#))
+        XCTAssertFalse(CodexUsageService.usesAPIKeyAuth(credentialsJSON: "not json"))
+
+        let message = CodexResetCreditsError.unsupportedForAPIKeyAuth.errorDescription ?? ""
+        XCTAssertTrue(message.contains("ChatGPT login"), message)
     }
 }
