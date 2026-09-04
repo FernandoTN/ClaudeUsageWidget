@@ -1683,14 +1683,18 @@ final class StatusBarUIManager {
         guard !groupItems.isEmpty else { return }
         var verdicts: [Profile.ProviderKind: GroupExposure.Verdict] = [:]
         var snapshot: [String] = []
+        let onScreenWindows = Self.onScreenWindowNumbers()
         for provider in [Profile.ProviderKind.claude, .grok, .codex] {
             guard let item = groupItems[provider] else { continue }
-            let observation = Self.observeExposure(of: item)
+            let observation = Self.observeExposure(of: item, onScreenWindows: onScreenWindows)
             let verdict = GroupExposure.verdict(observation)
             verdicts[provider] = verdict
             let frame = observation.frame.map { "x=\(Int($0.minX)) w=\(Int($0.width)) h=\(Int($0.height))" } ?? "no window"
             let hits = observation.hits.map { $0 ? "1" : "0" }.joined()
-            snapshot.append("\(provider)=\(verdict) [\(frame) len=\(Int(item.length)) hits=\(hits)]")
+            let onScreen = observation.onScreen.map { $0 ? "1" : "0" } ?? "?"
+            snapshot.append(
+                "\(provider)=\(verdict) [\(frame) len=\(Int(item.length)) vis=\(observation.isVisible ? 1 : 0) "
+                    + "occ=\(observation.occluded ? 1 : 0) on=\(onScreen) hits=\(hits)]")
         }
         let confirmed = exposureTracker.record(verdicts)
         let changed = confirmed != hiddenProviders
@@ -1710,9 +1714,20 @@ final class StatusBarUIManager {
         }
     }
 
-    /// One observation of a group item: its window geometry plus a screen-
-    /// point hit test at 25 / 50 / 75 % of the button width, mid-height.
-    private static func observeExposure(of item: NSStatusItem) -> GroupExposure.Observation {
+    /// The WindowServer's on-screen window list (numbers only; our own
+    /// windows are always listed, no screen-recording entitlement needed).
+    /// nil when the list could not be read.
+    private static func onScreenWindowNumbers() -> Set<Int>? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        return Set(list.compactMap { $0[kCGWindowNumber as String] as? Int })
+    }
+
+    /// One observation of a group item: its window geometry, the
+    /// WindowServer's occlusion and on-screen answers, plus an advisory
+    /// screen-point hit test at 25 / 50 / 75 % of the button width.
+    private static func observeExposure(of item: NSStatusItem, onScreenWindows: Set<Int>?) -> GroupExposure.Observation {
         guard let button = item.button, let window = button.window else {
             return GroupExposure.Observation(frame: nil, screenFrame: nil, isVisible: false, occluded: true,
                                              length: item.length, hits: [])
@@ -1732,6 +1747,7 @@ final class StatusBarUIManager {
             screenFrame: window.screen?.frame,
             isVisible: window.isVisible,
             occluded: !window.occlusionState.contains(.visible),
+            onScreen: onScreenWindows.map { $0.contains(window.windowNumber) },
             length: item.length,
             hits: hits
         )

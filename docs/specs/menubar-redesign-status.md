@@ -27,6 +27,7 @@ Spec: `docs/specs/menubar-redesign.md`. Check-in brief (self-contained HTML):
 | 20:10 | B1 merged (`ee0e5ff`). Fixes session merged #60 (duplicate accounts) and #61. |
 | 20:15–20:45 | Stage B2: dashboard view + wiring; rendered from the test harness and inspected at full height (no overlaps; Codex "nowhere with headroom", single-account Grok, collapsed switches all correct). UX-revamp sibling (`fe2aabe1`) agreed a file split: it owns the selection vocabulary model, per-provider selectors, the inspector, Settings restructure, counts; I keep the bar, dashboard view/model, popover lifecycle, overflow. |
 | 21:05 | B2 merged (#62, `8da0c3d`). Fixes session deployed main `46bc36a` (B2 + #63), then `98aff7b` (+ #64) at 19:51 PDT: 23 profiles / 22 tiles, default layout, no composite rebuild at launch. |
+| 22:07 | Fixes session deployed `ead8c54` (C0 + #66): the probe's first field sample was a false positive on every group (hit-test leg structurally blind on macOS 27). C0.1 fix-forward: WindowServer evidence, advisory hit test. |
 | 21:10–21:55 | Stage C0: observe-only exposure telemetry. Pure `MenuBar/GroupExposure.swift` (verdict over one observation + hysteresis tracker), the probe in `StatusBarUIManager` (next runloop after every composite assembly, and on `NSWorkspace.didActivateApplicationNotification`), `hiddenProviders` fed to the dashboard's overflow banner, `GroupExposureTests` (5). Full suite 350 / 0. |
 
 ## Stage A — fleet summary layout (MERGED)
@@ -76,6 +77,20 @@ item. Never the heal-rebuild path, never an item-count change.
 | PR | Branch | Contents | State |
 |---|---|---|---|
 | C0 | `feat/menubar-overflow-c0` | `MenuBar/GroupExposure.swift`: `GroupExposure.Observation` (window frame, screen frame, visibility, occlusion, item length, per-probe hits) → `verdict` (a hit on the item's own window is proof of exposure; nil window/screen → unknown; never laid out, off a screen edge, parked below the 100 pt bar band, a stub narrower than half the item length, not visible, or every probe resolving to another window → hidden; a plausible frame with no probe → unknown) and `GroupExposureTracker` (confirmed hidden after 2 consecutive hidden samples, cleared after 3 exposed, unknown leaves the state alone, vanished items drop out). `StatusBarUIManager`: `scheduleExposureProbe` coalesced onto the next runloop turn after every `assembleComposites` (AppKit lays the bar out after the assignment returns) and on `NSWorkspace.didActivateApplicationNotification` (the frontmost app's menu width decides the overflow); `observeExposure(of:)` hit-tests 25 / 50 / 75 % of the button width at mid-height with `NSWindow.windowNumber(at:belowWindowWithWindowNumber: 0)`; `hiddenProviders` (confirmed set) → `DashboardSnapshot.Inputs.hiddenProviders` → the dashboard's "hidden by the menu bar" banner; one default-level log line per change (`Menu bar exposure (<reason>): claude=exposed [x=… w=… h=… len=… hits=111] …`) mirrored to the `debugGroupExposure` default; the tracker resets on `clearOverflowParkedState` (screen change) and `cleanup`. `GroupExposureTests` (5). | draft PR, full suite 350 / 0 |
+
+First field sample (fixes session, build `ead8c54`, 20:07 PDT, macOS 27):
+every group CONFIRMED HIDDEN while the tiles were visibly on the bar —
+`claude=hidden [x=1078 w=461 h=33 len=458 hits=000] …`. The hit-test leg
+can never resolve to the item's own window on macOS 27 (the menu-bar host
+owns the event surface above third-party items, the same architecture as the
+synthesized-center clicks), so "plausible frame + every probe elsewhere →
+hidden" was always true. C0.1 (fix-forward, same evening): the WindowServer's
+answers decide — `occlusionState` `.visible` → exposed, absent from the
+on-screen window list → hidden — the hit test is advisory (a hit proves
+exposure, a miss proves nothing), the `h = 0` first-paint frame is unknown
+rather than hidden, and the log line carries `vis= occ= on=`. A plausible,
+ordered-in, fully-occluded frame stays `unknown` until the field says
+occlusion is trustworthy for status windows.
 
 What C0 deliberately does not do: no notification, no ladder, no rebuild.
 The next stage reads the log lines this one produces on the owner's machine

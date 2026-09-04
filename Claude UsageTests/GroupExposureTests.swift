@@ -3,8 +3,9 @@
 //  Claude UsageTests
 //
 //  Stage C0: is a provider's composite status item visible on the menu bar?
-//  The verdict is pure over one observation (screen-point hit tests first,
-//  frame-shape rules second, absent windows unknown); the tracker applies
+//  The verdict is pure over one observation (the WindowServer's occlusion
+//  and on-screen answers, frame-shape rules, an advisory hit test whose
+//  misses prove nothing, absent windows unknown); the tracker applies
 //  hysteresis so a single odd sample cannot flip the confirmed state.
 //
 
@@ -15,42 +16,47 @@ final class GroupExposureTests: XCTestCase {
     /// A 16" display: 1728 × 1117 points, menu bar at the top.
     private let screen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
 
-    private func observation(frame: CGRect?, length: CGFloat = 89, hits: [Bool] = [true, true, true],
-                             visible: Bool = true, occluded: Bool = false, screen: CGRect? = nil) -> GroupExposure.Observation {
+    private func observation(frame: CGRect?, length: CGFloat = 89, hits: [Bool] = [false, false, false],
+                             visible: Bool = true, occluded: Bool = false, onScreen: Bool? = true,
+                             screen: CGRect? = nil) -> GroupExposure.Observation {
         GroupExposure.Observation(frame: frame, screenFrame: screen ?? self.screen, isVisible: visible,
-                                  occluded: occluded, length: length, hits: hits)
+                                  occluded: occluded, onScreen: onScreen, length: length, hits: hits)
     }
 
     private var onBar: CGRect { CGRect(x: 1200, y: 1117 - 37, width: 89, height: 37) }
 
-    func testAHitOnItsOwnWindowIsProofOfExposureWhateverTheFrameSays() {
+    func testWindowServerEvidenceDecidesAndAHitTestMissProvesNothing() {
+        // The field shape on macOS 27: real frame, visible, not occluded, every probe missed.
         XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar)), .exposed)
-        // Even a stub frame with one positive probe is exposed: pixels are on screen.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, hits: [])), .exposed,
+                       "no probe at all changes nothing when the WindowServer sees the window")
+        // A hit on the item's own window is proof even for a stub frame.
         XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1701, y: 1080, width: 27, height: 37),
-                                                         hits: [false, true, false])), .exposed)
+                                                         hits: [false, true, false], occluded: true)), .exposed)
+        // Ordered out: absent from the on-screen list.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, onScreen: false)), .hidden)
+        // Ordered in but fully occluded, no hit: not confirmed either way.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, occluded: true)), .unknown)
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, occluded: true, onScreen: nil)), .unknown)
     }
 
-    func testAbsentWindowOrScreenIsUnknownNeverHidden() {
+    func testAbsentWindowScreenOrLayoutIsUnknownNeverHidden() {
         XCTAssertEqual(GroupExposure.verdict(observation(frame: nil, hits: [])), .unknown)
         XCTAssertEqual(GroupExposure.verdict(GroupExposure.Observation(frame: onBar, screenFrame: nil, isVisible: true,
                                                                        occluded: false, length: 89, hits: [])), .unknown)
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, hits: [])), .unknown,
-                       "a plausible frame with no probe run is not evidence either way")
+        // The first paint after launch (field: x=0 w=461 h=0): not laid out yet.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 0, y: 0, width: 461, height: 0))), .unknown)
     }
 
     func testParkedStubAndOffEdgeFramesAreHidden() {
-        let misses = [false, false, false]
-        // Never laid out (lab census: h = 0).
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1200, y: 1080, width: 89, height: 0), hits: misses)), .hidden)
-        // Parked below the bar (lab census: y = -33).
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1200, y: -33, width: 89, height: 37), hits: misses)), .hidden)
+        // Parked below the bar (lab census: y = -33), even with the WindowServer bits looking healthy.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1200, y: -33, width: 89, height: 37))), .hidden)
         // Past the right edge.
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1700, y: 1080, width: 89, height: 37), hits: misses)), .hidden)
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1700, y: 1080, width: 89, height: 37))), .hidden)
         // A 27 pt stub for an 89 pt item — the legacy parking signature.
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1701, y: 1080, width: 27, height: 37), hits: misses)), .hidden)
-        // Plausible frame, all probes resolve elsewhere: covered / hidden.
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, hits: misses)), .hidden)
-        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, hits: misses, visible: false)), .hidden)
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: CGRect(x: 1701, y: 1080, width: 27, height: 37))), .hidden)
+        // AppKit itself says the window is not visible.
+        XCTAssertEqual(GroupExposure.verdict(observation(frame: onBar, visible: false)), .hidden)
     }
 
     func testTrackerConfirmsAfterTwoHiddenAndClearsAfterThreeExposed() {
