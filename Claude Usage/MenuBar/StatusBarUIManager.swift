@@ -694,6 +694,32 @@ final class StatusBarUIManager {
         LoggingService.shared.logUIEvent(
             "Multi-profile: composite mode — \(groupItems.count) group items for \(selectedProfiles.count) profiles")
         observeExposureTriggers()
+        logPlacementAtCreation()
+    }
+
+    /// Where the bar put the group items BEFORE any paint (next runloop turn,
+    /// after AppKit's initial layout), beside the auxiliary items. Compared
+    /// with the post-paint exposure line this tells whether the host places
+    /// items by creation order and later RE-INSERTS them when their length
+    /// changes at the first paint — the one hypothesis that fits the
+    /// 2026-09-03 reorder (groups reversed next to a fixed-length anchor,
+    /// unchanged by creation-order and placeholder-length changes, absent in
+    /// a fresh process that never sets images).
+    private func logPlacementAtCreation() {
+        let created = groupItems
+        let auxiliary = auxiliaryExposureItems
+        DispatchQueue.main.async {
+            var parts: [String] = []
+            for (provider, item) in created.sorted(by: { "\($0.key)" < "\($1.key)" }) {
+                let x = item.button?.window?.frame.minX
+                parts.append("\(provider)=\(x.map { "x=\(Int($0))" } ?? "no window") len=\(Int(item.length))")
+            }
+            for (label, item) in auxiliary().sorted(by: { $0.key < $1.key }) {
+                let x = item.button?.window?.frame.minX
+                parts.append("\(label)=\(x.map { "x=\(Int($0))" } ?? "no window") len=\(Int(item.length))")
+            }
+            LoggingService.shared.log("Multi-profile: placement at creation — " + parts.joined(separator: " "))
+        }
     }
 
     /// True when on-screen x-positions no longer strictly DESCEND in creation
