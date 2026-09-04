@@ -30,8 +30,9 @@ class ProfileManager: ObservableObject {
     @Published private(set) var activeCodexProfileId: UUID?
     /// The Grok half of the same idea: who owns ~/.grok/auth.json. Nil means the
     /// app has never handed that file to a profile, which is how every install
-    /// predating this pointer starts — `activeAccountIds(among:)` then falls
-    /// back to the focused-or-sole rule that was the whole answer before.
+    /// predating this pointer starts — `providerOwnerId(for:)` then falls back
+    /// to a sole credentialed Grok profile, and to nothing at all when several
+    /// carry a Grok login.
     @Published private(set) var activeGrokProfileId: UUID?
 
     /// Mirrors `ProfileStore.preferencesDegraded` for SwiftUI. True while macOS's
@@ -216,6 +217,15 @@ class ProfileManager: ObservableObject {
             activeCodexProfileId = nil
             profileStore.saveActiveCodexProfileId(nil)
         }
+        // The Grok pointer needs the same release. It was missed when Grok got a
+        // pointer of its own, and a dangling one is no longer merely untidy:
+        // `providerOwnerId(for:)` reads these pointers as THE owner, so a
+        // deleted profile's id would go on naming the Grok owner and suppress
+        // the sole-credentialed answer that is now correct.
+        if activeGrokProfileId == id {
+            activeGrokProfileId = nil
+            profileStore.saveActiveGrokProfileId(nil)
+        }
 
         // Delete Keychain credentials before removing from the array
         profileStore.deleteProfileCredentials(profileId: id)
@@ -223,13 +233,16 @@ class ProfileManager: ObservableObject {
         profiles.removeAll { $0.id == id }
         ProfileCredentialStatusCache.invalidateAll()
 
-        // Switch to first profile if deleted active
-        if activeProfile?.id == id {
-            if let first = profiles.first {
-                Task {
-                    await activateProfile(first.id)
-                }
-            }
+        // The VIEWED profile is gone, so the UI needs somewhere to look — and
+        // that is the whole of it. A delete must never rewrite a CLI login:
+        // `activateProfile` would apply the surviving profile's credentials to
+        // the shared Keychain item / auth.json, so removing an account the user
+        // never even switched to would silently sign the CLI into a different
+        // one. The pointers the deleted profile held were released above (and
+        // are re-derived from live evidence on the next resolve), so a focus
+        // move is all that is left to do.
+        if activeProfile?.id == id, let first = profiles.first {
+            viewProfile(first.id)
         }
 
         profileStore.saveProfiles(profiles)
@@ -381,6 +394,34 @@ class ProfileManager: ObservableObject {
         }
     }
 
+    /// Whether a LANDED switch should take the FOCUS — the account the popover,
+    /// the inspector and Settings are showing — along with it.
+    ///
+    /// - A **user-initiated** switch always moves it: you chose to make that
+    ///   account active in order to look at it.
+    /// - An **ownership repair** on the profile already on screen trivially
+    ///   moves it (there is nowhere else for it to go).
+    /// - An **AUTOMATIC** switch moves it only out of the OUTGOING OWNER. If
+    ///   the user was watching the active account they should go on watching
+    ///   the active account; if they were looking anywhere else they went there
+    ///   deliberately — an inspector open half-way through a re-login is the
+    ///   sharp case — and a sweep-driven rotation must not yank the screen off
+    ///   a repair nobody asked to abandon.
+    ///
+    /// This deliberately narrows `docs/specs/ux-revamp.md` D5 / §6, which had
+    /// the view follow every switch: D5's reasoning ("you switched to look at
+    /// it") is a statement about a switch the user ASKED for, and once viewing
+    /// is free to land on any account it stops holding for the automatic one.
+    nonisolated static func focusFollowsSwitch(
+        userInitiated: Bool,
+        focusIsTarget: Bool,
+        focusWasOutgoingOwner: Bool,
+        hasFocus: Bool
+    ) -> Bool {
+        guard hasFocus else { return true }
+        return userInitiated || focusIsTarget || focusWasOutgoingOwner
+    }
+
     /// How a provider set is named in the ownership-repair log line.
     private static func providerNames(_ providers: [Profile.ProviderKind]) -> String {
         providers.map { provider in
@@ -512,6 +553,21 @@ class ProfileManager: ObservableObject {
             ? (unownedProviders.compactMap { currentOwnerName(of: $0) }.first ?? activeProfile?.name)
             : activeProfile?.name
 
+        // Whether the VIEW should follow this switch, decided before any pointer
+        // moves. A user-initiated "Make active" always moves the focus — you
+        // switched in order to look at the account you switched to. An AUTOMATIC
+        // switch moves it only when the focus was the OUTGOING OWNER: the user
+        // was watching the active account, so they should go on watching the
+        // active account. Any other view is somewhere the user deliberately
+        // went — an inspector open on a half-finished re-login is the sharp case
+        // — and a sweep-driven rotation that dragged the screen off it would
+        // interrupt a repair nobody asked to abandon.
+        let focusWasOutgoingOwner: Bool = activeProfile.map { focused in
+            applyScope.contains { provider in
+                Self.carriesLogin(profile, for: provider) && providerOwnerId(for: provider) == focused.id
+            }
+        } ?? false
+
         if isFocused {
             LoggingService.shared.log(
                 "Profile '\(profile.name)' is focused but does not own its "
@@ -536,8 +592,12 @@ class ProfileManager: ObservableObject {
         // 1. Claude side: the CLI Keychain login is about to be replaced — re-adopt
         //    it (incl. any silent token refresh) into the profile that owns it.
         //    The `security` subprocess runs off the main actor so the UI never freezes.
+        // The outgoing account is the one that OWNS the shared login — resolved
+        // from the pointer, or from a sole credentialed profile. It used to fall
+        // back to the focused profile, which would re-sync the CLI's live login
+        // into whatever account the user happened to be looking at.
         if target?.cliCredentialsJSON != nil,
-           let outgoingId = activeClaudeProfileId ?? (activeProfile?.cliCredentialsJSON != nil ? activeProfile?.id : nil),
+           let outgoingId = providerOwnerId(for: .claude),
            outgoingId != id,
            profiles.first(where: { $0.id == outgoingId })?.cliCredentialsJSON != nil {
             do {
@@ -792,8 +852,20 @@ class ProfileManager: ObservableObject {
             profiles[index] = updated
         }
 
-        activeProfile = updated
-        profileStore.saveActiveProfileId(id)
+        if Self.focusFollowsSwitch(
+            userInitiated: userInitiated,
+            focusIsTarget: isFocused,
+            focusWasOutgoingOwner: focusWasOutgoingOwner,
+            hasFocus: activeProfile != nil
+        ) {
+            activeProfile = updated
+            profileStore.saveActiveProfileId(id)
+        } else {
+            // The view stays put — but its published copy predates this
+            // switch's reloads, so re-read it or the UI shows stale usage.
+            refreshFocusedProfileCopy()
+            LoggingService.shared.log("👁 Automatic switch to '\(updated.name)' left the view on '\(activeProfile?.name ?? "none")' — the focus was not the outgoing owner")
+        }
         profileStore.saveProfiles(profiles)
 
         // Provider pointers were claimed immediately after each successful apply
@@ -954,57 +1026,125 @@ class ProfileManager: ObservableObject {
 
     /// Who owns ~/.grok/auth.json right now, for the pre-switch adoption. Same
     /// precedence as the Codex twin: the FILE's own account first (it is the
-    /// CLI's current login, so it outranks any bookkeeping), then the persisted
-    /// pointer, then the focused profile if it carries a Grok login at all.
+    /// CLI's current login, so it outranks any bookkeeping), then the standing
+    /// owner — pointer, else a sole credentialed profile. Never the focus: the
+    /// adoption WRITES the CLI's live token into the profile it names, so a
+    /// merely-viewed account would absorb somebody else's login.
     private func resolveOutgoingGrokOwner() -> UUID? {
         let service = GrokUsageService.shared
         if let fileJSON = service.readAuthFile(),
            let owner = profiles.first(where: { service.profileMatchesAuthFile($0, authFileJSON: fileJSON) }) {
             return owner.id
         }
-        if let pointer = activeGrokProfileId { return pointer }
-        if let focused = activeProfile, focused.grokCredentialsJSON != nil { return focused.id }
-        return nil
+        return providerOwnerId(for: .grok)
     }
 
-    /// True if the profile owns its provider's shared CLI login — the Claude Code
-    /// Keychain item, ~/.codex/auth.json, or ~/.grok/auth.json. One account per
+    /// Re-reads the FOCUSED profile from `profiles` after a background pass
+    /// rewrote them, so the popover and Settings do not show a stale copy.
+    ///
+    /// It never changes WHICH profile is focused, and that is the point: the
+    /// CLI-side adoption passes (`adoptSystemLoginByIdentity`,
+    /// `adoptCodexLoginByAccountId`) move a provider POINTER when a `/login`
+    /// outside the app changes who owns a shared login. That is not a decision
+    /// the user made about what to look at, so the view must not follow it.
+    func refreshFocusedProfileCopy() {
+        guard let focusedId = activeProfile?.id,
+              let refreshed = profiles.first(where: { $0.id == focusedId }) else { return }
+        activeProfile = refreshed
+    }
+
+    // MARK: - Provider Owner Resolution — FOCUS IS NEVER AUTHORITY
+
+    /// The persisted pointer for `provider`, with no inference of any kind.
+    private func providerPointer(for provider: Profile.ProviderKind) -> UUID? {
+        switch provider {
+        case .claude: return activeClaudeProfileId
+        case .codex: return activeCodexProfileId
+        case .grok: return activeGrokProfileId
+        }
+    }
+
+    /// True when `profile` CARRIES `provider`'s login and could therefore be the
+    /// account that CLI is signed into.
+    static func carriesLogin(_ profile: Profile, for provider: Profile.ProviderKind) -> Bool {
+        switch provider {
+        case .claude: return profile.cliCredentialsJSON != nil
+        case .codex: return profile.codexCredentialsJSON != nil
+        case .grok: return profile.grokCredentialsJSON != nil
+        }
+    }
+
+    /// WHO OWNS `provider`'s shared CLI login — the Claude Code Keychain item,
+    /// ~/.codex/auth.json, or ~/.grok/auth.json. The single definition the
+    /// sweep, the auto-switch trigger, the credential self-heal, the dead-login
+    /// skip and the header probe all read, so they cannot disagree.
+    ///
+    /// **FOCUS IS NEVER AUTHORITY.** `activeProfile` is only the account the
+    /// user is LOOKING at, and every viewing surface lets them look at any
+    /// account freely. Answering "who owns the CLI login" with "whoever is on
+    /// screen" is the hazard this helper exists to remove: a *viewed* non-owner
+    /// sitting at 96 % session would fire the auto-switch and move the CLI off
+    /// the real owner that still has headroom. So the rule is:
+    ///
+    /// 1. **the pointer wins** — it records a login this app actually wrote, or
+    ///    verified against the account-identity endpoint. It is the only
+    ///    positive evidence in the system;
+    /// 2. **with no pointer, a SOLE credentialed profile still answers** — the
+    ///    CLI is signed in as that account or as nobody at all, so naming it
+    ///    can wrong no one. (An install predating a pointer starts here.)
+    /// 3. **otherwise nil.** Several candidates and no pointer means the app
+    ///    does not know, and "does not know" must never be resolved by the
+    ///    focus.
+    ///
+    /// `pool` restricts the sole-credentialed inference to a caller's own view
+    /// of the roster (the menu bar paints a selected subset); the pointer is
+    /// read from live state either way.
+    ///
+    /// Deliberately NOT gated on credential hydration, unlike the twin
+    /// inference in `resolveProviderActiveAccounts` that PERSISTS a pointer.
+    /// Mid-hydration "exactly one credentialed profile" can mean "exactly one
+    /// hydrated so far", which is why nothing durable is written on it — but
+    /// every consumer that could act destructively on a wrong answer carries
+    /// its own guard (the auto-switch waits for hydration; the Keychain
+    /// adoption is account-matched), and answering nil for the whole warm-up
+    /// would blind the sweep on a single-account install.
+    func providerOwnerId(for provider: Profile.ProviderKind, among pool: [Profile]? = nil) -> UUID? {
+        if let pointer = providerPointer(for: provider) { return pointer }
+        let candidates = (pool ?? profiles).filter { Self.carriesLogin($0, for: provider) }
+        return candidates.count == 1 ? candidates[0].id : nil
+    }
+
+    /// True when `id` owns `provider`'s shared CLI login (see `providerOwnerId`).
+    func isProviderOwner(_ id: UUID, of provider: Profile.ProviderKind) -> Bool {
+        providerOwnerId(for: provider) == id
+    }
+
+    /// True when `id` owns ANY provider's shared CLI login — the "this account
+    /// is the one a CLI is burning right now" test that the sweep's backoffs,
+    /// its throttle inference and the auto-switch trigger all want. Being the
+    /// account on screen is NOT this test.
+    func isProviderOwner(_ id: UUID) -> Bool {
+        Profile.ProviderKind.allCases.contains { isProviderOwner(id, of: $0) }
+    }
+
+    /// True if the profile owns its provider's shared CLI login. One account per
     /// provider is active at any time, so up to THREE profiles carry the "Active"
     /// badge; the focused profile is a separate concept and gets no badge of its
-    /// own. Grok contributes only once its pointer is set (an install where no
-    /// Grok login has ever been applied has no owner to name).
+    /// own.
     func isProviderActive(_ profile: Profile) -> Bool {
-        profile.id == activeClaudeProfileId
-            || profile.id == activeCodexProfileId
-            || profile.id == activeGrokProfileId
+        isProviderOwner(profile.id)
     }
 
     /// Every account the UI marks as ACTIVE: the profiles that own their
-    /// provider's shared CLI login. Grok now has a pointer of its own, and it
-    /// wins when it is set; with no pointer — an install where the app has never
-    /// applied a Grok login — the old inference stands, so the FOCUSED Grok
-    /// profile counts and a sole Grok profile is trivially the active one.
+    /// provider's shared CLI login, resolved by the one rule above.
     ///
-    /// One definition, two consumers: the menu-bar tile's cyan label
-    /// (`StatusBarUIManager.paintTiles`) and the popover's "Active" badge /
-    /// group navigator. They disagreed before this existed — a Grok tile drew
-    /// cyan while the popover called it inactive.
+    /// One definition, several consumers: the menu-bar tile's cyan label
+    /// (`StatusBarUIManager.paintTiles`), the popover's "Active" badge, the
+    /// dashboard snapshot — and, since focus stopped conferring authority, the
+    /// auto-switch trigger's membership test. They disagreed before this
+    /// existed: a Grok tile drew cyan while the popover called it inactive.
     func activeAccountIds(among profiles: [Profile]) -> Set<UUID> {
-        var ids = Set([activeClaudeProfileId, activeCodexProfileId].compactMap { $0 })
-        if let grokOwner = activeGrokProfileId {
-            // A real pointer beats every inference: it records a login this app
-            // actually wrote to ~/.grok/auth.json, which is the same evidence the
-            // other two pointers carry.
-            ids.insert(grokOwner)
-        } else {
-            let groks = profiles.filter { $0.providerKind == .grok }
-            if let focused = activeProfile, focused.providerKind == .grok {
-                ids.insert(focused.id)
-            } else if groks.count == 1, let sole = groks.first {
-                ids.insert(sole.id)
-            }
-        }
-        return ids
+        Set(Profile.ProviderKind.allCases.compactMap { providerOwnerId(for: $0, among: profiles) })
     }
 
     // MARK: - Duplicate Claude Accounts
@@ -1567,7 +1707,9 @@ class ProfileManager: ObservableObject {
 
     /// Validates the persisted per-provider active ids against the loaded profiles
     /// and infers them when missing (first run after the two-active-accounts update):
-    /// - Claude: falls back to the focused profile when it holds CLI credentials.
+    /// - Claude: falls back to a SOLE CLI-credentialed profile. Never to the
+    ///   focused one — the focus says what the user is looking at, not what the
+    ///   CLI is signed into.
     /// - Codex: matched by account_id against ~/.codex/auth.json — deterministic,
     ///   because that file IS the codex CLI's current login.
     private func resolveProviderActiveAccounts() {
@@ -1585,9 +1727,18 @@ class ProfileManager: ObservableObject {
            profiles.first(where: { $0.id == id })?.cliCredentialsJSON == nil {
             activeClaudeProfileId = nil
         }
-        if activeClaudeProfileId == nil,
-           let focused = activeProfile, focused.cliCredentialsJSON != nil {
-            activeClaudeProfileId = focused.id
+        // With no pointer, infer an owner only from a SOLE credentialed profile
+        // — the CLI is signed in as that account or as nobody. This used to
+        // claim the FOCUSED profile, which wrote "the account on screen owns the
+        // Keychain login" into persisted state on every load; with viewing now
+        // free to land anywhere, that pointer would follow the user's browsing.
+        // The exactly-one inference leans on absence, so it needs a completed
+        // hydration to mean anything (same rule as the Codex arm below).
+        if activeClaudeProfileId == nil, absenceIsEvidence {
+            let claudeLogins = profiles.filter { $0.cliCredentialsJSON != nil }
+            if claudeLogins.count == 1 {
+                activeClaudeProfileId = claudeLogins[0].id
+            }
         }
         profileStore.saveActiveClaudeProfileId(activeClaudeProfileId)
 
@@ -1633,8 +1784,8 @@ class ProfileManager: ObservableObject {
         // not — until this pointer shipped, nothing in the app ever wrote
         // ~/.grok/auth.json, so "one Grok profile" says nothing about who the
         // CLI is logged in as. With no match the pointer stays unset and
-        // `activeAccountIds(among:)` falls back to the focused-or-sole rule that
-        // was the entire answer before.
+        // `providerOwnerId(for:)` answers from a sole credentialed Grok profile
+        // — or, when several carry one, not at all.
         let grokService = GrokUsageService.shared
         if let fileJSON = grokService.readAuthFile(),
            let owner = profiles.first(where: { grokService.profileMatchesAuthFile($0, authFileJSON: fileJSON) }) {
@@ -1795,25 +1946,21 @@ class ProfileManager: ObservableObject {
             profileStore.saveProfiles(reloaded)
             profiles = profileStore.loadProfiles()
             applyPendingOverlay(to: &profiles)
-            if let activeId = activeProfile?.id,
-               let updatedActive = profiles.first(where: { $0.id == activeId }) {
-                activeProfile = updatedActive
-            }
+            refreshFocusedProfileCopy()
         }
         return owner.name
     }
 
     /// The profile that owns ~/.codex/auth.json right now, by the file's own
     /// `account_id` — the only deterministic answer, since that file IS the
-    /// codex CLI's current login. Falls back to the persisted pointer, then to
-    /// the focused profile when it carries a Codex account (the Claude side has
-    /// had that last fallback all along; its absence here meant a nil pointer
-    /// silently skipped the outgoing adoption).
+    /// codex CLI's current login. Falls back to the standing owner (pointer,
+    /// else a sole credentialed profile), never to the focus: this resolves the
+    /// account auth.json's rotated refresh token is ADOPTED INTO, so naming the
+    /// profile the user happens to be viewing would file one account's login
+    /// under another's name.
     private func resolveOutgoingCodexOwner() -> UUID? {
         if let ownerId = codexOwnerFromAuthFile()?.id { return ownerId }
-        if let pointer = activeCodexProfileId { return pointer }
-        if let focused = activeProfile, focused.codexCredentialsJSON != nil { return focused.id }
-        return nil
+        return providerOwnerId(for: .codex)
     }
 
     /// The profile whose Codex account matches ~/.codex/auth.json (credentials
@@ -1871,10 +2018,7 @@ class ProfileManager: ObservableObject {
         if adopted {
             profiles = profileStore.loadProfiles()
             applyPendingOverlay(to: &profiles)
-            if let activeId = activeProfile?.id,
-               let updatedActive = profiles.first(where: { $0.id == activeId }) {
-                activeProfile = updatedActive
-            }
+            refreshFocusedProfileCopy()
             LoggingService.shared.log("ProfileManager: ✓ adopted the codex CLI's fresh login into '\(owner.name)' (account-matched)")
         }
         return owner.name
