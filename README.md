@@ -92,6 +92,8 @@ There is no wizard step for Codex (yet):
 1. If `~/.codex/auth.json` exists (you ran `codex login`), the app auto-imports it once as a "Codex (email)" profile.
 2. For additional Codex accounts, follow the next section — do **not** run `codex login` again in the default home.
 
+**Usage limit resets.** The widget shows how many usage-limit resets an account has, read out of the usage payload it already fetches, and can list their expiry on demand — that detail lookup is a separate endpoint that rate-limits per IP, so it runs only when you ask for it, never on the refresh timer. A blank count means unknown rather than zero: an account with no resets and an account the endpoint declined to talk about look identical from the usage payload. Activation spends a scarce, non-refundable reset, so it is offered only while the account is measured at its limit, and a retry inside the same window re-sends the same request id rather than spending a second one.
+
 ### Codex accounts: adding more than one
 
 **Never run `codex login` or `codex logout` in the default `~/.codex` once an account is stored there.** `codex login` revokes, server-side, whatever credentials already sit in the home it runs in *before* it opens the browser (`codex-rs/cli/src/login.rs`: `login_with_chatgpt` → `clear_existing_auth_before_login` → `logout_with_revoke`). The account the widget applied there dies with it — the widget's stored copy starts answering 401 and cannot be repaired app-side. Three accounts were lost this way on 2026-09-03.

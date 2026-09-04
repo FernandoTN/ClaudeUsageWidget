@@ -54,4 +54,10 @@ extension Notification.Name {
     /// succeeds — the auto-switch must respect the explicit choice instead of
     /// yanking an over-threshold account away on the next sweep.
     static let profileManuallyActivated = Notification.Name("profileManuallyActivated")
+
+    /// Posted (userInfo["profileId"] = profile UUID) after a Codex usage-limit
+    /// reset is redeemed successfully. The account's windows have just changed
+    /// and its cached usage is stale by construction, so an observer should
+    /// refresh that profile rather than wait for the next sweep.
+    static let codexResetActivated = Notification.Name("codexResetActivated")
 }

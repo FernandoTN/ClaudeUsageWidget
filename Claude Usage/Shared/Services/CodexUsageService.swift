@@ -1038,7 +1038,11 @@ class CodexUsageService {
         let sessionPercentage = sessionWindow?.percent ?? 0
         let sessionResetTime = sessionWindow?.reset ?? weeklyResetTime
 
-        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"))")
+        // Usage-limit resets ride along in this same payload — the count costs
+        // no request and no new failure mode. nil is UNKNOWN, not zero.
+        let resetCreditsAvailable = Self.resetCreditCount(inUsagePayload: json)
+
+        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"), resets: \(resetCreditsAvailable.map(String.init) ?? "unknown"))")
 
         return ClaudeUsage(
             sessionTokensUsed: 0,
@@ -1046,6 +1050,8 @@ class CodexUsageService {
             sessionPercentage: sessionPercentage,
             sessionResetTime: sessionResetTime,
             hasSessionWindow: sessionWindow != nil,
+            codexResetCreditsAvailable: resetCreditsAvailable,
+            codexResetCreditsMeasuredAt: resetCreditsAvailable == nil ? nil : Date(),
             weeklyTokensUsed: 0,
             weeklyLimit: Constants.weeklyLimit,
             weeklyPercentage: weeklyPercentage,

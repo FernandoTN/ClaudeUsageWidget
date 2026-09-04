@@ -103,6 +103,23 @@ struct ClaudeUsage: Codable, Equatable {
     /// Convenience: nil means legacy/Claude data — session window exists.
     var providesSessionWindow: Bool { hasSessionWindow ?? true }
 
+    /// How many OpenAI "usage limit resets" (wire name: rate limit reset
+    /// credits) the Codex account has available, read out of the SAME
+    /// `wham/usage` payload the sweep already fetches — no extra request.
+    ///
+    /// **nil means UNKNOWN, never zero.** An account with no credits returns
+    /// `"rate_limit_reset_credits": null` (verified live 2026-09-03 across all
+    /// five local Codex homes), so "absent" and "zero" are indistinguishable
+    /// from this endpoint — surfacing a measured "0" would be a claim the
+    /// payload does not support. Display a badge only when this is > 0.
+    /// Optional with nil default so previously cached usage JSON still decodes.
+    var codexResetCreditsAvailable: Int? = nil
+
+    /// When `codexResetCreditsAvailable` was measured. Stamped only alongside a
+    /// non-nil count, so a stamp is never evidence about an unknown value.
+    /// Optional with nil default so previously cached usage JSON still decodes.
+    var codexResetCreditsMeasuredAt: Date? = nil
+
     // Weekly data (all models)
     var weeklyTokensUsed: Int
     var weeklyLimit: Int
