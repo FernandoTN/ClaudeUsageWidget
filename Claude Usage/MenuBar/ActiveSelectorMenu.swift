@@ -38,6 +38,21 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
     }
 
     static let length: CGFloat = 24
+    /// The item's autosave name; the groups use `cuw.group.<provider>`.
+    static let autosaveName = "cuw.selector"
+    /// AppKit's remembered-slot key for a named status item; 50 sits right of
+    /// the Claude group (100), the rightmost of ours.
+    static let preferredPositionKey = "NSStatusItem Preferred Position \(autosaveName)"
+    static let designedPreferredPosition = 50
+
+    /// Writes the designed slot for the named item only when AppKit has none
+    /// yet (a first launch of a named item, or a fresh defaults domain).
+    @discardableResult
+    static func seedPreferredPosition(in defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: preferredPositionKey) == nil else { return false }
+        defaults.set(designedPreferredPosition, forKey: preferredPositionKey)
+        return true
+    }
     /// Not the circular-arrows glyph: that is the popover's REFRESH icon (I1).
     static let symbolName = "arrow.left.arrow.right"
 
@@ -60,7 +75,13 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
 
     init(actions: Actions) {
         self.actions = actions
+        // One STABLE role name pins the item's remembered slot (right of the
+        // Claude group); the 2026-07-17 failure came from rotating per-tile
+        // names, not from naming as such. The designed position is seeded only
+        // when absent, so a slot the owner dragged the item to is respected.
+        Self.seedPreferredPosition()
         statusItem = NSStatusBar.system.statusItem(withLength: Self.length)
+        statusItem.autosaveName = Self.autosaveName
         super.init()
 
         menu.delegate = self

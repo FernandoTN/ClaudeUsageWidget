@@ -305,4 +305,16 @@ final class ActiveSelectorMenuTests: XCTestCase {
         store.saveActiveSelectorItemEnabled(true)
         XCTAssertTrue(store.loadActiveSelectorItemEnabled())
     }
+
+    func testSelectorPreferredPositionIsSeededOnlyWhenAbsent() {
+        let defaults = UserDefaults(suiteName: "com.claudeusagewidget.tests")!
+        defaults.removeObject(forKey: ActiveSelectorItem.preferredPositionKey)
+        XCTAssertTrue(ActiveSelectorItem.seedPreferredPosition(in: defaults))
+        XCTAssertEqual(defaults.integer(forKey: ActiveSelectorItem.preferredPositionKey), 50)
+        defaults.set(120, forKey: ActiveSelectorItem.preferredPositionKey)   // the owner dragged it
+        XCTAssertFalse(ActiveSelectorItem.seedPreferredPosition(in: defaults), "a remembered slot is respected")
+        XCTAssertEqual(defaults.integer(forKey: ActiveSelectorItem.preferredPositionKey), 120)
+        defaults.removeObject(forKey: ActiveSelectorItem.preferredPositionKey)
+        XCTAssertTrue(SettingsKeyRegistry.isSystemKey(ActiveSelectorItem.preferredPositionKey), "AppKit's own key; the registry alarm ignores it")
+    }
 }
