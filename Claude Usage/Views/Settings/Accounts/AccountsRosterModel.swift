@@ -164,7 +164,7 @@ enum AccountsRosterModel {
         return "\(keyed.kind == .session ? "S" : "W") \(Int(keyed.percentage.rounded()))"
     }
 
-    /// Keeps the domain readable (R3): "fernando@mymemori.app" → "f…@mymemori.app"
+    /// Keeps the domain readable (R3): "long.name@example.com" → "l…@example.com"
     /// when the local part is long; short addresses pass through.
     static func shortEmail(_ email: String) -> String {
         guard let at = email.firstIndex(of: "@") else { return email }

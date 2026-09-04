@@ -149,17 +149,17 @@ final class AccountsRosterModelTests: XCTestCase {
     // MARK: - Filter
 
     func testFilterMatchesNameEmailAndStateWords() {
-        let owner = claude("dRir", usage(session: 78), email: "fer@gmail.com")
+        let owner = claude("dRir", usage(session: 78), email: "owner@example.com")
         let maxed = claude("Commits", usage(weekly: 99.5))
         let dead = claude("Ai", usage(session: 20))
-        let queued = claude("Memori", usage(session: 40), email: "fernando@mymemori.app")
+        let queued = claude("Memori", usage(session: 40), email: "memori@example.com")
         let profiles = [owner, maxed, dead, queued]
         let sel = selections(profiles, active: [owner.id], dead: [dead.id], queue: [queued.id])
         func names(_ filter: String) -> [String] {
             rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: filter), .claude).map(\.name)
         }
         XCTAssertEqual(names("mem"), ["Memori"])
-        XCTAssertEqual(names("gmail"), ["dRir"], "emails match")
+        XCTAssertEqual(names("owner"), ["dRir"], "emails match")
         XCTAssertEqual(names("dead"), ["Ai"])
         XCTAssertEqual(names("maxed"), ["Commits"])
         XCTAssertEqual(names("queued"), ["Memori"])

@@ -292,7 +292,7 @@ fixture sources are now "exec" and "xfenrir-dev/vscode".
 Stage 4d merged as `6a5eab2` (#124) and deployed 23:57:36 PDT (pid 54481;
 bar pinned, RSS 165 MB, 0 cfprefsd rejections). **Dormant on this Mac:**
 all four isolated homes under `~/.codex-accounts/` (xfenrir-dev,
-xfho-fer-hotmail-com, xfme-fernando-mymemori-app, xlucifer-dev) hold zero
+xfho-example, xfme-example, xlucifer-dev) hold zero
 rollouts — the widget copies each account's auth into `~/.codex` on a
 switch, so every Codex session so far ran in the default home and is
 attributed by time. The first tick after launch was an ordinary slice

@@ -392,16 +392,16 @@ the sidebar becomes the roster.** (recommended; all three reviews)
 │ │ ⌕ filter                      │ │ not active · Active for Claude: dRir                                       │ │
 │ │ CLAUDE 18 profiles · 17 accts │ │ [Make active for Claude…]  [Queue next]  [Open in dashboard]              │ │
 │ │   ●4 ◐2 ○1 ▲10 ×1 · ⧉2       │ │ ─ Overview ─ Login ─ Alerts ─ Monitoring ─                                 │ │
-│ │ ● dRir  fer…@gmail   78  Cl   │ │ Session  ▓▓░░░░░░░░ 12 %   resets 4 h 02 m                                 │ │
+│ │ ● dRir  a…@example   78  Cl   │ │ Session  ▓▓░░░░░░░░ 12 %   resets 4 h 02 m                                 │ │
 │ │ ● dJormun  jor…@…    12  ✓    │ │ Weekly   ▓▓▓▓▓▓▓░░░ 70 %   resets Mon 09:41                                │ │
-│ │ ● Memori   fer…@mym  40  Q1   │ │ Fable    ▓▓▓▓▓▓▓▓▓▓ 99 %   at the 99 % threshold                           │ │
+│ │ ● Memori   b…@example  40  Q1   │ │ Fable    ▓▓▓▓▓▓▓▓▓▓ 99 %   at the 99 % threshold                           │ │
 │ │ ● 2026     …          3  Q2   │ │ measured 3 m ago · own endpoint · not stale                                │ │
 │ │ ○ Hotmail  …         —        │ │ Readiness  ready · login verified 12 m (usage probe)                       │ │
-│ │ ◐ Stanford …         93  free │ │ Identity   jor…@… · account …9f3a · org …c2                                │ │
+│ │ ◐ Stanford …         93  free │ │ Identity   jor…@… · account …0000 · org …00                                │ │
 │ │ ▲ Commits  …         W! Mon   │ │ Fetch      every sweep · no backoff                                        │ │
 │ │ ▲ BBR      …         S! 3h10m │ │ History    active 2×/24 h · last switch 2 h ago (auto, ← Memori)           │ │
 │ │ × Ai       …         dead     │ │                                                                            │ │
-│ │ ⧉ Google   fer…@gmail = dRir  │ │                                                                            │ │
+│ │ ⧉ Google   a…@example = dRir  │ │                                                                            │ │
 │ │ …                             │ │                                                                            │ │
 │ │ CODEX 4 · ●1 ◐1 ×2            │ │                                                                            │ │
 │ │ ● xFernando(dev)     95  Cx   │ │                                                                            │ │
@@ -1069,7 +1069,7 @@ line under the gauges: "measured 3 m ago · own endpoint" / "via API headers · 
 ago" / "CLI cache · 5 m ago" / "not measured yet"; "stale" appended when older
 than the staleness threshold. Then a two-column fact list: Readiness (state +
 login verdict kind and age, e.g. "ready · login probed 12 m ago"), Identity
-(email · account …9f3a · org …c2; Codex: home path), Fetch ("every sweep" /
+(email · account …0000 · org …00; Codex: home path), Fetch ("every sweep" /
 "backing off until …" is stage 2b — MenuBarManager keeps it private; 2a shows
 the refresh interval), History (the last three switch events naming this
 account, from the ring buffer), Same account as (when duplicated), Usage limit
