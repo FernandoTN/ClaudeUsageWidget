@@ -463,6 +463,29 @@ class SharedDataStore {
         return queue
     }
 
+    // MARK: - Key registry (SettingsKeyRegistry, spec §5.2)
+
+    static let registeredKeys: [RegisteredKey] = [
+        RegisteredKey(Keys.hasCompletedSetup, .sharedDataStore, .live, ui: "— (setup state)"),
+        RegisteredKey(Keys.hasShownWizardOnce, .sharedDataStore, .live, ui: "— (setup state)"),
+        RegisteredKey(Keys.debugAPILoggingEnabled, .sharedDataStore, .live, ui: "Advanced › Diagnostics"),
+        RegisteredKey(Keys.shortcutTogglePopover, .sharedDataStore, .live, ui: "Advanced › Shortcuts"),
+        RegisteredKey(Keys.shortcutRefresh, .sharedDataStore, .live, ui: "Advanced › Shortcuts"),
+        RegisteredKey(Keys.shortcutOpenSettings, .sharedDataStore, .live, ui: "Advanced › Shortcuts"),
+        RegisteredKey(Keys.shortcutNextProfile, .sharedDataStore, .live, ui: "Advanced › Shortcuts (view next)"),
+        RegisteredKey(Keys.autoSwitchProfileEnabled, .sharedDataStore, .live, ui: "Active & Auto-switch"),
+        RegisteredKey(Keys.autoSwitchThreshold, .sharedDataStore, .live, ui: "Active & Auto-switch"),
+        RegisteredKey(Keys.autoSwitchWeeklyThreshold, .sharedDataStore, .live, ui: "Active & Auto-switch"),
+        RegisteredKey(Keys.popoverShowRemainingTime, .sharedDataStore, .migrationFlag),
+        RegisteredKey(Keys.popoverTimeDisplay, .sharedDataStore, .live, ui: "Display › Popover"),
+        RegisteredKey(Keys.timeFormatPreference, .sharedDataStore, .live, ui: "Display › Popover"),
+        RegisteredKey("switchHistory_v1", .sharedDataStore, .live, ui: "Dashboard (switch log)"),
+        RegisteredKey("measuredSessionHistory_v1", .sharedDataStore, .live, ui: "Dashboard (burn history)"),
+        RegisteredKey("autoSwitchQueue", .sharedDataStore, .live, ui: "Active & Auto-switch › Hand-off queue"),
+        RegisteredKey("fleetAlertDefaults_v1", .sharedDataStore, .live, ui: "Alerts › Fleet defaults"),
+        RegisteredKey("activeSelectorItem_v1", .sharedDataStore, .live, ui: "Display › Active-account selector"),
+    ]
+
     // MARK: - Fleet alert defaults (docs/specs/ux-revamp.md §5.2, D11)
 
     private enum FleetAlertKeys {
