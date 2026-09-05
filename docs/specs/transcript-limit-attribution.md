@@ -7,8 +7,10 @@ names, and when the auto-switch may act on it. Branches
 
 **Status:** #158 merged as main `4352b40` (squash), deployed by the
 orchestrating session 2026-09-04 23:25:01 (pid 73406); preview and post-merge
-suites 612 / 0, Release green. Window classification: in review on
-`fix/transcript-limit-class`.
+suites 612 / 0, Release green. Window classification (#165,
+`fix/transcript-limit-class`): merged as main `c22d614` (squash) on
+2026-09-05; preview and post-merge suites 632 / 0, Release green; deploy
+staged by the orchestrating session behind the next Claude switch.
 
 ## The window (2026-09-05 15:47, main `8c2eec0`, deployed `fd626cf`, pid 39798)
 
