@@ -323,7 +323,7 @@ enum InsightsFormatting {
     static func incident(_ incident: FleetInsights.Incident, now: Date) -> String {
         let kind: String
         switch incident.kind {
-        case .tripwire: kind = tripwireKind(incident.tripwire)
+        case .tripwire: kind = tripwireKind(incident.tripwire, window: incident.window)
         case .affirmedStamp(let until): kind = "insights.kind_affirmed".localized(with: DashboardFormatting.duration(max(0, until.timeIntervalSince(now))))
         case .inferredStamp: kind = "insights.kind_inferred".localized
         case .headerProbe429: kind = "insights.kind_probe_429".localized
@@ -336,19 +336,24 @@ enum InsightsFormatting {
     }
 
     /// A tripwire row says what the widget DID with the event — "429 from the
-    /// previous owner ignored" is the line the 2026-09-04 incident needed.
-    static func tripwireKind(_ disposition: FleetInsights.Incident.TripwireDisposition?) -> String {
+    /// previous owner ignored" is the line the 2026-09-04 incident needed —
+    /// and which window the transcript named ("Fable 429 contradicted"); rows
+    /// from before events were classified read as the session's.
+    static func tripwireKind(_ disposition: FleetInsights.Incident.TripwireDisposition?,
+                             window: LimitWindow? = nil) -> String {
+        let word = (window ?? .session).rowWord
+        let limit = (window ?? .session) == .session ? "limit" : "\(word) limit"
         switch disposition {
         case .actedOn(let basis, let liveRead)?:
-            return "insights.kind_tripwire_acted".localized(with: basis, liveRead)
+            return "insights.kind_tripwire_acted".localized(with: limit, basis, liveRead)
         case .previousOwner(let currentOwner)?:
             return "insights.kind_tripwire_previous".localized(with: currentOwner)
         case .contradicted(let livePercent)?:
-            return "insights.kind_tripwire_contradicted".localized(with: livePercent)
+            return "insights.kind_tripwire_contradicted".localized(with: word, livePercent)
         case .postSwitchGrace?:
-            return "insights.kind_tripwire_grace".localized
+            return "insights.kind_tripwire_grace".localized(with: word)
         case .unmatched?:
-            return "insights.kind_tripwire_unmatched".localized
+            return "insights.kind_tripwire_unmatched".localized(with: word)
         case nil:
             return "insights.kind_tripwire".localized
         }

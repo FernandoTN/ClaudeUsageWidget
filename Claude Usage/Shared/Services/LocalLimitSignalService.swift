@@ -36,8 +36,11 @@ nonisolated enum LocalLimitSignalService {
 
     struct RateLimitEvent: Sendable, Equatable {
         let at: Date
-        /// Parsed from the message text when present.
+        /// Parsed from the message text when present. The Fable message
+        /// carries none; nothing is invented in its place.
         let resetsAt: Date?
+        /// The window the message named (`classifyWindow`).
+        let window: LimitWindow
     }
 
     private static let projectsRoot = NSString(string: "~/.claude/projects").expandingTildeInPath
@@ -94,7 +97,8 @@ nonisolated enum LocalLimitSignalService {
                           ?? ISO8601DateFormatter.plain.date(from: timestamp),
                       at >= since else { continue }
                 let text = messageText(of: obj)
-                events.append(RateLimitEvent(at: at, resetsAt: parseResetTime(from: text, eventTime: at)))
+                events.append(RateLimitEvent(at: at, resetsAt: parseResetTime(from: text, eventTime: at),
+                                             window: classifyWindow(text)))
             }
         }
         return events.sorted { $0.at < $1.at }
@@ -109,36 +113,79 @@ nonisolated enum LocalLimitSignalService {
         return ""
     }
 
-    /// Parses "… resets 10:50pm (America/Los_Angeles)" (also "resets 3pm").
-    /// Returns the next occurrence of that wall-clock time in the named zone
-    /// at/after the event time.
+    /// Which window the message names — see `LimitWindow` for the catalogue.
+    /// Fable is tested first: its texts never say "session", and a model
+    /// name may carry a version ("Fable 5 limit").
+    static func classifyWindow(_ text: String) -> LimitWindow {
+        let lower = text.lowercased()
+        func names(_ pattern: String) -> Bool {
+            lower.range(of: pattern, options: .regularExpression) != nil
+        }
+        if names(#"\bfable(\s+[\d.]+)?\s+limit\b"#) { return .fableWeekly }
+        if names(#"\bweekly(\s+usage)?\s+limit\b"#) { return .weekly }
+        if names(#"\bsession\s+limit\b"#) { return .session }
+        return .unknown
+    }
+
+    /// Parses "… resets 10:50pm (America/Los_Angeles)" (also "resets 3pm")
+    /// and the dated form the weekly and Fable texts use when the boundary
+    /// is not today, "resets Aug 22 at 3pm (America/Denver)". Returns the
+    /// next occurrence of that wall clock in the named zone at/after the
+    /// event time; nil when the text carries no reset.
     static func parseResetTime(from text: String, eventTime: Date) -> Date? {
-        let pattern = #"resets (\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)"#
+        if let g = firstMatch(#"resets\s+([A-Za-z]{3,9})\s+(\d{1,2})\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)"#, in: text) {
+            guard let month = monthNumber(g[1]), let day = Int(g[2]), let hour = Int(g[3]) else { return nil }
+            return wallClock(month: month, day: day, hour: hour, minute: Int(g[4]) ?? 0,
+                             meridiem: g[5], zoneName: g[6], eventTime: eventTime)
+        }
+        if let g = firstMatch(#"resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)"#, in: text) {
+            guard let hour = Int(g[1]) else { return nil }
+            return wallClock(month: nil, day: nil, hour: hour, minute: Int(g[2]) ?? 0,
+                             meridiem: g[3], zoneName: g[4], eventTime: eventTime)
+        }
+        return nil
+    }
+
+    /// Capture groups of the first case-insensitive match ("" for an
+    /// unmatched optional group), or nil.
+    private static func firstMatch(_ pattern: String, in text: String) -> [String]? {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else {
             return nil
         }
-        func group(_ i: Int) -> String? {
-            guard let r = Range(match.range(at: i), in: text) else { return nil }
-            return String(text[r])
+        return (0..<match.numberOfRanges).map { i in
+            Range(match.range(at: i), in: text).map { String(text[$0]) } ?? ""
         }
-        guard let hourRaw = group(1).flatMap({ Int($0) }),
-              let meridiem = group(3)?.lowercased(),
-              let zoneName = group(4),
-              let zone = TimeZone(identifier: zoneName) else { return nil }
-        let minute = group(2).flatMap { Int($0) } ?? 0
-        var hour = hourRaw % 12
-        if meridiem == "pm" { hour += 12 }
+    }
 
+    private static let monthAbbreviations = ["jan", "feb", "mar", "apr", "may", "jun",
+                                             "jul", "aug", "sep", "oct", "nov", "dec"]
+
+    private static func monthNumber(_ name: String) -> Int? {
+        monthAbbreviations.firstIndex(of: String(name.lowercased().prefix(3))).map { $0 + 1 }
+    }
+
+    /// The reset is always in the event's future: a wall clock earlier than
+    /// the event means tomorrow; a dated one earlier means next year.
+    private static func wallClock(
+        month: Int?, day: Int?, hour hourRaw: Int, minute: Int,
+        meridiem: String, zoneName: String, eventTime: Date
+    ) -> Date? {
+        guard let zone = TimeZone(identifier: zoneName) else { return nil }
+        var hour = hourRaw % 12
+        if meridiem.lowercased() == "pm" { hour += 12 }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
         var components = calendar.dateComponents([.year, .month, .day], from: eventTime)
+        if let month, let day {
+            components.month = month
+            components.day = day
+        }
         components.hour = hour
         components.minute = minute
-        guard let sameDay = calendar.date(from: components) else { return nil }
-        // The reset is always in the event's future; a wall-clock earlier
-        // than the event means tomorrow.
-        return sameDay >= eventTime ? sameDay : calendar.date(byAdding: .day, value: 1, to: sameDay)
+        guard let candidate = calendar.date(from: components) else { return nil }
+        if candidate >= eventTime { return candidate }
+        return calendar.date(byAdding: month == nil ? .day : .year, value: 1, to: candidate)
     }
 
     // MARK: - CLI cached usage bars

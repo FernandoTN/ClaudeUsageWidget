@@ -17,6 +17,12 @@
 //  previous owner), Dune (an older one), Lagoon (a Codex account), Marsh,
 //  Quarry.
 //
+//  2026-09-05 15:47 incident: four transcripts said "You've reached your
+//  Fable limit" (no reset in the text) while the owner sat at session 89 % /
+//  Fable 100 %; the session read "contradicted" a genuine Fable hit and the
+//  fallback stamped it as a session limit with a 30-minute placeholder. The
+//  window-aware tests use Tundra (the owner) and Reef (a previous owner).
+//
 
 import XCTest
 @testable import Claude_Usage
@@ -54,16 +60,27 @@ final class TranscriptLimitAttributionTests: XCTestCase {
     /// dFr as the store held it: 100 %, window ends 03:39:59 local.
     private lazy var cobalt: Candidate = candidate("Cobalt", reset: utc(10, 39, 59), session: 100)
 
+    private let thresholds = ReadinessThresholds(session: 95, weekly: 99)
+
     private func resolve(
         reset: Date?,
+        window: LimitWindow = .session,
         current: Candidate,
         previous: [Candidate],
         lastSwitchAt: Date?
     ) -> Attribution.Verdict {
         Attribution.resolve(
-            eventAt: eventAt, eventResetsAt: reset,
-            currentOwner: current, previousOwners: previous, lastSwitchAt: lastSwitchAt
+            eventAt: eventAt, eventResetsAt: reset, window: window,
+            currentOwner: current, previousOwners: previous, lastSwitchAt: lastSwitchAt,
+            thresholds: thresholds
         )
+    }
+
+    /// A candidate with a Fable window beside its session one.
+    private func fableCandidate(_ name: String, session: Double, fable: Double?, fableReset: Date? = nil) -> Candidate {
+        Candidate(id: UUID(), name: name, sessionResetTime: utc(10, 49, 59), sessionPercentage: session,
+                  weeklyResetTime: utc(20, 0, 0), weeklyPercentage: 40,
+                  fableWeeklyResetTime: fableReset ?? utc(20, 0, 0), fableWeeklyPercentage: fable)
     }
 
     private func switchRow(_ minutesBeforeEvent: Double, from: String, to: String) -> SwitchEvent {
@@ -125,9 +142,9 @@ final class TranscriptLimitAttributionTests: XCTestCase {
         let unmeasuredPrevious = candidate("Cobalt", reset: nil, session: 0)
         XCTAssertEqual(resolve(reset: eventReset, current: unmeasured, previous: [unmeasuredPrevious], lastSwitchAt: nil),
                        .currentOwner(unmeasured, basis: .clock))
-        XCTAssertEqual(resolve(reset: nil, current: basalt, previous: [cobalt], lastSwitchAt: nil),
+        XCTAssertEqual(resolve(reset: nil, window: .unknown, current: basalt, previous: [cobalt], lastSwitchAt: nil),
                        .currentOwner(basalt, basis: .clock),
-                       "an event whose text carried no reset cannot be matched")
+                       "an unknown-window event whose text carried no reset cannot be matched")
     }
 
     /// A stamp from a window that already rolled over, or a healed boundary
@@ -203,18 +220,182 @@ final class TranscriptLimitAttributionTests: XCTestCase {
         var live = ClaudeUsage.empty
         live.sessionResetTime = Date().addingTimeInterval(3600)
         live.sessionPercentage = 96
-        XCTAssertEqual(Attribution.corroborate(live: live, sessionThreshold: 95), .confirmed(sessionPercent: 96))
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .session, thresholds: thresholds), .confirmed(percent: 96))
 
         live.sessionPercentage = 22
-        XCTAssertEqual(Attribution.corroborate(live: live, sessionThreshold: 95), .contradicted(sessionPercent: 22),
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .session, thresholds: thresholds), .contradicted(percent: 22),
                        "dJormun's own reading in the same second — the event was not its")
 
         var stamped = live
         stamped.rateLimitedUntil = Date().addingTimeInterval(1800)
-        XCTAssertEqual(Attribution.corroborate(live: stamped, sessionThreshold: 95), .confirmed(sessionPercent: 100),
+        XCTAssertEqual(Attribution.corroborate(live: stamped, window: .session, thresholds: thresholds), .confirmed(percent: 100),
                        "an account-level Retry-After is itself the confirmation")
 
-        XCTAssertEqual(Attribution.corroborate(live: nil, sessionThreshold: 95), .unavailable)
+        XCTAssertEqual(Attribution.corroborate(live: nil, window: .session, thresholds: thresholds), .unavailable)
+    }
+
+    // MARK: - Window-aware attribution (2026-09-05 15:47)
+
+    /// The Fable text carries no reset: the owner whose Fable window already
+    /// reads at the limit is the one it names — the current owner first,
+    /// then a previous one; nobody at the limit falls back to the clock.
+    func testFableEventWithoutAResetIsAttributedByWindowState() {
+        let tundraOut = fableCandidate("Tundra", session: 89, fable: 100)
+        let reefOut = fableCandidate("Reef", session: 30, fable: 100)
+        XCTAssertEqual(resolve(reset: nil, window: .fableWeekly, current: tundraOut, previous: [reefOut], lastSwitchAt: nil),
+                       .currentOwner(tundraOut, basis: .windowState),
+                       "both at the limit: the current owner, because its live read decides")
+
+        let tundraFresh = fableCandidate("Tundra", session: 89, fable: 40)
+        XCTAssertEqual(resolve(reset: nil, window: .fableWeekly, current: tundraFresh, previous: [reefOut], lastSwitchAt: switchAt),
+                       .previousOwner(reefOut),
+                       "the previous owner's Fable window is the exhausted one — even inside the grace")
+
+        let nearLimit = fableCandidate("Reef", session: 30, fable: 97)
+        XCTAssertEqual(resolve(reset: nil, window: .fableWeekly, current: tundraFresh, previous: [nearLimit], lastSwitchAt: nil),
+                       .previousOwner(nearLimit),
+                       "97 % measured a sweep ago clears the 95 % floor under the 99 % weekly threshold")
+
+        let reefFresh = fableCandidate("Reef", session: 30, fable: 40)
+        XCTAssertEqual(resolve(reset: nil, window: .fableWeekly, current: tundraFresh, previous: [reefFresh], lastSwitchAt: nil),
+                       .currentOwner(tundraFresh, basis: .clock))
+
+        // Only the NAMED window is evidence: a session at 100 % says nothing
+        // about a Fable 429, and an account with no Fable window at all is
+        // never the one a Fable limit refused.
+        let sessionOut = fableCandidate("Tundra", session: 100, fable: 40)
+        let noFable = fableCandidate("Reef", session: 100, fable: nil)
+        XCTAssertEqual(resolve(reset: nil, window: .fableWeekly, current: sessionOut, previous: [noFable], lastSwitchAt: nil),
+                       .currentOwner(sessionOut, basis: .clock))
+        XCTAssertEqual(resolve(reset: nil, window: .session, current: sessionOut, previous: [], lastSwitchAt: nil),
+                       .currentOwner(sessionOut, basis: .windowState),
+                       "the same state names the owner for a SESSION event")
+    }
+
+    /// A dated weekly text ("resets Aug 22 at 3pm") is matched against the
+    /// owners' WEEKLY stamps; their session stamps do not take part.
+    func testResetMatchUsesTheNamedWindowsStamp() {
+        let weeklyReset = utc(20, 0, 0)
+        let tundra = Candidate(id: UUID(), name: "Tundra", sessionResetTime: weeklyReset, sessionPercentage: 60,
+                               weeklyResetTime: utc(21, 30, 0), weeklyPercentage: 50)
+        let reef = Candidate(id: UUID(), name: "Reef", sessionResetTime: nil, sessionPercentage: 0,
+                             weeklyResetTime: weeklyReset.addingTimeInterval(-1), weeklyPercentage: 100)
+        XCTAssertEqual(resolve(reset: weeklyReset, window: .weekly, current: tundra, previous: [reef], lastSwitchAt: nil),
+                       .previousOwner(reef),
+                       "Tundra's SESSION stamp equals the reset, but the event named the weekly window")
+        XCTAssertEqual(resolve(reset: weeklyReset, window: .weekly, current: tundra, previous: [], lastSwitchAt: nil),
+                       .unmatched(currentOwner: tundra))
+    }
+
+    /// The live read is judged in the window the event named: Fable against
+    /// the weekly threshold, and a header rescue — which carries no Fable
+    /// window — is no reading at all for a Fable event.
+    func testCorroborationReadsTheNamedWindow() {
+        var live = ClaudeUsage.empty
+        live.sessionResetTime = Date().addingTimeInterval(3600)
+        live.sessionPercentage = 89
+        live.fableWeeklyPercentage = 100
+        live.fableWeeklyResetTime = Date().addingTimeInterval(86_400)
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .fableWeekly, thresholds: thresholds), .confirmed(percent: 100))
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .session, thresholds: thresholds), .contradicted(percent: 89),
+                       "the same reading contradicts a SESSION event — the 15:47 misreading")
+
+        live.fableWeeklyPercentage = 40
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .fableWeekly, thresholds: thresholds), .contradicted(percent: 40))
+
+        live.fableWeeklyPercentage = 100
+        live.provenance = .headerRescue
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .fableWeekly, thresholds: thresholds), .unavailable,
+                       "a header-rescued Fable number is the stored one carried forward")
+        live.weeklyPercentage = 99
+        XCTAssertEqual(Attribution.corroborate(live: live, window: .weekly, thresholds: thresholds), .confirmed(percent: 99),
+                       "the headers DO carry the all-models weekly window")
+
+        var noFable = ClaudeUsage.empty
+        noFable.fableWeeklyPercentage = nil
+        XCTAssertEqual(Attribution.corroborate(live: noFable, window: .fableWeekly, thresholds: thresholds), .unavailable)
+    }
+
+    /// The stamp lands on the named window and nowhere else, readiness and
+    /// the dashboard's "capacity returns" read it as a Fable hit, and an
+    /// event without a reset records no reset — no 30-minute placeholder.
+    func testStampingMovesOnlyTheNamedWindow() {
+        let now = Date()
+        let eventTime = now.addingTimeInterval(-30)
+        var usage = ClaudeUsage.empty
+        usage.sessionPercentage = 89
+        usage.fableWeeklyPercentage = 97
+        usage.fableWeeklyResetTime = now.addingTimeInterval(2 * 86_400)
+        usage.weeklyPercentage = 40
+
+        var fable = usage
+        fable.stampLimitHit(.fableWeekly, at: eventTime, resetsAt: nil)
+        XCTAssertEqual(fable.fableWeeklyPercentage, 100)
+        XCTAssertEqual(fable.sessionPercentage, 89)
+        XCTAssertNil(fable.rateLimitedUntil, "a Fable hit is not a session stamp")
+        XCTAssertEqual(fable.fableWeeklyResetTime, usage.fableWeeklyResetTime, "no reset in the text: the stored boundary stands")
+        XCTAssertEqual(fable.lastUpdated, eventTime)
+        XCTAssertEqual(AccountReadiness.classify(usage: fable, isLoginDead: false, isExcluded: false, thresholds: thresholds, now: now),
+                       .weeklyHit)
+        XCTAssertEqual(DashboardSnapshot.capacityReturnsAt(fable, readiness: .weeklyHit, thresholds: thresholds, now: now),
+                       usage.fableWeeklyResetTime, "capacity returns with the FABLE window, not in 30 minutes")
+
+        var session = usage
+        session.stampLimitHit(.session, at: eventTime, resetsAt: nil)
+        XCTAssertNil(session.rateLimitedUntil, "the 30-minute placeholder is gone")
+        XCTAssertEqual(session.sessionPercentage, 100)
+        XCTAssertEqual(session.fableWeeklyPercentage, 97)
+
+        let reset = now.addingTimeInterval(3 * 86_400)
+        var weekly = usage
+        weekly.weeklyResetProjected = true
+        weekly.stampLimitHit(.weekly, at: eventTime, resetsAt: reset)
+        XCTAssertEqual(weekly.weeklyPercentage, 100)
+        XCTAssertEqual(weekly.weeklyResetTime, reset)
+        XCTAssertNil(weekly.weeklyResetProjected, "the text's reset is a measured boundary")
+    }
+
+    /// Today's 15:47 sequence end to end: the Fable text classifies as a
+    /// Fable event, window state names the owner, and its live read —
+    /// session 89 %, Fable 100 % — CONFIRMS it. Before this the same read
+    /// contradicted it ("live read says 89%").
+    func testReplayOfTheFableIncidentIsConfirmedNotContradicted() {
+        let text = "You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."
+        let window = LocalLimitSignalService.classifyWindow(text)
+        XCTAssertEqual(window, .fableWeekly)
+        XCTAssertNil(LocalLimitSignalService.parseResetTime(from: text, eventTime: eventAt))
+
+        let tundra = fableCandidate("Tundra", session: 89, fable: 100)
+        XCTAssertEqual(resolve(reset: nil, window: window, current: tundra, previous: [], lastSwitchAt: nil),
+                       .currentOwner(tundra, basis: .windowState))
+
+        var live = ClaudeUsage.empty
+        live.sessionResetTime = Date().addingTimeInterval(3600)
+        live.sessionPercentage = 89
+        live.fableWeeklyPercentage = 100
+        live.fableWeeklyResetTime = Date().addingTimeInterval(86_400)
+        XCTAssertEqual(Attribution.corroborate(live: live, window: window, thresholds: thresholds), .confirmed(percent: 100))
+    }
+
+    func testInsightsRowNamesTheWindow() {
+        let now = Date()
+        let contradicted = FleetInsights.Incident(
+            at: now.addingTimeInterval(-60), profileId: nil, name: "Tundra", provider: .claude, kind: .tripwire,
+            detail: nil, tripwire: .contradicted(livePercent: 40), window: .fableWeekly)
+        XCTAssertEqual(InsightsFormatting.incident(contradicted, now: now),
+                       "1 m ago · Fable 429 contradicted — live read 40 %, ignored")
+
+        let acted = FleetInsights.Incident(
+            at: now.addingTimeInterval(-60), profileId: nil, name: "Tundra", provider: .claude, kind: .tripwire,
+            detail: nil, tripwire: .actedOn(basis: "window state", liveRead: "live read Fable 100%"), window: .fableWeekly)
+        XCTAssertEqual(InsightsFormatting.incident(acted, now: now),
+                       "1 m ago · a running session hit the Fable limit (window state, live read Fable 100%)")
+
+        let weekly = FleetInsights.Incident(
+            at: now.addingTimeInterval(-60), profileId: nil, name: "Reef", provider: .claude, kind: .tripwire,
+            detail: nil, tripwire: .unmatched, window: .weekly)
+        XCTAssertEqual(InsightsFormatting.incident(weekly, now: now),
+                       "1 m ago · weekly 429 matches no tracked window — ignored")
     }
 
     // MARK: - Dashboard row

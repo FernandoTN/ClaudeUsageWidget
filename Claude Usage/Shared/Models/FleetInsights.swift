@@ -142,6 +142,9 @@ struct FleetInsights: Hashable {
         /// Nil for every other kind, and for tripwire rows recorded before the
         /// attribution existed.
         var tripwire: TripwireDisposition? = nil
+        /// For `.tripwire` rows: the window the transcript named. Nil for
+        /// rows recorded before events were classified (all session-shaped).
+        var window: LimitWindow? = nil
     }
     var incidents: [Incident]
 
