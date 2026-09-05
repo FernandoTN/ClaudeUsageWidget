@@ -699,6 +699,7 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | `cuwSlotPinsVersion` | on disk only (2026-07-17 slot-pinning experiment, never merged) | left alone, registered legacy-unread (3d) | — | — |
 | **`fleetAlertDefaults_v1`** | SharedDataStore | **new**, journaled + shadowed | `NotificationSettings` JSON; seeded from `NotificationSettings()` — or, when every profile's settings are identical, promoted from them; never from whichever row is viewed | Alerts |
 | **`activeSelectorItem_v1`** | SharedDataStore | **new**, journaled | `{ enabled: Bool }`; default enabled; toggles `isVisible` | Display |
+| **`codexDaemonRestartOnSwitch_v1`** | SharedDataStore | **new**, journaled | `Bool`; default false; after a Codex switch the widget may restart the Codex daemon when no interactive session is attached (`docs/specs/codex-daemon-awareness.md`) | Advanced |
 
 Dropped since v1: `activeSelectorConfirm_v1` (confirmation is not suppressible),
 `settingsLayout_v2` (no two-tree flag; §5.5), the per-provider selector mode.
