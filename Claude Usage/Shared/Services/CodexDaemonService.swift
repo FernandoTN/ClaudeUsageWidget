@@ -201,7 +201,7 @@ nonisolated enum CodexTerminals {
         return Line(profileName: profile(matching: evidence, in: profiles)?.name, since: evidence.sessionStartedAt)
     }
 
-    @MainActor static let clock: DateFormatter = {
+    nonisolated(unsafe) static let clock: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .none
         f.timeStyle = .short
