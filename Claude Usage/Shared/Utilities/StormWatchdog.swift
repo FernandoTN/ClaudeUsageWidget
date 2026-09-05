@@ -7,86 +7,269 @@
 //  days across multiple "fixed" builds because nothing watched the app's own
 //  idle cost. This watchdog samples the process's CPU time every 2 minutes;
 //  sustained burn while the UI is nominally idle is logged loudly and
-//  surfaced via a user notification — promptly at each new storm EPISODE
-//  (45-min first-notify floor + 20-min cumulative suppressed-burn override),
-//  re-posted on a 6h backoff while one already-notified episode persists (a
-//  6.5-day process once burned for hours after its single per-launch
-//  notification was spent, silently; the GLOBAL 6h floor that replaced it
-//  then compressed 8 hot-burn runs/22h into 3 notifications on 2026-08-07,
-//  leaving the day's worst episode silent for 2h52m at 8-11% burn).
+//  surfaced via a user notification — promptly at each new EPISODE (45-min
+//  first-notify floor + 20-min cumulative suppressed-burn override), re-posted
+//  on a 6h backoff while one already-notified episode persists (a 6.5-day
+//  process once burned for hours after its single per-launch notification
+//  was spent, silently; the GLOBAL 6h floor that replaced it then compressed
+//  8 hot-burn runs/22h into 3 notifications on 2026-08-07, leaving the day's
+//  worst episode silent for 2h52m at 8-11% burn).
+//
+//  2026-09-05: the alarm fired 270 times overnight on a burn that was the
+//  app's OWN work (a 55 MB-per-sweep rollout read, PR #160), and told the
+//  user to quit for a WindowServer storm that was not there. The decision
+//  logic now lives in `StormWatchdogPolicy` (pure, tested), the threshold is
+//  re-baselined against the measured idle cost, and the notification names
+//  the measured value and prescribes quitting ONLY when the storm signature
+//  — the window population growing during the episode — is actually seen.
 //
 
 import AppKit
 import UserNotifications
 
-final class StormWatchdog {
-    static let shared = StormWatchdog()
+// MARK: - Policy (pure)
 
+/// The watchdog's decisions — threshold, strikes, episodes, the notification
+/// gates — as a value the timer feeds one sample at a time, so the logic is
+/// testable against a synthetic tick stream. `StormWatchdog` performs what
+/// it decides (log, remediate, notify).
+struct StormWatchdogPolicy {
     /// Fraction of one core considered pathological while idle.
     ///
     /// History, all 2026-07-29: 12% was arithmetically unreachable (the
     /// post-remap storm cost 8-11%) and the watchdog stayed silent through a
     /// full evening storm; 6% caught every storm observed with 14 per-profile
-    /// tiles. COMPOSITE provider-group tiles then cut the wedged-state cost to
-    /// ~2% by construction (42 scene windows → 9) — which puts the storm BACK
-    /// UNDER the threshold and re-silences the tripwire. 1.5% sits above the
-    /// measured idle baseline (0.0% healthy, sweeps invisible over a 2-minute
-    /// window) and below the projected composite storm cost.
-    private static let burnThreshold = 0.015
-    /// Consecutive hot samples before alarming (3 × interval = 6 minutes).
-    private static let hotSamplesBeforeAlarm = 3
-    private static let interval: TimeInterval = 120
+    /// tiles; composite provider-group tiles then cut the wedged-state cost to
+    /// ~2% (42 scene windows → 9), so 1.5% was chosen above a 0.0% measured
+    /// idle. That baseline was measured with no sweep cost visible; the app's
+    /// legitimate steady state is a 30 s sweep of ~8 network fetches, the
+    /// telemetry slices and a repaint, and at 1.5% the alarm fired 270 times
+    /// overnight on 2026-09-04/05 against the app's own work. Re-baselined
+    /// 2026-09-05 after PR #160: `measuredIdleBaseline` below is the measured
+    /// idle average, and the threshold sits at 3× it.
+    static let defaultBurnThreshold = 0.045
+    /// The idle average the threshold was derived from (fraction of a core):
+    /// 1.5% — 0.9 s of CPU per 60 s wall, measured 2026-09-05 10:22 on the
+    /// deployed #160 build (pid 91164, 23 profiles, 30 s sweep, no
+    /// interactive Codex daemon running). Named in the log line so the reader
+    /// sees what "high" is relative to.
+    static let measuredIdleBaseline = 0.015
+
+    var burnThreshold = defaultBurnThreshold
+    /// Consecutive hot samples before the episode opens (3 × interval = 6 min).
+    var hotSamplesBeforeAlarm = 3
+    var interval: TimeInterval = 120
     /// While ONE already-notified episode persists unremediated, re-post on
-    /// this backoff (same identifier — replaces, never stacks). The
-    /// 2026-08-06 storm burned all night behind a spent once-per-launch
-    /// notification. Since 2026-08-07 this interval gates ONLY intra-episode
-    /// re-posts — the FIRST notification of a new episode is gated by
-    /// `firstNotifyFloor` / `cumulativeOverrideBurn` below.
-    private static let renotifyInterval: TimeInterval = 6 * 3600
+    /// this backoff (same identifier — replaces, never stacks). Since
+    /// 2026-08-07 this gates ONLY intra-episode re-posts.
+    var renotifyInterval: TimeInterval = 6 * 3600
     /// Global floor between ANY notification and the FIRST notification of a
-    /// NEW episode. History: a floor-free per-episode bypass could flap
-    /// every ~14 min under threshold hover (Codex review); the GLOBAL 6h
-    /// floor that replaced it degraded per-episode alerting to once-per-6h
-    /// under real storm weather (2026-08-07: 8 hot-burn runs in 22h → 3
-    /// notifications; ep7 burned 8-11% for 2h52m before its floor-release
-    /// alert at exactly lastNotified+6h). 45 min absorbs the worst REAL flap
-    /// cadence ever measured (3 episode opens in 54 min, 8-min minimum
-    /// end-to-reopen gap ≈ 20-min cycles) while restoring minutes-scale
-    /// latency: simulated on the real 22h tick stream this policy posts 7
-    /// notifications (vs 3) and alerts ep7 six minutes into its burn (vs
-    /// 2h52m). True pathological ceiling (judge-corrected): minimum
-    /// first-of-episode post spacing is 26 min (6-min episode close + 20-min
-    /// bank refill) ≈ 55 posts/day ≈ 2.2/h — and each such post is backed by
-    /// 20 min of banked ≥1.5% burn, i.e. it is signal, not flap; the classic
-    /// 14-min hover shape (6-min hot cycles) actually produces ~0 posts,
-    /// because 3-hot-sample runs never reach the notify gate at all.
-    /// Replace-don't-stack keeps at most one banner pending. A 30-min floor
-    /// was rejected: zero latency gain on the real day.
-    private static let firstNotifyFloor: TimeInterval = 45 * 60
+    /// NEW episode. 45 min absorbs the worst REAL flap cadence ever measured
+    /// (3 episode opens in 54 min) while restoring minutes-scale latency:
+    /// simulated on the real 2026-08-07 tick stream this posts 7
+    /// notifications (vs 3 under a global 6h floor) and alerts the worst
+    /// episode six minutes into its burn (vs 2h52m).
+    var firstNotifyFloor: TimeInterval = 45 * 60
     /// Cumulative suppressed-burn override: while the current episode is
-    /// un-notified, every idle-attributed hot sample banks its wall
-    /// interval; at ≥20 min of banked burn the first-of-episode notification
-    /// fires REGARDLESS of `firstNotifyFloor`. The accumulator carries
-    /// across episode close (drained only by an actual post): on the real
-    /// 2026-08-07 ledger ep5's eligible tick cleared the 45-min floor
-    /// anyway — the override is the counterfactual guard for a follow-on
-    /// episode opening INSIDE the floor, which would otherwise wait it out.
-    /// The ~20-min bound holds for episodes that REACH the notify gate
-    /// (≥4 hot samples ≈ ≥8-min runs); shorter runs (≤3 hot samples — the
-    /// remediation tick consumes the 3rd) never reach notifyIfDue and bank
-    /// without firing — a pre-existing reach limitation, unchanged here.
-    /// (~2.4 banked core-minutes at the measured 8-11% burn,
-    /// vs ~19.5 silent core-minutes under the 6h floor). Because only a
-    /// posted notification drains it and accumulation stops once the episode
-    /// is notified, it cannot drum through a continuous storm the way a
-    /// cumulative-only policy would (~16 posts/day simulated at N=20): after
-    /// the first post, the 6h `renotifyInterval` owns the episode.
-    private static let cumulativeOverrideBurn: TimeInterval = 20 * 60
+    /// un-notified, every idle-attributed hot sample banks its wall interval
+    /// (clamped to 2× the nominal interval — a clamshell sleep must not fill
+    /// the bank from one tick); at ≥ 20 min of banked burn the first-of-episode
+    /// notification fires regardless of the floor. Drained only by a post, so
+    /// floor-blocked micro-episodes accumulate toward it.
+    var cumulativeOverrideBurn: TimeInterval = 20 * 60
     /// Hot samples tolerated while the UI reports "open" before the pause is
-    /// overridden. A stranded-visible window (2026-07-29: a minimized-orphan
-    /// settings window; also any detached popover panel left open) otherwise
-    /// disarms the watchdog through an entire storm.
-    private static let maxPausedHotSamples = 15 // 30 minutes
+    /// overridden (30 min): a stranded-visible window otherwise disarms the
+    /// watchdog through an entire storm.
+    var maxPausedHotSamples = 15
+
+    /// One tick: the process's CPU share over `wall`, whether the UI was
+    /// nominally idle, and the window population — the storm signature's
+    /// inputs.
+    struct Sample: Equatable {
+        var usage: Double
+        var wall: TimeInterval
+        var uiIdle: Bool
+        var windows: Int
+        var trackingAreas: Int
+        var now: Date
+    }
+
+    /// The WindowServer-storm signature: the window population GREW while the
+    /// episode ran idle. The 2026-07-29 storm accreted windows (9 → 11) and
+    /// leaked tracking areas; the app's own work (a sweep, a scan, a decode)
+    /// changes neither. Without it, "quit and relaunch" is a guess.
+    struct Signature: Equatable {
+        var windowsAtOpen: Int
+        var windowsNow: Int
+        var trackingAreasAtOpen: Int
+        var trackingAreasNow: Int
+        var detected: Bool { windowsNow > windowsAtOpen || trackingAreasNow > trackingAreasAtOpen }
+    }
+
+    struct Notice: Equatable {
+        var isFirstForEpisode: Bool
+        var gate: String
+        /// Mean CPU share over the current run of hot samples.
+        var measuredUsage: Double
+        /// Wall time that mean covers.
+        var measuredOver: TimeInterval
+        var episodeAge: TimeInterval
+        var signature: Signature
+    }
+
+    enum Verdict: Equatable {
+        /// Below the threshold. `episodeEnded` on the third clean sample of
+        /// an open episode: remediation and notification are re-armed.
+        case clean(episodeEnded: Bool)
+        /// Hot, but the UI is open: paused, not counted (until the override).
+        case pausedHot(paused: Int)
+        /// Hot and idle, strike `streak` of `hotSamplesBeforeAlarm`.
+        case hot(streak: Int)
+        /// The strike bar was reached and the episode is open: one in-place
+        /// remediation is attempted, with one interval to prove itself.
+        case remediate
+        /// Remediation did not clear it and a notification gate is open.
+        case notify(Notice)
+        /// Still burning past the bar, every gate closed.
+        case gated(String)
+    }
+
+    private(set) var consecutiveHotSamples = 0
+    private(set) var consecutiveCleanSamples = 0
+    private(set) var pausedHotSamples = 0
+    /// True when the last sample's pause was overridden (stranded window).
+    private(set) var didOverridePause = false
+    private(set) var episodeStartedAt: Date?
+    private(set) var didRemediateThisEpisode = false
+    private(set) var didNotifyThisEpisode = false
+    private(set) var lastNotifiedAt: Date = .distantPast
+    private(set) var suppressedBurn: TimeInterval = 0
+    private var runUsageSeconds: Double = 0
+    private var runWall: TimeInterval = 0
+    private var windowsAtEpisodeOpen = 0
+    private var trackingAreasAtEpisodeOpen = 0
+
+    init(burnThreshold: Double = StormWatchdogPolicy.defaultBurnThreshold) {
+        self.burnThreshold = burnThreshold
+    }
+
+    mutating func observe(_ sample: Sample) -> Verdict {
+        didOverridePause = false
+        guard sample.usage >= burnThreshold else {
+            consecutiveHotSamples = 0
+            pausedHotSamples = 0
+            runUsageSeconds = 0
+            runWall = 0
+            consecutiveCleanSamples += 1
+            if consecutiveCleanSamples >= 3,
+               episodeStartedAt != nil || didRemediateThisEpisode || didNotifyThisEpisode {
+                episodeStartedAt = nil
+                didRemediateThisEpisode = false
+                didNotifyThisEpisode = false
+                return .clean(episodeEnded: true)
+            }
+            return .clean(episodeEnded: false)
+        }
+        consecutiveCleanSamples = 0
+
+        if !sample.uiIdle {
+            pausedHotSamples += 1
+            if pausedHotSamples < maxPausedHotSamples {
+                // Hot but the user has UI open: PAUSE rather than reset — brief
+                // foreground activity must not erase the hot history of a
+                // storm that keeps burning underneath it.
+                return .pausedHot(paused: pausedHotSamples)
+            }
+            // A window has been "open" through 30 minutes of continuous burn —
+            // that is the stranded-window failure mode, not a user session.
+            didOverridePause = true
+        } else {
+            pausedHotSamples = 0
+        }
+
+        if !didNotifyThisEpisode {
+            suppressedBurn += min(sample.wall, 2 * interval)
+        }
+        consecutiveHotSamples += 1
+        runUsageSeconds += sample.usage * sample.wall
+        runWall += sample.wall
+        guard consecutiveHotSamples >= hotSamplesBeforeAlarm else {
+            return .hot(streak: consecutiveHotSamples)
+        }
+
+        if episodeStartedAt == nil {
+            episodeStartedAt = sample.now.addingTimeInterval(-TimeInterval(hotSamplesBeforeAlarm) * interval)
+            windowsAtEpisodeOpen = sample.windows
+            trackingAreasAtEpisodeOpen = sample.trackingAreas
+        }
+
+        // One cheap self-heal attempt per episode (render-cache repaint), with
+        // a single sample interval to prove itself before alarming.
+        if !didRemediateThisEpisode {
+            didRemediateThisEpisode = true
+            consecutiveHotSamples = hotSamplesBeforeAlarm - 1
+            return .remediate
+        }
+
+        // Hybrid gate (2026-08-07 policy analysis): first-of-episode passes
+        // the 45-min global floor or the 20-min cumulative override; a
+        // re-post inside an already-notified episode waits the 6h backoff.
+        let sinceLast = sample.now.timeIntervalSince(lastNotifiedAt)
+        let gate: String
+        if didNotifyThisEpisode {
+            guard sinceLast >= renotifyInterval else {
+                return .gated("6h intra-episode re-post backoff (\(Int(sinceLast / 60)) min since the last post)")
+            }
+            gate = "6h intra-episode re-post backoff elapsed"
+        } else if sinceLast >= firstNotifyFloor {
+            gate = "first-of-episode, 45-min floor clear"
+        } else if suppressedBurn >= cumulativeOverrideBurn {
+            gate = "first-of-episode, cumulative override (\(Int(suppressedBurn / 60)) min suppressed burn)"
+        } else {
+            return .gated("first-of-episode floor (\(Int(sinceLast / 60)) min since the last post, \(Int(suppressedBurn / 60)) min banked)")
+        }
+        let notice = Notice(
+            isFirstForEpisode: !didNotifyThisEpisode,
+            gate: gate,
+            measuredUsage: runWall > 0 ? runUsageSeconds / runWall : sample.usage,
+            measuredOver: runWall,
+            episodeAge: episodeStartedAt.map { sample.now.timeIntervalSince($0) } ?? 0,
+            signature: Signature(
+                windowsAtOpen: windowsAtEpisodeOpen, windowsNow: sample.windows,
+                trackingAreasAtOpen: trackingAreasAtEpisodeOpen, trackingAreasNow: sample.trackingAreas
+            )
+        )
+        didNotifyThisEpisode = true
+        lastNotifiedAt = sample.now
+        suppressedBurn = 0
+        return .notify(notice)
+    }
+
+    // MARK: Alarm text
+
+    /// The user-facing body: the measured value first, the threshold it is
+    /// judged against, and quit advice ONLY behind the storm signature.
+    static func alarmBody(for notice: Notice, threshold: Double) -> String {
+        let measured = String(format: "%.1f", notice.measuredUsage * 100)
+        let over = max(1, Int((notice.measuredOver / 60).rounded()))
+        let limit = String(format: "%.1f", threshold * 100)
+        let lead = notice.isFirstForEpisode
+            ? "The widget averaged \(measured)% of a core over the last \(over) min while idle (alarm threshold \(limit)%)."
+            : "Still averaging \(measured)% of a core after ~\(Int((notice.episodeAge / 3600).rounded())) h (alarm threshold \(limit)%)."
+        let s = notice.signature
+        if s.detected {
+            return lead + " The window population grew during this episode (\(s.windowsAtOpen) → \(s.windowsNow) windows, \(s.trackingAreasAtOpen) → \(s.trackingAreasNow) tracking areas): the WindowServer storm signature. Quit the widget, wait ~2 minutes, then relaunch — an immediate relaunch re-inherits the OS-side wedge."
+        }
+        return lead + " No WindowServer storm signature (\(s.windowsNow) windows, unchanged), so the cost is inside the app's own work: nothing to quit for. Logs were captured for diagnosis."
+    }
+}
+
+// MARK: - Watchdog (timer + effects)
+
+final class StormWatchdog {
+    static let shared = StormWatchdog()
+
+    private static let interval: TimeInterval = 120
 
     /// Closed-state provider: returns true when no popover/settings window is
     /// open (i.e. the app SHOULD be idle). Injected by MenuBarManager.
@@ -103,28 +286,11 @@ final class StormWatchdog {
     ///          trigger for live-storm experiments.
     var remediate: (Int) -> Void = { _ in }
 
+    private var policy = StormWatchdogPolicy()
     private var timer: Timer?
     private var observerToken: NSObjectProtocol?
     private var lastCPUTime: TimeInterval = 0
     private var lastSampleAt: Date?
-    private var consecutiveHotSamples = 0
-    private var consecutiveCleanSamples = 0
-    private var pausedHotSamples = 0
-    /// Episode state: an episode opens at the first sustained-burn alarm and
-    /// closes after 3 consecutive clean samples. Each episode gets one
-    /// remediation attempt and its own notification; closing re-arms both, so
-    /// a second storm days into the same launch is never silent.
-    private var episodeStartedAt: Date?
-    private var didRemediateThisEpisode = false
-    private var didNotifyThisEpisode = false
-    private var lastNotifiedAt: Date = .distantPast
-    /// Wall time banked by idle-attributed hot samples while the current
-    /// episode is un-notified (pre-open streak-1/2 samples included — burn
-    /// is burn). Drained ONLY by a posted notification; deliberately NOT
-    /// reset on episode close, so floor-blocked micro-episodes accumulate
-    /// toward `cumulativeOverrideBurn`. UI-open (paused) hot samples do not
-    /// bank — they may be legitimate foreground work.
-    private var suppressedBurn: TimeInterval = 0
     private var manualStage = 0
     private var lastManualTrigger: Date = .distantPast
 
@@ -175,134 +341,61 @@ final class StormWatchdog {
         guard let lastSampleAt else { return }
         let wall = now.timeIntervalSince(lastSampleAt)
         guard wall > 0 else { return }
-        let usage = (cpu - lastCPUTime) / wall
+        let sample = StormWatchdogPolicy.Sample(
+            usage: (cpu - lastCPUTime) / wall,
+            wall: wall,
+            uiIdle: isNominallyIdle(),
+            windows: NSApp.windows.count,
+            trackingAreas: Self.trackingAreaCount(),
+            now: now
+        )
+        let verdict = policy.observe(sample)
+        let percent = String(format: "%.1f", sample.usage * 100)
+        if policy.didOverridePause {
+            LoggingService.shared.logWarning(
+                "StormWatchdog: pause override — hot for \(policy.pausedHotSamples) samples with UI reported open (stranded window?); treating as idle burn")
+        }
 
-        guard usage >= Self.burnThreshold else {
-            consecutiveHotSamples = 0
-            pausedHotSamples = 0
-            consecutiveCleanSamples += 1
-            if consecutiveCleanSamples >= 3,
-               episodeStartedAt != nil || didRemediateThisEpisode || didNotifyThisEpisode {
-                episodeStartedAt = nil
-                didRemediateThisEpisode = false
-                didNotifyThisEpisode = false
+        switch verdict {
+        case .clean(let ended):
+            if ended {
                 manualStage = 0
                 LoggingService.shared.log(
                     "StormWatchdog: storm episode ended (3 clean samples) — remediation and notification re-armed"
-                        + (suppressedBurn > 0 ? "; \(Int(suppressedBurn / 60)) min suppressed burn carries toward the cumulative override" : ""))
+                        + (policy.suppressedBurn > 0 ? "; \(Int(policy.suppressedBurn / 60)) min suppressed burn carries toward the cumulative override" : ""))
             }
-            return
-        }
-        consecutiveCleanSamples = 0
-
-        if !isNominallyIdle() {
-            pausedHotSamples += 1
-            if pausedHotSamples < Self.maxPausedHotSamples {
-                // Hot but the user has UI open: PAUSE rather than reset (Codex
-                // consult) — brief foreground activity must not erase the hot
-                // history of a storm that keeps burning underneath it.
-                LoggingService.shared.log(
-                    "StormWatchdog: hot sample (\(Int(usage * 100))%) while UI open — pausing (\(pausedHotSamples)/\(Self.maxPausedHotSamples) before override; hot streak \(consecutiveHotSamples)/\(Self.hotSamplesBeforeAlarm))")
-                return
-            }
-            // A window has been "open" through 30 minutes of continuous burn —
-            // that is the stranded-window failure mode, not a user session.
-            LoggingService.shared.logWarning(
-                "StormWatchdog: pause override — hot for \(pausedHotSamples) samples with UI reported open (stranded window?); treating as idle burn")
-        } else {
-            pausedHotSamples = 0
-        }
-
-        if !didNotifyThisEpisode {
-            // Clamp per-sample banking to 2× the nominal interval: a timer
-            // suspension (ep5's 37-min clamshell sleep bridged one sample
-            // across a 42-min wall gap) must not fill the 20-min bank from a
-            // single tick — the bank means "minutes of observed hot samples",
-            // not "wall time spanned by them".
-            suppressedBurn += min(wall, 2 * Self.interval)
-        }
-        consecutiveHotSamples += 1
-        LoggingService.shared.logWarning(
-            "StormWatchdog: idle CPU \(Int(usage * 100))% of a core over \(Int(wall))s (\(consecutiveHotSamples)/\(Self.hotSamplesBeforeAlarm)); windows=\(NSApp.windows.count) [\(Self.windowCensus())]"
-        )
-        guard consecutiveHotSamples >= Self.hotSamplesBeforeAlarm else { return }
-
-        if episodeStartedAt == nil {
-            episodeStartedAt = now.addingTimeInterval(-TimeInterval(Self.hotSamplesBeforeAlarm) * Self.interval)
-            LoggingService.shared.logWarning("StormWatchdog: storm episode opened")
-        }
-
-        // One cheap self-heal attempt per episode (render-cache repaint), with
-        // a single sample interval to prove itself before alarming. The old
-        // ladder required 3 fresh hot samples per rung and included the
-        // falsified tile-visibility cycle — a live storm once took 4.8 hours
-        // to walk from stage 0 to stage 1, all of it silent.
-        if !didRemediateThisEpisode {
-            didRemediateThisEpisode = true
-            LoggingService.shared.logWarning("StormWatchdog: attempting remediation (render-cache repaint)")
+        case .pausedHot(let paused):
+            LoggingService.shared.log(
+                "StormWatchdog: hot sample (\(percent)%) while UI open — pausing (\(paused)/\(policy.maxPausedHotSamples) before override; hot streak \(policy.consecutiveHotSamples)/\(policy.hotSamplesBeforeAlarm))")
+        case .hot(let streak):
+            logHot(sample, percent: percent, streak: streak)
+        case .remediate:
+            logHot(sample, percent: percent, streak: policy.hotSamplesBeforeAlarm)
+            LoggingService.shared.logWarning("StormWatchdog: episode opened — attempting the one in-place remediation (render-cache repaint) before alarming")
             remediate(0)
-            consecutiveHotSamples = Self.hotSamplesBeforeAlarm - 1
-            return
+        case .gated(let reason):
+            logHot(sample, percent: percent, streak: policy.hotSamplesBeforeAlarm)
+            LoggingService.shared.log("StormWatchdog: alarm gated — \(reason)")
+        case .notify(let notice):
+            logHot(sample, percent: percent, streak: policy.hotSamplesBeforeAlarm)
+            post(notice)
         }
-
-        notifyIfDue(now: now)
     }
 
-    private func notifyIfDue(now: Date) {
-        // Hybrid gate (2026-08-07 policy analysis, simulated tick-by-tick
-        // against the real 22h episode ledger):
-        //  - FIRST notification of a NEW episode: 45-min global floor since
-        //    ANY notification, overridden by ≥20 min cumulative suppressed
-        //    burn. The previous GLOBAL 6h floor here — added because a
-        //    floor-free bypass could flap every ~14 min under threshold
-        //    hover — compressed 8 hot-burn runs/22h into 3 notifications and
-        //    let ep7 burn 8-11% for 2h52m silently. This gate on the same
-        //    day: 7 notifications, 6-min worst first-alert latency, ~20-min
-        //    bound on suppressed burn for episodes that reach this gate,
-        //    ~2.2/h true pathological ceiling (26-min min post spacing, each
-        //    post backed by 20 min of banked burn; same-identifier
-        //    replacement keeps at most one banner pending).
-        //  - Re-post within an already-notified episode: unchanged 6h
-        //    backoff — a recurrence there is "same storm, already reported";
-        //    the cure (quit + ~2-min gap + relaunch) hasn't happened.
-        let sinceLast = now.timeIntervalSince(lastNotifiedAt)
-        let gate: String
-        if didNotifyThisEpisode {
-            guard sinceLast >= Self.renotifyInterval else { return }
-            gate = "6h intra-episode re-post backoff elapsed"
-        } else if sinceLast >= Self.firstNotifyFloor {
-            gate = "first-of-episode, 45-min floor clear"
-        } else if suppressedBurn >= Self.cumulativeOverrideBurn {
-            gate = "first-of-episode, cumulative override (\(Int(suppressedBurn / 60)) min suppressed burn)"
-        } else {
-            return
-        }
-        let isFirstForEpisode = !didNotifyThisEpisode
-        didNotifyThisEpisode = true
-        lastNotifiedAt = now
-        suppressedBurn = 0
-        let burningHours = episodeStartedAt.map { now.timeIntervalSince($0) / 3600 } ?? 0
+    private func logHot(_ sample: StormWatchdogPolicy.Sample, percent: String, streak: Int) {
+        LoggingService.shared.logWarning(
+            "StormWatchdog: idle CPU \(percent)% of a core over \(Int(sample.wall))s (\(streak)/\(policy.hotSamplesBeforeAlarm); threshold \(String(format: "%.1f", policy.burnThreshold * 100))%); windows=\(sample.windows) trackingAreas=\(sample.trackingAreas) [\(Self.windowCensus())]"
+        )
+    }
+
+    private func post(_ notice: StormWatchdogPolicy.Notice) {
+        let s = notice.signature
         LoggingService.shared.logError(
-            "StormWatchdog: SUSTAINED idle burn ≥\(Self.burnThreshold * 100)% (storm ~\(String(format: "%.1f", burningHours))h old; \(gate)) — likely tracking-area/WindowServer storm; in-place remediation failed. The only known cure: quit, wait ~2 minutes off the bar, relaunch."
+            "StormWatchdog: SUSTAINED idle burn — \(String(format: "%.1f", notice.measuredUsage * 100))% of a core over \(Int(notice.measuredOver / 60)) min (threshold \(String(format: "%.1f", policy.burnThreshold * 100))%, measured baseline \(String(format: "%.1f", StormWatchdogPolicy.measuredIdleBaseline * 100))%; episode ~\(String(format: "%.1f", notice.episodeAge / 3600))h old; \(notice.gate)) — storm signature \(s.detected ? "DETECTED" : "absent") (windows \(s.windowsAtOpen)→\(s.windowsNow), tracking areas \(s.trackingAreasAtOpen)→\(s.trackingAreasNow)); in-place remediation did not clear it"
         )
-        let content = UNMutableNotificationContent()
-        content.title = "Claude Usage: high idle CPU"
-        content.body = isFirstForEpisode
-            ? "The widget has sustained background CPU burn and self-healing did not clear it. Quit it, wait ~2 minutes, then relaunch — an immediate relaunch re-inherits the OS-side wedge. Logs were captured for diagnosis."
-            : "Still burning after ~\(Int(burningHours.rounded())) hours. Quit the widget, wait ~2 minutes, then relaunch — an immediate relaunch re-inherits the OS-side wedge."
-        let request = UNNotificationRequest(
-            identifier: "storm-watchdog",
-            content: content,
-            trigger: nil
+        NotificationManager.shared.sendStormWatchdogNotification(
+            body: StormWatchdogPolicy.alarmBody(for: notice, threshold: policy.burnThreshold)
         )
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error {
-                DispatchQueue.main.async {
-                    LoggingService.shared.logError(
-                        "StormWatchdog: notification delivery failed (\(error.localizedDescription)) — storm alarm is log-only")
-                }
-            }
-        }
     }
 
     /// Compact per-class window census for the hot-sample log line, e.g.
@@ -320,6 +413,15 @@ final class StormWatchdog {
         return counts.sorted { $0.key < $1.key }
             .map { "\($0.key)×\($0.value)" }
             .joined(separator: ", ")
+    }
+
+    /// Tracking areas across every window's view tree — the other half of the
+    /// storm signature (the 2026-07-29 loop churned them).
+    private static func trackingAreaCount() -> Int {
+        func count(_ view: NSView) -> Int {
+            view.trackingAreas.count + view.subviews.reduce(0) { $0 + count($1) }
+        }
+        return NSApp.windows.reduce(0) { $0 + ($1.contentView.map(count) ?? 0) }
     }
 
     /// Total user+system CPU seconds consumed by this process.
