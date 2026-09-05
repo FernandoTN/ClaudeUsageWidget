@@ -18,6 +18,7 @@
 import XCTest
 @testable import Claude_Usage
 
+@MainActor
 final class CodexDaemonTests: XCTestCase {
 
     private let home = URL(fileURLWithPath: "/Users/tester/.codex", isDirectory: true)
