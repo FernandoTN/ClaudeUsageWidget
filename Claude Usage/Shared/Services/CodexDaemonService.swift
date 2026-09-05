@@ -35,7 +35,7 @@ import Foundation
 // MARK: - Process records
 
 /// One row of `ps -axo pid=,ppid=,command=`.
-struct ProcessRecord: Equatable {
+nonisolated struct ProcessRecord: Equatable {
     var pid: Int32
     var ppid: Int32
     /// The command as `ps` prints it: the executable path, then the arguments.
@@ -56,7 +56,7 @@ struct ProcessRecord: Equatable {
 
 // MARK: - The daemon
 
-enum CodexDaemon {
+nonisolated enum CodexDaemon {
     /// Where the standalone build lives, relative to the Codex home. The match
     /// is anchored here so nothing outside the standalone package can qualify.
     nonisolated static let standalonePackagesComponent = "packages/standalone/"
@@ -120,7 +120,7 @@ enum CodexDaemon {
 
 // MARK: - Which account the terminals are on
 
-enum CodexTerminals {
+nonisolated enum CodexTerminals {
     /// The `session_meta.payload.originator` of a daemon-hosted (TUI) session.
     /// `codex_exec` rollouts are written by the in-process run and say nothing
     /// about terminals.
@@ -150,12 +150,12 @@ enum CodexTerminals {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
-    private nonisolated static let isoWithFraction: ISO8601DateFormatter = {
+    private nonisolated(unsafe) static let isoWithFraction: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
-    private nonisolated static let isoPlain = ISO8601DateFormatter()
+    private nonisolated(unsafe) static let isoPlain = ISO8601DateFormatter()
 
     nonisolated static func originator(ofSessionMetaLine line: String) -> String? {
         guard let object = json(line), object["type"] as? String == "session_meta",
@@ -186,7 +186,7 @@ enum CodexTerminals {
     /// The UNIQUE Codex profile whose cached reset equals the stamp to the
     /// minute (the usage API jitters ±1 s across fetches). Claude and Grok
     /// profiles never match; two Codex matches are ambiguous and resolve to nil.
-    nonisolated static func profile(matching evidence: Evidence, in profiles: [Profile]) -> Profile? {
+    @MainActor static func profile(matching evidence: Evidence, in profiles: [Profile]) -> Profile? {
         let weekly = (evidence.windowMinutes ?? 10080) >= 6 * 24 * 60
         let target = minute(evidence.resetsAt)
         let matches = profiles.filter { profile in
@@ -196,12 +196,12 @@ enum CodexTerminals {
         return matches.count == 1 ? matches[0] : nil
     }
 
-    nonisolated static func line(from evidence: Evidence?, profiles: [Profile]) -> Line? {
+    @MainActor static func line(from evidence: Evidence?, profiles: [Profile]) -> Line? {
         guard let evidence else { return nil }
         return Line(profileName: profile(matching: evidence, in: profiles)?.name, since: evidence.sessionStartedAt)
     }
 
-    nonisolated static let clock: DateFormatter = {
+    @MainActor static let clock: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .none
         f.timeStyle = .short
@@ -210,7 +210,7 @@ enum CodexTerminals {
 
     /// "Terminals: Cedar since 17:31" / "Terminals: unknown account since
     /// 17:31" / "Terminals: unknown".
-    nonisolated static func format(_ line: Line?, clock: DateFormatter = clock) -> String {
+    @MainActor static func format(_ line: Line?, clock: DateFormatter = clock) -> String {
         guard let line else { return "codex_daemon.terminals_unknown".localized }
         let who = line.profileName ?? "codex_daemon.terminals_unknown_account".localized
         return "codex_daemon.terminals_line".localized(with: who, clock.string(from: line.since))
