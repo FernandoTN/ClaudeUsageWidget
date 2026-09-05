@@ -14,15 +14,23 @@ class NotificationManager {
     // moving is what re-arms their alerts (see checkWeeklyRollover).
     private var previousWeeklyBoundaries: [String: Date] = [:]
 
-    // Track which notifications have been sent to prevent duplicates
-    // Persisted to UserDefaults to survive app restarts
+    /// Where the dedupe ledger lives. Under XCTest the isolated suite
+    /// `ProfileStore` uses, so a fixture night never leaves
+    /// "Atlas_session_info_75" in the user's real ledger.
+    private static let ledgerDefaults: UserDefaults =
+        isRunningUnderXCTest ? (UserDefaults(suiteName: "com.claudeusagewidget.tests") ?? .standard) : .standard
+
+    // Track which notifications have been sent to prevent duplicates.
+    // Persisted to UserDefaults to survive app restarts. Key shape:
+    // "<profile>_<AlertType.rawValue>_<threshold>" — "Atlas_session_info_75",
+    // "Atlas_session_reset_0", "Cedar_weekly_critical_95" — one entry per
+    // (profile, type, threshold) per window; `checkSessionReset` clears a
+    // profile's entries when its session window comes back, and
+    // `checkWeeklyRollover` clears its weekly entries when the weekly boundary
+    // moves.
     private var sentNotifications: Set<String> {
-        get {
-            Set(UserDefaults.standard.array(forKey: "sentNotifications") as? [String] ?? [])
-        }
-        set {
-            UserDefaults.standard.set(Array(newValue), forKey: "sentNotifications")
-        }
+        get { Set(Self.ledgerDefaults.array(forKey: "sentNotifications") as? [String] ?? []) }
+        set { Self.ledgerDefaults.set(Array(newValue), forKey: "sentNotifications") }
     }
 
     private init() {}
@@ -34,10 +42,71 @@ class NotificationManager {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         || NSClassFromString("XCTestCase") != nil
 
-    /// The single seam every notification goes through.
-    private func deliver(_ request: UNNotificationRequest, _ completion: @escaping (Error?) -> Void) {
+    /// What one send looked like — the log line's fields, kept for the audit
+    /// tests and for anything that later wants to show "what did the widget
+    /// tell me tonight".
+    struct Delivery: Equatable {
+        let category: String
+        /// The request identifier, which is also the dedupe key.
+        let identifier: String
+        let title: String
+        let profile: String?
+        let at: Date
+    }
+
+    /// The last `recentDeliveryLimit` sends, oldest first.
+    private(set) var recentDeliveries: [Delivery] = []
+    private static let recentDeliveryLimit = 64
+
+    /// The single seam every notification goes through. One log line per
+    /// send — category, dedupe key (the request identifier), title, profile
+    /// when the sender knows it — so a post in Notification Center can always
+    /// be matched to a log line (35 of the 48 posts on the night of
+    /// 2026-09-04 could not be). Never a token or a body: the title is a fixed
+    /// string plus a profile name.
+    private func deliver(_ request: UNNotificationRequest, profile: String? = nil, _ completion: @escaping (Error?) -> Void) {
+        let delivery = Delivery(
+            category: request.content.categoryIdentifier, identifier: request.identifier,
+            title: request.content.title, profile: profile, at: Date()
+        )
+        recentDeliveries.append(delivery)
+        if recentDeliveries.count > Self.recentDeliveryLimit {
+            recentDeliveries.removeFirst(recentDeliveries.count - Self.recentDeliveryLimit)
+        }
+        LoggingService.shared.log(
+            "Notification: \(delivery.category) id=\(delivery.identifier) title=\"\(delivery.title)\""
+                + (profile.map { " profile=\($0)" } ?? "")
+                + (Self.isRunningUnderXCTest ? " (XCTest host, not posted)" : "")
+        )
         if Self.isRunningUnderXCTest { completion(nil); return }
         UNUserNotificationCenter.current().add(request, withCompletionHandler: completion)
+    }
+
+    /// One-per-window notices (inferred throttle, projected exhaustion): the
+    /// session boundary each identifier was last sent for. Their callers
+    /// re-arm on every successful fetch, so a flapping endpoint (429 ×3, 200,
+    /// 429 ×3 — the 2026-08-11 shape) could re-post them inside one window;
+    /// a window is now told once.
+    private var windowNoticeBoundaries: [String: Date] = [:]
+
+    /// True when `identifier` has not been sent for the window ending at
+    /// `boundary` (same ±2 min jitter tolerance as `windowRolledOver`), and
+    /// records the send. A nil boundary — no window known — always sends.
+    private func claimWindowNotice(identifier: String, boundary: Date?) -> Bool {
+        guard let boundary else { return true }
+        if let previous = windowNoticeBoundaries[identifier],
+           !Self.windowRolledOver(previousBoundary: previous, current: boundary) {
+            LoggingService.shared.log("Notification: suppressed id=\(identifier) — already sent for the window ending \(boundary)")
+            return false
+        }
+        windowNoticeBoundaries[identifier] = boundary
+        return true
+    }
+
+    /// Test seam: forget the recent sends and the per-window notices.
+    func resetDeliveryRecordsForTesting() {
+        recentDeliveries.removeAll()
+        windowNoticeBoundaries.removeAll()
     }
 
     /// Sends a notification when approaching usage limits (legacy method)
@@ -307,7 +376,7 @@ class NotificationManager {
             trigger: nil // Show immediately
         )
 
-        deliver(request) { [weak self] error in
+        deliver(request, profile: profileName) { [weak self] error in
             if error == nil {
                 // Play custom system sound after notification is delivered
                 if let name = customSoundName {
@@ -343,7 +412,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: toProfile) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send auto-switch notification: \(error)")
             }
@@ -354,7 +423,11 @@ class NotificationManager {
     /// (inferred account-level throttle). The app deliberately does NOT
     /// auto-switch on inferred evidence — switching invalidates every
     /// concurrent CLI session's prompt cache — so the user decides.
-    func sendInferredThrottleNotification(profileName: String) {
+    /// Once per (profile, session window): the caller's per-episode guard
+    /// re-arms on every 200, and the endpoint flaps.
+    func sendInferredThrottleNotification(profileName: String, sessionResetTime: Date? = nil) {
+        let identifier = "inferred_throttle_\(profileName)"
+        guard claimWindowNotice(identifier: identifier, boundary: sessionResetTime) else { return }
         let content = UNMutableNotificationContent()
         content.title = "notification.inferred_throttle.title".localized
         content.body = "notification.inferred_throttle.message".localized(with: profileName)
@@ -362,12 +435,12 @@ class NotificationManager {
         content.categoryIdentifier = "INFO_ALERT"
 
         let request = UNNotificationRequest(
-            identifier: "inferred_throttle_\(profileName)",
+            identifier: identifier,
             content: content,
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send inferred-throttle notification: \(error)")
             }
@@ -379,7 +452,10 @@ class NotificationManager {
     /// trigger itself stays measured-only (a projection must never spend the
     /// fleet-wide prompt-cache cost of a switch), so the user gets the signal
     /// and makes the call.
-    func sendProjectedExhaustionNotification(profileName: String, projectedPercentage: Double) {
+    /// Once per (profile, session window), like the inferred-throttle notice.
+    func sendProjectedExhaustionNotification(profileName: String, projectedPercentage: Double, sessionResetTime: Date? = nil) {
+        let identifier = "projected_exhaustion_\(profileName)"
+        guard claimWindowNotice(identifier: identifier, boundary: sessionResetTime) else { return }
         let content = UNMutableNotificationContent()
         content.title = "notification.projected_exhaustion.title".localized
         content.body = "notification.projected_exhaustion.message".localized(
@@ -389,12 +465,12 @@ class NotificationManager {
         content.categoryIdentifier = "INFO_ALERT"
 
         let request = UNNotificationRequest(
-            identifier: "projected_exhaustion_\(profileName)",
+            identifier: identifier,
             content: content,
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send projected-exhaustion notification: \(error)")
             }
@@ -416,7 +492,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Claude re-login notification: \(error)")
             }
@@ -448,7 +524,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Codex re-login notification: \(error)")
             }
@@ -487,7 +563,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send focus-without-login notification: \(error)")
             }
@@ -510,7 +586,7 @@ class NotificationManager {
             content: content,
             trigger: nil
         )
-        deliver(request) { error in
+        deliver(request, profile: ownerName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send owner-changed-externally notification: \(error)")
             }
@@ -541,7 +617,7 @@ class NotificationManager {
             content: content,
             trigger: nil
         )
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send credential-write-failed notification: \(error)")
             }
@@ -584,7 +660,7 @@ class NotificationManager {
             content: content,
             trigger: nil
         )
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Codex-daemon-holds notification: \(error)")
             }
@@ -605,7 +681,7 @@ class NotificationManager {
             content: content,
             trigger: nil
         )
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Codex-daemon-restarted notification: \(error)")
             }
@@ -627,7 +703,7 @@ class NotificationManager {
             trigger: nil
         )
 
-        deliver(request) { error in
+        deliver(request, profile: profileName) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send Grok re-login notification: \(error)")
             }
@@ -683,6 +759,28 @@ class NotificationManager {
         deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send preferences-degraded notification: \(error)")
+            }
+        }
+    }
+
+    /// The StormWatchdog's sustained-idle-burn alarm. Fixed identifier: a
+    /// re-post replaces the pending banner rather than stacking. Routed
+    /// through `deliver` like everything else so it is logged and the XCTest
+    /// host stays silent.
+    func sendStormWatchdogNotification(body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Claude Usage: high idle CPU"
+        content.body = body
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "storm-watchdog",
+            content: content,
+            trigger: nil
+        )
+        deliver(request) { error in
+            if let error {
+                LoggingService.shared.logError("StormWatchdog: notification delivery failed (\(error.localizedDescription)) — storm alarm is log-only")
             }
         }
     }

@@ -38,6 +38,18 @@ If the main thread is in `SecItemCopyMatching`, a `security` subprocess, or any 
 call, the UI is frozen. The app logs via `os.log`; read it with
 `log show --predicate 'process == "Claude Usage"' --info --last 10m`.
 
+**Idle CPU.** The legitimate steady state is ~1.5 % of a core (measured 2026-09-05 on
+pid 91164: a 30 s sweep of ~8 network fetches, the telemetry slices and a repaint). Two
+regressions that pushed it to 10 %: the rollout scan reading 55 MB per sweep (#160) and
+`ProfileStore.loadProfiles()` decoding the roster 44 times a minute (now served from a
+decoded copy while the stored bytes are unchanged).
+
+**Notifications.** Every user notification goes through `NotificationManager.deliver`,
+which logs `Notification: <category> id=<dedupe key> title=… profile=…` per send and is
+silent under XCTest; the last 64 sends are kept in `recentDeliveries`. Band alerts and
+reset notices dedupe through the persisted `sentNotifications` ledger, one key per
+(profile, type, threshold) per window.
+
 ## Code signing — important
 
 The app is **ad-hoc signed** (`CODE_SIGN_IDENTITY = "-"`). Its code signature changes on
@@ -69,6 +81,10 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
   `cliCredentialsJSON`, so they are never serialized into the `profiles_v3` JSON.
 - `ProfileStore` keeps an in-memory credential cache. `loadProfiles()` reads the cache —
   **never the Keychain on the calling thread**. All Keychain writes go to `keychainQueue`.
+  It also keeps the decoded roster beside the `profiles_v3` bytes it came from: a read
+  whose bytes equal the cached bytes is served without a JSON decode (~22 calls per
+  sweep, 44 decodes a minute before 2026-09-05), and any writer of the key invalidates
+  it by construction. The cfprefsd fallbacks below sit in front of that cache.
 - `saveProfiles` uses **merge semantics**: a nil credential field never deletes anything.
   Profiles loaded before the background cache hydration finished carry nil credentials,
   and saving such a stale copy used to diff nil-vs-cached and enqueue Keychain deletions
