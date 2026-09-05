@@ -1211,11 +1211,11 @@
 "insights.burn_rate" = "+%.1f pp/min";
 "insights.crosses_in" = "crosses the threshold in %@";
 "insights.kind_tripwire" = "a running session hit the limit";
-"insights.kind_tripwire_acted" = "a running session hit the limit (%@, %@)";
+"insights.kind_tripwire_acted" = "a running session hit the %@ (%@, %@)";
 "insights.kind_tripwire_previous" = "429 from the previous owner — ignored, %@ kept the login";
-"insights.kind_tripwire_contradicted" = "session 429 contradicted — live read %d %%, ignored";
-"insights.kind_tripwire_grace" = "session 429 inside the post-switch grace — ignored";
-"insights.kind_tripwire_unmatched" = "session 429 matches no tracked window — ignored";
+"insights.kind_tripwire_contradicted" = "%@ 429 contradicted — live read %d %%, ignored";
+"insights.kind_tripwire_grace" = "%@ 429 inside the post-switch grace — ignored";
+"insights.kind_tripwire_unmatched" = "%@ 429 matches no tracked window — ignored";
 "insights.kind_affirmed" = "429 with Retry-After, %@ left";
 "insights.kind_inferred" = "suspected throttle (inferred)";
 "insights.kind_probe_429" = "header probe refused";

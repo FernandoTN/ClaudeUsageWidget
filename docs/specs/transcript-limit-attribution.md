@@ -1,11 +1,73 @@
 # Transcript rate-limit attribution (auto-switch policy)
 
-Which account a transcript `rate_limit` event belongs to, and when the
-auto-switch may act on it. Branch `fix/transcript-limit-attribution`.
+Which account a transcript `rate_limit` event belongs to, which WINDOW it
+names, and when the auto-switch may act on it. Branches
+`fix/transcript-limit-attribution` (#158) and `fix/transcript-limit-class`
+(window classification, below).
 
-**Status:** merged as main `4352b40` (#158, squash), deployed by the
+**Status:** #158 merged as main `4352b40` (squash), deployed by the
 orchestrating session 2026-09-04 23:25:01 (pid 73406); preview and post-merge
-suites 612 / 0, Release green.
+suites 612 / 0, Release green. Window classification: in review on
+`fix/transcript-limit-class`.
+
+## The window (2026-09-05 15:47, main `8c2eec0`, deployed `fd626cf`, pid 39798)
+
+| Time (PDT) | What happened |
+| --- | --- |
+| 15:47:16–29 | Four transcripts recorded `error: "rate_limit"` with the text **"You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."** — no reset time in the text. The owner, 'Memori', read session 89 %, Fable weekly 97→100 %. |
+| 15:47:26.378 | `transcript says limit, live read says 89% — ignoring event for 'Memori' (attributed by clock)` — corroborated against the SESSION window; the limit was FABLE. |
+| 15:47:31.164 | `AutoSwitch: Switching from 'Memori' to 'dFernando'` — the header reading (Fable 100 % ≥ 99 %) did the right thing five seconds later. |
+| 15:47:31.600 | `could not corroborate … — E3003`, then `'Memori' hit its session limit …, resets unknown (30min stamp)` — still called a session limit, with a 30-minute placeholder reset and clock attribution because no reset stamp could match. |
+
+No false hop, but three defects: a genuine Fable event was dismissed as
+contradicted because the session had headroom; a Fable event stamped as a
+session hit misplaces the account's readiness, dot colour and "capacity
+returns" sort key; and with no reset in the text, reset-stamp attribution
+never applied to Fable events at all.
+
+### Message catalogue → window (`LimitWindow`, `LocalLimitSignalService.classifyWindow`)
+
+Shapes in 21 days of transcripts (2026-09-05) and the CLI 2.1.261 string
+table; the window picks every stamp, percentage and threshold downstream.
+
+| Transcript text | Window | Reset in text | Attribution stamp | Corroborated against | Stamped on the profile |
+| --- | --- | --- | --- | --- | --- |
+| `You've hit your session limit · resets 2:50am (Zone)` | `.session` | yes | `sessionResetTime` | `effectiveSessionPercentage` vs session threshold | `rateLimitedUntil` = reset, `sessionResetTime` |
+| `You've hit your weekly limit · resets Aug 22 at 3pm (Zone)` (dated form, newly parsed) | `.weekly` | yes | `weeklyResetTime` | `weeklyPercentage` vs weekly threshold (headers carry it) | `weeklyPercentage` = 100, `weeklyResetTime` = reset |
+| `You've reached your Fable 5 limit. Run /usage-credits …` | `.fableWeekly` | **no** | window STATE (below) | `fableWeeklyPercentage` vs weekly threshold — own endpoint only; a header rescue carries no Fable window and is `unavailable` | `fableWeeklyPercentage` = 100 |
+| `You've hit your Fable 5 limit · resets Sep 5 at 9pm (Zone)` | `.fableWeekly` | yes | `fableWeeklyResetTime` | as above | as above + `fableWeeklyResetTime` = reset |
+| anything else (`monthly spend limit`, `Sonnet limit`, …) | `.unknown` | — | the session's, as before | the session's, as before | as `.session` |
+
+Rules added on top of the ones below:
+
+- **Attribution by window state.** When the text carries no reset, the owner
+  at event time whose NAMED window already reads at the limit is the one it
+  names — the current owner first (its live read decides), then the previous
+  owners of the 15-minute lookback; nobody at the limit → clock. "At the
+  limit" is the window's auto-switch threshold capped at 95 %
+  (`windowStateFloor`: the weekly default is 99 %, and a Fable window
+  measured at 97 % a sweep ago is the account a Fable 429 names). Only the
+  named window is evidence: a session at 100 % says nothing about a Fable
+  429, and an account with no Fable window is never picked.
+- **Corroboration in the named window.** A Fable event is confirmed when the
+  live Fable weekly ≥ the weekly threshold and contradicted only when THAT
+  window shows headroom; the log line names it: `transcript says FABLE
+  limit, live read Fable 40% — ignoring …`. An account-level Retry-After
+  confirms a session event only; a header rescue answers session and weekly
+  events, never a Fable one (the probe is skipped — it would spend quota for
+  nothing).
+- **The stamp lands on the named window** (`ClaudeUsage.stampLimitHit`): a
+  Fable hit reads Fable 100 (readiness `.weeklyHit`, "capacity returns" at
+  the Fable reset), never the session. **The 30-minute placeholder is gone**:
+  an event without a reset records `resets unknown`, the session reads 100
+  through its percentage instead of a synthetic `rateLimitedUntil`, and no
+  placeholder ever takes part in stamp matching. The incident ring carries
+  the window (`Incident.window`) and the Insights row says "Fable 429
+  contradicted — live read 40 %, ignored".
+
+Replay of the 15:47 sequence (`testReplayOfTheFableIncidentIsConfirmedNotContradicted`):
+the text classifies as `.fableWeekly` with no reset; window state names the
+owner (Fable 100 %); the live read session 89 % / Fable 100 % CONFIRMS it.
 
 ## The incident (2026-09-04, unified log + profile store + transcripts)
 

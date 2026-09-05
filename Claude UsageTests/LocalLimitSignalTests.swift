@@ -59,6 +59,59 @@ final class LocalLimitSignalTests: XCTestCase {
         ))
     }
 
+    /// The weekly and Fable texts date their reset ("resets Aug 22 at 3pm")
+    /// when it is not today; a date already behind the event is next year's.
+    func testParsesDatedResetText() {
+        let denver = TimeZone(identifier: "America/Denver")!
+        let event = date(20, 29, tz: losAngeles)
+        let reset = LocalLimitSignalService.parseResetTime(
+            from: "You've hit your weekly limit · resets Aug 22 at 3pm (America/Denver)", eventTime: event
+        )
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = denver
+        XCTAssertEqual(reset, cal.date(from: DateComponents(year: 2026, month: 8, day: 22, hour: 15, minute: 0)))
+
+        let rollover = LocalLimitSignalService.parseResetTime(
+            from: "You've hit your Fable 5 limit · resets Jan 2 at 9:30pm (America/Denver)",
+            eventTime: cal.date(from: DateComponents(year: 2026, month: 12, day: 30, hour: 10))!
+        )
+        XCTAssertEqual(rollover, cal.date(from: DateComponents(year: 2027, month: 1, day: 2, hour: 21, minute: 30)))
+    }
+
+    // MARK: - Window classification
+
+    /// The four shapes in 21 days of transcripts (2026-09-05) and the CLI's
+    /// string table; anything else is unknown, never guessed.
+    func testClassifiesTheLimitWindowFromTheMessageText() {
+        typealias Service = LocalLimitSignalService
+        XCTAssertEqual(Service.classifyWindow("You've hit your session limit · resets 2:50am (America/Los_Angeles)"), .session)
+        XCTAssertEqual(Service.classifyWindow("You've hit your weekly limit · resets Aug 22 at 3pm (America/Denver)"), .weekly)
+        XCTAssertEqual(Service.classifyWindow("you have reached your weekly usage limit"), .weekly)
+        XCTAssertEqual(Service.classifyWindow("You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."), .fableWeekly)
+        XCTAssertEqual(Service.classifyWindow("You've hit your FABLE 5 limit · resets Sep 5 at 9pm (America/Los_Angeles)"), .fableWeekly,
+                       "any casing, with or without a model version")
+        XCTAssertEqual(Service.classifyWindow("You've hit your monthly spend limit."), .unknown)
+        XCTAssertEqual(Service.classifyWindow("You've hit your Sonnet limit"), .unknown,
+                       "a named model the widget tracks no window for is not invented into one")
+        XCTAssertEqual(Service.classifyWindow(""), .unknown)
+    }
+
+    /// A Fable death event comes off disk as a Fable event with NO reset —
+    /// nothing is invented in the text's place.
+    func testScanCarriesTheWindowAndNoInventedReset() throws {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let at = iso.string(from: Date().addingTimeInterval(-60))
+        let line = #"{"type":"assistant","error":"rate_limit","apiErrorStatus":429,"timestamp":"\#(at)","message":{"content":[{"type":"text","text":"You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model."}]}}"#
+        let root = try Self.makeTranscriptTree(files: ["proj/session.jsonl": line])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let events = LocalLimitSignalService.scanRateLimitEvents(since: Date().addingTimeInterval(-300), root: root.path)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.window, .fableWeekly)
+        XCTAssertNil(events.first?.resetsAt)
+    }
+
     // MARK: - Transcript scanning
 
     func testScanFindsRateLimitEventInTailAndIgnoresOldOnes() throws {
