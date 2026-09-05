@@ -50,9 +50,10 @@ struct StormWatchdogPolicy {
     static let defaultBurnThreshold = 0.045
     /// The idle average the threshold was derived from (fraction of a core):
     /// 1.5% — 0.9 s of CPU per 60 s wall, measured 2026-09-05 10:22 on the
-    /// deployed #160 build (pid 91164, 23 profiles, 30 s sweep, no
-    /// interactive Codex daemon running). Named in the log line so the reader
-    /// sees what "high" is relative to.
+    /// deployed #160 build (pid 91164) and again at 10:41 on the deployed
+    /// #161 build (pid 61652); 23 profiles, 30 s sweep, no interactive Codex
+    /// daemon running. Named in the log line so the reader sees what "high"
+    /// is relative to.
     static let measuredIdleBaseline = 0.015
 
     var burnThreshold = defaultBurnThreshold
