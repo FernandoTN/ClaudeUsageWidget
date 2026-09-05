@@ -10,7 +10,8 @@ first sweep after the deploy resolved `CodexDaemon: Terminals: <profile> since
 9:48 AM` from the newest `codex-tui` rollout. **2026-09-05:** the rollout scan
 was found reading 55 MB per sweep (10.4 % of a core, measured 09:50 on pid
 73406) and was bounded to head + tail reads with a per-file cache and a 120 s
-cadence (`fix/idle-cpu-audit`, see "Bounded reads" below).
+cadence (#160, merged `a70b5a0`, deployed 10:20:20 as pid 91164: cold scan
+68 KB from 1 file, CPU 1.5 % of a core; see "Bounded reads" below).
 
 ## Verified facts (this Mac, 2026-09-04)
 
