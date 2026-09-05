@@ -2834,7 +2834,8 @@ private func observeCredentialChanges() {
             projectionNotifiedIds.insert(profile.id)
             NotificationManager.shared.sendProjectedExhaustionNotification(
                 profileName: profile.name,
-                projectedPercentage: projected
+                projectedPercentage: projected,
+                sessionResetTime: usage.sessionResetTime
             )
         }
     }
@@ -3379,7 +3380,9 @@ private func observeCredentialChanges() {
         let isActiveAccount = profileManager.isProviderOwner(profile.id)
         guard isActiveAccount, !inferredThrottleNotifiedIds.contains(profile.id) else { return }
         inferredThrottleNotifiedIds.insert(profile.id)
-        NotificationManager.shared.sendInferredThrottleNotification(profileName: profile.name)
+        NotificationManager.shared.sendInferredThrottleNotification(
+            profileName: profile.name, sessionResetTime: profile.claudeUsage?.sessionResetTime
+        )
     }
 
     /// The usage a switch-away decision is allowed to see. An INFERRED

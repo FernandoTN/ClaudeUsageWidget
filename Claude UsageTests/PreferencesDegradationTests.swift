@@ -251,4 +251,51 @@ final class PreferencesDegradationTests: XCTestCase {
         store.saveActiveClaudeProfileId(nil)
         XCTAssertNil(store.loadActiveClaudeProfileId(), "an explicit clear must not be re-filled from the shadow")
     }
+
+    // MARK: - Decoded-roster cache (2026-09-05 idle-CPU audit)
+
+    /// `loadProfiles()` ran 44 decodes a minute of the same 38 KB. Repeated
+    /// reads of unchanged bytes are served from the decoded copy; a usage
+    /// patch refreshes the copy without a decode; bytes written behind the
+    /// store's back miss the cache by construction.
+    func testRepeatedLoadsDecodeOnceUntilTheStoredBytesChange() throws {
+        let seeded = seed(["Alpha", "Bravo"])
+        let before = store.profileDecodeCount
+        XCTAssertEqual(store.loadProfiles().map(\.id), seeded.map(\.id))
+        XCTAssertEqual(store.profileDecodeCount, before + 1, "the first read after a save decodes")
+        _ = store.loadProfiles()
+        _ = store.loadProfiles()
+        XCTAssertEqual(store.profileDecodeCount, before + 1, "the same bytes are not decoded again")
+
+        var usage = ClaudeUsage.empty
+        usage.sessionPercentage = 42
+        store.applyUsagePatches([seeded[0].id: ProfileStore.UsagePatch(claudeUsage: usage, apiUsage: nil)])
+        XCTAssertEqual(store.loadProfiles().first?.claudeUsage?.sessionPercentage, 42, "the patch is visible")
+        XCTAssertEqual(store.profileDecodeCount, before + 1, "the patched array IS the decode of the bytes just written")
+
+        let foreign = try JSONEncoder().encode([Profile(id: UUID(), name: "Charlie")])
+        defaults.set(foreign, forKey: profilesKey)
+        XCTAssertEqual(store.loadProfiles().map(\.name), ["Charlie"], "foreign bytes are decoded, never served stale")
+        XCTAssertEqual(store.profileDecodeCount, before + 2)
+    }
+
+    /// The degradation layers sit in front of the cache: a wedged read still
+    /// serves the shadow (nothing to decode), and the recovered bytes are the
+    /// ones already decoded.
+    func testWedgedReadServesTheShadowWithoutDecodingAndRecoveryHitsTheCache() throws {
+        let seeded = seed(["Alpha", "Bravo"])
+        let persisted = try XCTUnwrap(defaults.data(forKey: profilesKey))
+        _ = store.loadProfiles()
+        let decodes = store.profileDecodeCount
+
+        simulateWedgedRead(of: profilesKey)
+        XCTAssertEqual(store.loadProfiles().map(\.id), seeded.map(\.id), "served from the last-known-good shadow")
+        XCTAssertTrue(store.preferencesDegraded)
+        XCTAssertEqual(store.profileDecodeCount, decodes, "nothing to decode while the key is unreadable")
+
+        defaults.set(persisted, forKey: profilesKey)
+        XCTAssertEqual(store.loadProfiles().map(\.id), seeded.map(\.id))
+        XCTAssertFalse(store.preferencesDegraded, "the read agrees with the shadow again")
+        XCTAssertEqual(store.profileDecodeCount, decodes, "the recovered bytes are the ones already decoded")
+    }
 }

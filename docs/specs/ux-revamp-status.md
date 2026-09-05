@@ -107,7 +107,7 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 
 ## Open items
 
-- **Codex daemon awareness — stage 2 (`feat/codex-daemon-awareness`, #154 **merged** `1bb44f4`, deployed 2026-09-04 18:04 as pid 6120, suites 584 / 0; first live line `CodexDaemon: Terminals: <profile> since 9:48 AM` resolved from the daemon's rollout). 2026-09-05 regression: its rollout scan read the 30 newest rollouts WHOLE every 30 s sweep — 55 MB per sweep, 10.4 % of a core measured 09:50 on pid 73406, 270 `StormWatchdog` strikes overnight — fixed on `fix/idle-cpu-audit` (head + tail reads ≤ 320 KB per file, per-file cache keyed by size + mtime, 120 s scan cadence; spec section "Bounded reads"):**
+- **Codex daemon awareness — stage 2 (`feat/codex-daemon-awareness`, #154 **merged** `1bb44f4`, deployed 2026-09-04 18:04 as pid 6120, suites 584 / 0; first live line `CodexDaemon: Terminals: <profile> since 9:48 AM` resolved from the daemon's rollout). 2026-09-05 regression: its rollout scan read the 30 newest rollouts WHOLE every 30 s sweep — 55 MB per sweep, 10.4 % of a core measured 09:50 on pid 73406, 270 `StormWatchdog` strikes overnight — fixed by #160 (`fix/idle-cpu-audit`, **merged** `a70b5a0`, deployed 10:20:20 as pid 91164: cold scan 68 KB from 1 file, CPU 1.5 % of a core at 2 min uptime; head + tail reads ≤ 320 KB per file, per-file cache keyed by size + mtime, 120 s scan cadence; spec section "Bounded reads"):**
   spec `docs/specs/codex-daemon-awareness.md`. `CodexDaemonService` observes
   every Codex activation through `.providerOwnerClaimed`, matches the daemon
   by PATH (`<codexHome>/packages/standalone/…/codex app-server`, never the
