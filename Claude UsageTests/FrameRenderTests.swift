@@ -103,6 +103,41 @@ final class FrameRenderTests: XCTestCase {
         ))
     }
 
+    /// The roster bands (queue resets, 2026-09-04): one Claude section with
+    /// two next-up rows and four exhausted rows staggered by when the walk
+    /// could take them again — session back in 2h 10m, weekly in 19h, Fable
+    /// in 3d 5h, a PROJECTED weekly boundary ~4d 2h out — plus a dead login
+    /// whose weekly boundary was never reported (sentinel).
+    private func bandsSnapshot() -> DashboardSnapshot {
+        func at(_ hours: Double) -> Date { now.addingTimeInterval(hours * 3600) }
+        var quarry = usage(session: 100, weekly: 40, fable: 35)
+        quarry.sessionResetTime = at(2.17)
+        var willow = usage(weekly: 100, fable: 60)
+        willow.weeklyResetTime = at(19)
+        var fjord = usage(weekly: 45, fable: 100)
+        fjord.fableWeeklyResetTime = at(3 * 24 + 5)
+        var granite = usage(weekly: 100, fable: 70, age: 240)
+        granite.weeklyResetTime = at(4 * 24 + 2)
+        granite.weeklyResetProjected = true
+        var echo = usage(weekly: 100, fable: 91)
+        echo.weeklyResetTime = ClaudeUsage.unknownResetSentinel
+        var harbor = usage(weekly: 55, fable: 30)
+        harbor.weeklyResetTime = at(5 * 24 + 6)
+        let owner = claude("Atlas (dev)", usage(session: 42, weekly: 31, fable: 20))
+        let next = claude("Cedar", usage(weekly: 16, fable: 22))
+        let dead = claude("Echo", echo)
+        let profiles = [owner, next, claude("Harbor", harbor), claude("Quarry", quarry), claude("Willow", willow),
+                        claude("Fjord", fjord), claude("Granite", granite), dead]
+        return DashboardSnapshot.build(DashboardSnapshot.Inputs(
+            profiles: profiles, activeIds: [owner.id], focusedId: owner.id,
+            context: FleetSummaryContext(
+                thresholds: thresholds, isLoginDead: { $0.id == dead.id }, isExcluded: { !$0.isAutoSwitchEnabled },
+                nextCandidates: [.claude: PredictedCandidate(id: next.id, label: "Ced", queued: false, queueHeadBlocked: false)],
+                preflightVerdicts: [next.id: PreflightVerdict(isLive: true, at: now.addingTimeInterval(-300), kind: .probed)],
+                preferencesDegraded: false, isSwitching: false, now: now),
+            queue: [], history: []))
+    }
+
     private func fleet(members: Int, ready: Int, dead: Int, next: NextCandidate?, keyed: Double,
                        stale: Bool = false) -> ProviderSummary {
         let ids = (0..<members).map { _ in UUID() }
@@ -186,6 +221,15 @@ final class FrameRenderTests: XCTestCase {
               surface: "dashboard", state: "degraded", size: NSSize(width: width, height: 600), note: "preferences-degraded banner outranking the rest")
         write(DashboardView(store: DashboardStore(snapshot: snapshot(hidden: [.codex]), clickedProvider: .codex), actions: noActions, height: 600),
               surface: "dashboard", state: "overflow", size: NSSize(width: width, height: 600), note: "Codex hidden by the menu bar (banner), scrolled to Codex")
+        // Roster bands: the collapsed three, then the section expanded.
+        let bands = bandsSnapshot()
+        write(DashboardView(store: DashboardStore(snapshot: bands, clickedProvider: .claude), actions: noActions, height: 600),
+              surface: "dashboard", state: "queue-resets", size: NSSize(width: width, height: 600),
+              note: "roster bands collapsed: next up (Cedar, Harbor) with W countdowns, capacity returns (Quarry, session back in 2h) muted")
+        write(DashboardView(store: DashboardStore(snapshot: bands, clickedProvider: .claude), actions: noActions, height: 900,
+                            rostersExpanded: [.claude]),
+              surface: "dashboard", state: "queue-resets-expanded", size: NSSize(width: width, height: 900),
+              note: "roster expanded: capacity returns by soonest return (session 2h, weekly 19h, F 3d 5h, projected ~4d 2h), not switchable (dead, W reset unknown)")
         // The Insights block in situ, expanded, from the stage-4a fixture
         // (the block's own frames are the UX-revamp harness's).
         var withInsights = snap

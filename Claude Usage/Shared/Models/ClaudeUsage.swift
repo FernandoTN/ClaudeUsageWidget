@@ -141,6 +141,15 @@ struct ClaudeUsage: Codable, Equatable {
     var fableWeeklyPercentage: Double? = nil
     var fableWeeklyResetTime: Date? = nil
 
+    /// True when `weeklyResetTime` / `fableWeeklyResetTime` were NOT reported
+    /// by the API but carried forward from a previous week's boundary by
+    /// `healMissingResetStamps` (or guessed a week out with nothing to carry).
+    /// The dashboard marks such a boundary ("resets in ~2d 1h") and never
+    /// presents it as measured; a fresh parse with a real stamp carries the
+    /// nil default. Optional so previously cached usage JSON still decodes.
+    var weeklyResetProjected: Bool? = nil
+    var fableWeeklyResetProjected: Bool? = nil
+
     // Extra usage data
     var costUsed: Double?
     var costLimit: Double?
@@ -226,6 +235,7 @@ struct ClaudeUsage: Codable, Equatable {
         merged.weeklyTokensUsed = headerUsage.weeklyTokensUsed
         if headerUsage.weeklyResetTime != Self.unknownResetSentinel {
             merged.weeklyResetTime = headerUsage.weeklyResetTime
+            merged.weeklyResetProjected = nil
         }
         // A real measurement supersedes suspicion and any stale projection —
         // same semantics as a successful oauth/usage fetch. A server-affirmed
@@ -267,15 +277,18 @@ struct ClaudeUsage: Codable, Equatable {
             }
         }
         if weeklyResetTime == Self.unknownResetSentinel {
-            if let prev = previous?.weeklyResetTime {
+            if let prev = previous?.weeklyResetTime, prev != Self.unknownResetSentinel {
                 weeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)
             } else {
                 weeklyResetTime = now.addingTimeInterval(7 * 24 * 3600)
             }
+            // Either way the boundary is a projection, not a measurement.
+            weeklyResetProjected = true
         }
         if fableWeeklyPercentage != nil, fableWeeklyResetTime == nil,
            let prev = previous?.fableWeeklyResetTime {
             fableWeeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)
+            fableWeeklyResetProjected = true
         }
     }
 

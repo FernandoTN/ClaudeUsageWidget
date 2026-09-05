@@ -957,6 +957,18 @@
 "accounts.history_in" = "switched in from %@";
 "accounts.history_out" = "switched out to %@";
 "accounts.resets_in" = "resets in %@";
+
+// Dashboard roster bands and weekly countdowns (docs/specs/menubar-redesign-status.md, queue resets)
+"dashboard.reset_unknown" = "reset unknown";
+"dashboard.reset_now" = "resets now";
+"dashboard.reset_window_weekly" = "Weekly window";
+"dashboard.reset_window_fable" = "Fable weekly window";
+"dashboard.reset_help_at" = "%@ resets %@.";
+"dashboard.reset_help_unknown" = "%@: the usage endpoint reported no reset stamp for this account.";
+"dashboard.reset_help_projected" = "Estimated (~): no reset stamp was reported; projected from the previous week's boundary, not measured.";
+"dashboard.band.next_up" = "next up";
+"dashboard.band.capacity_returns" = "capacity returns";
+"dashboard.band.not_switchable" = "not switchable";
 "accounts.roster.profile_one" = "1 profile";
 "accounts.suspected_help" = "Suspected throttle — the usage endpoint refused; this is the last measured or projected value, not a live reading.";
 
