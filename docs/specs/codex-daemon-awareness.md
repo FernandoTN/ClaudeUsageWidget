@@ -4,6 +4,11 @@ Stage 2 of the Codex-switch work (stage 1: `fix/codex-switch-repaint`, PR #153 â
 fleet repaint on pointer change, fail-closed apply, repair grace window). This
 stage makes the widget aware of the one Codex process a switch cannot reach.
 
+**Status:** stage 1 merged as main `9bed05e` (#153, 2026-09-04 17:50); this stage
+merged as `1bb44f4` (#154, 18:04). Both deployed by the orchestrating session; the
+first sweep after the deploy resolved `CodexDaemon: Terminals: <profile> since
+9:48 AM` from the newest `codex-tui` rollout.
+
 ## Verified facts (this Mac, 2026-09-04)
 
 - The Codex standalone build (0.153.3) is installed at
