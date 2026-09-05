@@ -269,6 +269,38 @@ class ProfileStore {
     private var cachedPlistRoot: [String: Any]?
     private static let plistFallbackMinInterval: TimeInterval = 5.0
 
+    // MARK: - Decoded-roster cache
+    //
+    // `loadProfiles()` is called ~22 times per 30 s sweep — every service
+    // re-reads the roster to find one profile by id — and each call decoded the
+    // 38 KB `profiles_v3` JSON: 44 decodes a minute, the second-largest idle
+    // CPU cost after the rollout scan in the 2026-09-05 sample. The decoded
+    // array is kept beside the BYTES it was decoded from, and a read whose bytes
+    // equal the cached bytes (one memcmp) is served from memory. The comparison
+    // is the whole invalidation rule: any writer of the key — `saveProfiles`,
+    // `applyUsagePatches`, the v2 migration's strip, a test poking UserDefaults —
+    // misses the cache by construction, so nothing has to remember to clear it.
+    // The cached array is credential-free like every decode (`Profile.CodingKeys`
+    // excludes the credential fields); `hydrated` fills them per call as before.
+    // The degradation layers above are untouched: a read that comes back absent
+    // never consults this cache and still falls through to the shadow.
+
+    private var decodedProfilesData: Data?
+    private var decodedProfiles: [Profile] = []
+    /// JSON decodes of `profiles_v3` this process has performed. Test seam.
+    private(set) var profileDecodeCount = 0
+
+    /// The roster behind `data`: the cached array when the bytes are the ones
+    /// it was decoded from, else a fresh decode that replaces the cache.
+    private func decodeStoredProfiles(_ data: Data) throws -> [Profile] {
+        if data == decodedProfilesData { return decodedProfiles }
+        let profiles = try JSONDecoder().decode([Profile].self, from: data)
+        profileDecodeCount += 1
+        decodedProfilesData = data
+        decodedProfiles = profiles
+        return profiles
+    }
+
     /// `~/Library/Preferences/<bundle id>.plist` for the running app.
     static func defaultPreferencesPlistURL(bundleIdentifier: String?) -> URL? {
         guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
@@ -304,6 +336,8 @@ class ProfileStore {
         preferencesDegraded = false
         readDegraded = false
         writeDegraded = false
+        decodedProfilesData = nil
+        decodedProfiles = []
         PreferenceWriteJournal.shared.resetForTesting()
     }
 
@@ -443,7 +477,7 @@ class ProfileStore {
     private func knownProfileCount() -> Int {
         if let known = lastKnownGoodProfiles { return known.count }
         if let data = defaults.data(forKey: Keys.profiles),
-           let decoded = try? JSONDecoder().decode([Profile].self, from: data) {
+           let decoded = try? decodeStoredProfiles(data) {
             return decoded.count
         }
         return profilesFromPreferencesPlist()?.count ?? 0
@@ -918,7 +952,7 @@ class ProfileStore {
 
         do {
             // Decode the CURRENT persisted array (not any caller-supplied snapshot).
-            var profiles = try JSONDecoder().decode([Profile].self, from: data)
+            var profiles = try decodeStoredProfiles(data)
             var applied = 0
 
             for (id, patch) in patches {
@@ -938,6 +972,11 @@ class ProfileStore {
                 let encoder = JSONEncoder()
                 let encoded = try encoder.encode(profiles)
                 defaults.set(encoded, forKey: Keys.profiles)
+                // The patched array IS the decode of what was just written
+                // (credential-free, straight from storage), so the next read
+                // is a cache hit instead of a decode.
+                decodedProfilesData = encoded
+                decodedProfiles = profiles
             }
 
             LoggingService.shared.log("ProfileStore: applied \(applied) usage patches")
@@ -1040,11 +1079,13 @@ class ProfileStore {
 
     func loadProfiles() -> [Profile] {
         var decoded: [Profile]?
+        var servedFromDecodeCache = false
 
         if let data = defaults.data(forKey: Keys.profiles) {
             do {
                 // Credential fields are nil here (excluded from Profile.CodingKeys).
-                decoded = try JSONDecoder().decode([Profile].self, from: data)
+                servedFromDecodeCache = data == decodedProfilesData
+                decoded = try decodeStoredProfiles(data)
             } catch {
                 LoggingService.shared.logStorageError("loadProfiles", error: error)
                 decoded = nil
@@ -1054,7 +1095,9 @@ class ProfileStore {
         if let decoded, !decoded.isEmpty {
             clearPreferencesDegraded()
             lastKnownGoodProfiles = decoded
-            return hydrated(decoded, source: "storage")
+            // A cache hit is the same roster the last decode logged; only a
+            // decode is worth a line (44/min before the cache, ~2/min after).
+            return hydrated(decoded, source: servedFromDecodeCache ? nil : "storage")
         }
 
         // Empty or undecodable. Serve the shadow rather than emptying the UI — unless
@@ -1087,12 +1130,15 @@ class ProfileStore {
     }
 
     /// Fills credentials from the in-memory cache (never the Keychain on this thread).
-    private func hydrated(_ profiles: [Profile], source: String) -> [Profile] {
+    /// `source` nil = a decode-cache hit, which is not logged.
+    private func hydrated(_ profiles: [Profile], source: String?) -> [Profile] {
         var copy = profiles
         for i in copy.indices {
             hydrateCredentialsFromCache(for: &copy[i])
         }
-        LoggingService.shared.log("ProfileStore: Loaded \(copy.count) profiles from \(source) (credentials from cache)")
+        if let source {
+            LoggingService.shared.log("ProfileStore: Loaded \(copy.count) profiles from \(source) (credentials from cache)")
+        }
         return copy
     }
 
