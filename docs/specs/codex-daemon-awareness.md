@@ -7,7 +7,10 @@ stage makes the widget aware of the one Codex process a switch cannot reach.
 **Status:** stage 1 merged as main `9bed05e` (#153, 2026-09-04 17:50); this stage
 merged as `1bb44f4` (#154, 18:04). Both deployed by the orchestrating session; the
 first sweep after the deploy resolved `CodexDaemon: Terminals: <profile> since
-9:48 AM` from the newest `codex-tui` rollout.
+9:48 AM` from the newest `codex-tui` rollout. **2026-09-05:** the rollout scan
+was found reading 55 MB per sweep (10.4 % of a core, measured 09:50 on pid
+73406) and was bounded to head + tail reads with a per-file cache and a 120 s
+cadence (`fix/idle-cpu-audit`, see "Bounded reads" below).
 
 ## Verified facts (this Mac, 2026-09-04)
 
@@ -91,7 +94,7 @@ running"), and a manual **Restart Codex daemon** button.
 
 ### Terminals line (deliverable c)
 
-At the end of every refresh sweep, off the main actor,
+At the end of a refresh sweep, off the main actor,
 `CodexTerminals.newestDaemonEvidence(sessionsRoot:)` walks the newest rollout
 files (two newest day directories, newest 30 files by mtime), skips every
 rollout whose originator is not `codex-tui`, and takes the LAST
@@ -101,6 +104,41 @@ with that session's `session_meta` timestamp.
 profile whose cached reset (weekly when `window_minutes` ≥ 6 days, else
 session) equals it to the minute; no match or two matches → "unknown account".
 Nothing is inferred beyond the stamp.
+
+**Bounded reads (2026-09-05 regression fix).** The first release read each of
+the 30 files whole on every 30 s sweep — 55 MB per sweep on this Mac (largest
+rollout 6 MB), which cost the app 10.4 % of a core and tripped the
+`StormWatchdog` 270 times overnight. A rollout is needed for exactly two
+lines, so the scan now reads with seeks and never the middle:
+
+- **Head:** the first 4 KB (`ReadBudget.headInitial`). A first line closed by a
+  newline is parsed as JSON; a line cut short — real ones are ~22 KB because
+  the session's instructions ride in the `session_meta` payload — is searched
+  for the closed `"type"`, `"originator"` and `"timestamp"` fields, which sit
+  in its first few hundred bytes. Only when neither settles it does the read
+  grow to 64 KB (`headMax`).
+- **Tail:** the last 64 KB (`tailInitial`), walked backwards for the last
+  `"rate_limits"` line that parses; if none does, ONE growth reads the 192 KB
+  in front of it (`tailMax` = 256 KB) and the walk repeats. A stamp deeper
+  than that is not chased: the file reads as stampless and the next newest
+  terminal rollout wins. Measured 2026-09-05, the last stamp sat ≤ 14 KB from
+  the end in all 30 newest files.
+- **Cache (`RolloutScanCache`):** per path, the head verdict is learned once
+  (an append-only file's first line never changes), so a `codex_exec` rollout
+  costs its head once and is never opened again however much it grows; the
+  stamp is tied to the (size, mtime) pair it was read at, so an unchanged
+  terminal rollout costs one stat and a grown one costs its tail. Entries for
+  files that leave the newest-30 set are pruned each scan. A head caught
+  mid-creation (no newline, fields not closed) is not cached and is re-read
+  next scan.
+- **Cadence:** `CodexDaemonService.refreshTerminalsState` re-scans the tree at
+  most every 120 s (`rolloutScanInterval`; `force:` scans now) and re-matches
+  the cached evidence against the current profiles on every call, since their
+  cached resets move with every usage fetch. The cold scan logs the bytes it
+  read at default level; later scans log at debug.
+
+Worst case per file is `ReadBudget.perFileMax` = 320 KB; steady state is
+30 stats and a few KB.
 
 Shown as `Terminals: <profile> since HH:MM` (the daemon has served that
 account at least since that session began), `Terminals: unknown account since
@@ -115,8 +153,9 @@ profiles.
   after a fresh scan.
 - Auto-restart is opt-in (default OFF) and only fires with zero attached
   sessions; the notification action is the user's explicit click.
-- Rollout reads are read-only, off the main actor, bounded (30 files), and
-  never parse anything but the two line shapes above.
+- Rollout reads are read-only, off the main actor, bounded (30 files, ≤ 320 KB
+  per file — head and tail only, never the whole file), and never parse
+  anything but the two line shapes above.
 - No file watcher on `auth.json`; the daemon is never started by the widget.
 
 ## Tests (`CodexDaemonTests`)
@@ -128,7 +167,13 @@ path, a standalone `codex exec`, and another home; attached-session counting
 Codex-only, ambiguity → nil); rollout line parsing (originator, session start,
 stamp); line formatting; the setting's OFF default; an end-to-end scan of a
 temporary sessions tree that skips a newer `codex_exec` rollout and reads the
-last stamp of the newest `codex-tui` one.
+last stamp of the newest `codex-tui` one. Bounded reads: a > 1 MB fixture
+rollout is resolved from ≤ 68 KB (one head chunk + one tail chunk), an
+unchanged file costs zero bytes on the next scan, an appended stamp re-reads
+only the tail; a stamp beyond 64 KB from the end grows the tail once within
+the 320 KB budget and one beyond 256 KB is not chased; a ~30 KB first line is
+settled from the 4 KB head chunk and a `codex_exec` rollout is never reopened
+after its head verdict.
 
 ## Follow-ups
 
