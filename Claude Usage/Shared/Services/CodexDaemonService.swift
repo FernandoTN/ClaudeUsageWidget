@@ -172,13 +172,13 @@ nonisolated enum CodexTerminals {
 
     /// `payload.rate_limits.primary.resets_at` (+ `window_minutes`) of a
     /// `token_count` line, or nil for any other line.
-    nonisolated static func rateLimitStamp(inLine line: String) -> (resetsAt: Date, windowMinutes: Int?)? {
+    nonisolated static func rateLimitStamp(inLine line: String) -> RateLimitStamp? {
         guard line.contains("\"rate_limits\""), let object = json(line),
               let payload = object["payload"] as? [String: Any],
               let limits = payload["rate_limits"] as? [String: Any],
               let primary = limits["primary"] as? [String: Any],
               let resets = primary["resets_at"] as? Double else { return nil }
-        return (Date(timeIntervalSince1970: resets), primary["window_minutes"] as? Int)
+        return RateLimitStamp(resetsAt: Date(timeIntervalSince1970: resets), windowMinutes: primary["window_minutes"] as? Int)
     }
 
     private nonisolated static func minute(_ date: Date) -> Int { Int((date.timeIntervalSince1970 / 60).rounded(.down)) }
@@ -218,32 +218,79 @@ nonisolated enum CodexTerminals {
 
     // MARK: Rollout scan (file I/O — call off the main actor)
 
+    /// One rollout as the day directory lists it. Size and modification date
+    /// are the identity the per-file cache keys on: an append-only file that
+    /// reports the same pair has nothing new to read.
+    struct RolloutFile: Equatable {
+        var url: URL
+        var size: Int
+        var modified: Date
+    }
+
+    /// `rate_limits.primary` of one `token_count` line.
+    struct RateLimitStamp: Equatable {
+        var resetsAt: Date
+        var windowMinutes: Int?
+    }
+
+    /// What one rollout's head says: its originator and session start.
+    /// `complete` is true when the first line was read to its newline, or the
+    /// fields were found closed inside the chunk — only then is the verdict
+    /// cached, so a file caught mid-creation is re-read on the next scan
+    /// instead of being filed as "not a terminal" forever.
+    struct HeadInfo: Equatable {
+        var originator: String?
+        var sessionStart: Date?
+        var complete: Bool
+    }
+
+    /// Byte budget of the bounded read. A rollout is needed for exactly two
+    /// lines — the `session_meta` first line and the LAST `rate_limits` line —
+    /// and the files are megabytes (2026-09-05: the newest 30 totalled 55 MB,
+    /// the largest 6 MB; reading them whole every 30 s sweep cost the app 10%
+    /// of a core), so the head and the tail are read with seeks and the middle
+    /// never is. Measured on those 30 files: the first line is ~22 KB (the
+    /// session's instructions ride in it) with the originator in its first few
+    /// hundred bytes, and the last stamp sits ≤ 14 KB from the end. Worst case
+    /// per file is `headMax + tailMax` = 320 KB.
+    nonisolated enum ReadBudget {
+        /// First attempt at the head; grown to `headMax` only when the chunk
+        /// neither ends the line nor closes the fields the scan needs.
+        nonisolated static let headInitial = 4 * 1024
+        nonisolated static let headMax = 64 * 1024
+        /// The tail; grown ONCE to `tailMax` when no stamp parses in it. The
+        /// growth reads only the bytes in front of the first chunk.
+        nonisolated static let tailInitial = 64 * 1024
+        nonisolated static let tailMax = 256 * 1024
+        nonisolated static var perFileMax: Int { headMax + tailMax }
+    }
+
     /// The newest daemon-written rollout that carries a rate-limit stamp, read
     /// from `<sessionsRoot>/YYYY/MM/DD/*.jsonl`: the two newest day directories,
     /// the newest `maxFiles` files by modification date, first `codex-tui`
     /// rollout with a stamp wins, and the LAST stamp in it is the one reported.
+    /// Every file costs one stat; an unchanged file costs nothing more, a
+    /// non-terminal file only ever costs its head once, and a terminal file
+    /// that grew costs its tail (`RolloutScanCache`).
     nonisolated static func newestDaemonEvidence(
-        sessionsRoot: URL, fileManager: FileManager = .default, maxFiles: Int = 30
+        sessionsRoot: URL, fileManager: FileManager = .default, maxFiles: Int = 30,
+        cache: RolloutScanCache = .shared
     ) -> Evidence? {
-        for url in recentRolloutFiles(sessionsRoot: sessionsRoot, fileManager: fileManager, limit: maxFiles) {
-            guard let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else { continue }
-            let lines = text.split(whereSeparator: \.isNewline)
-            guard let first = lines.first.map(String.init),
-                  originator(ofSessionMetaLine: first) == daemonOriginator else { continue }
-            for line in lines.reversed() where line.contains("\"rate_limits\"") {
-                if let stamp = rateLimitStamp(inLine: String(line)) {
-                    let started = sessionStart(ofSessionMetaLine: first)
-                        ?? (try? fileManager.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)
-                        ?? Date()
-                    return Evidence(resetsAt: stamp.resetsAt, windowMinutes: stamp.windowMinutes, sessionStartedAt: started)
-                }
-            }
+        let files = recentRolloutFiles(sessionsRoot: sessionsRoot, fileManager: fileManager, limit: maxFiles)
+        cache.beginScan(retaining: Set(files.map(\.url.path)))
+        for file in files {
+            guard let entry = examine(file, cache: cache),
+                  entry.originator == daemonOriginator, let stamp = entry.stamp else { continue }
+            return Evidence(
+                resetsAt: stamp.resetsAt, windowMinutes: stamp.windowMinutes,
+                sessionStartedAt: entry.sessionStart ?? file.modified
+            )
         }
         return nil
     }
 
     /// Newest-first rollout files from the two newest day directories.
-    nonisolated static func recentRolloutFiles(sessionsRoot: URL, fileManager: FileManager, limit: Int) -> [URL] {
+    nonisolated static func recentRolloutFiles(sessionsRoot: URL, fileManager: FileManager, limit: Int) -> [RolloutFile] {
         func subdirectories(_ url: URL) -> [URL] {
             ((try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey])) ?? [])
                 .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
@@ -256,13 +303,191 @@ nonisolated enum CodexTerminals {
                 for day in subdirectories(month) where days.count < 2 { days.append(day) }
             }
         }
-        let files = days.flatMap { day -> [(URL, Date)] in
-            ((try? fileManager.contentsOfDirectory(at: day, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        let files = days.flatMap { day -> [RolloutFile] in
+            ((try? fileManager.contentsOfDirectory(at: day, includingPropertiesForKeys: Array(keys))) ?? [])
                 .filter { $0.pathExtension == "jsonl" }
-                .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
+                .map { url in
+                    let values = try? url.resourceValues(forKeys: keys)
+                    return RolloutFile(
+                        url: url, size: values?.fileSize ?? 0,
+                        modified: values?.contentModificationDate ?? .distantPast
+                    )
+                }
         }
-        return files.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0)
+        return files.sorted { $0.modified > $1.modified }.prefix(limit).map { $0 }
     }
+
+    /// One file through the cache: a known non-terminal costs nothing, an
+    /// unchanged terminal costs nothing, a terminal that grew costs its tail.
+    /// Nil = the file is empty or could not be opened.
+    nonisolated static func examine(_ file: RolloutFile, cache: RolloutScanCache) -> RolloutScanCache.Entry? {
+        let path = file.url.path
+        let cached = cache.entry(for: path)
+        if let cached {
+            if cached.originator != daemonOriginator { return cached }
+            if cached.size == file.size && cached.modified == file.modified { return cached }
+        }
+        guard file.size > 0, let handle = try? FileHandle(forReadingFrom: file.url) else { return nil }
+        defer { try? handle.close() }
+        cache.recordFileOpened()
+
+        let head = cached.map { HeadInfo(originator: $0.originator, sessionStart: $0.sessionStart, complete: true) }
+            ?? readHead(handle, cache: cache)
+        var entry = RolloutScanCache.Entry(
+            originator: head.originator, sessionStart: head.sessionStart,
+            size: file.size, modified: file.modified, stamp: nil
+        )
+        if head.originator == daemonOriginator {
+            entry.stamp = readTailStamp(handle, fileSize: file.size, cache: cache)
+        }
+        if head.complete { cache.store(entry, for: path) }
+        return entry
+    }
+
+    /// The head, from the start of the file: `headInitial` bytes, then the
+    /// rest of `headMax` only if the first chunk settled nothing.
+    nonisolated static func readHead(_ handle: FileHandle, cache: RolloutScanCache) -> HeadInfo {
+        guard (try? handle.seek(toOffset: 0)) != nil,
+              var data = try? handle.read(upToCount: ReadBudget.headInitial) else {
+            return HeadInfo(originator: nil, sessionStart: nil, complete: false)
+        }
+        cache.record(bytesRead: data.count)
+        var info = Self.head(fromBytes: data)
+        if !info.complete, data.count == ReadBudget.headInitial,
+           let more = try? handle.read(upToCount: ReadBudget.headMax - ReadBudget.headInitial) {
+            cache.record(bytesRead: more.count)
+            data.append(more)
+            info = Self.head(fromBytes: data)
+        }
+        return info
+    }
+
+    /// Parses the first line out of the head bytes. A line closed by a newline
+    /// is parsed as JSON; a chunk that cuts the line short is searched for the
+    /// closed `"type"` / `"originator"` / `"timestamp"` fields instead — they
+    /// sit in the line's first few hundred bytes, ahead of the instructions
+    /// text that makes it ~22 KB.
+    nonisolated static func head(fromBytes data: Data) -> HeadInfo {
+        if let newline = data.firstIndex(of: 0x0A) {
+            let line = String(decoding: data[data.startIndex..<newline], as: UTF8.self)
+            return HeadInfo(
+                originator: originator(ofSessionMetaLine: line),
+                sessionStart: sessionStart(ofSessionMetaLine: line),
+                complete: true
+            )
+        }
+        let text = String(decoding: data, as: UTF8.self)
+        guard quotedValue(forKey: "type", in: text) == "session_meta",
+              let originator = quotedValue(forKey: "originator", in: text) else {
+            return HeadInfo(originator: nil, sessionStart: nil, complete: false)
+        }
+        let start = quotedValue(forKey: "timestamp", in: text)
+            .flatMap { isoWithFraction.date(from: $0) ?? isoPlain.date(from: $0) }
+        return HeadInfo(originator: originator, sessionStart: start, complete: true)
+    }
+
+    /// `"key":"value"` → value, for the flat string fields of a cut-short line.
+    private nonisolated static func quotedValue(forKey key: String, in text: String) -> String? {
+        guard let range = text.range(of: "\"\(key)\":\"") else { return nil }
+        let rest = text[range.upperBound...]
+        guard let end = rest.firstIndex(of: "\"") else { return nil }
+        return String(rest[..<end])
+    }
+
+    /// The LAST parsable stamp in the file's tail: `tailInitial` bytes from the
+    /// end, then the bytes in front of them up to `tailMax` if none parsed.
+    nonisolated static func readTailStamp(_ handle: FileHandle, fileSize: Int, cache: RolloutScanCache) -> RateLimitStamp? {
+        var data = Data()
+        var chunkStart = fileSize
+        for target in [ReadBudget.tailInitial, ReadBudget.tailMax] {
+            let newStart = max(0, fileSize - target)
+            if newStart < chunkStart {
+                guard (try? handle.seek(toOffset: UInt64(newStart))) != nil,
+                      let front = try? handle.read(upToCount: chunkStart - newStart) else { return nil }
+                cache.record(bytesRead: front.count)
+                data = front + data
+                chunkStart = newStart
+            }
+            if let stamp = lastStamp(inTailBytes: data, chunkStartsAtFileStart: chunkStart == 0) { return stamp }
+            if chunkStart == 0 { return nil }
+        }
+        return nil
+    }
+
+    /// Walks the `"rate_limits"` lines of a tail chunk backwards and returns the
+    /// first that parses. A line that begins before the chunk is cut short and
+    /// stops the walk — the caller grows the chunk or gives up.
+    nonisolated static func lastStamp(inTailBytes data: Data, chunkStartsAtFileStart: Bool) -> RateLimitStamp? {
+        let needle = Data("\"rate_limits\"".utf8)
+        var searchEnd = data.endIndex
+        while searchEnd > data.startIndex,
+              let hit = data.range(of: needle, options: .backwards, in: data.startIndex..<searchEnd) {
+            let lineStart: Data.Index
+            if let newline = data[data.startIndex..<hit.lowerBound].lastIndex(of: 0x0A) {
+                lineStart = data.index(after: newline)
+            } else if chunkStartsAtFileStart {
+                lineStart = data.startIndex
+            } else {
+                return nil
+            }
+            let lineEnd = data[hit.upperBound...].firstIndex(of: 0x0A) ?? data.endIndex
+            let line = String(decoding: data[lineStart..<lineEnd], as: UTF8.self)
+            if let stamp = rateLimitStamp(inLine: line) { return stamp }
+            searchEnd = lineStart
+        }
+        return nil
+    }
+}
+
+/// Per-file memory of what the bounded read found, so a scan re-reads only
+/// what changed. The head verdict (originator, session start) is learned once
+/// per path — an append-only file's first line never changes — and the stamp
+/// is tied to the (size, modification date) pair it was read at. Entries for
+/// files that drop out of the newest set are pruned at the start of each scan.
+/// Lock-protected: the scan runs on a utility queue, the tests on the main one.
+nonisolated final class RolloutScanCache: @unchecked Sendable {
+    nonisolated static let shared = RolloutScanCache()
+
+    struct Entry: Equatable {
+        var originator: String?
+        var sessionStart: Date?
+        var size: Int
+        var modified: Date
+        var stamp: CodexTerminals.RateLimitStamp?
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var scanBytes = 0
+    private var scanFilesOpened = 0
+    private var scans = 0
+
+    init() {}
+
+    var count: Int { lock.withLock { entries.count } }
+    /// Bytes read from disk by the most recent scan (stats excluded).
+    var lastScanBytesRead: Int { lock.withLock { scanBytes } }
+    /// Files the most recent scan opened.
+    var lastScanFilesOpened: Int { lock.withLock { scanFilesOpened } }
+    var scanCount: Int { lock.withLock { scans } }
+
+    func entry(for path: String) -> Entry? { lock.withLock { entries[path] } }
+
+    func store(_ entry: Entry, for path: String) { lock.withLock { entries[path] = entry } }
+
+    func beginScan(retaining paths: Set<String>) {
+        lock.withLock {
+            entries = entries.filter { paths.contains($0.key) }
+            scanBytes = 0
+            scanFilesOpened = 0
+            scans += 1
+        }
+    }
+
+    func recordFileOpened() { lock.withLock { scanFilesOpened += 1 } }
+
+    func record(bytesRead: Int) { lock.withLock { scanBytes += bytesRead } }
 }
 
 // MARK: - Service
@@ -388,16 +613,44 @@ final class CodexDaemonService {
 
     // MARK: Terminals line
 
+    /// How often the rollout tree is re-scanned. The sweep calls
+    /// `refreshTerminalsState` every ~30 s; a stamp that is two minutes old
+    /// tells the terminals line nothing different, and every scan between
+    /// costs only stats once the cache is warm anyway — but a scan is still
+    /// 30 stats and a directory walk, and the line is informational.
+    static let rolloutScanInterval: TimeInterval = 120
+
+    /// The evidence the last scan produced. It is re-matched against the
+    /// CURRENT profiles on every refresh (their cached resets move with every
+    /// usage fetch) without touching the disk.
+    private(set) var lastEvidence: CodexTerminals.Evidence?
+    private(set) var lastRolloutScanAt: Date?
+    private var loggedColdScan = false
+
     /// Re-derives the terminals line from the newest daemon-written rollout.
-    /// File reads run off the main actor; the result is cached for the
+    /// The rollout tree is scanned at most every `rolloutScanInterval`
+    /// (`force` scans now); file reads run off the main actor and only the
+    /// head and tail of each file are ever read. The result is cached for the
     /// dashboard and the inspector.
-    func refreshTerminalsState(profiles: [Profile]) async {
+    func refreshTerminalsState(profiles: [Profile], force: Bool = false) async {
         guard !refreshInFlight else { return }
         refreshInFlight = true
         defer { refreshInFlight = false }
-        let root = CodexUsageService.defaultCodexHome.appendingPathComponent("sessions")
-        let evidence = await Self.offMain { CodexTerminals.newestDaemonEvidence(sessionsRoot: root) }
-        let line = CodexTerminals.line(from: evidence, profiles: profiles)
+        let scanDue = force || lastRolloutScanAt.map { Date().timeIntervalSince($0) >= Self.rolloutScanInterval } ?? true
+        if scanDue {
+            let root = CodexUsageService.defaultCodexHome.appendingPathComponent("sessions")
+            let cache = RolloutScanCache.shared
+            lastEvidence = await Self.offMain { CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache) }
+            lastRolloutScanAt = Date()
+            let summary = "CodexDaemon: rollout scan read \(cache.lastScanBytesRead / 1024) KB from \(cache.lastScanFilesOpened) file(s), \(cache.count) cached"
+            if loggedColdScan {
+                LoggingService.shared.logDebug(summary)
+            } else {
+                loggedColdScan = true
+                LoggingService.shared.log(summary + " (cold scan)")
+            }
+        }
+        let line = CodexTerminals.line(from: lastEvidence, profiles: profiles)
         if line != terminals {
             LoggingService.shared.log("CodexDaemon: \(CodexTerminals.format(line))")
         }

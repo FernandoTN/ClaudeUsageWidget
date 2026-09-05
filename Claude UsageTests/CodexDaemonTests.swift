@@ -195,6 +195,129 @@ final class CodexDaemonTests: XCTestCase {
                      "a codex_exec rollout says nothing about terminals")
     }
 
+    // MARK: - Terminals: bounded reads (the 2026-09-05 idle-CPU regression)
+
+    private func makeSessionsTree() throws -> (root: URL, day: URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cuw-codex-sessions-\(UUID().uuidString)", isDirectory: true)
+        let day = root.appendingPathComponent("2026/09/05", isDirectory: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        return (root, day)
+    }
+
+    /// A rollout whose middle is `fillerBytes` of event lines that carry no
+    /// stamp, with `trailingBytes` more of them after the last stamp.
+    private func writeRollout(at url: URL, meta: String, stamps: [Int], fillerBytes: Int, trailingBytes: Int = 0) throws {
+        let filler = #"{"timestamp":"2026-09-05T00:33:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"\#(String(repeating: "x", count: 900))"}]}}"# + "\n"
+        var text = meta + "\n"
+        text += String(repeating: filler, count: fillerBytes / filler.utf8.count + 1)
+        text += stamps.map { tokenCount(resetsAt: $0) + "\n" }.joined()
+        text += String(repeating: filler, count: trailingBytes / filler.utf8.count)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// The regression: 30 multi-megabyte rollouts were read whole every 30 s
+    /// (55 MB per sweep, 10% of a core). A scan now reads only the head and
+    /// the tail of a terminal rollout, an unchanged file costs nothing, and a
+    /// file that grew costs only its tail again.
+    func testScanReadsOnlyHeadAndTailAndRereadsOnlyWhatChanged() throws {
+        let (root, day) = try makeSessionsTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tui = day.appendingPathComponent("rollout-2026-09-05T00-31-19-tui.jsonl")
+        try writeRollout(at: tui, meta: metaTUI, stamps: [1_789_140_000, 1_789_140_026], fillerBytes: 1_500_000, trailingBytes: 2_000)
+        let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: tui.path)[.size] as? Int)
+        XCTAssertGreaterThan(size, 1_000_000, "the fixture must be a real multi-megabyte rollout")
+
+        let cache = RolloutScanCache()
+        let first = try XCTUnwrap(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache))
+        XCTAssertEqual(first.resetsAt, Date(timeIntervalSince1970: 1_789_140_026), "the LAST stamp, found from the tail")
+        XCTAssertEqual(first.sessionStartedAt.timeIntervalSince1970, 1_788_568_279.308, accuracy: 0.001, "the head's session_meta")
+        XCTAssertLessThanOrEqual(cache.lastScanBytesRead, CodexTerminals.ReadBudget.perFileMax, "never more than 320 KB per file")
+        XCTAssertLessThanOrEqual(cache.lastScanBytesRead, CodexTerminals.ReadBudget.headInitial + CodexTerminals.ReadBudget.tailInitial,
+                                 "a short first line and a stamp near the end need one head chunk and one tail chunk")
+
+        XCTAssertEqual(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache), first)
+        XCTAssertEqual(cache.lastScanBytesRead, 0, "an unchanged file (same size and mtime) costs one stat and no read")
+        XCTAssertEqual(cache.lastScanFilesOpened, 0)
+
+        // The daemon appends a newer stamp: the size changes, the tail is re-read, the head is not.
+        let handle = try FileHandle(forWritingTo: tui)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((tokenCount(resetsAt: 1_789_140_086) + "\n").utf8))
+        try handle.close()
+        let grown = try XCTUnwrap(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache))
+        XCTAssertEqual(grown.resetsAt, Date(timeIntervalSince1970: 1_789_140_086))
+        XCTAssertGreaterThan(cache.lastScanBytesRead, 0)
+        XCTAssertLessThanOrEqual(cache.lastScanBytesRead, CodexTerminals.ReadBudget.tailInitial, "tail only — the head verdict is per path")
+    }
+
+    /// The tail grows ONCE when the newest stamp sits further than 64 KB from
+    /// the end, and the growth reads only the bytes in front of the first
+    /// chunk, so the 320 KB budget holds. A stamp beyond 256 KB is not chased.
+    func testTailGrowsOnceForAStampBeyondTheFirstChunkAndStopsAtTheBudget() throws {
+        let (root, day) = try makeSessionsTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tui = day.appendingPathComponent("rollout-2026-09-05T00-31-19-tui.jsonl")
+        try writeRollout(at: tui, meta: metaTUI, stamps: [1_789_140_026], fillerBytes: 1_100_000, trailingBytes: 100_000)
+
+        let cache = RolloutScanCache()
+        let evidence = try XCTUnwrap(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache))
+        XCTAssertEqual(evidence.resetsAt, Date(timeIntervalSince1970: 1_789_140_026))
+        XCTAssertGreaterThan(cache.lastScanBytesRead, CodexTerminals.ReadBudget.tailInitial, "the first chunk held no stamp")
+        XCTAssertLessThanOrEqual(cache.lastScanBytesRead, CodexTerminals.ReadBudget.perFileMax)
+
+        let deep = day.appendingPathComponent("rollout-2026-09-05T00-40-00-tui.jsonl")
+        try writeRollout(at: deep, meta: metaTUI, stamps: [1_789_999_999], fillerBytes: 1_100_000, trailingBytes: 300_000)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: deep.path)
+        let stillFirst = try XCTUnwrap(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache))
+        XCTAssertEqual(stillFirst.resetsAt, Date(timeIntervalSince1970: 1_789_140_026),
+                       "the newer rollout's stamp is beyond the budget — it reads as stampless and the older terminal wins")
+        XCTAssertLessThanOrEqual(cache.lastScanBytesRead, CodexTerminals.ReadBudget.perFileMax, "the older file was cached; only the new one was read")
+    }
+
+    /// Real first lines are ~22 KB (the session instructions ride in the
+    /// session_meta payload). The 4 KB head chunk cuts them short, and the
+    /// closed `type` / `originator` / `timestamp` fields settle the verdict
+    /// without growing the read. A `codex_exec` rollout is filed by its head
+    /// alone and never opened again, however much it grows.
+    func testLongFirstLinesAreSettledFromTheHeadChunkAndExecRolloutsCostTheirHeadOnce() throws {
+        let (root, day) = try makeSessionsTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let instructions = String(repeating: "i", count: 30_000)
+        let longTUI = #"{"timestamp":"2026-09-05T00:31:19.405Z","ordinal":0,"type":"session_meta","payload":{"id":"01a06efa","timestamp":"2026-09-05T00:31:19.308Z","cwd":"/tmp","originator":"codex-tui","cli_version":"0.153.3","base_instructions":"\#(instructions)"}}"#
+        let longExec = longTUI.replacingOccurrences(of: "codex-tui", with: "codex_exec")
+
+        let head = CodexTerminals.head(fromBytes: Data(longTUI.utf8.prefix(CodexTerminals.ReadBudget.headInitial)))
+        XCTAssertEqual(head.originator, "codex-tui", "a cut-short line still closes the fields the scan needs")
+        XCTAssertTrue(head.complete)
+        XCTAssertEqual(head.sessionStart?.timeIntervalSince1970 ?? 0, 1_788_568_279.405, accuracy: 0.001,
+                       "the top-level timestamp stands in for the payload's")
+        XCTAssertFalse(CodexTerminals.head(fromBytes: Data(#"{"timestamp":"2026-09-05T00:31:19.405Z","type":"session_meta","payload":{"id":"01a0"#.utf8)).complete,
+                       "an originator that is not closed yet is not a verdict")
+
+        let tui = day.appendingPathComponent("rollout-2026-09-05T00-31-19-tui.jsonl")
+        try writeRollout(at: tui, meta: longTUI, stamps: [1_789_140_026], fillerBytes: 1_100_000)
+        let exec = day.appendingPathComponent("rollout-2026-09-05T00-32-18-exec.jsonl")
+        try writeRollout(at: exec, meta: longExec, stamps: [1_789_999_999], fillerBytes: 1_100_000)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: exec.path)
+
+        let cache = RolloutScanCache()
+        let evidence = try XCTUnwrap(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache))
+        XCTAssertEqual(evidence.resetsAt, Date(timeIntervalSince1970: 1_789_140_026))
+        XCTAssertEqual(evidence.sessionStartedAt.timeIntervalSince1970, 1_788_568_279.405, accuracy: 0.001)
+        XCTAssertEqual(cache.lastScanFilesOpened, 2)
+        XCTAssertLessThanOrEqual(cache.lastScanBytesRead, 2 * CodexTerminals.ReadBudget.headInitial + CodexTerminals.ReadBudget.tailInitial,
+                                 "two 4 KB heads and one tail — neither long first line forced the 64 KB head")
+
+        let handle = try FileHandle(forWritingTo: exec)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((tokenCount(resetsAt: 1_789_999_999) + "\n").utf8))
+        try handle.close()
+        XCTAssertEqual(CodexTerminals.newestDaemonEvidence(sessionsRoot: root, cache: cache), evidence)
+        XCTAssertEqual(cache.lastScanFilesOpened, 0, "the exec rollout grew but its head verdict is final; the TUI rollout is unchanged")
+        XCTAssertEqual(cache.count, 2)
+    }
+
     // MARK: - Setting
 
     func testRestartOnSwitchIsOffByDefault() {
