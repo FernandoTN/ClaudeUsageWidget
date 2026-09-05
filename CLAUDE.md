@@ -42,7 +42,13 @@ call, the UI is frozen. The app logs via `os.log`; read it with
 pid 91164: a 30 s sweep of ~8 network fetches, the telemetry slices and a repaint). Two
 regressions that pushed it to 10 %: the rollout scan reading 55 MB per sweep (#160) and
 `ProfileStore.loadProfiles()` decoding the roster 44 times a minute (now served from a
-decoded copy while the stored bytes are unchanged).
+decoded copy while the stored bytes are unchanged). `StormWatchdog` samples the process
+every 2 min and alarms on sustained burn above `StormWatchdogPolicy.defaultBurnThreshold`
+(4.5 %, 3× that baseline; the number and its measurement live next to the constant).
+Its notification names the measured average and prescribes quitting ONLY when the
+WindowServer-storm signature is seen — the window or tracking-area population GREW during
+the episode; otherwise the cost is the app's own work and the log is the diagnosis. The
+decision logic is `StormWatchdogPolicy` (pure, tested).
 
 **Notifications.** Every user notification goes through `NotificationManager.deliver`,
 which logs `Notification: <category> id=<dedupe key> title=… profile=…` per send and is
