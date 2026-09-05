@@ -274,6 +274,26 @@ final class DashboardQueueResetTests: XCTestCase {
         XCTAssertEqual(DashboardFormatting.resetCountdown(nil, now: now), "")
     }
 
+    func testSessionExhaustedRowPrintsTheBindingResetFirst() {
+        let owner = claude("Atlas", usage(session: 40))
+        let quarry = claude("Quarry", usage(session: 100, weekly: 40, sessionReset: at(2)))
+        let willow = claude("Willow", usage(weekly: 100, weeklyReset: at(19)))
+        let cedar = claude("Cedar", usage(weekly: 16))
+        let s = section([owner, willow, quarry, cedar], active: owner.id)
+        XCTAssertEqual(row(s, "Quarry").sessionReturnsAt, at(2), "the reset the band sorted on")
+        XCTAssertNil(row(s, "Willow").sessionReturnsAt, "a weekly-hit row is bound by its weekly window")
+        XCTAssertNil(row(s, "Cedar").sessionReturnsAt)
+        XCTAssertEqual(DashboardFormatting.resetLine(row(s, "Quarry"), now: now), "S resets in 2h · W in 2d 1h")
+        XCTAssertEqual(DashboardFormatting.resetLine(row(s, "Willow"), now: now), "W resets in 19h")
+        XCTAssertTrue(DashboardFormatting.resetHelp(row(s, "Quarry"), now: now).hasPrefix("Session window resets "))
+        var stamped = usage(session: 20, weekly: 40)
+        stamped.rateLimitedUntil = at(0.5)
+        let harbor = claude("Harbor", stamped)
+        let throttled = section([owner, harbor], active: owner.id)
+        XCTAssertEqual(row(throttled, "Harbor").sessionReturnsAt, at(0.5), "an affirmed stamp binds like a full session window")
+        XCTAssertEqual(DashboardFormatting.resetLine(row(throttled, "Harbor"), now: now), "S resets in 30m · W in 2d 1h")
+    }
+
     func testResetHelpSpellsOutTheWindowAndTheProvenance() {
         let weekly = DashboardFormatting.resetHelp(ResetCountdown(window: .weekly, resetAt: at(49)), now: now)
         XCTAssertTrue(weekly.hasPrefix("Weekly window resets "), weekly)

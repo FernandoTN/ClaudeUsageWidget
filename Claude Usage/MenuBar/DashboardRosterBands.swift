@@ -18,14 +18,39 @@ extension DashboardFormatting {
     /// "W resets in 2d 1h" / "F resets in 2d 1h" (Fable is the exhausted
     /// window) / "W resets in ~2d 1h" (projected) / "W reset unknown"; the
     /// letter is the legend's, so the weekly reset on a session-exhausted
-    /// row is never read as the session's. Empty for a never-measured row.
-    static func resetCountdown(_ reset: ResetCountdown?, now: Date = Date()) -> String {
+    /// row is never read as the session's. `short` drops the verb ("W in
+    /// 2d 1h") for the second half of a line. Empty for a never-measured row.
+    static func resetCountdown(_ reset: ResetCountdown?, now: Date = Date(), short: Bool = false) -> String {
         guard let reset else { return "" }
         let label = gaugeTitle(reset.window == .fable ? .fable : .weekly, compact: true) + " "
         guard let at = reset.resetAt else { return label + "dashboard.reset_unknown".localized }
         if at <= now { return label + "dashboard.reset_now".localized }
         let clock = (reset.projected ? "~" : "") + at.timeRemainingString(from: now)
-        return label + "accounts.resets_in".localized(with: clock)
+        return label + (short ? "dashboard.reset_in_short" : "accounts.resets_in").localized(with: clock)
+    }
+
+    /// The row's third line. A session-exhausted row leads with the reset
+    /// the band sorted on — "S resets in 2h 10m · W in 2 days" — so the
+    /// binding window and the weekly one are both there, in that order.
+    static func resetLine(_ row: RosterRow, now: Date = Date()) -> String {
+        let weekly = resetCountdown(row.weeklyReset, now: now, short: row.sessionReturnsAt != nil)
+        guard let session = row.sessionReturnsAt else { return weekly }
+        let lead = gaugeTitle(.session, compact: true) + " "
+            + (session > now ? "accounts.resets_in".localized(with: session.timeRemainingString(from: now))
+                             : "dashboard.reset_now".localized)
+        return weekly.isEmpty ? lead : lead + " · " + weekly
+    }
+
+    /// The tooltip for a row's third line: the binding session boundary
+    /// first when there is one, then the weekly's.
+    static func resetHelp(_ row: RosterRow, now: Date = Date()) -> String {
+        var parts: [String] = []
+        if let session = row.sessionReturnsAt {
+            parts.append("dashboard.reset_help_at".localized(with: "dashboard.reset_window_session".localized,
+                                                             session.resetTimeString(from: now)))
+        }
+        if let weekly = row.weeklyReset { parts.append(resetHelp(weekly, now: now)) }
+        return parts.joined(separator: " ")
     }
 
     /// The tooltip: the absolute boundary, and the provenance of a projected
@@ -66,22 +91,23 @@ struct RosterBandLabel: View {
     }
 }
 
-/// A row's weekly countdown in the row's small type, monospaced digits, the
-/// absolute boundary on hover. Emphasised (primary, medium) on an exhausted
-/// row, where the reset is the fact; an unreported boundary is a
-/// data-quality notice and takes the caution colour, like a CLI-cache reading.
+/// A row's reset line in the row's small type, monospaced digits, the
+/// absolute boundaries on hover. Emphasised (primary, medium) on an
+/// exhausted row, where the reset is the fact; an unreported weekly
+/// boundary is a data-quality notice and takes the caution colour, like a
+/// CLI-cache reading.
 struct RosterResetText: View {
-    let reset: ResetCountdown
+    let row: RosterRow
     var emphasized = false
     var now = Date()
 
     var body: some View {
-        Text(DashboardFormatting.resetCountdown(reset, now: now))
+        Text(DashboardFormatting.resetLine(row, now: now))
             .font(.system(size: 8.5, weight: emphasized ? .medium : .regular))
             .monospacedDigit()
-            .foregroundColor(reset.resetAt == nil ? DesignRole.caution.color : (emphasized ? .primary : .secondary))
+            .foregroundColor(row.weeklyReset?.resetAt == nil ? DesignRole.caution.color : (emphasized ? .primary : .secondary))
             .lineLimit(1)
             .fixedSize()
-            .help(DashboardFormatting.resetHelp(reset, now: now))
+            .help(DashboardFormatting.resetHelp(row, now: now))
     }
 }

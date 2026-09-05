@@ -225,7 +225,7 @@ final class FrameRenderTests: XCTestCase {
         let bands = bandsSnapshot()
         write(DashboardView(store: DashboardStore(snapshot: bands, clickedProvider: .claude), actions: noActions, height: 600),
               surface: "dashboard", state: "queue-resets", size: NSSize(width: width, height: 600),
-              note: "roster bands collapsed: next up (Cedar, Harbor) with W countdowns, capacity returns (Quarry, session back in 2h) muted")
+              note: "roster bands collapsed: next up (Cedar, Harbor) with W countdowns, capacity returns (Quarry: S resets in 2h · W in 2 days) muted")
         write(DashboardView(store: DashboardStore(snapshot: bands, clickedProvider: .claude), actions: noActions, height: 900,
                             rostersExpanded: [.claude]),
               surface: "dashboard", state: "queue-resets-expanded", size: NSSize(width: width, height: 900),
