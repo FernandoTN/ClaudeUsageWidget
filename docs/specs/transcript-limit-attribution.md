@@ -3,7 +3,9 @@
 Which account a transcript `rate_limit` event belongs to, and when the
 auto-switch may act on it. Branch `fix/transcript-limit-attribution`.
 
-**Status:** draft PR open; awaiting the orchestrating session's gate.
+**Status:** merged as main `4352b40` (#158, squash), deployed by the
+orchestrating session 2026-09-04 23:25:01 (pid 73406); preview and post-merge
+suites 612 / 0, Release green.
 
 ## The incident (2026-09-04, unified log + profile store + transcripts)
 
