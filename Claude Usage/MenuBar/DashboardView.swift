@@ -5,11 +5,13 @@
 //  The fleet dashboard — the click surface for the fleet-summary layouts
 //  (docs/specs/menubar-redesign.md §3). Stacked provider sections, each with
 //  the provider-active account's card, the next executable switch target, the
-//  provider's slice of the queue and a two-line roster; recent switches
-//  collapsed at the bottom. Renders a `DashboardSnapshot` the manager rebuilds
-//  once per paint; every number carries its provenance and age, and a value
-//  that was not measured with the account's own credentials is drawn dimmed
-//  with a label. Account detail reuses the classic usage rows.
+//  provider's slice of the queue and a roster in three bands (next up,
+//  capacity returns, not switchable — `DashboardRosterBands.swift`); recent
+//  switches collapsed at the bottom. Renders a `DashboardSnapshot` the
+//  manager rebuilds once per paint; every number carries its provenance and
+//  age, and a value that was not measured with the account's own
+//  credentials is drawn dimmed with a label. Account detail reuses the
+//  classic usage rows.
 //
 
 import Combine
@@ -241,9 +243,9 @@ enum DashboardFormatting {
         return line
     }
 
-    /// "ROSTER · 17 · soonest weekly reset first · 7 eligible now".
+    /// "ROSTER · 17 · next up, then soonest reset · 7 eligible now".
     static func rosterHeader(_ section: ProviderSection) -> String {
-        var line = "ROSTER · \(section.roster.count) · soonest weekly reset first"
+        var line = "ROSTER · \(section.roster.count) · next up, then soonest reset"
         if let counts = section.selection?.counts {
             line += " · \(counts.autoSwitchEligible) eligible now"
         }
@@ -348,7 +350,10 @@ struct DashboardView: View {
     /// The harness seeds the Insights block open to render it in situ.
     var insightsExpanded = false
     @State private var isRefreshing = false
-    @State private var expandedRosters: Set<Profile.ProviderKind> = []
+    @State private var expandedRosterChoice: Set<Profile.ProviderKind>?
+    /// The harness seeds a section expanded to render every roster band.
+    var rostersExpanded: Set<Profile.ProviderKind> = []
+    private var expandedRosters: Set<Profile.ProviderKind> { expandedRosterChoice ?? rostersExpanded }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -572,12 +577,17 @@ struct DashboardView: View {
                 .font(.system(size: 8))
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
-            ForEach(rows, id: \.id) { row in
+            // A band label wherever the band changes, so the collapsed three
+            // still say which question each row answers.
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                if index == 0 || rows[index - 1].group != row.group {
+                    RosterBandLabel(group: row.group)
+                }
                 rosterRow(row, section: section)
             }
             if section.roster.count > Self.collapsedRosterRows {
                 Button(isExpanded ? "Show fewer" : "Show all \(section.roster.count)") {
-                    if isExpanded { expandedRosters.remove(section.provider) } else { expandedRosters.insert(section.provider) }
+                    expandedRosterChoice = expandedRosters.symmetricDifference([section.provider])
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 9, weight: .semibold))
@@ -679,13 +689,14 @@ struct DashboardView: View {
             // The threshold is stated once per section ("Auto-switch at 95 %
             // session / 99 % weekly") — repeating it per gauge crowded the row
             // into wrapping (round 1 render). The reset text never yields.
-            Text(gauge.resetAt.map { "resets \($0.timeRemainingString().lowercased() == "reset now" ? "now" : "in " + $0.timeRemainingString())" } ?? "")
+            Text(gauge.resetAt.map { "resets \($0.timeRemainingString().lowercased() == "reset now" ? "now" : "in " + (gauge.projected ? "~" : "") + $0.timeRemainingString())" } ?? "")
                 .font(.system(size: 8.5))
                 .monospacedDigit()
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .fixedSize()
                 .frame(width: 92, alignment: .leading)
+                .help(gauge.projected ? "dashboard.reset_help_projected".localized : "")
         }
     }
 
@@ -739,7 +750,10 @@ struct DashboardView: View {
     /// Two lines: state on the left, a fixed right column (state chip over
     /// the reading's age) so the two never collide (round 1, D7); numerals
     /// monospaced-digit (G3); no bars — the letters carry the windows and
-    /// the legend sits above the roster.
+    /// the legend sits above the roster. The weekly countdown is the left
+    /// column's third line (the second line's 172 pt cannot hold three
+    /// gauges and a clock); on a capacity-returns row it is the emphasised
+    /// element and the row is muted — a filler is never dressed as next up.
     private func rosterRow(_ row: RosterRow, section: ProviderSection) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
@@ -773,8 +787,13 @@ struct DashboardView: View {
                                 }
                             }
                         }
+                        .fixedSize()
                         .padding(.leading, 16)
                         .opacity((row.measurement?.isOwn ?? true) ? 1 : 0.6)
+                        if let reset = row.weeklyReset {
+                            RosterResetText(reset: reset, emphasized: row.group == .capacityReturns)
+                                .padding(.leading, 16)
+                        }
                     }
                     Spacer(minLength: 4)
                     VStack(alignment: .trailing, spacing: 3) {
@@ -796,6 +815,7 @@ struct DashboardView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.025)))
+                .opacity(row.group == .capacityReturns ? 0.72 : 1)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

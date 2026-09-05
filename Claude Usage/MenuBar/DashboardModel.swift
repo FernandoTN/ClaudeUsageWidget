@@ -4,8 +4,10 @@
 //
 //  The snapshot the fleet dashboard renders (docs/specs/menubar-redesign.md
 //  §3): every provider with its active account, the next executable switch
-//  target, the provider's slice of the queue, the roster in the bar's order,
-//  recent switches and the health banners. Built ONCE per paint from plain
+//  target, the provider's slice of the queue, the roster in three bands (next
+//  up in the walk's order, then exhausted accounts by soonest capacity
+//  return, then the rest in the bar's order), recent switches and the health
+//  banners. Built ONCE per paint from plain
 //  values and read by the view — no view observes the managers row by row.
 //  Every number carries its provenance and age; a value that was not
 //  measured with the account's own credentials is never presented as one.
@@ -25,6 +27,9 @@ struct WindowGauge: Hashable {
     var duration: TimeInterval
     /// The auto-switch threshold this window fires at.
     var threshold: Double
+    /// `resetAt` was carried forward from a previous week, not reported
+    /// (`ClaudeUsage.weeklyResetProjected`) — drawn with a "~".
+    var projected: Bool = false
 }
 
 /// Provenance + age of the value behind a row or card.
@@ -57,6 +62,27 @@ enum RowChip: Hashable {
     case autoSwitchOff
     case freePlan
     case deadLogin
+}
+
+/// When a roster row's weekly window comes back, as the row prints it: the
+/// all-models weekly boundary, or the Fable weekly's when Fable alone is
+/// the exhausted window. `resetAt` nil means the API never reported a
+/// boundary (`ClaudeUsage.unknownResetSentinel`); `projected` marks one
+/// carried forward from a previous week — shown with a "~", never as
+/// measured (owner ruling: no synthetic values).
+struct ResetCountdown: Hashable {
+    enum Window: Hashable { case weekly, fable }
+    var window: Window
+    var resetAt: Date?
+    var projected: Bool = false
+}
+
+/// The three bands of a provider's roster, in reading order: who the
+/// auto-switch would take next (in its own order), then exhausted accounts
+/// by when the walk could take them again, then everything it never picks.
+enum RosterGroup: Int, Hashable, CaseIterable, Comparable {
+    case nextUp, capacityReturns, notSwitchable
+    nonisolated static func < (lhs: RosterGroup, rhs: RosterGroup) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
 /// The one-click route out of a dead login. Settings sections are named by
@@ -134,6 +160,14 @@ struct RosterRow: Hashable {
     /// Named by `ProfileManager.profilesNeedingAccountRelogin` (a login that
     /// carried another account, or a duplicate of the CLI's login).
     var needsRelogin: Bool = false
+    /// Which band of the roster the row sits in (`DashboardSnapshot.rosterGroup`).
+    var group: RosterGroup = .notSwitchable
+    /// The weekly countdown the row prints; nil only when never measured.
+    var weeklyReset: ResetCountdown? = nil
+    /// Exhausted rows: when the auto-switch could take the account again
+    /// (the latest reset among its hit windows) — the band's ordering key.
+    /// nil = not at a limit, or a hit window with no known boundary.
+    var capacityReturnsAt: Date? = nil
 }
 
 struct ProviderSection: Hashable {
@@ -145,7 +179,9 @@ struct ProviderSection: Hashable {
     var sessionThreshold: Double?
     var weeklyThreshold: Double
     var queue: [QueueEntry]
-    /// The OTHER accounts, in the bar's painted order.
+    /// The OTHER accounts in three bands (`RosterGroup`): next up in the
+    /// walk's order (the predicted target first), exhausted accounts by
+    /// soonest capacity return, then the rest in the bar's painted order.
     var roster: [RosterRow]
     var hiddenByOverflow: Bool
     var summary: ProviderSummary
@@ -369,20 +405,25 @@ struct DashboardSnapshot: Hashable {
                 sessionThreshold: weeklyOnly ? nil : thresholds.session,
                 weeklyThreshold: thresholds.weekly,
                 queue: queue,
-                roster: members.filter { $0 != activeId }.compactMap { id in
-                    byId[id].map { profile in
-                        var row = rosterRow(profile, readiness: readiness[id] ?? .unknown, isStale: stale.contains(id),
-                                            queuePosition: inputs.queue.firstIndex(of: id).map { $0 + 1 },
-                                            thresholds: thresholds, now: now)
-                        row.sameAccountAs = duplicates[id] ?? []
-                        if let candidate = candidates[id] {
-                            row.candidateStatus = candidate.status
-                            row.isNext = candidate.isNext
-                            row.needsRelogin = candidate.needsRelogin
+                roster: orderedRoster(
+                    members.filter { $0 != activeId }.compactMap { id in
+                        byId[id].map { profile in
+                            var row = rosterRow(profile, readiness: readiness[id] ?? .unknown, isStale: stale.contains(id),
+                                                queuePosition: inputs.queue.firstIndex(of: id).map { $0 + 1 },
+                                                thresholds: thresholds, now: now)
+                            row.sameAccountAs = duplicates[id] ?? []
+                            if let candidate = candidates[id] {
+                                row.candidateStatus = candidate.status
+                                row.isNext = candidate.isNext
+                                row.needsRelogin = candidate.needsRelogin
+                            }
+                            row.group = rosterGroup(status: row.candidateStatus, readiness: row.readiness)
+                            return row
                         }
-                        return row
-                    }
-                },
+                    },
+                    ranked: selection?.rankedIds ?? [],
+                    predictedNext: next?.id
+                ),
                 hiddenByOverflow: inputs.hiddenProviders.contains(provider),
                 summary: summary,
                 selection: selection,
@@ -424,12 +465,84 @@ struct DashboardSnapshot: Hashable {
         }
         out.append(WindowGauge(kind: .weekly, percentage: usage.weeklyPercentage,
                                resetAt: usage.weeklyResetTime, duration: Constants.weeklyWindow,
-                               threshold: thresholds.weekly))
+                               threshold: thresholds.weekly, projected: usage.weeklyResetProjected == true))
         if let fable = usage.fableWeeklyPercentage {
             out.append(WindowGauge(kind: .fable, percentage: fable, resetAt: usage.fableWeeklyResetTime,
-                                   duration: Constants.weeklyWindow, threshold: thresholds.weekly))
+                                   duration: Constants.weeklyWindow, threshold: thresholds.weekly,
+                                   projected: usage.fableWeeklyResetProjected == true))
         }
         return out
+    }
+
+    // MARK: - Roster bands and resets (pure, tested)
+
+    /// The countdown a roster row prints: the all-models weekly boundary,
+    /// or the Fable weekly's when Fable alone is the exhausted window (the
+    /// same two windows the dot colour judges). A sentinel is unknown; a
+    /// boundary already behind `now` is projected a week at a time forward
+    /// and marked so, exactly like a healed stamp.
+    static func weeklyReset(for usage: ClaudeUsage, thresholds: ReadinessThresholds, now: Date) -> ResetCountdown {
+        let weeklyHit = usage.weeklyResetTime >= now && usage.weeklyPercentage >= thresholds.weekly
+        if !weeklyHit, let fable = usage.fableWeeklyPercentage, fable >= thresholds.weekly,
+           usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
+            return ResetCountdown(window: .fable, resetAt: usage.fableWeeklyResetTime,
+                                  projected: usage.fableWeeklyResetProjected == true)
+        }
+        let reset = usage.weeklyResetTime
+        if reset == ClaudeUsage.unknownResetSentinel { return ResetCountdown(window: .weekly, resetAt: nil) }
+        if reset < now {
+            return ResetCountdown(window: .weekly, resetAt: ClaudeUsage.projectedWeeklyBoundary(reset, after: now), projected: true)
+        }
+        return ResetCountdown(window: .weekly, resetAt: reset, projected: usage.weeklyResetProjected == true)
+    }
+
+    /// When the auto-switch could take an exhausted account again: the
+    /// LATEST reset among its hit windows (every window must have headroom;
+    /// a server-affirmed throttle stamp counts as one). nil when the account
+    /// is not at a limit, or a hit window has no known boundary.
+    static func capacityReturnsAt(_ usage: ClaudeUsage?, readiness: AccountReadiness,
+                                  thresholds: ReadinessThresholds, now: Date) -> Date? {
+        guard let usage, readiness.isAtLimit else { return nil }
+        var resets: [Date] = []
+        if let until = usage.rateLimitedUntil, until > now, usage.rateLimitedInferred != true { resets.append(until) }
+        if usage.providesSessionWindow, usage.sessionResetTime > now, usage.sessionPercentage >= thresholds.session {
+            resets.append(usage.sessionResetTime)
+        }
+        if usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.weekly { resets.append(usage.weeklyResetTime) }
+        if let fable = usage.fableWeeklyPercentage, fable >= thresholds.weekly,
+           usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
+            guard let reset = usage.fableWeeklyResetTime else { return nil }
+            resets.append(reset)
+        }
+        return resets.max()
+    }
+
+    /// Which band a row belongs to, from the selector's verdict (the walk's
+    /// own eligibility); readiness alone when no selection was built.
+    static func rosterGroup(status: CandidateRow.Status?, readiness: AccountReadiness) -> RosterGroup {
+        switch status {
+        case .eligible?: return .nextUp
+        case .blocked(let state)?: return state.isAtLimit ? .capacityReturns : .notSwitchable
+        case .duplicateOfOwner?, .excluded?: return .notSwitchable
+        case nil:
+            if !readiness.blocksSwitchTarget { return .nextUp }
+            return readiness.isAtLimit ? .capacityReturns : .notSwitchable
+        }
+    }
+
+    /// The bands in order. Next up keeps the walk's rank (`ranked`: queue
+    /// entries first, then soonest weekly reset) with the predicted target
+    /// in front — the countdown is information, never a re-sort; capacity
+    /// returns sorts by soonest return (unknown last), then name; the rest
+    /// keep the order they arrived in (the bar's painted order).
+    static func orderedRoster(_ rows: [RosterRow], ranked: [UUID], predictedNext: UUID?) -> [RosterRow] {
+        var rank = Dictionary(uniqueKeysWithValues: ranked.enumerated().map { ($1, $0 + 1) })
+        if let predictedNext { rank[predictedNext] = 0 }
+        let nextUp = rows.filter { $0.group == .nextUp }
+            .sorted { (rank[$0.id] ?? .max, $0.name) < (rank[$1.id] ?? .max, $1.name) }
+        let returning = rows.filter { $0.group == .capacityReturns }
+            .sorted { ($0.capacityReturnsAt ?? .distantFuture, $0.name) < ($1.capacityReturnsAt ?? .distantFuture, $1.name) }
+        return nextUp + returning + rows.filter { $0.group == .notSwitchable }
     }
 
     static func measurement(for usage: ClaudeUsage?) -> UsageMeasurement? {
@@ -501,7 +614,9 @@ struct DashboardSnapshot: Hashable {
             id: profile.id, name: profile.name, readiness: readiness, isStale: isStale,
             gauges: usage.map { Self.gauges(for: $0, thresholds: thresholds) } ?? [],
             measurement: measurement(for: usage), chip: chip, queuePosition: queuePosition,
-            repair: repair, isSelectedForDisplay: profile.isSelectedForDisplay
+            repair: repair, isSelectedForDisplay: profile.isSelectedForDisplay,
+            weeklyReset: usage.map { weeklyReset(for: $0, thresholds: thresholds, now: now) },
+            capacityReturnsAt: capacityReturnsAt(usage, readiness: readiness, thresholds: thresholds, now: now)
         )
     }
 }

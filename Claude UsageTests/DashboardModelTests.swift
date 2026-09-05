@@ -208,12 +208,15 @@ final class DashboardModelTests: XCTestCase {
         XCTAssertNil(RepairAction.grokLogin.settingsSectionRawValue)
     }
 
-    func testRosterFollowsThePaintedOrderAndAppendsUnpaintedAccountsFirst() {
+    func testNotSwitchableRowsFollowThePaintedOrderAndAppendUnpaintedAccountsFirst() {
+        // Eligible rows keep the walk's order (DashboardQueueResetTests); the
+        // band the walk never picks keeps the bar's order, unpainted first.
         let a = claude("A", usage()), b = claude("B", usage()), c = claude("C", usage())
-        var inp = inputs([a, b, c], active: [])
+        var inp = inputs([a, b, c], active: [], dead: [a.id, b.id, c.id])
         inp.paintedOrder = [.claude: [c.id, a.id]]
         let snap = DashboardSnapshot.build(inp)
         XCTAssertEqual(snap.sections[0].roster.map(\.name), ["B", "C", "A"])
+        XCTAssertEqual(Set(snap.sections[0].roster.map(\.group)), [.notSwitchable])
     }
 
     // MARK: - Banners and history

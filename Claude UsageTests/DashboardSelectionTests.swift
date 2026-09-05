@@ -137,6 +137,6 @@ final class DashboardSelectionTests: XCTestCase {
         XCTAssertEqual(counts.profiles, 3)
         XCTAssertEqual(counts.autoSwitchEligible, 2, "owner and Ready have headroom; Maxed is exhausted")
         XCTAssertEqual(DashboardFormatting.rosterHeader(snap.sections[0]),
-                       "ROSTER · 2 · soonest weekly reset first · 2 eligible now")
+                       "ROSTER · 2 · next up, then soonest reset · 2 eligible now")
     }
 }
