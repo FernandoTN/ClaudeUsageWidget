@@ -222,7 +222,7 @@ final class StatusBarUIManager {
     weak var delegate: StatusBarUIManagerDelegate?
 
     /// Inputs the multi-profile render path consumes — hash-equal ⇒ skip re-render.
-    private struct TileRenderKey: Hashable {
+    struct TileRenderKey: Hashable {
         /// Display percentages after `getDisplayPercentage`, quantized to 0.1
         var sessionDisplayQ: Int
         var weekDisplayQ: Int
@@ -2317,7 +2317,12 @@ final class StatusBarUIManager {
     /// Inputs a provider's summary tile is a pure function of — equal ⇒ skip
     /// the render. Discrete visible facts only (no dates): the verdict is
     /// keyed by its glyph, staleness by its flag.
-    private struct SummaryRenderKey: Hashable {
+    struct SummaryRenderKey: Hashable {
+        /// WHO is active, not just how its tile rendered. `activeKey` is nil
+        /// for an owner whose tile has never been painted, and nil == nil: an
+        /// owner change between two never-painted profiles produced an equal
+        /// key and the summary kept the previous owner's block on the bar.
+        var activeId: UUID?
         var activeKey: TileRenderKey?
         var members: [FleetMember]
         var affix: String?
@@ -2476,6 +2481,7 @@ final class StatusBarUIManager {
                 ?? button.superview?.window?.backingScaleFactor
                 ?? 0
             let key = SummaryRenderKey(
+                activeId: activeId,
                 activeKey: activeId.flatMap { lastRenderKey[$0] },
                 members: summary.members,
                 affix: summary.affix,

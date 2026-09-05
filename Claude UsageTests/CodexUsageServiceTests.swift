@@ -342,4 +342,54 @@ final class CodexUsageServiceTests: XCTestCase {
         ]
         return String(data: try! JSONSerialization.data(withJSONObject: root), encoding: .utf8)!
     }
+
+    // MARK: - Apply reads auth.json back (the switch fails closed on it)
+
+    /// A write that lands but does not stick — two external writers share
+    /// auth.json on the owner's Mac — must not claim the Codex pointer. A
+    /// stored login with no account_id can only be checked for "the file is
+    /// there and parses".
+    func testAppliedLoginVerdictNamesTheAccountThatCameBack() {
+        typealias Verdict = CodexUsageService.AppliedLoginVerdict
+        XCTAssertEqual(
+            CodexUsageService.appliedLoginVerdict(expectedAccountId: "acct-cedar", fileReadable: true, readBackAccountId: "acct-cedar"),
+            Verdict.verified)
+        XCTAssertEqual(
+            CodexUsageService.appliedLoginVerdict(expectedAccountId: "acct-cedar", fileReadable: true, readBackAccountId: "acct-atlas"),
+            Verdict.accountMismatch(expected: "acct-cedar", found: "acct-atlas"),
+            "the file names somebody else — the write did not stick")
+        XCTAssertEqual(
+            CodexUsageService.appliedLoginVerdict(expectedAccountId: "acct-cedar", fileReadable: true, readBackAccountId: nil),
+            Verdict.accountMismatch(expected: "acct-cedar", found: nil))
+        XCTAssertEqual(
+            CodexUsageService.appliedLoginVerdict(expectedAccountId: "acct-cedar", fileReadable: false, readBackAccountId: nil),
+            Verdict.unreadable)
+        XCTAssertEqual(
+            CodexUsageService.appliedLoginVerdict(expectedAccountId: nil, fileReadable: true, readBackAccountId: "acct-atlas"),
+            Verdict.verified,
+            "nothing to compare against — a readable file is all the evidence there is")
+        XCTAssertEqual(
+            CodexUsageService.appliedLoginVerdict(expectedAccountId: nil, fileReadable: false, readBackAccountId: nil),
+            Verdict.unreadable)
+    }
+
+    /// End to end against a temporary home: the read-back sees what is ON
+    /// DISK, not what was handed to the writer.
+    func testVerifyAppliedLoginReadsTheFileInTheGivenHome() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cuw-codex-home-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cedar = #"{"tokens":{"access_token":"x","account_id":"acct-cedar"}}"#
+        let atlas = #"{"tokens":{"access_token":"y","account_id":"acct-atlas"}}"#
+        let service = CodexUsageService.shared
+
+        XCTAssertEqual(service.verifyAppliedLogin(expectedJSON: cedar, inHome: home), .unreadable, "no file yet")
+
+        try atlas.write(to: CodexUsageService.authFileURL(inHome: home), atomically: true, encoding: .utf8)
+        XCTAssertEqual(service.verifyAppliedLogin(expectedJSON: cedar, inHome: home),
+                       .accountMismatch(expected: "acct-cedar", found: "acct-atlas"),
+                       "somebody else's account is in the file")
+        XCTAssertEqual(service.verifyAppliedLogin(expectedJSON: atlas, inHome: home), .verified)
+    }
 }

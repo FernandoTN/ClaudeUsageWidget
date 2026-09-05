@@ -392,7 +392,46 @@ class CodexUsageService {
             throw CodexError.noProfileCredentials
         }
         try writeAuthFile(json)
+        // Read it BACK. `auth.json` has two external writers on the owner's Mac
+        // (the Codex standalone daemon, the ChatGPT desktop app), and the write
+        // used to be trusted blind: a write that did not stick still claimed the
+        // provider pointer, and the sweep-end repair then quietly reverted it.
+        let verdict = verifyAppliedLogin(expectedJSON: json, inHome: Self.defaultCodexHome)
+        guard verdict == .verified else { throw CodexError.applyNotVerified(verdict) }
         LoggingService.shared.log("Codex: Applied profile credentials to auth.json for \(profileId)")
+    }
+
+    /// What reading `auth.json` back right after writing it found.
+    enum AppliedLoginVerdict: Equatable {
+        case verified
+        /// The file is missing, unreadable or not JSON.
+        case unreadable
+        /// The file parses but names another account (or none).
+        case accountMismatch(expected: String, found: String?)
+    }
+
+    /// The pure rule behind `verifyAppliedLogin`. A stored login with no
+    /// `account_id` cannot be compared, so a readable file is all the evidence
+    /// there is for it; anything else must name the expected account.
+    nonisolated static func appliedLoginVerdict(
+        expectedAccountId: String?, fileReadable: Bool, readBackAccountId: String?
+    ) -> AppliedLoginVerdict {
+        guard fileReadable else { return .unreadable }
+        guard let expectedAccountId else { return .verified }
+        return readBackAccountId == expectedAccountId
+            ? .verified
+            : .accountMismatch(expected: expectedAccountId, found: readBackAccountId)
+    }
+
+    /// Reads `<home>/auth.json` back and checks it names the account in
+    /// `expectedJSON`. File read + JSON parse, no network.
+    func verifyAppliedLogin(expectedJSON: String, inHome home: URL) -> AppliedLoginVerdict {
+        let readBack = readAuthFile(inHome: home)
+        return Self.appliedLoginVerdict(
+            expectedAccountId: extractAccountId(from: expectedJSON),
+            fileReadable: readBack != nil,
+            readBackAccountId: readBack.flatMap(extractAccountId(from:))
+        )
     }
 
     /// Removes Codex credentials from a profile (does not touch auth.json).
@@ -1088,6 +1127,9 @@ enum CodexError: LocalizedError {
     case tokenRefreshFailed(status: Int, errorCode: String?)
     case accountAlreadySynced(profileName: String)
     case noCredentialsInHome(path: String)
+    /// `applyProfileCredentials` wrote auth.json but the read-back did not
+    /// confirm the target account — the switch fails closed on this.
+    case applyNotVerified(CodexUsageService.AppliedLoginVerdict)
 
     var errorDescription: String? {
         switch self {
@@ -1106,6 +1148,15 @@ enum CodexError: LocalizedError {
             return "This Codex account is already synced to the profile \u{201C}\(profileName)\u{201D}. Remove it there first, or log into a different Codex account with `codex login` before syncing here."
         case .noCredentialsInHome(let path):
             return "No readable Codex login at \(path). Log the account in under that home first: CODEX_HOME=<folder> codex login"
+        case .applyNotVerified(let verdict):
+            switch verdict {
+            case .verified:
+                return "auth.json was verified."
+            case .unreadable:
+                return "auth.json could not be read back after writing it — the Codex switch was not applied."
+            case .accountMismatch(let expected, let found):
+                return "auth.json read back as account \(found ?? "none") instead of \(expected) right after it was written — another process owns that file; the Codex switch was not applied."
+            }
         }
     }
 }

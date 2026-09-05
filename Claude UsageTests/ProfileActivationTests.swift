@@ -348,4 +348,38 @@ final class ProfileActivationTests: XCTestCase {
             ProfileManager.needsProviderApply(profile: profile, pointers: .init(grok: id)).isEmpty
         )
     }
+
+    // MARK: - Fail closed: a login that could not be WRITTEN claims nothing
+
+    /// `credentialWriteFailed` is neither a landed switch nor a dead login.
+    /// The Bool API reads it as "did not land", and the auto-switch walk
+    /// retries next sweep instead of excluding a candidate whose login is
+    /// fine — the machine failed to write, not the account. (The apply itself
+    /// is not exercised end to end: it writes the developer's real
+    /// `~/.codex/auth.json` and probes the network; the read-back verdict it
+    /// fails closed on is covered in CodexUsageServiceTests.)
+    func testCredentialWriteFailedIsNotALandedSwitchAndNeverExcludesTheCandidate() {
+        XCTAssertFalse(ProfileManager.ActivationOutcome.credentialWriteFailed.didActivate)
+        XCTAssertEqual(MenuBarManager.walkReaction(to: .credentialWriteFailed), .deferToNextSweep,
+                       "retry next sweep — the candidate's login is not what failed")
+        XCTAssertNotEqual(MenuBarManager.walkReaction(to: .credentialWriteFailed), .excludeCandidate)
+    }
+
+    // MARK: - Grace window after a user-initiated switch
+
+    /// The sweep-end repair re-derives the Codex pointer from auth.json, which
+    /// two other processes rewrite on the owner's Mac. Inside the window after
+    /// the user's own switch the file is not evidence against their choice;
+    /// after it, the repair adopts as before (and now tells the user).
+    func testRepairHoldsThePointerInsideTheGraceWindowAndReleasesItAfter() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertTrue(ProfileManager.repairMayMovePointer(userClaimedAt: nil, now: now),
+                      "no user switch on record — the file is the only evidence")
+        XCTAssertFalse(ProfileManager.repairMayMovePointer(userClaimedAt: now.addingTimeInterval(-10), now: now),
+                       "10 s after the user chose — hold")
+        XCTAssertFalse(ProfileManager.repairMayMovePointer(userClaimedAt: now.addingTimeInterval(-89), now: now))
+        XCTAssertTrue(ProfileManager.repairMayMovePointer(userClaimedAt: now.addingTimeInterval(-90), now: now),
+                      "the window is exactly `externalRepairGrace`")
+        XCTAssertEqual(ProfileManager.externalRepairGrace, 90)
+    }
 }

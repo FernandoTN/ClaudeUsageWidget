@@ -6,6 +6,9 @@ import os.log
 @MainActor
 class MenuBarManager: NSObject, ObservableObject {
     private var statusBarUIManager: StatusBarUIManager?
+    /// Coalesced fleet repaints: one per turn, held while a switch is in
+    /// flight, released when it completes (see FleetRepaintScheduler).
+    private var fleetRepaint: FleetRepaintScheduler?
     private var refreshTimer: Timer?
     @Published private(set) var usage: ClaudeUsage = .empty
     @Published private(set) var status: ClaudeStatus = .unknown
@@ -225,6 +228,7 @@ class MenuBarManager: NSObject, ObservableObject {
 
         // Observe profile changes - CRITICAL: Set up before anything else
         observeProfileChanges()
+        installFleetRepaintScheduler()
 
         Self.current = self
 
@@ -447,6 +451,8 @@ class MenuBarManager: NSObject, ObservableObject {
         refreshTimer = nil
         networkMonitor.stopMonitoring()
         cancellables.removeAll()  // Clean up Combine subscriptions
+        fleetRepaint?.stopObserving()
+        fleetRepaint = nil
         if let iconConfigObserver = iconConfigObserver {
             NotificationCenter.default.removeObserver(iconConfigObserver)
             self.iconConfigObserver = nil
@@ -548,6 +554,37 @@ class MenuBarManager: NSObject, ObservableObject {
             .store(in: &cancellables)
 
         LoggingService.shared.log("MenuBarManager: Observing profile changes (initial: \(initialProfileId?.uuidString ?? "nil"))")
+    }
+
+    /// The fleet item paints from the LIVE provider pointers, so it must
+    /// repaint when one MOVES — `$activeProfile` above cannot carry that: a
+    /// switch onto the already-focused profile publishes an unchanged id and
+    /// `removeDuplicates` drops it (2026-09-04 16:38 — the tile kept the old
+    /// Codex owner until the 30 s timer). `.providerOwnerClaimed` is the one
+    /// signal for a pointer change, any provider, any cause; the scheduler
+    /// turns N posts in a turn into one paint on the next, holds paints while
+    /// a switch is in flight, and paints once when the switch completes.
+    private func installFleetRepaintScheduler() {
+        let scheduler = FleetRepaintScheduler(
+            isBlocked: { [weak self] in self?.profileManager.isSwitchingProfile ?? false },
+            paint: { [weak self] reason in
+                guard let self else { return }
+                LoggingService.shared.log("MenuBarManager: fleet repaint (\(reason.rawValue))")
+                self.updateAllStatusBarIcons()
+            }
+        )
+        scheduler.observeOwnerChanges()
+        fleetRepaint = scheduler
+
+        // `@Published` fires on willSet, so the sink sees the NEW value while
+        // the property still reads the old one; the scheduler only enqueues
+        // here and reads `isSwitchingProfile` live on the next turn.
+        profileManager.$isSwitchingProfile
+            .removeDuplicates()
+            .dropFirst()
+            .filter { !$0 }
+            .sink { [weak self] _ in self?.fleetRepaint?.switchCompleted() }
+            .store(in: &cancellables)
     }
 
     private func handleProfileSwitch(to profile: Profile) async {
@@ -1914,13 +1951,22 @@ private func observeCredentialChanges() {
             // from this sweep's fresh data.
             self.refreshViewedProfileUsage()
 
-            // Update all icons once after all profiles are refreshed
-            let config = self.profileManager.multiProfileConfig
-            self.statusBarUIManager?.updateMultiProfileButtons(
-                profiles: self.profileManager.profiles,
-                config: config,
-                context: self.fleetSummaryContext(for: config)
-            )
+            // Update all icons once after all profiles are refreshed — unless
+            // a switch is in flight. The loop above ended early for it, and a
+            // paint here can read a provider pointer the activation is about
+            // to move and then be the LAST paint (16:38:39.984 on 2026-09-04:
+            // painted 1 ms before the Codex pointer was claimed). The
+            // scheduler paints once the switch completes instead.
+            if self.profileManager.isSwitchingProfile {
+                self.fleetRepaint?.request(.sweepEnd)
+            } else {
+                let config = self.profileManager.multiProfileConfig
+                self.statusBarUIManager?.updateMultiProfileButtons(
+                    profiles: self.profileManager.profiles,
+                    config: config,
+                    context: self.fleetSummaryContext(for: config)
+                )
+            }
 
             // Reflect the sweep's real outcome in the error-tracking state.
             if sweepSuccesses > 0 {
@@ -3501,9 +3547,11 @@ private func observeCredentialChanges() {
     enum CandidateWalkReaction {
         /// The switch landed — consume the queue entry and stop walking.
         case switched
-        /// Nothing was attempted because another switch holds the semaphore.
-        /// Stop walking and let the next sweep retry, WITHOUT excluding the
-        /// candidate: its credentials were never examined.
+        /// Nothing was attempted because another switch holds the semaphore —
+        /// or the attempt could not WRITE the CLI's login store
+        /// (`credentialWriteFailed`). Stop walking and let the next sweep
+        /// retry, WITHOUT excluding the candidate: its credentials are not what
+        /// failed.
         case deferToNextSweep
         /// The candidate itself is unusable — exclude it and try the next one.
         case excludeCandidate
@@ -3521,7 +3569,9 @@ private func observeCredentialChanges() {
         switch outcome {
         case .activated, .alreadyActive:
             return .switched
-        case .switchInFlight:
+        case .switchInFlight, .credentialWriteFailed:
+            // A failed write is the machine's, not the candidate's: nothing
+            // was claimed and the login is fine, so retry — never exclude.
             return .deferToNextSweep
         case .profileNotFound, .credentialsRefused, .focusedWithoutApplying:
             // `focusedWithoutApplying` is a USER-initiated outcome and the walk

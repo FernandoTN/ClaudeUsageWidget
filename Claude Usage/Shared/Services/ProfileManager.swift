@@ -342,6 +342,16 @@ class ProfileManager: ObservableObject {
         /// exactly like `.credentialsRefused` — but it can only be produced by a
         /// user-initiated activation, which the walk never performs.
         case focusedWithoutApplying
+        /// The switch ran and the target's login is live, but WRITING it to the
+        /// CLI failed — the file or Keychain item could not be written, or
+        /// (Codex) `auth.json` did not read back as the target's account.
+        /// NOTHING was claimed: the outgoing login and its provider pointer stay
+        /// put and the focus does not move. Before this the error was logged
+        /// "non-fatal" and the pointer claimed anyway, so the bar showed an
+        /// owner the CLI never switched to until the sweep-end repair silently
+        /// moved it back. Not the candidate's fault, so the auto-switch walk
+        /// retries next sweep instead of excluding it.
+        case credentialWriteFailed
 
         /// Back-compat with the `Bool`-returning API: true only when the
         /// profile is active as a result of the call.
@@ -678,6 +688,11 @@ class ProfileManager: ObservableObject {
         // provider, not as one flag, so the user-facing notice can name which
         // CLI stayed put and who still owns it.
         var refusedProviders: [RefusedProvider] = []
+        /// Providers whose LIVE login could not be written to (or verified in)
+        /// the CLI's store. Kept apart from `refusedProviders`: a dead login is
+        /// the profile's problem and moves the focus for repair; a failed write
+        /// is the machine's, and moves nothing.
+        var writeFailedProviders: [RefusedProvider] = []
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
@@ -723,25 +738,35 @@ class ProfileManager: ObservableObject {
             } else {
                 let targetProfileId = updatedProfile.id
                 let targetProfileName = updatedProfile.name
-                await runOffMainActor {
+                let applied: Bool = await runOffMainActor {
                     do {
                         try ClaudeCodeSyncService.shared.applyProfileCredentials(targetProfileId)
                         LoggingService.shared.log("✓ Applied CLI credentials for: \(targetProfileName)")
+                        return true
                     } catch {
-                        LoggingService.shared.logError("Failed to apply CLI credentials (non-fatal)", error: error)
+                        LoggingService.shared.logError("⛔️ Failed to apply CLI credentials — the switch fails closed", error: error)
+                        return false
                     }
                 }
-                // Claim ownership IMMEDIATELY after the apply — the shared login
-                // just changed hands, and any await between the apply and the
-                // pointer update is a window where a concurrent sweep would adopt
-                // the NEW login into the OLD owner's profile (cross-account
-                // contamination — a real incident).
-                setProviderOwner(.claude, to: id, cause: .activate)
-                profileStore.saveActiveClaudeProfileId(id)
+                if applied {
+                    // Claim ownership IMMEDIATELY after the apply — the shared login
+                    // just changed hands, and any await between the apply and the
+                    // pointer update is a window where a concurrent sweep would adopt
+                    // the NEW login into the OLD owner's profile (cross-account
+                    // contamination — a real incident).
+                    setProviderOwner(.claude, to: id, cause: .activate)
+                    profileStore.saveActiveClaudeProfileId(id)
+                    noteUserClaim(.claude, userInitiated: userInitiated)
 
-                // Learn/refresh the applied login's account identity in the
-                // background so future adoptions stay account-matched.
-                Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: id) }
+                    // Learn/refresh the applied login's account identity in the
+                    // background so future adoptions stay account-matched.
+                    Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: id) }
+                } else {
+                    // A partial write (Keychain updated, file not) leaves the CLI
+                    // on the new account with the pointer unclaimed; the
+                    // identity adoption at sweep end re-derives the true owner.
+                    writeFailedProviders.append(.claude)
+                }
             }
         } else if updatedProfile.cliCredentialsJSON == nil {
             LoggingService.shared.log("⚠️ Profile '\(updatedProfile.name)' has no CLI credentials JSON")
@@ -781,18 +806,28 @@ class ProfileManager: ObservableObject {
             } else {
                 let targetProfileId = updatedProfile.id
                 let targetProfileName = updatedProfile.name
-                await runOffMainActor {
+                // The apply reads auth.json BACK and throws unless it names the
+                // target's account — a write that lands but does not stick
+                // (two external writers share that file) must not claim.
+                let applied: Bool = await runOffMainActor {
                     do {
                         try CodexUsageService.shared.applyProfileCredentials(targetProfileId)
-                        LoggingService.shared.log("✓ Applied Codex credentials for: \(targetProfileName)")
+                        LoggingService.shared.log("✓ Applied Codex credentials for: \(targetProfileName) (auth.json read back as the target account)")
+                        return true
                     } catch {
-                        LoggingService.shared.logError("Failed to apply Codex credentials (non-fatal)", error: error)
+                        LoggingService.shared.logError("⛔️ Failed to apply Codex credentials — the switch fails closed", error: error)
+                        return false
                     }
                 }
-                // Same rule as the Claude side: pointer follows the apply with no
-                // awaits in between.
-                setProviderOwner(.codex, to: id, cause: .activate)
-                profileStore.saveActiveCodexProfileId(id)
+                if applied {
+                    // Same rule as the Claude side: pointer follows the apply with no
+                    // awaits in between.
+                    setProviderOwner(.codex, to: id, cause: .activate)
+                    profileStore.saveActiveCodexProfileId(id)
+                    noteUserClaim(.codex, userInitiated: userInitiated)
+                } else {
+                    writeFailedProviders.append(.codex)
+                }
             }
         }
 
@@ -827,18 +862,25 @@ class ProfileManager: ObservableObject {
             } else {
                 let targetProfileId = updatedProfile.id
                 let targetProfileName = updatedProfile.name
-                await runOffMainActor {
+                let applied: Bool = await runOffMainActor {
                     do {
                         try GrokUsageService.shared.applyProfileCredentials(targetProfileId)
                         LoggingService.shared.log("✓ Applied Grok credentials for: \(targetProfileName)")
+                        return true
                     } catch {
-                        LoggingService.shared.logError("Failed to apply Grok credentials (non-fatal)", error: error)
+                        LoggingService.shared.logError("⛔️ Failed to apply Grok credentials — the switch fails closed", error: error)
+                        return false
                     }
                 }
-                // Same rule as the other two: the pointer follows the apply with
-                // no awaits in between.
-                setProviderOwner(.grok, to: id, cause: .activate)
-                profileStore.saveActiveGrokProfileId(id)
+                if applied {
+                    // Same rule as the other two: the pointer follows the apply with
+                    // no awaits in between.
+                    setProviderOwner(.grok, to: id, cause: .activate)
+                    profileStore.saveActiveGrokProfileId(id)
+                    noteUserClaim(.grok, userInitiated: userInitiated)
+                } else {
+                    writeFailedProviders.append(.grok)
+                }
             }
         }
 
@@ -853,6 +895,39 @@ class ProfileManager: ObservableObject {
         // in-app repair (Settings → Codex Account / CLI Account, which read
         // `activeProfile`) is reachable only once the focus is on it. Refusing to
         // move it made every dead profile permanently unrepairable in-app.
+        // FAIL CLOSED. A live login that could not be written to the CLI (or,
+        // for Codex, did not read back as the target account) claimed nothing,
+        // so the outgoing login and its pointer are exactly as they were. This
+        // is the machine's failure, not the profile's: the focus stays put for
+        // BOTH callers (there is nothing to repair on the target), the user is
+        // told, and the walk retries next sweep rather than excluding a healthy
+        // candidate. Checked before the dead-login exit — on a mixed profile a
+        // write failure is the more surprising of the two.
+        if !writeFailedProviders.isEmpty {
+            switchingSemaphore = false
+            isSwitchingProfile = false
+            let providers = RefusedProvider.summary(writeFailedProviders)
+            let ownerName = writeFailedProviders.compactMap { currentOwnerName(of: $0.providerKind) }.first
+            LoggingService.shared.log("⛔️ Activation of '\(updatedProfile.name)' FAILED CLOSED — its \(providers) login could not be written to the CLI; the pointer stays with '\(ownerName ?? "none")', focus unchanged")
+            // The user-initiated surfaces (⇄ menu, dashboard, inspector) show
+            // the outcome in place; the automatic path has no surface but this.
+            if !userInitiated {
+                NotificationManager.shared.sendCredentialWriteFailedNotification(
+                    profileName: updatedProfile.name, providerName: providers, currentOwnerName: ownerName
+                )
+            }
+            SharedDataStore.shared.recordSwitchEvent(SwitchEvent(
+                at: Date(),
+                from: outgoingNameForHistory ?? "none",
+                to: updatedProfile.name,
+                trigger: userInitiated ? .manual : .auto,
+                reason: "NOT applied — \(providers) login could not be written to the CLI",
+                fromHeadroom: nil,
+                providerRaw: String(describing: updatedProfile.providerKind)
+            ))
+            return .credentialWriteFailed
+        }
+
         if !refusedProviders.isEmpty && !userInitiated {
             switchingSemaphore = false
             isSwitchingProfile = false
@@ -954,6 +1029,22 @@ class ProfileManager: ObservableObject {
         case claude
         case codex
         case grok
+
+        init(_ kind: Profile.ProviderKind) {
+            switch kind {
+            case .claude: self = .claude
+            case .codex: self = .codex
+            case .grok: self = .grok
+            }
+        }
+
+        var providerKind: Profile.ProviderKind {
+            switch self {
+            case .claude: return .claude
+            case .codex: return .codex
+            case .grok: return .grok
+            }
+        }
 
         /// How the provider is named to the user.
         var displayName: String {
@@ -1210,6 +1301,65 @@ class ProfileManager: ObservableObject {
                 "ownerName": newOwner.name
             ]
         )
+        // The view does not follow an external change, so without this the
+        // only trace of "the CLI is on a different account than you chose" is
+        // a log line (the 12:53 desktop-app rewrite on 2026-09-04 went unseen).
+        NotificationManager.shared.sendProviderOwnerChangedExternallyNotification(
+            providerName: RefusedProvider(provider).displayName, ownerName: newOwner.name
+        )
+    }
+
+    // MARK: - Grace window after a user-initiated switch
+
+    /// How long after a USER-initiated switch claims a provider pointer the
+    /// sweep-end adoption repairs (`adoptCodexLoginByAccountId`,
+    /// `adoptSystemLoginByIdentity`) leave that pointer alone even when the
+    /// CLI's login file names another account.
+    ///
+    /// Two external writers rewrite `~/.codex/auth.json` on the owner's Mac —
+    /// the Codex standalone daemon and the ChatGPT desktop app — and the repair
+    /// re-derived the pointer from the file at the end of EVERY sweep with no
+    /// memory of who had just switched, so a user's choice could be reverted
+    /// 30 s later with one log line and no notice (2026-09-04). Inside the
+    /// window the pointer holds; after it the file is adopted as before and the
+    /// user is TOLD (`announceExternalOwnerChange`). File watching and daemon
+    /// awareness are a separate design item, not this window.
+    nonisolated static let externalRepairGrace: TimeInterval = 90
+
+    /// When a user-initiated activation last claimed each provider's pointer.
+    private var userClaimedPointerAt: [Profile.ProviderKind: Date] = [:]
+    /// The claim (by its date) whose hold has already been logged, per provider.
+    private var graceHoldLogged: [Profile.ProviderKind: Date] = [:]
+
+    /// The pure rule: a repair may move the pointer when no user claim is
+    /// recorded, or the claim is at least `grace` old.
+    nonisolated static func repairMayMovePointer(
+        userClaimedAt: Date?, now: Date, grace: TimeInterval = externalRepairGrace
+    ) -> Bool {
+        guard let userClaimedAt else { return true }
+        return now.timeIntervalSince(userClaimedAt) >= grace
+    }
+
+    private func noteUserClaim(_ provider: Profile.ProviderKind, userInitiated: Bool) {
+        guard userInitiated else { return }
+        userClaimedPointerAt[provider] = Date()
+    }
+
+    /// False — logging once per claim — while `provider`'s pointer is inside
+    /// the grace window that follows a user-initiated switch.
+    private func repairMayMovePointerNow(_ provider: Profile.ProviderKind, fileOwnerName: String) -> Bool {
+        let claimedAt = userClaimedPointerAt[provider]
+        if Self.repairMayMovePointer(userClaimedAt: claimedAt, now: Date()) { return true }
+        if let claimedAt, graceHoldLogged[provider] != claimedAt {
+            graceHoldLogged[provider] = claimedAt
+            let age = Int(Date().timeIntervalSince(claimedAt))
+            LoggingService.shared.log(
+                "ProfileManager: \(RefusedProvider(provider).displayName) login file names '\(fileOwnerName)' but the user made "
+                + "'\(currentOwnerName(of: provider) ?? "none")' active \(age)s ago — holding the pointer through the "
+                + "\(Int(Self.externalRepairGrace))s grace window"
+            )
+        }
+        return false
     }
 
     // MARK: - Provider Owner Resolution — FOCUS IS NEVER AUTHORITY
@@ -1783,11 +1933,11 @@ class ProfileManager: ObservableObject {
     /// Runs blocking work (e.g. `security` subprocesses, Keychain I/O) on a background
     /// queue and *suspends* — rather than blocks — the calling actor until it finishes.
     /// Keeps the main thread free so the UI stays responsive during a profile switch.
-    private func runOffMainActor(_ work: @escaping () -> Void) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    @discardableResult
+    private func runOffMainActor<T>(_ work: @escaping () -> T) async -> T {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                work()
-                continuation.resume()
+                continuation.resume(returning: work())
             }
         }
     }
@@ -2034,6 +2184,7 @@ class ProfileManager: ObservableObject {
         guard let owner else { return nil }
 
         if activeClaudeProfileId != owner.id {
+            guard repairMayMovePointerNow(.claude, fileOwnerName: owner.name) else { return nil }
             LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
             setProviderOwner(.claude, to: owner.id, cause: .identityAdoption,
                              knownAccountStamp: identity.accountUUID)
@@ -2162,6 +2313,9 @@ class ProfileManager: ObservableObject {
         guard let owner = codexOwnerFromAuthFile() else { return nil }
 
         if activeCodexProfileId != owner.id {
+            // Inside the grace window the file is not evidence against the
+            // user's choice — see `externalRepairGrace`. Adoption waits too.
+            guard repairMayMovePointerNow(.codex, fileOwnerName: owner.name) else { return nil }
             LoggingService.shared.log("ProfileManager: ⚠️ active Codex pointer repaired — auth.json's account belongs to '\(owner.name)', not '\(profiles.first(where: { $0.id == activeCodexProfileId })?.name ?? "none")'")
             setProviderOwner(.codex, to: owner.id, cause: .identityAdoption)
             profileStore.saveActiveCodexProfileId(owner.id)
