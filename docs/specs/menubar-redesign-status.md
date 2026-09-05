@@ -155,6 +155,15 @@ Reading the telemetry after a deploy:
 defaults read com.claudeusagewidget.app debugGroupExposure
 ```
 
+## Related: Codex daemon awareness (2026-09-04, sibling session)
+
+The dashboard's Codex section carries one more line under its caption,
+`Terminals: <profile> since HH:MM` (`ProviderSection.terminalsLine`, fed from
+`CodexDaemonService.terminalsText` in `rebuildDashboardSnapshot`), because the
+Codex standalone daemon loads `auth.json` only at launch and interactive
+terminals can lag the active account after a switch. Design and safety rules:
+`docs/specs/codex-daemon-awareness.md`.
+
 ## Open questions for the owner — ANSWERED 2026-09-04 (all recommendations taken; see the timeline)
 
 1. Layout default: B (dots) is recommended and implemented; A (counts) is

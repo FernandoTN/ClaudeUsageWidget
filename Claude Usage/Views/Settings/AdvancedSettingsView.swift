@@ -30,6 +30,9 @@ struct AdvancedSettingsView: View {
                 SettingsSectionCard(title: "advanced.diagnostics_title".localized, subtitle: "advanced.diagnostics_subtitle".localized) {
                     AdvancedDiagnosticsCard()
                 }
+                SettingsSectionCard(title: "advanced.codex_daemon_title".localized, subtitle: "advanced.codex_daemon_subtitle".localized) {
+                    CodexDaemonCard()
+                }
                 SettingsSectionCard(title: "advanced.dead_title".localized, subtitle: "advanced.dead_subtitle".localized) {
                     DeadLoginFlagsCard(rows: deadRows) { row in
                         DeadLoginFlags.forget(row)
@@ -88,6 +91,61 @@ struct AdvancedDiagnosticsCard: View {
             }
             Text(versionLine).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
         }
+    }
+}
+
+// MARK: - Codex daemon (docs/specs/codex-daemon-awareness.md)
+
+/// The opt-in restart-on-switch toggle, a live status line, and the manual
+/// restart. The status comes from one `ps` scan off the main actor on appear
+/// and on "Check"; nothing here watches anything.
+struct CodexDaemonCard: View {
+    @State private var restartOnSwitch = SharedDataStore.shared.loadCodexDaemonRestartOnSwitch()
+    @State private var status: CodexDaemon.Status? = CodexDaemonService.shared.lastStatus
+    @State private var checking = false
+
+    private var statusLine: String {
+        guard let status else { return "advanced.codex_daemon_status_unknown".localized }
+        guard let daemon = status.daemon else { return "advanced.codex_daemon_status_not_running".localized }
+        return "advanced.codex_daemon_status_running".localized(with: Int(daemon.pid), status.attachedSessions)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.cardPadding) {
+            SettingToggle(
+                title: "advanced.codex_daemon_restart_on_switch".localized,
+                description: "advanced.codex_daemon_restart_on_switch_desc".localized,
+                isOn: Binding(get: { restartOnSwitch }, set: { on in
+                    restartOnSwitch = on
+                    SharedDataStore.shared.saveCodexDaemonRestartOnSwitch(on)
+                })
+            )
+            Divider()
+            HStack(spacing: 8) {
+                Text(statusLine).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                Spacer()
+                Button("advanced.codex_daemon_check".localized) { Task { await refresh() } }
+                    .controlSize(.small)
+                    .disabled(checking)
+                Button("advanced.codex_daemon_restart_now".localized) {
+                    Task {
+                        await CodexDaemonService.shared.restartDaemon(reason: "Settings › Advanced")
+                        await refresh()
+                    }
+                }
+                .controlSize(.small)
+                .disabled(checking || status?.isRunning != true)
+                .help("advanced.codex_daemon_restart_now_help".localized)
+            }
+            Text(CodexDaemonService.shared.terminalsText).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+        }
+        .task { await refresh() }
+    }
+
+    private func refresh() async {
+        checking = true
+        status = await CodexDaemonService.shared.currentStatus()
+        checking = false
     }
 }
 

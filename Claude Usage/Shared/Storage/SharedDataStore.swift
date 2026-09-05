@@ -21,6 +21,9 @@ class SharedDataStore {
         // Debug Settings
         static let debugAPILoggingEnabled = "debugAPILoggingEnabled"
 
+        // Codex daemon (docs/specs/codex-daemon-awareness.md)
+        static let codexDaemonRestartOnSwitch = "codexDaemonRestartOnSwitch_v1"
+
         // Keyboard Shortcuts
         static let shortcutTogglePopover = "shortcutTogglePopover"
         static let shortcutRefresh = "shortcutRefresh"
@@ -171,6 +174,20 @@ class SharedDataStore {
 
     func loadDebugAPILoggingEnabled() -> Bool {
         return defaults.bool(forKey: Keys.debugAPILoggingEnabled)
+    }
+
+    // MARK: - Codex daemon
+
+    /// Whether a Codex account switch may restart the Codex daemon by itself
+    /// when no interactive session is attached (the daemon loads auth.json only
+    /// at launch, so terminals otherwise keep the previous login). OFF by
+    /// default: restarting somebody's daemon is opt-in.
+    func loadCodexDaemonRestartOnSwitch() -> Bool {
+        defaults.bool(forKey: Keys.codexDaemonRestartOnSwitch)
+    }
+
+    func saveCodexDaemonRestartOnSwitch(_ enabled: Bool) {
+        writeSingleShot(enabled, forKey: Keys.codexDaemonRestartOnSwitch)
     }
 
     // MARK: - Keyboard Shortcuts
@@ -484,6 +501,7 @@ class SharedDataStore {
         RegisteredKey("autoSwitchQueue", .sharedDataStore, .live, ui: "Active & Auto-switch › Hand-off queue"),
         RegisteredKey("fleetAlertDefaults_v1", .sharedDataStore, .live, ui: "Alerts › Fleet defaults"),
         RegisteredKey("activeSelectorItem_v1", .sharedDataStore, .live, ui: "Display › Active-account selector"),
+        RegisteredKey(Keys.codexDaemonRestartOnSwitch, .sharedDataStore, .live, ui: "Advanced › Codex daemon"),
     ]
 
     // MARK: - Fleet alert defaults (docs/specs/ux-revamp.md §5.2, D11)

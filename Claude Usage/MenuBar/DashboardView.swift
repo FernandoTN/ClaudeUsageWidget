@@ -515,6 +515,14 @@ struct DashboardView: View {
                 .font(.system(size: 9.5))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
+            if let terminals = section.terminalsLine {
+                // Codex: the daemon's account can lag the active one.
+                Text(terminals)
+                    .font(.system(size: 8.5))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .help("codex_daemon.terminals_help".localized)
+            }
             if let counts = section.selection?.counts {
                 Text(DashboardFormatting.counts(counts))
                     .font(.system(size: 8.5))
