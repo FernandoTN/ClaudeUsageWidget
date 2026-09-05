@@ -116,12 +116,32 @@ struct FleetInsights: Hashable {
             /// A burst-class 429 backed the fetch off.
             case burst429(streak: Int)
         }
+        /// For `.tripwire` rows: whose window the event was attributed to and
+        /// what became of it (`TranscriptLimitAttribution`). The row is filed
+        /// under the profile it was attributed TO.
+        enum TripwireDisposition: Hashable {
+            /// The current owner's — handed to the auto-switch after the live
+            /// read confirmed it or nothing answered.
+            case actedOn(basis: String, liveRead: String)
+            /// A former owner's window (reset match): recorded against it, no
+            /// switch; `currentOwner` kept the login.
+            case previousOwner(currentOwner: String)
+            /// The current owner's live read showed headroom — ignored.
+            case contradicted(livePercent: Int)
+            /// Inside the post-switch grace and not the new owner's — ignored.
+            case postSwitchGrace
+            /// Matches no owner's measured window — ignored.
+            case unmatched
+        }
         var at: Date
         var profileId: UUID?
         var name: String
         var provider: Profile.ProviderKind
         var kind: Kind
         var detail: String?
+        /// Nil for every other kind, and for tripwire rows recorded before the
+        /// attribution existed.
+        var tripwire: TripwireDisposition? = nil
     }
     var incidents: [Incident]
 

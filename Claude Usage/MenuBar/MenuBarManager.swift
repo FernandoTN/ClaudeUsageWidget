@@ -2869,25 +2869,21 @@ private func observeCredentialChanges() {
 
         if let event = signals.events.last, event.at > lastTripwireEventAt {
             lastTripwireEventAt = event.at
-            applyTranscriptRateLimitEvent(event)
+            await applyTranscriptRateLimitEvent(event)
         }
         if let cache = signals.cliCache {
             adoptCLICachedUsage(cache)
         }
     }
 
-    /// The account that owned the shared CLI login when the event fired: the
-    /// switch history's first switch AFTER the event names who it was taken
-    /// from; no later switch means the current owner. (The event may be
-    /// minutes old — attributing it to the CURRENT owner after the user
-    /// already switched away would exhaust-stamp the wrong account.)
-    private func attributeRateLimitEvent(at eventTime: Date) -> Profile? {
-        let history = SharedDataStore.shared.loadSwitchHistory()
-        let claudeNames = Set(
-            profileManager.profiles
-                .filter { !$0.isCodexOnlyProfile && !$0.isGrokOnlyProfile }
-                .map(\.name)
-        )
+    /// The account that owned the shared CLI login when the event fired, by
+    /// the wall clock: the switch history's first Claude switch AFTER the
+    /// event names who it was taken from; no later switch means the current
+    /// owner. (The event may be minutes old — attributing it to the CURRENT
+    /// owner after the user already switched away would exhaust-stamp the
+    /// wrong account.) The clock is only the starting point: whose window the
+    /// event actually names is `TranscriptLimitAttribution.resolve`'s call.
+    private func ownerProfile(atEventTime eventTime: Date, history: [SwitchEvent], claudeNames: Set<String>) -> Profile? {
         if let ownerName = Self.rateLimitEventOwnerName(
             history: history, eventTime: eventTime, claudeProfileNames: claudeNames
         ) {
@@ -2917,12 +2913,99 @@ private func observeCredentialChanges() {
             .from
     }
 
-    private func applyTranscriptRateLimitEvent(_ event: LocalLimitSignalService.RateLimitEvent) {
-        guard let profile = attributeRateLimitEvent(at: event.at) else { return }
+    private static func transcriptCandidate(_ profile: Profile) -> TranscriptLimitAttribution.Candidate {
+        TranscriptLimitAttribution.Candidate(
+            id: profile.id,
+            name: profile.name,
+            sessionResetTime: profile.claudeUsage?.sessionResetTime,
+            sessionPercentage: profile.claudeUsage?.sessionPercentage ?? 0
+        )
+    }
+
+    /// Attributes the event by evidence (the reset time it names against the
+    /// owners' cached window stamps), corroborates the blamed current owner
+    /// LIVE, and only then lets the auto-switch see it. The 2026-09-04 22:53
+    /// incident this closes is described on `TranscriptLimitAttribution`.
+    private func applyTranscriptRateLimitEvent(_ event: LocalLimitSignalService.RateLimitEvent) async {
+        let history = SharedDataStore.shared.loadSwitchHistory()
+        let claudeNames = Set(
+            profileManager.profiles
+                .filter { !$0.isCodexOnlyProfile && !$0.isGrokOnlyProfile }
+                .map(\.name)
+        )
+        guard let owner = ownerProfile(atEventTime: event.at, history: history, claudeNames: claudeNames) else {
+            LoggingService.shared.log("MenuBarManager: transcript rate-limit event at \(event.at) — no Claude owner to attribute it to, ignoring")
+            return
+        }
+        let previousOwners = TranscriptLimitAttribution.previousOwnerNames(
+            history: history, eventTime: event.at, claudeProfileNames: claudeNames, excluding: owner.name
+        ).compactMap { name in profileManager.profiles.first(where: { $0.name == name }) }
+        let lastSwitchAt = TranscriptLimitAttribution.lastClaudeSwitchAt(
+            history: history, before: event.at, claudeProfileNames: claudeNames
+        )
+        let verdict = TranscriptLimitAttribution.resolve(
+            eventAt: event.at,
+            eventResetsAt: event.resetsAt,
+            currentOwner: Self.transcriptCandidate(owner),
+            previousOwners: previousOwners.map(Self.transcriptCandidate),
+            lastSwitchAt: lastSwitchAt
+        )
+        let resetText = event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)"
+        let detail = "session limit, resets \(resetText)"
+
+        switch verdict {
+        case .previousOwner(let candidate):
+            // The outgoing account's own sessions died on its own limit —
+            // stamp IT (its own reading already says 100 %) and leave the
+            // current owner alone: it was never the account refused.
+            guard let previous = profileManager.profiles.first(where: { $0.id == candidate.id }) else { return }
+            stampTranscriptHit(previous.id, event: event)
+            LoggingService.shared.log("MenuBarManager: transcript rate-limit event attributed to previous owner '\(previous.name)' (reset match) — no switch; '\(owner.name)' keeps the login")
+            recordTripwireIncident(previous, event: event, detail: detail,
+                                   disposition: .previousOwner(currentOwner: owner.name))
+
+        case .postSwitchGrace(let newOwner):
+            let sinceSwitch = lastSwitchAt.map { Int(event.at.timeIntervalSince($0)) } ?? 0
+            LoggingService.shared.log("MenuBarManager: transcript rate-limit event \(sinceSwitch)s after the switch to '\(newOwner.name)' names a reset (\(resetText)) that is not its window — ignoring (post-switch grace)")
+            recordTripwireIncident(owner, event: event, detail: detail, disposition: .postSwitchGrace)
+
+        case .unmatched(let current):
+            let ownStamp = current.sessionResetTime.map(String.init(describing:)) ?? "none"
+            LoggingService.shared.log("MenuBarManager: transcript rate-limit event resets \(resetText) — matches neither '\(current.name)' (resets \(ownStamp)) nor a recent previous owner — ignoring")
+            recordTripwireIncident(owner, event: event, detail: detail, disposition: .unmatched)
+
+        case .currentOwner(_, let basis):
+            // Corroborate before switching: a switch invalidates every running
+            // session's prompt cache, so the account must be measured out, or
+            // unmeasurable, before the transcript's word alone may move the
+            // login. The candidate walk keeps its own TARGET re-measure.
+            let live = await corroborateSessionLimit(for: owner)
+            let sessionThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
+            switch TranscriptLimitAttribution.corroborate(live: live, sessionThreshold: sessionThreshold) {
+            case .contradicted(let percent):
+                LoggingService.shared.log("MenuBarManager: transcript says limit, live read says \(Int(percent))% — ignoring event for '\(owner.name)' (attributed by \(basis.rawValue))")
+                recordTripwireIncident(owner, event: event, detail: detail,
+                                       disposition: .contradicted(livePercent: Int(percent)))
+
+            case .confirmed(let percent):
+                actOnTranscriptHit(owner.id, event: event, detail: detail,
+                                   basis: basis, liveRead: "live read \(Int(percent))%")
+
+            case .unavailable:
+                actOnTranscriptHit(owner.id, event: event, detail: detail,
+                                   basis: basis, liveRead: "live read unavailable")
+            }
+        }
+    }
+
+    /// Server-affirmed (a real session died on the API's 429): display reads
+    /// 100 through the affirmed-stamp seam, sweeps skip until the window
+    /// resets, the auto-switch may act on it. Re-reads the profile so a live
+    /// reading saved a moment ago is the base.
+    @discardableResult
+    private func stampTranscriptHit(_ profileId: UUID, event: LocalLimitSignalService.RateLimitEvent) -> (Profile, ClaudeUsage)? {
+        guard let profile = profileManager.profiles.first(where: { $0.id == profileId }) else { return nil }
         var usage = profile.claudeUsage ?? .empty
-        // Server-affirmed (a real session died on the API's 429): display
-        // reads 100 through the affirmed-stamp seam, sweeps skip until the
-        // window resets, the auto-switch may act on it.
         usage.rateLimitedUntil = event.resetsAt ?? event.at.addingTimeInterval(1800)
         usage.rateLimitedInferred = nil
         usage.projectedSessionPercentage = nil
@@ -2931,15 +3014,72 @@ private func observeCredentialChanges() {
         }
         usage.lastUpdated = event.at
         profileManager.saveClaudeUsage(usage, for: profile.id)
-        LoggingService.shared.log("MenuBarManager: transcript rate-limit event — '\(profile.name)' hit its session limit at \(event.at), resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)")")
-        // Filed at the EVENT's time, not now: the tripwire routinely reads a
-        // transcript minutes old, and the dashboard's 24 h window must age it
-        // from when the session actually died.
-        incidentRing.record(FleetInsights.Incident(
-            at: event.at, profileId: profile.id, name: profile.name, provider: .claude, kind: .tripwire,
-            detail: "session limit, resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)")"))
+        return (profile, usage)
+    }
+
+    /// The actionable path: stamp the current owner and hand the event to the
+    /// auto-switch trigger.
+    private func actOnTranscriptHit(
+        _ profileId: UUID,
+        event: LocalLimitSignalService.RateLimitEvent,
+        detail: String,
+        basis: TranscriptLimitAttribution.Basis,
+        liveRead: String
+    ) {
+        guard let (profile, usage) = stampTranscriptHit(profileId, event: event) else { return }
+        LoggingService.shared.log("MenuBarManager: transcript rate-limit event — '\(profile.name)' hit its session limit at \(event.at), resets \(event.resetsAt.map(String.init(describing:)) ?? "unknown (30min stamp)") (attributed by \(basis.rawValue), \(liveRead))")
+        recordTripwireIncident(profile, event: event, detail: detail,
+                               disposition: .actedOn(basis: basis.rawValue, liveRead: liveRead))
         if mayTriggerAutoSwitch(profile.id) {
             checkAutoSwitchIfNeeded(usage: usage, currentProfile: profile)
+        }
+    }
+
+    /// Filed at the EVENT's time, not now: the tripwire routinely reads a
+    /// transcript minutes old, and the dashboard's 24 h window must age it
+    /// from when the session actually died.
+    private func recordTripwireIncident(
+        _ profile: Profile,
+        event: LocalLimitSignalService.RateLimitEvent,
+        detail: String,
+        disposition: FleetInsights.Incident.TripwireDisposition
+    ) {
+        incidentRing.record(FleetInsights.Incident(
+            at: event.at, profileId: profile.id, name: profile.name, provider: .claude, kind: .tripwire,
+            detail: detail, tripwire: disposition))
+    }
+
+    /// Re-measures the blamed current owner with its own credentials: the
+    /// usage endpoint first, then — when that is refused — the Messages-API
+    /// header rescue the blind-owner path already uses. A reading is saved
+    /// like any sweep success; an account-level Retry-After is itself the
+    /// confirmation. Nil when nothing answered.
+    private func corroborateSessionLimit(for profile: Profile) async -> ClaudeUsage? {
+        var profile = profile
+        await ensureFreshCLICredentialsIfNeeded(for: profile)
+        if let updated = profileManager.profiles.first(where: { $0.id == profile.id }) {
+            profile = updated
+        }
+        do {
+            let fresh = try await fetchUsageForProfile(profile)
+            profileManager.saveClaudeUsage(fresh, for: profile.id)
+            burstBackoffs.removeValue(forKey: profile.id)
+            recordClaudeUsageSuccess(profile, usage: fresh)
+            return fresh
+        } catch {
+            let appError = AppError.wrap(error)
+            if let stamped = stampAccountThrottleIfNeeded(appError, profile: profile) {
+                return stamped
+            }
+            if appError.code == .apiRateLimited,
+               let rescued = await probeUsageViaMessageHeaders(for: profile) {
+                profileManager.saveClaudeUsage(rescued, for: profile.id)
+                burstBackoffs.removeValue(forKey: profile.id)
+                recordClaudeUsageSuccess(profile, usage: rescued, countsAsEndpointControl: false)
+                return rescued
+            }
+            LoggingService.shared.log("MenuBarManager: could not corroborate the transcript rate-limit event for '\(profile.name)' — \(appError.code.rawValue)")
+            return nil
         }
     }
 

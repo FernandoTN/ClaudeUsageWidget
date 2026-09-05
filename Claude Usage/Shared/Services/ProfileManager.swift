@@ -575,13 +575,20 @@ class ProfileManager: ObservableObject {
             : Set(Profile.ProviderKind.allCases)
 
         // Captured before any state changes — the history record needs the
-        // OUTGOING account, and activeProfile is rewritten mid-switch. On an
-        // ownership repair the focus is not moving, so the account being left
-        // is the one that owns the login, not the focused profile (which is the
-        // target itself — a from == to record would read as a no-op).
+        // OUTGOING account, and activeProfile is rewritten mid-switch. The
+        // account being left is the one that OWNS the target's provider login,
+        // never the focused profile: the focus may sit anywhere ('xLucifer(dev)'
+        // stayed on screen through eleven automatic Claude switches on
+        // 2026-09-04 and every row named it as the outgoing account), and the
+        // transcript rate-limit attribution reads `from` as "who owned the CLI
+        // login before this switch". The focus is only the fallback when no
+        // pointer exists. On an ownership repair the focus is not moving, so
+        // the same rule applies to the providers being repaired (the focused
+        // profile is the target itself — a from == to record would read as a
+        // no-op).
         let outgoingNameForHistory = isFocused
             ? (unownedProviders.compactMap { currentOwnerName(of: $0) }.first ?? activeProfile?.name)
-            : activeProfile?.name
+            : (currentOwnerName(of: profile.providerKind) ?? activeProfile?.name)
 
         // Whether the VIEW should follow this switch, decided before any pointer
         // moves. A user-initiated "Make active" always moves the focus — you

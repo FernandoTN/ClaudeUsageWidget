@@ -323,7 +323,7 @@ enum InsightsFormatting {
     static func incident(_ incident: FleetInsights.Incident, now: Date) -> String {
         let kind: String
         switch incident.kind {
-        case .tripwire: kind = "insights.kind_tripwire".localized
+        case .tripwire: kind = tripwireKind(incident.tripwire)
         case .affirmedStamp(let until): kind = "insights.kind_affirmed".localized(with: DashboardFormatting.duration(max(0, until.timeIntervalSince(now))))
         case .inferredStamp: kind = "insights.kind_inferred".localized
         case .headerProbe429: kind = "insights.kind_probe_429".localized
@@ -333,6 +333,25 @@ enum InsightsFormatting {
         var parts = [DashboardFormatting.age(incident.at, now: now), kind]
         if let detail = incidentDetail(incident) { parts.append(detail) }
         return parts.joined(separator: " · ")
+    }
+
+    /// A tripwire row says what the widget DID with the event — "429 from the
+    /// previous owner ignored" is the line the 2026-09-04 incident needed.
+    static func tripwireKind(_ disposition: FleetInsights.Incident.TripwireDisposition?) -> String {
+        switch disposition {
+        case .actedOn(let basis, let liveRead)?:
+            return "insights.kind_tripwire_acted".localized(with: basis, liveRead)
+        case .previousOwner(let currentOwner)?:
+            return "insights.kind_tripwire_previous".localized(with: currentOwner)
+        case .contradicted(let livePercent)?:
+            return "insights.kind_tripwire_contradicted".localized(with: livePercent)
+        case .postSwitchGrace?:
+            return "insights.kind_tripwire_grace".localized
+        case .unmatched?:
+            return "insights.kind_tripwire_unmatched".localized
+        case nil:
+            return "insights.kind_tripwire".localized
+        }
     }
 
     /// The recorder's free-text detail in human form: dropped for an affirmed

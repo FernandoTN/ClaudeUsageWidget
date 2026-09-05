@@ -551,6 +551,19 @@ in the shared switch-history ring (`rateLimitEventOwnerName`) — a Codex
 switch landing between the Claude death event and the next Claude switch
 used to drop the event as "not attributable".
 
+**Transcript events belong to whoever's window they name, not to whoever owns
+the login now (2026-09-04 22:53 incident).** Running sessions keep the
+previous owner's token for a while after a switch, so a transcript 429 in the
+minutes after one is usually the OUTGOING account's. `TranscriptLimitAttribution`
+matches the event's parsed reset against the cached `sessionResetTime` of the
+owner at event time and of the previous owners from the switch history (15 min
+lookback, ±3 min); a previous-owner match stamps THAT profile and never
+switches; the current owner is re-measured live first and a reading with
+headroom is `contradicted` (no stamp, no switch); for 120 s after a switch an
+event that does not match the new owner is never actionable. The switch
+history's `from` is now the outgoing OWNER, not the focused profile. Spec:
+`docs/specs/transcript-limit-attribution.md`.
+
 **Menu-bar overflow vs stranded tiles**: when the bar overflows, macOS hides
 the clipped status items and parks them all at one shared off-edge frame —
 `strandedTileDetected` treats duplicate minX values as "overflow-hidden" and
