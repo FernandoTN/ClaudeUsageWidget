@@ -346,4 +346,26 @@ final class FleetSummaryTests: XCTestCase {
         XCTAssertTrue(MenuBarLayout.fleetCounts.isFleetSummary)
         XCTAssertFalse(MenuBarLayout.everyAccount.isFleetSummary)
     }
+
+    // MARK: - Summary memo key
+
+    /// Two owners whose tiles were never painted both carry a nil tile key, and
+    /// nil == nil: an owner change between them produced an EQUAL summary key,
+    /// the paint was skipped, and the bar kept the previous owner's block. The
+    /// key now names who is active, not only how its tile rendered.
+    func testSummaryKeyTellsNeverPaintedOwnersApart() {
+        let atlas = UUID()
+        let cedar = UUID()
+        func key(active: UUID?) -> StatusBarUIManager.SummaryRenderKey {
+            StatusBarUIManager.SummaryRenderKey(
+                activeId: active, activeKey: nil, members: [], affix: nil, glyph: nil, digits: nil,
+                activeReadiness: nil, nextReadiness: nil, activeIsStale: false,
+                layout: .fleetDots, config: MultiProfileDisplayConfig(barLayout: .fleetDots),
+                appearanceName: "NSAppearanceNameDarkAqua", backingScaleQ: 200
+            )
+        }
+        XCTAssertNotEqual(key(active: atlas), key(active: cedar), "a different owner is a different paint")
+        XCTAssertEqual(key(active: atlas), key(active: atlas), "the same owner still memoizes")
+        XCTAssertNotEqual(key(active: atlas), key(active: nil), "losing the owner is a change too")
+    }
 }

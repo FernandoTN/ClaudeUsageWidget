@@ -102,9 +102,21 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 | 4b `DashboardInsightsView` (eight sections, timeline strip, sparkline, `InsightsFormatting`, `FleetInsights.fixture`) — the redesign embeds it under the last section | `feat/ux-revamp-4b-insights-view` | #110 | **merged** `ec3f474` |
 | Round-3 design pass (R1–R8, S1; `ActivePill`, `clearManualPin`) | `feat/ux-revamp-r3-only` | #114 | **merged** `f887cdf` (on the seams 1326db1) |
 | 4.1 `CodexResetsCard` in the Overview (count never claims zero, on-demand details by expiry, Redeem gated on a measured limit with confirmation and outcome) | `feat/ux-revamp-r3-design-pass` | #116 | **merged** `6af5bab` — the deploy point (round 3 + 4.1, one restart) |
+| Fix (2026-09-04 16:38 incident): a manual Codex switch onto the focused profile left the fleet tile on the old owner for ~30 s and could be silently reverted. `FleetRepaintScheduler` repaints the fleet item on every `.providerOwnerClaimed` (coalesced per turn, held while `isSwitchingProfile`, one paint on completion — the sweep-end paint no longer lands mid-switch); `SummaryRenderKey.activeId`; the apply FAILS CLOSED (`ActivationOutcome.credentialWriteFailed`: no pointer claim on a thrown write, Codex reads `auth.json` back and requires the target `account_id`; walk → retry next sweep; ⇄/dashboard show the outcome; automatic path notifies); `ProfileManager.externalRepairGrace` = 90 s after a user-initiated claim during which `adoptCodexLoginByAccountId` / `adoptSystemLoginByIdentity` hold the pointer (one log line per claim); an adopted external rewrite now posts a user notification ("<Provider> login changed outside the app: now <profile>"). The ⇄ selector already applied immediately (`activateProfileDetailed(userInitiated: true)` — the 6.6 s in the log was the modal confirmation). | `fix/codex-switch-repaint` | draft | Release build OK; suite on the merged tree pending |
 
 ## Open items
 
+- **Codex daemon awareness (follow-up, separate design item):** the Codex
+  standalone build runs a shared `codex app-server` daemon that loads
+  `~/.codex/auth.json` ONCE at launch and never reloads, so a widget switch
+  reaches `codex exec` and the desktop app but NOT interactive terminals until
+  the daemon restarts; the ChatGPT desktop app also rewrites that file. The
+  repaint/fail-closed/grace PR deliberately adds no file watcher and no daemon
+  detection — stage 2 (spec to be written under `docs/specs/`): path-anchored
+  daemon detection after a switch, a "Restart Codex daemon" action, an opt-in
+  auto-restart setting, and a "Terminals: <profile> since HH:MM" line derived
+  from the daemon's newest rollout `resets_at` matched to the profiles' cached
+  weekly `reset_at`.
 - Owner check-in answers (spec §9) — the owner said to proceed on the
   recommendations; the page stays open for notes.
 - `.providerOwnerChangedExternally` (#70) is consumed by the ⇄ selector (stage

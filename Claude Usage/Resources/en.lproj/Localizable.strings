@@ -299,6 +299,11 @@
 "notification.focus_without_login.title" = "Showing account — CLI unchanged";
 "notification.focus_without_login.message" = "Showing '%1$@'. Its %2$@ login is dead, so the CLI stays on '%3$@' — use %4$@ → Log in to repair it.";
 "notification.focus_without_login.message_no_owner" = "Showing '%1$@'. Its %2$@ login is dead and was not applied, so the CLI is unchanged — use %3$@ → Log in to repair it.";
+"notification.owner_changed_externally.title" = "%@ login changed outside the app";
+"notification.owner_changed_externally.message" = "The %1$@ CLI is now signed in as '%2$@'. Nothing in the app made that change — the menu bar follows it.";
+"notification.credential_write_failed.title" = "Switch failed — CLI unchanged";
+"notification.credential_write_failed.message" = "The %2$@ login of '%1$@' could not be written to the CLI, so the CLI stays on '%3$@'. Check the log, then try again.";
+"notification.credential_write_failed.message_no_owner" = "The %2$@ login of '%1$@' could not be written to the CLI, so the CLI is unchanged. Check the log, then try again.";
 "notification.grok_relogin.title" = "Grok account needs re-login";
 "notification.grok_relogin.message" = "The saved Grok token for '%@' was revoked. Run `grok` and log in with that account, then re-sync it in Settings.";
 "notification.duplicate_claude_account.title" = "Two profiles, one Anthropic account";

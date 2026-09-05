@@ -244,4 +244,90 @@ final class ProviderOwnerClaimedTests: XCTestCase {
         XCTAssertEqual(note.userInfo?["cause"] as? String, "launchRepair",
                        "nobody switched anything — the app restored what it had already persisted")
     }
+
+    // MARK: - A pointer change repaints the fleet item
+
+    /// The signal's newest consumer, and the reason the fleet item can now
+    /// change owner without a focus change: the item paints from the LIVE
+    /// pointers, and a switch onto the already-focused profile publishes no
+    /// focus change at all — so this post is the ONLY thing that can repaint it
+    /// (2026-09-04 16:38: the tile kept the previous Codex owner for ~30 s).
+    func testAPointerChangeRequestsOneFleetRepaintOnTheNextTurn() {
+        let first = Profile(id: UUID(), name: "First")
+        let second = Profile(id: UUID(), name: "Second")
+        seed([first, second], focused: first.id)
+        manager.claimActiveCodexOwnership(first.id)
+
+        let painted = expectation(description: "one fleet paint after the pointer moved")
+        var reasons: [FleetRepaintScheduler.Reason] = []
+        let scheduler = FleetRepaintScheduler(
+            isBlocked: { false },
+            paint: { reason in
+                reasons.append(reason)
+                painted.fulfill()
+            }
+        )
+        scheduler.observeOwnerChanges()
+        defer { scheduler.stopObserving() }
+
+        manager.claimActiveCodexOwnership(second.id)
+
+        XCTAssertEqual(scheduler.paintCount, 0,
+                       "the paint waits for the next run-loop turn — never inline with the pointer write")
+        wait(for: [painted], timeout: 2)
+        XCTAssertEqual(reasons, [.ownerChanged])
+    }
+
+    /// N posts inside one turn are ONE paint. `loadProfiles()` can move all
+    /// three pointers in a single call, and painting the bar three times for
+    /// one fact is the flicker class the redesign removed.
+    func testPointerChangesInsideOneTurnCoalesceIntoOnePaint() {
+        var queued: [() -> Void] = []
+        var paints = 0
+        let scheduler = FleetRepaintScheduler(
+            isBlocked: { false },
+            paint: { _ in paints += 1 },
+            enqueue: { queued.append($0) }
+        )
+        let center = NotificationCenter()
+        scheduler.observeOwnerChanges(on: center)
+        defer { scheduler.stopObserving(on: center) }
+
+        for provider in ["claude", "codex", "grok"] {
+            center.post(name: .providerOwnerClaimed, object: UUID(),
+                        userInfo: ["provider": provider, "cause": "launchRepair"])
+        }
+
+        XCTAssertEqual(queued.count, 1, "the second and third posts were absorbed into the first request")
+        XCTAssertEqual(paints, 0)
+        queued.removeFirst()()
+        XCTAssertEqual(paints, 1)
+    }
+
+    /// The sweep's final paint used to land between the credential write and
+    /// the pointer save (16:38:39.984 — 1 ms before the Codex claim) and then be
+    /// the LAST paint. A request that finds a switch in flight is held, and
+    /// the switch completing paints once, whether or not anything was held.
+    func testAPaintRequestedDuringASwitchIsHeldUntilTheSwitchCompletes() {
+        var queued: [() -> Void] = []
+        var switching = true
+        var reasons: [FleetRepaintScheduler.Reason] = []
+        let scheduler = FleetRepaintScheduler(
+            isBlocked: { switching },
+            paint: { reasons.append($0) },
+            enqueue: { queued.append($0) }
+        )
+
+        scheduler.request(.sweepEnd)
+        queued.removeFirst()()
+        XCTAssertEqual(reasons, [], "no fleet paint lands while the switch is in flight")
+        XCTAssertEqual(scheduler.heldReason, .sweepEnd)
+
+        switching = false
+        scheduler.switchCompleted()
+        XCTAssertEqual(queued.count, 1)
+        queued.removeFirst()()
+        XCTAssertEqual(reasons, [.switchCompleted], "one paint, attributed to the switch that released it")
+        XCTAssertNil(scheduler.heldReason)
+    }
 }

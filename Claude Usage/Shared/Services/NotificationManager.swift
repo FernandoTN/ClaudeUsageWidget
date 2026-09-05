@@ -494,6 +494,60 @@ class NotificationManager {
         }
     }
 
+    /// A provider's shared CLI login changed OUTSIDE the app and the sweep-end
+    /// repair adopted it: the provider pointer — and the menu bar — now follow
+    /// the new owner. The view deliberately does not, so this is where the user
+    /// learns the CLI is on a different account than the one they chose.
+    func sendProviderOwnerChangedExternallyNotification(providerName: String, ownerName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.owner_changed_externally.title".localized(with: providerName)
+        content.body = "notification.owner_changed_externally.message".localized(with: providerName, ownerName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "owner_changed_externally_\(providerName)_\(ownerName)",
+            content: content,
+            trigger: nil
+        )
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send owner-changed-externally notification: \(error)")
+            }
+        }
+    }
+
+    /// An AUTOMATIC switch found the target's login live but could not write it
+    /// to the CLI (or, for Codex, the file did not read back as that account).
+    /// Nothing was claimed and the CLI is unchanged; the user-initiated surfaces
+    /// show the same outcome in place, so only the automatic path sends this.
+    func sendCredentialWriteFailedNotification(profileName: String, providerName: String, currentOwnerName: String?) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.credential_write_failed.title".localized
+        if let currentOwnerName {
+            content.body = "notification.credential_write_failed.message".localized(
+                with: profileName, providerName, currentOwnerName
+            )
+        } else {
+            content.body = "notification.credential_write_failed.message_no_owner".localized(
+                with: profileName, providerName
+            )
+        }
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "credential_write_failed_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send credential-write-failed notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Grok refresh token was revoked and the account
     /// needs a fresh `grok` CLI login + re-sync (the app cannot repair it itself).
     func sendGrokReloginNotification(profileName: String) {
