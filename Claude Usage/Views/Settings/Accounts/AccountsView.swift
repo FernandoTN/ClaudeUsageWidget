@@ -457,6 +457,8 @@ struct AccountOverviewTab: View {
                             Text("accounts.fact.resets".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary).frame(width: 84, alignment: .trailing)
                             CodexResetsCard(profile: profile, measurement: measurement, readiness: readiness)
                         }
+                        fact("accounts.fact.terminals".localized, CodexDaemonService.shared.terminalsText,
+                             help: "codex_daemon.terminals_help".localized)
                     }
                     fact("accounts.fact.history".localized, historyText)
                 }

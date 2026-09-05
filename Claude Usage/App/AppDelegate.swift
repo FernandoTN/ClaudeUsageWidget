@@ -151,6 +151,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private func requestNotificationPermissions() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        // The one category with an action: "Restart Codex daemon" on the
+        // switch notice (docs/specs/codex-daemon-awareness.md).
+        center.setNotificationCategories([NotificationManager.codexDaemonCategory])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
             // Silently request permissions
         }
@@ -355,5 +358,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     ) {
         // Show notifications even when app is in foreground (menu bar apps are always foreground)
         completionHandler([.banner, .sound])
+    }
+
+    /// The "Restart Codex daemon" action on the switch notice. The restart
+    /// re-scans and signals only the path-anchored daemon process.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if response.actionIdentifier == NotificationManager.restartCodexDaemonActionIdentifier {
+            Task { @MainActor in
+                await CodexDaemonService.shared.restartDaemon(reason: "notification action")
+                completionHandler()
+            }
+            return
+        }
+        completionHandler()
     }
 }

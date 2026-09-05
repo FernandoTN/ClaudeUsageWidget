@@ -106,17 +106,18 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
 
 ## Open items
 
-- **Codex daemon awareness (follow-up, separate design item):** the Codex
-  standalone build runs a shared `codex app-server` daemon that loads
-  `~/.codex/auth.json` ONCE at launch and never reloads, so a widget switch
-  reaches `codex exec` and the desktop app but NOT interactive terminals until
-  the daemon restarts; the ChatGPT desktop app also rewrites that file. The
-  repaint/fail-closed/grace PR deliberately adds no file watcher and no daemon
-  detection — stage 2 (spec to be written under `docs/specs/`): path-anchored
-  daemon detection after a switch, a "Restart Codex daemon" action, an opt-in
-  auto-restart setting, and a "Terminals: <profile> since HH:MM" line derived
-  from the daemon's newest rollout `resets_at` matched to the profiles' cached
-  weekly `reset_at`.
+- **Codex daemon awareness — stage 2 (`feat/codex-daemon-awareness`, draft):**
+  spec `docs/specs/codex-daemon-awareness.md`. `CodexDaemonService` observes
+  every Codex activation through `.providerOwnerClaimed`, matches the daemon
+  by PATH (`<codexHome>/packages/standalone/…/codex app-server`, never the
+  bare name), and either restarts it (opt-in "Restart Codex daemon on switch",
+  key `codexDaemonRestartOnSwitch_v1`, default OFF, only with zero attached
+  `codex-code-mode-host` children) or notifies "Codex terminals still on the
+  previous login" with a Restart action (`CODEX_DAEMON` category). Dashboard
+  Codex section and inspector Overview show "Terminals: <profile> since HH:MM"
+  from the newest `codex-tui` rollout's `rate_limits.primary.resets_at`
+  matched to the profiles' cached reset (minute-quantized, unique match or
+  "unknown account"). Settings › Advanced gains a Codex daemon card.
 - Owner check-in answers (spec §9) — the owner said to proceed on the
   recommendations; the page stays open for notes.
 - `.providerOwnerChangedExternally` (#70) is consumed by the ⇄ selector (stage

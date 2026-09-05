@@ -548,6 +548,70 @@ class NotificationManager {
         }
     }
 
+    // MARK: - Codex daemon (docs/specs/codex-daemon-awareness.md)
+
+    /// The category whose one action restarts the Codex daemon. Registered at
+    /// launch (`AppDelegate.requestNotificationPermissions`); the response is
+    /// handled in `AppDelegate.userNotificationCenter(_:didReceive:)`.
+    nonisolated static let codexDaemonCategoryIdentifier = "CODEX_DAEMON"
+    nonisolated static let restartCodexDaemonActionIdentifier = "RESTART_CODEX_DAEMON"
+
+    static var codexDaemonCategory: UNNotificationCategory {
+        UNNotificationCategory(
+            identifier: codexDaemonCategoryIdentifier,
+            actions: [UNNotificationAction(
+                identifier: restartCodexDaemonActionIdentifier,
+                title: "notification.codex_daemon_holds.action".localized,
+                options: []
+            )],
+            intentIdentifiers: [],
+            options: []
+        )
+    }
+
+    /// A Codex switch landed while the Codex daemon is running: interactive
+    /// codex sessions keep the previous login until it restarts. The action
+    /// button restarts it (SIGTERM to the one path-anchored process).
+    func sendCodexDaemonHoldsPreviousLoginNotification(profileName: String, attachedSessions: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.codex_daemon_holds.title".localized
+        content.body = "notification.codex_daemon_holds.message".localized(with: profileName, attachedSessions)
+        content.sound = .default
+        content.categoryIdentifier = Self.codexDaemonCategoryIdentifier
+
+        let request = UNNotificationRequest(
+            identifier: "codex_daemon_holds_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send Codex-daemon-holds notification: \(error)")
+            }
+        }
+    }
+
+    /// The opt-in restart-on-switch fired: no session was attached, the daemon
+    /// was sent SIGTERM, and new terminals will use the new account.
+    func sendCodexDaemonRestartedNotification(profileName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.codex_daemon_restarted.title".localized
+        content.body = "notification.codex_daemon_restarted.message".localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "codex_daemon_restarted_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send Codex-daemon-restarted notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Grok refresh token was revoked and the account
     /// needs a fresh `grok` CLI login + re-sync (the app cannot repair it itself).
     func sendGrokReloginNotification(profileName: String) {

@@ -231,6 +231,9 @@ class MenuBarManager: NSObject, ObservableObject {
         installFleetRepaintScheduler()
 
         Self.current = self
+        // Codex daemon awareness: observes Codex activations and keeps the
+        // terminals line current (docs/specs/codex-daemon-awareness.md).
+        CodexDaemonService.shared.start()
 
         // Initialize status bar UI manager
         statusBarUIManager = StatusBarUIManager()
@@ -2007,6 +2010,10 @@ private func observeCredentialChanges() {
             // account_id and adopt a fresher login into it. File read + JSON
             // parse, no network (audit H4).
             await self.profileManager.adoptCodexLoginByAccountId()
+
+            // Which account the Codex DAEMON is serving — from its newest
+            // rollout's rate-limit stamp, files read off the main actor.
+            await CodexDaemonService.shared.refreshTerminalsState(profiles: self.profileManager.profiles)
 
             // A CLI-side /login only writes the Keychain; keep the credentials
             // FILE in step so headless sessions that read the file aren't left
@@ -4112,7 +4119,8 @@ private func observeCredentialChanges() {
             // the manager's published rule, Codex groups from `codexAccountId`.
             duplicateGroups: FleetCounts.duplicateGroups(in: profiles, published: profileManager.duplicateClaudeAccountGroups),
             manuallyPinned: autoSwitchedProfileIds,
-            needsRelogin: profileManager.profilesNeedingAccountRelogin
+            needsRelogin: profileManager.profilesNeedingAccountRelogin,
+            codexTerminals: CodexDaemonService.shared.terminalsText
         ))
         // Same paint, same inputs shape: the insights ride inside the
         // snapshot so the view observes one value and the frame harness

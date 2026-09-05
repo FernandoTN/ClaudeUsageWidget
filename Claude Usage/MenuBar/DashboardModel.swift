@@ -153,6 +153,10 @@ struct ProviderSection: Hashable {
     /// ranked candidates, counts) — the same value, built once here, so the
     /// dashboard and the menu can never disagree (docs/specs/ux-revamp.md D6).
     var selection: ProviderActiveSelection?
+    /// Codex only: which account interactive terminals are on, derived from
+    /// the daemon's newest rollout stamp (`CodexTerminals`). The daemon loads
+    /// auth.json once, so this can lag the active account after a switch.
+    var terminalsLine: String? = nil
 }
 
 struct RecentSwitch: Hashable {
@@ -244,6 +248,8 @@ struct DashboardSnapshot: Hashable {
         var manuallyPinned: Set<UUID> = []
         /// `ProfileManager.profilesNeedingAccountRelogin`.
         var needsRelogin: Set<UUID> = []
+        /// `CodexDaemonService.terminalsText` — the Codex section's terminals line.
+        var codexTerminals: String? = nil
     }
 
     static func build(_ inputs: Inputs) -> DashboardSnapshot {
@@ -379,7 +385,8 @@ struct DashboardSnapshot: Hashable {
                 },
                 hiddenByOverflow: inputs.hiddenProviders.contains(provider),
                 summary: summary,
-                selection: selection
+                selection: selection,
+                terminalsLine: provider == .codex ? inputs.codexTerminals : nil
             ))
         }
 
