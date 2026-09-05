@@ -790,8 +790,8 @@ struct DashboardView: View {
                         .fixedSize()
                         .padding(.leading, 16)
                         .opacity((row.measurement?.isOwn ?? true) ? 1 : 0.6)
-                        if let reset = row.weeklyReset {
-                            RosterResetText(reset: reset, emphasized: row.group == .capacityReturns)
+                        if row.weeklyReset != nil {
+                            RosterResetText(row: row, emphasized: row.group == .capacityReturns)
                                 .padding(.leading, 16)
                         }
                     }

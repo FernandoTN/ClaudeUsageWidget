@@ -961,6 +961,8 @@
 // Dashboard roster bands and weekly countdowns (docs/specs/menubar-redesign-status.md, queue resets)
 "dashboard.reset_unknown" = "reset unknown";
 "dashboard.reset_now" = "resets now";
+"dashboard.reset_in_short" = "in %@";
+"dashboard.reset_window_session" = "Session window";
 "dashboard.reset_window_weekly" = "Weekly window";
 "dashboard.reset_window_fable" = "Fable weekly window";
 "dashboard.reset_help_at" = "%@ resets %@.";

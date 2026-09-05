@@ -168,6 +168,11 @@ struct RosterRow: Hashable {
     /// (the latest reset among its hit windows) — the band's ordering key.
     /// nil = not at a limit, or a hit window with no known boundary.
     var capacityReturnsAt: Date? = nil
+    /// Session-exhausted rows only: when the binding 5-hour window (or the
+    /// affirmed throttle stamp) lifts — the reset the band sorted on, so
+    /// the row prints it before the weekly countdown ("S resets in 2h 10m ·
+    /// W in 2 days") and the sort key and the printed reset never differ.
+    var sessionReturnsAt: Date? = nil
 }
 
 struct ProviderSection: Hashable {
@@ -610,13 +615,15 @@ struct DashboardSnapshot: Hashable {
         let repair: RepairAction? = readiness == .dead
             ? (profile.providerKind == .codex ? .codexLogin : (profile.providerKind == .grok ? .grokLogin : .claudeLogin))
             : nil
+        let returns = capacityReturnsAt(usage, readiness: readiness, thresholds: thresholds, now: now)
         return RosterRow(
             id: profile.id, name: profile.name, readiness: readiness, isStale: isStale,
             gauges: usage.map { Self.gauges(for: $0, thresholds: thresholds) } ?? [],
             measurement: measurement(for: usage), chip: chip, queuePosition: queuePosition,
             repair: repair, isSelectedForDisplay: profile.isSelectedForDisplay,
             weeklyReset: usage.map { weeklyReset(for: $0, thresholds: thresholds, now: now) },
-            capacityReturnsAt: capacityReturnsAt(usage, readiness: readiness, thresholds: thresholds, now: now)
+            capacityReturnsAt: returns,
+            sessionReturnsAt: readiness.isSessionHit ? returns : nil
         )
     }
 }
