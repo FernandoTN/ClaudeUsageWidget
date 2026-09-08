@@ -114,10 +114,18 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
   spec `docs/specs/codex-daemon-awareness.md`. `CodexDaemonService` observes
   every Codex activation through `.providerOwnerClaimed`, matches the daemon
   by PATH (`<codexHome>/packages/standalone/…/codex app-server`, never the
-  bare name), and either restarts it (opt-in "Restart Codex daemon on switch",
-  key `codexDaemonRestartOnSwitch_v1`, default OFF, only with zero attached
-  `codex-code-mode-host` children) or notifies "Codex terminals still on the
-  previous login" with a Restart action (`CODEX_DAEMON` category). Dashboard
+  bare name), and either restarts it ("Restart Codex daemon on switch", key
+  `codexDaemonRestartOnSwitch_v1` — **default ON since 2026-09-08**; fires
+  regardless of attached sessions when the outgoing login is exhausted or
+  dead, else only with zero LIVE `codex-code-mode-host` children — stale
+  hosts and the desktop app's helpers never count; verified exit, one SIGKILL
+  escalation) or notifies "Codex terminals still on the previous login" with
+  a Restart action (`CODEX_DAEMON` category), re-posted once after 10 min,
+  with a red "Terminals still on <old>: Restart" line in the dashboard Codex
+  block until the daemon is seen gone. **2026-09-08 incident** (12:34, pid
+  85212: xFenrir left at weekly 100 %, a stale host plus ~30 desktop helpers
+  kept the daemon "attached", every new terminal inherited the exhausted
+  login for an hour) → `fix/codex-daemon-restart-guard`. Dashboard
   Codex section and inspector Overview show "Terminals: <profile> since HH:MM"
   from the newest `codex-tui` rollout's `rate_limits.primary.resets_at`
   matched to the profiles' cached reset (minute-quantized, unique match or

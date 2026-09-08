@@ -61,6 +61,11 @@ final class SettingsKeyRegistryTests: XCTestCase {
         XCTAssertTrue(ProfileStore.registeredKeys.contains { $0.key == "activeGrokProfileId" && $0.status == .live })
         XCTAssertEqual(SettingsKeyRegistry.lookup("credentialsMigratedToKeychain")?.status, .migrationFlag)
         XCTAssertEqual(SettingsKeyRegistry.lookup("claudeUsageData")?.status, .legacyUnread)
+        // The migration map's "default true; absent → true" row (2026-09-08).
+        let daemon = SettingsKeyRegistry.lookup("codexDaemonRestartOnSwitch_v1")
+        XCTAssertEqual(daemon?.status, .live)
+        XCTAssertEqual(daemon?.ui, "Advanced › Codex daemon")
+        XCTAssertTrue(SharedDataStore.codexDaemonRestartOnSwitch(stored: nil), "an absent key reads ON")
     }
 
     func testUnregisteredAlarmIgnoresSystemKeysAndNamesOurs() {

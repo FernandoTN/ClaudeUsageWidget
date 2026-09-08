@@ -35,6 +35,9 @@ struct DashboardActions {
     /// Open the token-usage window for one account, or the fleet (nil)
     /// (`Notification.Name.telemetryWindowRequested`).
     var openTokenUsage: (UUID?, Profile.ProviderKind?) -> Void = { _, _ in }
+    /// The Codex block's "Restart" while the daemon still holds the previous
+    /// login (`CodexDaemonService.restartDaemon`, verified exit).
+    var restartCodexDaemon: () async -> Void = {}
 }
 
 // MARK: - Store
@@ -527,6 +530,23 @@ struct DashboardView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .help("codex_daemon.terminals_help".localized)
+            }
+            if let hold = section.terminalsHold {
+                // Codex: a switch left the daemon on the previous login and
+                // did not restart it — red until the daemon is seen gone.
+                HStack(spacing: 6) {
+                    Text(hold)
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundColor(DesignRole.blocking.color)
+                        .lineLimit(1)
+                    Button("codex_daemon.hold_restart".localized) {
+                        Task { await actions.restartCodexDaemon() }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundColor(DesignRole.action.color)
+                    .help("codex_daemon.hold_help".localized)
+                }
             }
             if let counts = section.selection?.counts {
                 Text(DashboardFormatting.counts(counts))

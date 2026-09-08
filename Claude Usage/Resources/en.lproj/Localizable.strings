@@ -305,10 +305,12 @@
 "notification.credential_write_failed.message" = "The %2$@ login of '%1$@' could not be written to the CLI, so the CLI stays on '%3$@'. Check the log, then try again.";
 "notification.credential_write_failed.message_no_owner" = "The %2$@ login of '%1$@' could not be written to the CLI, so the CLI is unchanged. Check the log, then try again.";
 "notification.codex_daemon_holds.title" = "Codex terminals still on the previous login";
-"notification.codex_daemon_holds.message" = "The Codex daemon read its login when it started, so interactive codex sessions keep the previous account until it restarts (%2$d attached now). New terminals use '%1$@' after a restart.";
+"notification.codex_daemon_holds.message" = "The Codex daemon read its login when it started, so interactive codex sessions — and every NEW terminal — stay on '%3$@' until it restarts (%2$d live session(s) attached). Restart it so new terminals use '%1$@'.";
+"notification.codex_daemon_holds.message_reminder" = "Codex terminals are still on '%1$@' %3$d minutes after the switch to '%2$@'. Restart the daemon so new terminals use '%2$@'.";
+"notification.codex_daemon_holds.previous_login" = "the previous login";
 "notification.codex_daemon_holds.action" = "Restart Codex daemon";
 "notification.codex_daemon_restarted.title" = "Codex daemon restarted";
-"notification.codex_daemon_restarted.message" = "No interactive session was attached, so the daemon was restarted; new codex terminals use '%@'.";
+"notification.codex_daemon_restarted.message" = "The daemon was restarted after the switch; new codex terminals use '%@'.";
 "notification.grok_relogin.title" = "Grok account needs re-login";
 "notification.grok_relogin.message" = "The saved Grok token for '%@' was revoked. Run `grok` and log in with that account, then re-sync it in Settings.";
 "notification.duplicate_claude_account.title" = "Two profiles, one Anthropic account";
@@ -948,6 +950,9 @@
 "codex_daemon.terminals_unknown_account" = "unknown account";
 "codex_daemon.terminals_unknown" = "Terminals: unknown";
 "codex_daemon.terminals_help" = "Interactive codex sessions run through a shared daemon that reads auth.json only when it starts, so terminals can stay on the previous account after a switch. Derived from the daemon's newest session rollout; unknown when its reset stamp matches no single Codex profile.";
+"codex_daemon.hold_line" = "Terminals still on %@";
+"codex_daemon.hold_restart" = "Restart";
+"codex_daemon.hold_help" = "The switch did not restart the Codex daemon, so interactive codex sessions — and every new terminal — keep the previous login. Restart sends SIGTERM to the one path-anchored daemon process and verifies it exits; attached terminals lose their session. It respawns on the next codex launch with the current auth.json.";
 "accounts.login_verified" = "login %@ %@";
 "accounts.login_unverified" = "login unverified";
 "accounts.account_suffix" = "account …%@";
@@ -1108,8 +1113,9 @@
 "advanced.codex_daemon_title" = "Codex daemon";
 "advanced.codex_daemon_subtitle" = "Interactive codex sessions run through a shared daemon that reads auth.json only when it starts";
 "advanced.codex_daemon_restart_on_switch" = "Restart Codex daemon on switch";
-"advanced.codex_daemon_restart_on_switch_desc" = "After a Codex account switch, restart the daemon automatically when no interactive session is attached, so new terminals use the new account. It respawns on the next codex launch.";
+"advanced.codex_daemon_restart_on_switch_desc" = "After a Codex account switch, restart the daemon so new terminals use the new account: always when the outgoing login is exhausted or dead (its sessions are already broken), otherwise only when no live interactive session is attached. Sessions older than 12 hours with no recent terminal activity do not count. The exit is verified; it respawns on the next codex launch.";
 "advanced.codex_daemon_status_running" = "Daemon running (pid %1$d) — %2$d attached session(s)";
+"advanced.codex_daemon_status_stale" = " · %d stale";
 "advanced.codex_daemon_status_not_running" = "Daemon not running — the next codex launch starts it with the current auth.json";
 "advanced.codex_daemon_status_unknown" = "Daemon status not checked yet";
 "advanced.codex_daemon_check" = "Check";

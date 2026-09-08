@@ -96,9 +96,10 @@ struct AdvancedDiagnosticsCard: View {
 
 // MARK: - Codex daemon (docs/specs/codex-daemon-awareness.md)
 
-/// The opt-in restart-on-switch toggle, a live status line, and the manual
-/// restart. The status comes from one `ps` scan off the main actor on appear
-/// and on "Check"; nothing here watches anything.
+/// The restart-on-switch toggle (default ON; `CodexDaemonRestartPolicy` says
+/// when it fires), a live status line, and the manual restart. The status
+/// comes from one `ps` scan off the main actor on appear and on "Check";
+/// nothing here watches anything.
 struct CodexDaemonCard: View {
     @State private var restartOnSwitch = SharedDataStore.shared.loadCodexDaemonRestartOnSwitch()
     @State private var status: CodexDaemon.Status? = CodexDaemonService.shared.lastStatus
@@ -107,7 +108,9 @@ struct CodexDaemonCard: View {
     private var statusLine: String {
         guard let status else { return "advanced.codex_daemon_status_unknown".localized }
         guard let daemon = status.daemon else { return "advanced.codex_daemon_status_not_running".localized }
-        return "advanced.codex_daemon_status_running".localized(with: Int(daemon.pid), status.attachedSessions)
+        let running = "advanced.codex_daemon_status_running".localized(with: Int(daemon.pid), status.attachedSessions)
+        guard status.staleSessions > 0 else { return running }
+        return running + "advanced.codex_daemon_status_stale".localized(with: status.staleSessions)
     }
 
     var body: some View {

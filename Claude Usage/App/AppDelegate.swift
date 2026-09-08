@@ -360,20 +360,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         completionHandler([.banner, .sound])
     }
 
-    /// The "Restart Codex daemon" action on the switch notice. The restart
-    /// re-scans and signals only the path-anchored daemon process.
+    /// The "Restart Codex daemon" action on the switch notice (and on its
+    /// ten-minute reminder). Routing is `NotificationManager.responseAction`,
+    /// pure and tested; the restart re-scans and signals only the
+    /// path-anchored daemon process, then verifies its exit.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if response.actionIdentifier == NotificationManager.restartCodexDaemonActionIdentifier {
+        switch NotificationManager.responseAction(
+            actionIdentifier: response.actionIdentifier,
+            categoryIdentifier: response.notification.request.content.categoryIdentifier
+        ) {
+        case .restartCodexDaemon:
             Task { @MainActor in
                 await CodexDaemonService.shared.restartDaemon(reason: "notification action")
                 completionHandler()
             }
-            return
+        case nil:
+            completionHandler()
         }
-        completionHandler()
     }
 }

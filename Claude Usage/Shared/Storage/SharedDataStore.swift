@@ -179,12 +179,18 @@ class SharedDataStore {
     // MARK: - Codex daemon
 
     /// Whether a Codex account switch may restart the Codex daemon by itself
-    /// when no interactive session is attached (the daemon loads auth.json only
-    /// at launch, so terminals otherwise keep the previous login). OFF by
-    /// default: restarting somebody's daemon is opt-in.
+    /// (the daemon loads auth.json only at launch, so terminals otherwise keep
+    /// the previous login; `CodexDaemonRestartPolicy` decides when). ON by
+    /// default since 2026-09-08 — the day an OFF default left every new
+    /// terminal on an exhausted login for an hour: an ABSENT key reads as ON,
+    /// so an install that never touched the toggle behaves like a fresh one;
+    /// only an explicit OFF sticks.
     func loadCodexDaemonRestartOnSwitch() -> Bool {
-        defaults.bool(forKey: Keys.codexDaemonRestartOnSwitch)
+        Self.codexDaemonRestartOnSwitch(stored: defaults.object(forKey: Keys.codexDaemonRestartOnSwitch) as? Bool)
     }
+
+    /// The migration rule, pure: absent → ON.
+    static func codexDaemonRestartOnSwitch(stored: Bool?) -> Bool { stored ?? true }
 
     func saveCodexDaemonRestartOnSwitch(_ enabled: Bool) {
         writeSingleShot(enabled, forKey: Keys.codexDaemonRestartOnSwitch)

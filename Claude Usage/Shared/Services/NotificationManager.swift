@@ -645,18 +645,39 @@ class NotificationManager {
         )
     }
 
-    /// A Codex switch landed while the Codex daemon is running: interactive
-    /// codex sessions keep the previous login until it restarts. The action
-    /// button restarts it (SIGTERM to the one path-anchored process).
-    func sendCodexDaemonHoldsPreviousLoginNotification(profileName: String, attachedSessions: Int) {
+    /// What a notification response asks the app to do. PURE, so the
+    /// `AppDelegate` handler's routing is testable without a
+    /// `UNNotificationResponse`: only the Restart button restarts; a tap on
+    /// the notice's body does nothing to the daemon.
+    enum ResponseAction: Equatable {
+        case restartCodexDaemon
+    }
+
+    nonisolated static func responseAction(actionIdentifier: String, categoryIdentifier: String) -> ResponseAction? {
+        if actionIdentifier == restartCodexDaemonActionIdentifier { return .restartCodexDaemon }
+        return nil
+    }
+
+    /// A Codex switch landed while the Codex daemon is running and it was not
+    /// restarted: interactive codex sessions keep the previous login until it
+    /// restarts. The action button restarts it (SIGTERM to the one
+    /// path-anchored process, verified). `reminder` is the one re-post ten
+    /// minutes later while the daemon still holds the old login; it has its
+    /// own identifier so the first notice does not swallow it.
+    func sendCodexDaemonHoldsPreviousLoginNotification(
+        profileName: String, previousOwnerName: String? = nil, attachedSessions: Int, reminder: Bool = false
+    ) {
         let content = UNMutableNotificationContent()
         content.title = "notification.codex_daemon_holds.title".localized
-        content.body = "notification.codex_daemon_holds.message".localized(with: profileName, attachedSessions)
+        let previous = previousOwnerName ?? "notification.codex_daemon_holds.previous_login".localized
+        content.body = reminder
+            ? "notification.codex_daemon_holds.message_reminder".localized(with: previous, profileName, Int(CodexDaemonService.reminderDelay / 60))
+            : "notification.codex_daemon_holds.message".localized(with: profileName, attachedSessions, previous)
         content.sound = .default
         content.categoryIdentifier = Self.codexDaemonCategoryIdentifier
 
         let request = UNNotificationRequest(
-            identifier: "codex_daemon_holds_\(profileName)",
+            identifier: "codex_daemon_holds_\(profileName)" + (reminder ? "_reminder" : ""),
             content: content,
             trigger: nil
         )
@@ -667,8 +688,8 @@ class NotificationManager {
         }
     }
 
-    /// The opt-in restart-on-switch fired: no session was attached, the daemon
-    /// was sent SIGTERM, and new terminals will use the new account.
+    /// Restart-on-switch fired and the daemon's exit was verified: new
+    /// terminals use the new account.
     func sendCodexDaemonRestartedNotification(profileName: String) {
         let content = UNMutableNotificationContent()
         content.title = "notification.codex_daemon_restarted.title".localized
