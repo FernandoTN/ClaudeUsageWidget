@@ -198,6 +198,10 @@ struct ProviderSection: Hashable {
     /// the daemon's newest rollout stamp (`CodexTerminals`). The daemon loads
     /// auth.json once, so this can lag the active account after a switch.
     var terminalsLine: String? = nil
+    /// Codex only: the daemon still holds the previous login after a switch
+    /// that did not restart it (`CodexDaemonService.holdText`) — shown in red
+    /// with a Restart button until the daemon is seen gone.
+    var terminalsHold: String? = nil
 }
 
 struct RecentSwitch: Hashable {
@@ -291,6 +295,9 @@ struct DashboardSnapshot: Hashable {
         var needsRelogin: Set<UUID> = []
         /// `CodexDaemonService.terminalsText` — the Codex section's terminals line.
         var codexTerminals: String? = nil
+        /// `CodexDaemonService.holdText` — the red "still on the previous
+        /// login" line under it, while a hold stands.
+        var codexTerminalsHold: String? = nil
     }
 
     static func build(_ inputs: Inputs) -> DashboardSnapshot {
@@ -432,7 +439,8 @@ struct DashboardSnapshot: Hashable {
                 hiddenByOverflow: inputs.hiddenProviders.contains(provider),
                 summary: summary,
                 selection: selection,
-                terminalsLine: provider == .codex ? inputs.codexTerminals : nil
+                terminalsLine: provider == .codex ? inputs.codexTerminals : nil,
+                terminalsHold: provider == .codex ? inputs.codexTerminalsHold : nil
             ))
         }
 

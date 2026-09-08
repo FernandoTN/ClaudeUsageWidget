@@ -24,14 +24,16 @@ final class CodexDaemonTests: XCTestCase {
     private let home = URL(fileURLWithPath: "/Users/tester/.codex", isDirectory: true)
     private var standalone: String { home.path + "/packages/standalone" }
 
+    /// `ps -axo pid=,ppid=,etime=,command=`: the elapsed column landed with
+    /// the 2026-09-08 restart guard (`CodexDaemonRestartTests`).
     private var psOutput: String {
         """
-          321     1 /Users/tester/.codex/packages/standalone/current/codex app-server --listen unix:///Users/tester/.codex/app-server-control/app-server-control.sock
-          400   321 /Users/tester/.codex/packages/standalone/releases/0.153.3-aarch64-apple-darwin/bin/codex-code-mode-host
-          401   321 /Users/tester/.codex/packages/standalone/releases/0.153.3-aarch64-apple-darwin/bin/codex-code-mode-host
-          402   321 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node launch.mjs
-        13463     1 codex exec --model gpt-6-astra -c model_reasoning_effort=xhigh -o out.json
-        15796 13463 /Users/tester/.codex/packages/standalone/releases/0.153.3-aarch64-apple-darwin/bin/codex-code-mode-host
+          321     1 16:25:33 /Users/tester/.codex/packages/standalone/current/codex app-server --listen unix:///Users/tester/.codex/app-server-control/app-server-control.sock
+          400   321    05:10 /Users/tester/.codex/packages/standalone/releases/0.153.3-aarch64-apple-darwin/bin/codex-code-mode-host
+          401   321    00:40 /Users/tester/.codex/packages/standalone/releases/0.153.3-aarch64-apple-darwin/bin/codex-code-mode-host
+          402   321    03:12 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node launch.mjs
+        13463     1    12:00 codex exec --model gpt-6-astra -c model_reasoning_effort=xhigh -o out.json
+        15796 13463    11:59 /Users/tester/.codex/packages/standalone/releases/0.153.3-aarch64-apple-darwin/bin/codex-code-mode-host
         """
     }
 
@@ -320,15 +322,18 @@ final class CodexDaemonTests: XCTestCase {
 
     // MARK: - Setting
 
-    func testRestartOnSwitchIsOffByDefault() {
+    /// ON by default since 2026-09-08 (`CodexDaemonRestartTests` covers the
+    /// absent-key rule); an explicit OFF round-trips.
+    func testRestartOnSwitchRoundTripsAndDefaultsOn() {
         let store = SharedDataStore.shared
         let saved = store.loadCodexDaemonRestartOnSwitch()
         defer { store.saveCodexDaemonRestartOnSwitch(saved) }
 
         store.saveCodexDaemonRestartOnSwitch(false)
-        XCTAssertFalse(store.loadCodexDaemonRestartOnSwitch(), "restarting somebody's daemon is opt-in")
+        XCTAssertFalse(store.loadCodexDaemonRestartOnSwitch(), "an explicit OFF sticks")
         store.saveCodexDaemonRestartOnSwitch(true)
         XCTAssertTrue(store.loadCodexDaemonRestartOnSwitch())
+        XCTAssertTrue(SharedDataStore.codexDaemonRestartOnSwitch(stored: nil), "absent → ON")
         XCTAssertTrue(SharedDataStore.registeredKeys.contains { $0.key == "codexDaemonRestartOnSwitch_v1" && $0.status == .live },
                       "every key is registered — Settings › Advanced flags the unregistered ones")
     }

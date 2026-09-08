@@ -49,6 +49,11 @@ extension Notification.Name {
     ///   not known yet; never a token.
     static let providerOwnerClaimed = Notification.Name("providerOwnerClaimed")
 
+    /// Posted by `CodexDaemonService` when a hold — the Codex daemon still
+    /// holding the previous login after a switch — appears or clears, so the
+    /// dashboard's Codex block repaints its red line. No object, no userInfo.
+    static let codexDaemonStateChanged = Notification.Name("codexDaemonStateChanged")
+
     /// Posted when the setup wizard should be shown manually (for testing)
     static let showSetupWizard = Notification.Name("showSetupWizard")
 

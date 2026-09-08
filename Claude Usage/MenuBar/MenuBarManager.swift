@@ -183,6 +183,7 @@ class MenuBarManager: NSObject, ObservableObject {
     private var credentialsObserver: NSObjectProtocol?
     private var manualActivationObserver: NSObjectProtocol?
     private var profileDeletedObserver: NSObjectProtocol?
+    private var codexDaemonStateObserver: NSObjectProtocol?
 
     // Observer for display mode changes (single/multi profile) — legacy posters
     private var displayModeObserver: NSObjectProtocol?
@@ -234,6 +235,16 @@ class MenuBarManager: NSObject, ObservableObject {
         // Codex daemon awareness: observes Codex activations and keeps the
         // terminals line current (docs/specs/codex-daemon-awareness.md).
         CodexDaemonService.shared.start()
+        // A hold appearing or clearing repaints the Codex block's red line.
+        codexDaemonStateObserver = NotificationCenter.default.addObserver(
+            forName: .codexDaemonStateChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor in
+                guard self.usesDashboardSurface else { return }
+                self.rebuildDashboardSnapshot()
+            }
+        }
 
         // Initialize status bar UI manager
         statusBarUIManager = StatusBarUIManager()
@@ -471,6 +482,10 @@ class MenuBarManager: NSObject, ObservableObject {
         if let profileDeletedObserver = profileDeletedObserver {
             NotificationCenter.default.removeObserver(profileDeletedObserver)
             self.profileDeletedObserver = nil
+        }
+        if let codexDaemonStateObserver {
+            NotificationCenter.default.removeObserver(codexDaemonStateObserver)
+            self.codexDaemonStateObserver = nil
         }
         if let displayModeObserver = displayModeObserver {
             NotificationCenter.default.removeObserver(displayModeObserver)
@@ -780,6 +795,12 @@ class MenuBarManager: NSObject, ObservableObject {
                 openTokenUsage: { [weak self] id, provider in
                     self?.closePopoverOrWindow()
                     Self.requestTokenUsageWindow(profileId: id, provider: provider)
+                },
+                restartCodexDaemon: { [weak self] in
+                    // Verified restart; the hold clears itself on success
+                    // and the snapshot follows `.codexDaemonStateChanged`.
+                    await CodexDaemonService.shared.restartDaemon(reason: "dashboard Restart")
+                    self?.rebuildDashboardSnapshot()
                 }
             )
             return NSHostingController(rootView: DashboardView(store: dashboardStore, actions: actions))
@@ -4279,7 +4300,8 @@ private func observeCredentialChanges() {
             duplicateGroups: FleetCounts.duplicateGroups(in: profiles, published: profileManager.duplicateClaudeAccountGroups),
             manuallyPinned: autoSwitchedProfileIds,
             needsRelogin: profileManager.profilesNeedingAccountRelogin,
-            codexTerminals: CodexDaemonService.shared.terminalsText
+            codexTerminals: CodexDaemonService.shared.terminalsText,
+            codexTerminalsHold: CodexDaemonService.shared.holdText
         ))
         // Same paint, same inputs shape: the insights ride inside the
         // snapshot so the view observes one value and the frame harness
