@@ -16,8 +16,10 @@ cadence (#160, merged `a70b5a0`, deployed 10:20:20 as pid 91164: cold scan
 restart guard was rewritten — exhausted outgoing login ⇒ restart regardless of
 attached sessions, only interactive and non-stale hosts count, default ON,
 verified exit with one SIGKILL escalation, a ten-minute reminder and a
-dashboard Restart affordance (`fix/codex-daemon-restart-guard`; see "Restart on
-switch").
+dashboard Restart affordance (`fix/codex-daemon-restart-guard`, #167, **merged**
+`fe9f36d` (squash), deployed 2026-09-08 13:11:25 as pid 94842 by the
+orchestrating session; suites 643 / 0 before and after the merge, Release
+green; see "Restart on switch").
 
 ## The 2026-09-08 incident (12:34, main `e896e09`, deployed `c22d614`, pid 85212)
 
