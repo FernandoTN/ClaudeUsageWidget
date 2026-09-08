@@ -125,7 +125,9 @@ redeem only when measured at the limit. Full table: spec §7; consult log §10.
   block until the daemon is seen gone. **2026-09-08 incident** (12:34, pid
   85212: xFenrir left at weekly 100 %, a stale host plus ~30 desktop helpers
   kept the daemon "attached", every new terminal inherited the exhausted
-  login for an hour) → `fix/codex-daemon-restart-guard`. Dashboard
+  login for an hour) → `fix/codex-daemon-restart-guard`, #167 **merged**
+  `fe9f36d` (squash), deployed 2026-09-08 13:11:25 as pid 94842 with clean
+  probes; suites 643 / 0 before and after the merge, Release green. Dashboard
   Codex section and inspector Overview show "Terminals: <profile> since HH:MM"
   from the newest `codex-tui` rollout's `rate_limits.primary.resets_at`
   matched to the profiles' cached reset (minute-quantized, unique match or
