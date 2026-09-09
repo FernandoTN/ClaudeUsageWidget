@@ -2,10 +2,14 @@
 
 **Status:** stage 1 `feat/weekly-window-priming`, PR #169, **merged**
 `c0952b8` (squash), deployed 2026-09-09 08:41:51 as pid 82343 — suites 658 / 0
-twice, Release green. Stage 2 `fix/weekly-priming-placeholder` (draft): the
-detector never fired in the field because an idle account is reported with a
-PLACEHOLDER window, not with no window (see "Semantics"). See the status rows
-in `docs/specs/ux-revamp-status.md`. **Scope: Codex only, by owner decision
+twice, Release green. Stage 2 `fix/weekly-priming-placeholder`, PR #170,
+**merged** `cf484e7` (squash), deployed 2026-09-09 09:32:42 as pid 36421 with
+clean probes — suites 664 / 0 twice, Release green: the stage-1 detector
+never fired in the field because an idle account is reported with a
+PLACEHOLDER window, not with no window (see "Semantics"). The first live
+prime (xLucifer (dev)) is being watched by the orchestrating session; its
+outcome goes under "First live prime". See the status rows in
+`docs/specs/ux-revamp-status.md`. **Scope: Codex only, by owner decision
 (2026-09-09).** Claude accounts are not primed: no Messages API call, no
 toggle, no Fable verification. (The original brief covered both providers;
 the owner narrowed it before any Claude-side code existed.)
