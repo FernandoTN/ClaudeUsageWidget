@@ -246,8 +246,9 @@ class MenuBarManager: NSObject, ObservableObject {
                 self.rebuildDashboardSnapshot()
             }
         }
-        // Every booked prime attempt is an Insights incident with its moved
-        // stamps, and repaints the roster row's priming line.
+        // Every SETTLED prime attempt (the clock started, no movement, the run
+        // failed) is an Insights incident with its stamps; a request merely
+        // sent only repaints the roster row's priming line.
         weeklyPrimeStateObserver = NotificationCenter.default.addObserver(
             forName: .weeklyPrimeStateChanged, object: nil, queue: .main
         ) { [weak self] note in
@@ -255,9 +256,9 @@ class MenuBarManager: NSObject, ObservableObject {
             Task { @MainActor in
                 if let profile = self.profileManager.profiles.first(where: { $0.id == id }),
                    let record = WeeklyWindowPrimer.shared.record(for: id),
-                   let outcome = record.lastOutcome {
+                   let outcome = record.lastOutcome, outcome != .sent {
                     self.incidentRing.record(FleetInsights.Incident(
-                        at: record.lastAttemptAt ?? Date(), profileId: id, name: profile.name,
+                        at: Date(), profileId: id, name: profile.name,
                         provider: profile.providerKind, kind: .primed(outcome: outcome), detail: record.lastDetail
                     ))
                 }
@@ -4343,11 +4344,10 @@ private func observeCredentialChanges() {
 
     // MARK: - Weekly window priming (docs/specs/weekly-window-priming.md)
 
-    /// What the primer reads each tick: the roster, the provider owners (never
-    /// primed), the dead-login rule the dashboard uses, the switch flag read
-    /// LIVE, and the verifying fetch — a real own-credential read that stages
-    /// and publishes like the sweep's, so the moved reset is what the tiles
-    /// and the dashboard show.
+    /// What the primer reads each tick: the roster (with this sweep's fresh
+    /// usage, which is what verifies a sent prime), the provider owners (never
+    /// primed), the dead-login rule the dashboard uses, and the switch flag
+    /// read LIVE.
     func makeWeeklyPrimeContext() -> WeeklyWindowPrimer.Context {
         let profiles = profileManager.profiles
         return WeeklyWindowPrimer.Context(
@@ -4357,11 +4357,7 @@ private func observeCredentialChanges() {
                 ProfileCredentialStatusCache.hasDeadLogin(profile)
                     || (profile.isGrokOnlyProfile && GrokUsageService.shared.isLoginMarkedDead(profile.id))
             },
-            isSwitching: { [weak self] in self?.profileManager.isSwitchingProfile ?? true },
-            fetch: { [weak self] profile in
-                guard let self else { throw AppError(code: .apiGenericError, message: "menu bar manager gone", isRecoverable: false) }
-                return try await self.fetchAndPublishUsage(for: profile)
-            }
+            isSwitching: { [weak self] in self?.profileManager.isSwitchingProfile ?? true }
         )
     }
 
@@ -4377,18 +4373,6 @@ private func observeCredentialChanges() {
             }
         }
         return statuses
-    }
-
-    /// One forced fetch for one profile, on the sweep's own path: healed reset
-    /// stamps, staged, published in one objectWillChange, the open dashboard
-    /// rebuilt. The disk flush happens at the sweep's usual boundary.
-    private func fetchAndPublishUsage(for profile: Profile) async throws -> ClaudeUsage {
-        let usage = try await fetchUsageForProfile(profile)
-        profileManager.stageClaudeUsage(usage, for: profile.id)
-        profileManager.publishStagedUsage()
-        recordClaudeUsageSuccess(profile, usage: usage)
-        refreshViewedProfileUsage()
-        return profileManager.profiles.first(where: { $0.id == profile.id })?.claudeUsage ?? usage
     }
 
     /// The readiness / candidate / verdict context both the fleet tiles and

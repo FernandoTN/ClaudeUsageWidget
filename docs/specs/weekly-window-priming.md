@@ -1,7 +1,11 @@
 # Weekly window priming (Codex)
 
-**Status:** `feat/weekly-window-priming`, draft PR — see the status row in
-`docs/specs/ux-revamp-status.md`. **Scope: Codex only, by owner decision
+**Status:** stage 1 `feat/weekly-window-priming`, PR #169, **merged**
+`c0952b8` (squash), deployed 2026-09-09 08:41:51 as pid 82343 — suites 658 / 0
+twice, Release green. Stage 2 `fix/weekly-priming-placeholder` (draft): the
+detector never fired in the field because an idle account is reported with a
+PLACEHOLDER window, not with no window (see "Semantics"). See the status rows
+in `docs/specs/ux-revamp-status.md`. **Scope: Codex only, by owner decision
 (2026-09-09).** Claude accounts are not primed: no Messages API call, no
 toggle, no Fable verification. (The original brief covered both providers;
 the owner narrowed it before any Claude-side code existed.)
@@ -16,12 +20,10 @@ the owner narrowed it before any Claude-side code existed.)
 > the resets come sooner rather than having to switch manually when the auto
 > switch kicks in."
 
-## Semantics — from the widget's own records
+## Semantics — from the widget's own records and the endpoint
 
 Codex's weekly window is **rolling, 7 days from the first real request after
-the previous window ended**. Polling `wham/usage` does not start it. An idle
-account past its reset has **no window at all**, and its next reset is 7 days
-after whenever the rotation happens to reach it.
+the previous window ended**. Polling `wham/usage` does not start it.
 
 | Account | Window start (`reset_at − 604800`, profile store) | What happened then |
 |---|---|---|
@@ -30,39 +32,56 @@ after whenever the rotation happens to reach it.
 | xFernando (dev) | 2026-09-09 03:05 | switch 03:05 |
 | xLucifer (dev), 09-04 | 2026-09-04 08:20 | manual switch 08:17 → window start 08:20 |
 
-**Live confirmation, 2026-09-09 08:05–08:10 (pid 94842):** xLucifer (dev)
-idled past its reset; every sweep logged `Codex: usage parsed - weekly-only -
-session: 0.0%, weekly: 0.0%` and its stored `weeklyResetTime` read fetch time
-+ 7 d — 08:05, then 08:10 — because the parser invented `now + 7 d` whenever
-the payload carried no window (`primary_window` null). That drifting stamp is
-exactly the "no window" state priming is for, and it was being presented as a
-measurement. The parser now stores the sentinel plus
-`ClaudeUsage.weeklyWindowOpen == false`; the healer projects the display
-boundary 7 days out and marks it projected (the dashboard's `~`).
+**How an idle account is reported — verified against `wham/usage` with each
+account's own token, 2026-09-09 09:12 (orchestrating session):**
+
+| Account | `used_percent` | `limit_window_seconds` | `reset_after_seconds` | `reset_at` |
+|---|---|---|---|---|
+| xLucifer (dev), idle since its reset | 0 | 604800 | **604800** | **now + 7 d exactly, advancing with every poll** (07:56 → 09:10 → 09:12) |
+| xFernando (dev), active | 28 | 604800 | 582757 | fixed |
+| xFenrir (dev), exhausted | 100 | 604800 | 466209, `limit_reached` | fixed |
+
+So an idle account is **not** reported as "no window": it gets a
+**placeholder** — nothing used, a countdown equal to the full window length,
+a reset stamp that follows the clock. A running window's `reset_after` counts
+down and its `reset_at` never moves. (Stage 1 read the drifting stamp as the
+parser's own `now + 7 d` fallback and looked for a missing window object,
+which some plans may still send; the field showed every Codex account with
+`weeklyWindowOpen = true` and no prime ever fired. The missing-window case is
+kept as a second closed shape.)
 
 Priming is never worse: the quota per window is unchanged, only the clock
 moves earlier. A window primed at reset + 5 min resets 7 days later instead
 of 7 days after the next switch reaches the account.
 
-Provider docs do not state the mechanism; **the before/after stamps are the
-source of truth.** A successful prime moves the reported reset from "none"
-to ≈ now + 7 d and the used percentage from 0 to a small non-zero value; the
-verifying fetch reads both and the log line records them.
-
 ## Behaviour
 
-### Detection
+### Detection (`CodexWindowPlaceholder`, pure)
 
-`WeeklyWindowState.of(usage, provider:, now:)`, pure:
+Closed (`ClaudeUsage.weeklyWindowOpen == false`) when EITHER:
+
+- **parser rule** — `used_percent == 0` and `reset_after_seconds ≥
+  limit_window_seconds − 120` (or, without `reset_after_seconds`, `reset_at`
+  within 2 min of now + window); or the payload carries no weekly window at
+  all;
+- **poll-to-poll cross-check** (`healMissingResetStamps`, every fetch) —
+  `used_percent == 0` and the REPORTED reset advanced ≥ 60 s since the
+  previous reported one (a projection is not evidence).
+
+The stored stamp of a closed window is the sentinel; the healer projects
+`now + 7 d` marked projected for the ranking's "when does this quota come
+back", and the dashboard prints **`W no window (idle)`** — a fact, not a
+missing stamp — instead of that projection. `weeklyWindowSeconds` keeps
+`limit_window_seconds` for the rules below.
+
+`WeeklyWindowState.of(usage, provider:, now:)`:
 
 | Last fetch said | State | Meaning |
 |---|---|---|
-| `weeklyWindowOpen == false` | `closed` | the account idled past its reset; only a request opens the next window |
+| `weeklyWindowOpen == false` | `closed` | idle past its reset; only a request opens the next window |
 | a reported stamp in the future | `open(resetAt)` | the clock is running |
 | a reported stamp in the past, no fetch since | `expired(resetAt)` | the next fetch decides (Codex is fetched every sweep) |
 | never measured / sentinel / projected stamp / non-Codex | `unknown` | nothing to do |
-
-A projected boundary is never a reason to do, or skip, anything.
 
 ### Schedule (`WeeklyPrimeSchedule`, pure, tested)
 
@@ -73,18 +92,20 @@ end after the Codex owner re-derivation, never while `isSwitchingProfile`):
   credentials, dead login, **the provider's active owner** (being used anyway),
   the toggle off, the "Never prime" list.
 - **Episode**: a closed window opens an episode (`episodeObservedAt = now`,
-  attempts reset); an open window ends it. `expired` / `unknown` change nothing.
+  attempts reset); a running window ends it. `expired` / `unknown` change
+  nothing. A sent prime keeps its episode: the window reads closed until the
+  clock has run past the placeholder tolerance, and that is not a new window.
 - **Due** at `episodeObservedAt + jitter`, jitter ∈ [2 min, 10 min] —
   **deterministic** (FNV-1a over the profile id and the episode's epoch
   second), so the due time is identical on every tick and after a relaunch
   without being stored, and a fleet whose windows closed together never fires
   as one burst.
-- **Once per window**: a successful prime records `primedForWindowEndingAt`
-  (the reset the verifying fetch reported); while the reported window is
-  that one (±2 min) the verdict is `alreadyPrimed`.
+- **Once per window**: a verified prime records `primedForWindowEndingAt`
+  (the reset the verifying fetch reported); while the running window is that
+  one (±2 min) the verdict is `alreadyPrimed`.
 - **Retry once**: a failed or unmoved attempt is retried 30 min later; after
-  two attempts the episode is spent (`attemptsExhausted`) until a new
-  window closes. The user gets ONE INFO notice per spent episode
+  two attempts the episode is spent (`attemptsExhausted`) until a new window
+  closes. The user gets ONE INFO notice per spent episode
   (`NotificationManager.sendWeeklyPrimeFailedNotification`, routed through
   `deliver`, identifier keyed by the episode start). Routine primes are
   log-and-dashboard only.
@@ -128,32 +149,38 @@ CODEX_HOME=<isolated home> codex exec --skip-git-repo-check --sandbox read-only 
 - **Process**: off the main actor, stdin closed (an open pipe makes the CLI
   wait for input forever), stdout + stderr drained as they arrive and capped
   to a 16 KB tail, hard timeout 90 s (SIGTERM, then SIGKILL after 5 s), cwd =
-  the isolated home. Exit 0 is required; the output tail goes to the log at
-  info level, never a token.
+  the isolated home. Exit 0 is required; the output tail goes to the log,
+  never a token.
 - **Never** the shared daemon (`codex exec` runs in-process), never
   `~/.codex/auth.json` for a non-owner, never a pointer move: priming is not
   a switch.
 
-### Verification and provenance
+### Verification and provenance (`WeeklyPrimeVerification`)
 
-After a clean exit the primer runs **one forced fetch** for the profile on
-the sweep's own path (`MenuBarManager.fetchAndPublishUsage`: healed stamps,
-staged, published, the open dashboard rebuilt) and compares before and after
-(`WeeklyPrimeVerification.compare`):
+A fetch right after the request cannot verify anything: `reset_after` has
+only dropped by the seconds since the request, which is still inside the
+placeholder tolerance, and a tiny request rounds to 0 % used. So a clean
+exit is booked as **`sent`** and the sweep's own later fetches (Codex profiles
+are fetched every sweep) resolve it:
 
-```
-Prime: codex 'xLucifer(dev)' — window reset moved none → Sep 16 08:12, used 1%
-Prime: codex 'xLucifer(dev)' — no window movement (no window — semantics differ?)
-Prime: codex 'xLucifer(dev)' — codex exec exited 2: <output tail>
-```
+- **moved** — the window reads running: `reset_after` below the window
+  length by more than the tolerance, or a non-zero used percentage.
+  `Prime: codex 'xLucifer(dev)' — window started: reset_after 604800 → 604650
+  s, resets Sep 16 08:12, used 0%`. `lastPrimedAt` = the request time,
+  `primedForWindowEndingAt` = the reported reset.
+- **no movement** — still closed 10 min after the request (`grace`):
+  `Prime: codex '…' — no window movement 10 min after the request (no window
+  (idle) — semantics differ?)`; then the retry rule.
+- **failed** — `codex exec` did not exit cleanly: `Prime: codex '…' — codex
+  exec exited N: <output tail>`.
 
 The ledger (`weeklyPrimeLedger_v1`) keeps, per profile, the episode and the
-last prime that opened a window (`lastPrimedAt`, `primedForWindowEndingAt`,
-`lastVerifiedUsedPercent`) — measured values, never synthetic. The dashboard
-roster row and the inspector Overview show `primed HH:MM · resets <date>`
-from those two stamps, `prime pending HH:MM` while due, `prime retry HH:MM`
-after a failure, and the exclusion word otherwise; every prime attempt is
-also an Insights incident (`FleetInsights.Incident.Kind.primed`).
+last prime that started a window — measured values, never synthetic. The
+dashboard roster row and the inspector Overview show `primed HH:MM · resets
+<date>` from those stamps, `prime sent HH:MM · verifying` while a request is
+unresolved, `prime pending HH:MM` while due, `prime retry HH:MM` after a
+failure, and the exclusion word otherwise; every SETTLED attempt is also an
+Insights incident (`FleetInsights.Incident.Kind.primed`).
 
 ### Settings and actions
 
@@ -162,8 +189,9 @@ also an Insights incident (`FleetInsights.Incident.Kind.primed`).
   "Never prime" list (`weeklyPrimePolicy_v1`, journaled + shadowed).
 - **Accounts › Overview › Prime now** (Codex accounts): the owner's explicit
   ask — the schedule, the toggle and the never list do not apply; no
-  credentials, a dead login and a switch in flight refuse. The outcome line
-  is shown on the page and booked like a scheduled prime (no notice).
+  credentials, a dead login and a switch in flight refuse. The request is
+  booked like a scheduled one and the row says `prime sent · verifying`
+  until the fetches settle it (no notice).
 
 ## Keys
 
@@ -171,21 +199,32 @@ See `docs/specs/ux-revamp.md` §5.2: `weeklyPrimePolicy_v1`,
 `weeklyPrimeLedger_v1` (both SharedDataStore, journaled, shadowed, registered;
 `SettingsKeyRegistryTests`).
 
-## Tests (`WeeklyWindowPrimingTests`, 15, pure)
+## Tests
 
-Parser "no window" → closed + sentinel, healer projection; window state;
-exclusions (owner, dead, unsupported, never list, toggle); jitter bounds and
-determinism; episode open/end; once per window; retry once then spent;
-verification moved / no movement / already open; attempt bookkeeping;
-command arguments, environment, output tail; home resolution (default home
-refused); binary order; run verdicts; settings record decoding and round trip.
+`WeeklyWindowPrimingTests` (15, pure): parser placeholder → closed + sentinel
+and a running window → open; healer projection; window state; exclusions
+(owner, dead, unsupported, never list, toggle); jitter bounds and determinism;
+episode open/end; once per window; retry once then spent; verification of a
+sent prime (started / still verifying / no movement after the grace);
+attempt bookkeeping; command arguments, environment, output tail; home
+resolution (default home refused); binary order; run verdicts; settings
+record decoding and round trip.
+
+`WeeklyWindowPrimingPayloadTests` (stage 2, 6): the three real payload
+shapes (idle placeholder, active, exhausted) through the parser and the
+window state; the missing-window shape; the poll-to-poll drift cross-check
+in the healer (advancing reset → closed; a fixed reset stays open; a
+projected previous stamp is no evidence); the placeholder rule's boundaries;
+the dashboard's idle countdown line and tooltip.
 
 ## First live prime — what to check
 
-The first scheduled prime (or a "Prime now" on an idle Codex account, e.g.
-xLucifer (dev) on 2026-09-09) is the semantics test. Expected in the log,
-in order: `weekly window seen closed`, `priming due HH:MM`, `starting attempt
-1`, `codex exec exited 0 in N s: OK`, `window reset moved none → <now + 7 d>,
-used N%`. If the last line reads `no window movement`, the request did not
-charge the primary window — try `-m` with the account's default model named
-explicitly, or a different effort, and record the finding here.
+The first scheduled prime after the stage-2 deploy targets xLucifer (dev)
+(idle, placeholder window) within 2–10 min of the first sweep. Expected in
+the log, in order: `weekly window seen closed (idle placeholder)`, `priming
+due HH:MM`, `starting attempt 1`, `codex exec exited 0 in N s: OK; the next
+fetches verify the clock started`, then within ~3 min `window started:
+reset_after 604800 → N s`. If the last line reads `no window movement`, the
+request did not charge the primary window — try `-m` with the account's
+default model named explicitly, or a different effort, and record the
+finding here.

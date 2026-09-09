@@ -120,17 +120,25 @@ struct ClaudeUsage: Codable, Equatable {
     /// Optional with nil default so previously cached usage JSON still decodes.
     var codexResetCreditsMeasuredAt: Date? = nil
 
-    /// Whether the provider reported a weekly window at all on the last fetch.
-    /// Codex's weekly window is ROLLING: it opens on the first real request
-    /// after the previous one ended, and until then `wham/usage` reports no
-    /// window (`primary_window` null — measured live 2026-09-09 on an idle
-    /// account, whose stored stamp drifted with every fetch while the parser
-    /// invented "now + 7 d"). `false` is that state: the window is CLOSED and
-    /// only a request will open it (`WeeklyWindowPrimer`). `true` is a
-    /// reported window; nil is legacy data or a provider that says nothing
-    /// (Claude reports a window whenever one exists). Optional with nil
-    /// default so previously cached usage JSON still decodes.
+    /// Whether the account's weekly window is RUNNING. Codex's weekly window
+    /// is rolling: it opens on the first real request after the previous one
+    /// ended. Until then `wham/usage` reports a PLACEHOLDER — `used_percent`
+    /// 0, `reset_after_seconds` equal to `limit_window_seconds`, `reset_at`
+    /// exactly now + 7 d and advancing with every poll (verified with each
+    /// account's own token 2026-09-09 09:12; an active account read 28 % /
+    /// 582 757 s, an exhausted one 100 % / 466 209 s) — or, on some plans, no
+    /// window object at all. `false` is either: the window is CLOSED and only
+    /// a request opens it (`WeeklyWindowPrimer`; `CodexWindowPlaceholder`
+    /// holds the rule). `true` is a running window; nil is legacy data or a
+    /// provider that says nothing (Claude reports a window whenever one
+    /// exists). Optional with nil default so cached usage JSON still decodes.
     var weeklyWindowOpen: Bool? = nil
+
+    /// The weekly window's length as the provider reports it (Codex
+    /// `limit_window_seconds`, 604 800 on this plan). The placeholder rule and
+    /// the "window started" verification compare `reset_after` against it.
+    /// Optional with nil default so cached usage JSON still decodes.
+    var weeklyWindowSeconds: TimeInterval? = nil
 
     // Weekly data (all models)
     var weeklyTokensUsed: Int
@@ -288,13 +296,26 @@ struct ClaudeUsage: Codable, Equatable {
                 sessionResetTime = now.addingTimeInterval(5 * 3600)
             }
         }
+        // The poll-to-poll cross-check for an idle Codex window: a running
+        // window's reset never moves, a placeholder's advances with every
+        // poll. Reported stamps only (a projection is not evidence).
+        if weeklyWindowOpen == true,
+           let prev = previous,
+           CodexWindowPlaceholder.advanced(
+               previousReset: prev.weeklyResetTime, previousReported: prev.weeklyWindowOpen == true && prev.weeklyResetProjected != true,
+               reset: weeklyResetTime, usedPercent: weeklyPercentage
+           ) {
+            weeklyWindowOpen = false
+            weeklyResetTime = Self.unknownResetSentinel
+        }
         if weeklyResetTime == Self.unknownResetSentinel {
             if weeklyWindowOpen == false {
-                // The provider said there is NO window (an idle Codex account):
-                // the window the next request opens would end 7 days out, which
-                // is the ranking's "when does this quota come back" for an
-                // account that has all of it. A previous boundary means nothing
-                // to a rolling window, so it is not carried forward.
+                // The window is CLOSED (an idle Codex account): the one the
+                // next request opens would end 7 days out, which is the
+                // ranking's "when does this quota come back" for an account
+                // that has all of it. A previous boundary means nothing to a
+                // rolling window, so it is not carried forward; the dashboard
+                // prints "no window (idle)", not this projection.
                 weeklyResetTime = now.addingTimeInterval(7 * 24 * 3600)
             } else if let prev = previous?.weeklyResetTime, prev != Self.unknownResetSentinel {
                 weeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)

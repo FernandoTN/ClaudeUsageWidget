@@ -329,6 +329,7 @@ enum InsightsFormatting {
         case .headerProbe429: kind = "insights.kind_probe_429".localized
         case .headerRescue: kind = "insights.kind_rescue".localized
         case .burst429(let streak): kind = "insights.kind_burst".localized(with: streak)
+        case .primed(.sent): kind = "insights.kind_prime_sent".localized
         case .primed(.moved): kind = "insights.kind_primed".localized
         case .primed(.noMovement): kind = "insights.kind_prime_no_movement".localized
         case .primed(.failed): kind = "insights.kind_prime_failed".localized
@@ -396,7 +397,7 @@ enum InsightsFormatting {
         case .inferredStamp: return DesignGlyph.suspected
         case .tripwire, .affirmedStamp, .headerProbe429, .burst429: return DesignGlyph.exhausted
         case .primed(.moved): return DesignGlyph.ready
-        case .primed(.noMovement), .primed(.failed): return DesignGlyph.unmeasured
+        case .primed(.sent), .primed(.noMovement), .primed(.failed): return DesignGlyph.unmeasured
         }
     }
 
@@ -407,6 +408,7 @@ enum InsightsFormatting {
         case .tripwire, .affirmedStamp: return DesignRole.blocking.color
         case .headerProbe429, .burst429: return DesignRole.caution.color
         case .primed(.moved): return DesignRole.ready.color
+        case .primed(.sent): return DesignRole.informational.color
         case .primed(.noMovement), .primed(.failed): return DesignRole.caution.color
         }
     }

@@ -14,9 +14,10 @@
 //     runs there with stdin closed and a hard timeout, and a rotation the CLI
 //     makes is adopted back with the switch path's same-account rule.
 //  2. `WeeklyWindowPrimer` — the scheduler the sweep ticks: one profile at a
-//     time, never mid-switch, verified by a forced fetch, booked in the ledger,
-//     logged with the moved stamps, one INFO notice when an episode's two
-//     attempts both fail.
+//     time, never mid-switch, booked as SENT and verified by the sweep's own
+//     later fetches (a fetch inside the placeholder tolerance still reads the
+//     window closed), logged with the reset_after drop, one INFO notice when
+//     an episode's two attempts both fail.
 //
 
 import Foundation
@@ -284,7 +285,7 @@ final class WeeklyWindowPrimer {
     static let shared = WeeklyWindowPrimer()
 
     /// What one tick reads. The switch flag is a closure because a switch can
-    /// start while a prime's fetch is awaiting.
+    /// start while a prime is running.
     struct Context {
         var profiles: [Profile]
         /// The provider owners (`ProfileManager.activeAccountIds`) — being used
@@ -292,9 +293,6 @@ final class WeeklyWindowPrimer {
         var ownerIds: Set<UUID>
         var isLoginDead: (Profile) -> Bool
         var isSwitching: () -> Bool
-        /// A fetch with the profile's own credentials that stages, publishes
-        /// and returns the healed usage — the verifying read after a prime.
-        var fetch: (Profile) async throws -> ClaudeUsage
         var now: Date = Date()
     }
 
@@ -313,9 +311,10 @@ final class WeeklyWindowPrimer {
     func record(for profileId: UUID) -> WeeklyPrimeRecord? { ledger[profileId] }
     func verdict(for profileId: UUID) -> WeeklyPrimeVerdict? { verdicts[profileId] }
 
-    /// One sweep's worth of priming: re-read every window, open or end its
-    /// episode, and run the ONE most overdue prime. Nothing runs mid-switch or
-    /// while a prime is already in flight.
+    /// One sweep's worth of priming: resolve the primes the sweep's fetches
+    /// can now verify, re-read every window, open or end its episode, and run
+    /// the ONE most overdue prime. Nothing runs mid-switch or while a prime
+    /// is already in flight.
     func tick(_ context: Context) async {
         guard inFlight == nil, !context.isSwitching() else { return }
         let policy = store.loadWeeklyPrimePolicy()
@@ -327,11 +326,18 @@ final class WeeklyWindowPrimer {
             let candidate = makeCandidate(profile, context: context)
             var record = ledger[profile.id] ?? WeeklyPrimeRecord()
             let state = WeeklyWindowState.of(profile.claudeUsage, provider: profile.providerKind, now: now)
+
+            if let result = WeeklyPrimeVerification.resolve(sent: record, usage: profile.claudeUsage, provider: profile.providerKind, now: now) {
+                WeeklyPrimeVerification.record(result, into: &record)
+                ledger[profile.id] = record
+                changed = true
+                report(result, for: profile, record: record)
+            }
             if WeeklyPrimeSchedule.observe(state, record: &record, now: now) {
                 ledger[profile.id] = record
                 changed = true
                 if state == .closed {
-                    LoggingService.shared.log("Prime: codex '\(profile.name)' — weekly window seen closed (no window reported)")
+                    LoggingService.shared.log("Prime: codex '\(profile.name)' — weekly window seen closed (idle placeholder)")
                 }
             }
             let verdict = WeeklyPrimeSchedule.verdict(candidate, policy: policy, record: record, now: now)
@@ -368,49 +374,55 @@ final class WeeklyWindowPrimer {
         defer { inFlight = nil }
 
         var record = ledger[profile.id] ?? WeeklyPrimeRecord()
-        let before = profile.claudeUsage
-        let beforeState = WeeklyWindowState.of(before, provider: profile.providerKind, now: Date())
+        let beforeState = WeeklyWindowState.of(profile.claudeUsage, provider: profile.providerKind, now: Date())
         LoggingService.shared.log(
             "Prime: codex '\(profile.name)' — starting attempt \(record.attempts + 1)"
                 + " (\(userInitiated ? "Prime now" : "scheduled"); window before: \(WeeklyPrimeVerification.describe(beforeState)))"
         )
 
-        let result: WeeklyPrimeVerification.Result
+        let line: String
         switch await CodexWindowPrimer.prime(profile) {
         case .failure(let failure):
-            result = WeeklyPrimeVerification.Result(outcome: .failed, detail: failure.description, resetAt: nil, usedPercent: nil)
+            WeeklyPrimeVerification.recordFailure(failure.description, into: &record, now: Date())
             LoggingService.shared.logError("Prime: codex '\(profile.name)' — \(failure.description)")
+            line = failure.description
+            if !userInitiated, record.attempts >= WeeklyPrimeSchedule.maxAttemptsPerEpisode {
+                NotificationManager.shared.sendWeeklyPrimeFailedNotification(
+                    profileName: profile.name, detail: failure.description, episodeStartedAt: record.episodeObservedAt
+                )
+            }
         case .success(let run):
+            WeeklyPrimeVerification.recordSent(into: &record, now: Date())
             LoggingService.shared.log(
-                "Prime: codex '\(profile.name)' — codex exec exited 0 in \(String(format: "%.1f", run.duration)) s: \(CodexPrimeCommand.tail(of: run.output))",
-                type: .info
+                "Prime: codex '\(profile.name)' — codex exec exited 0 in \(String(format: "%.1f", run.duration)) s: \(CodexPrimeCommand.tail(of: run.output)); the next fetches verify the clock started"
             )
-            do {
-                let after = try await context.fetch(profile)
-                result = WeeklyPrimeVerification.compare(before: before, after: after, provider: profile.providerKind, now: Date())
-            } catch {
-                result = WeeklyPrimeVerification.Result(
-                    outcome: .noMovement, detail: "request ran; the verifying fetch failed: \(error.localizedDescription)",
-                    resetAt: nil, usedPercent: nil
+            line = "prime.outcome_sent".localized
+        }
+
+        ledger[profile.id] = record
+        store.saveWeeklyPrimeLedger(ledger)
+        verdicts[profile.id] = WeeklyPrimeSchedule.verdict(
+            makeCandidate(profile, context: context), policy: store.loadWeeklyPrimePolicy(), record: record, now: Date()
+        )
+        NotificationCenter.default.post(name: .weeklyPrimeStateChanged, object: profile.id)
+        return line
+    }
+
+    /// A resolved verification: the log line with the moved stamps, the
+    /// notice when the episode is spent, the repaint.
+    private func report(_ result: WeeklyPrimeVerification.Result, for profile: Profile, record: WeeklyPrimeRecord) {
+        let line = "Prime: codex '\(profile.name)' — \(result.detail)"
+        if result.outcome == .moved {
+            LoggingService.shared.log(line)
+        } else {
+            LoggingService.shared.logWarning(line)
+            if record.attempts >= WeeklyPrimeSchedule.maxAttemptsPerEpisode {
+                NotificationManager.shared.sendWeeklyPrimeFailedNotification(
+                    profileName: profile.name, detail: result.detail, episodeStartedAt: record.episodeObservedAt
                 )
             }
         }
-
-        let now = Date()
-        WeeklyPrimeVerification.record(result, into: &record, now: now)
-        ledger[profile.id] = record
-        store.saveWeeklyPrimeLedger(ledger)
-
-        let line = "Prime: codex '\(profile.name)' — \(result.detail)"
-        if result.outcome == .moved { LoggingService.shared.log(line) } else { LoggingService.shared.logWarning(line) }
-
-        if !userInitiated, result.outcome != .moved, record.attempts >= WeeklyPrimeSchedule.maxAttemptsPerEpisode {
-            NotificationManager.shared.sendWeeklyPrimeFailedNotification(
-                profileName: profile.name, detail: result.detail, episodeStartedAt: record.episodeObservedAt
-            )
-        }
         NotificationCenter.default.post(name: .weeklyPrimeStateChanged, object: profile.id)
-        return result.detail
     }
 
     private func makeCandidate(_ profile: Profile, context: Context) -> WeeklyPrimeCandidate {

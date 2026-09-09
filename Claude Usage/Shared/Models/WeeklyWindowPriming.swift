@@ -5,23 +5,70 @@
 //  The pure half of weekly-window priming (docs/specs/weekly-window-priming.md).
 //
 //  A Codex account's weekly window is ROLLING: it opens on the first real
-//  request after the previous window ended, and an idle account has no window
-//  at all — its next reset is 7 days after whenever the rotation happens to
-//  reach it. Priming sends one tiny request the moment the window is seen
-//  closed, so the 7-day clock runs while the account idles and its capacity
-//  comes back as early as it can. The quota per window is unchanged; only the
-//  clock moves earlier.
+//  request after the previous window ended. An idle account is reported with
+//  a PLACEHOLDER window — 0 %, reset_after == limit_window_seconds, reset_at
+//  exactly now + 7 d and advancing with every poll — so its next reset lands
+//  7 days after whenever the rotation happens to reach it. Priming sends one
+//  tiny request the moment the window is seen closed, so the 7-day clock runs
+//  while the account idles and its capacity comes back as early as it can.
+//  The quota per window is unchanged; only the clock moves earlier.
 //
 //  Everything here takes `now` and touches no process, network or store:
-//  the settings record, the per-profile ledger, the window-state reading of a
-//  cached usage, the schedule (jitter, once per window, one retry) and the
-//  verification rule. `WeeklyWindowPrimer` runs it; `CodexPrimeCommand` (in
-//  the same service file) builds and runs the CLI command.
+//  the placeholder rule, the settings record, the per-profile ledger, the
+//  window-state reading of a cached usage, the schedule (jitter, once per
+//  window, one retry) and the verification rule. `WeeklyWindowPrimer` runs
+//  it; `CodexPrimeCommand` (in the same service file) builds and runs the CLI
+//  command.
 //
 //  Scope: Codex only, by owner decision (2026-09-09). Claude is not primed.
 //
 
 import Foundation
+
+// MARK: - The placeholder rule
+
+/// How an idle Codex account tells itself apart from one whose window runs.
+/// Verified with each account's own token, 2026-09-09 09:12: idle
+/// `used_percent 0, reset_after_seconds 604800 == limit_window_seconds,
+/// reset_at = now + 604800` (advancing every poll); active `28 %,
+/// reset_after 582757`; exhausted `100 %, reset_after 466209,
+/// limit_reached`. A running window's `reset_after` counts down and its
+/// `reset_at` never moves; a placeholder's `reset_after` stays at the window
+/// length and its `reset_at` follows the clock.
+nonisolated enum CodexWindowPlaceholder {
+    /// How far below the window length `reset_after` may sit and still read
+    /// as a placeholder (server-side rounding); past it the clock is running.
+    static let tolerance: TimeInterval = 120
+    /// A reported reset that moved this much between polls is a placeholder's.
+    static let driftTolerance: TimeInterval = 60
+    /// The window length assumed when the payload carries none.
+    static let defaultWindowSeconds: TimeInterval = 7 * 24 * 3600
+
+    /// The parser-level rule: nothing used AND `reset_after` (or `reset_at −
+    /// now`) within `tolerance` of the window length.
+    static func isPlaceholder(usedPercent: Double, resetAfter: TimeInterval?, resetAt: Date?,
+                              windowSeconds: TimeInterval?, now: Date) -> Bool {
+        guard usedPercent <= 0 else { return false }
+        let window = windowSeconds ?? defaultWindowSeconds
+        let remaining = resetAfter ?? resetAt?.timeIntervalSince(now)
+        guard let remaining else { return false }
+        return remaining >= window - tolerance
+    }
+
+    /// The poll-to-poll cross-check: nothing used AND the reported reset
+    /// advanced by at least `driftTolerance` since the previous REPORTED one.
+    static func advanced(previousReset: Date, previousReported: Bool, reset: Date, usedPercent: Double) -> Bool {
+        guard usedPercent <= 0, previousReported, previousReset != ClaudeUsage.unknownResetSentinel,
+              reset != ClaudeUsage.unknownResetSentinel else { return false }
+        return reset.timeIntervalSince(previousReset) >= driftTolerance
+    }
+
+    /// Seconds until the reported reset as of the fetch — `reset_after`
+    /// reconstructed from the stored stamps.
+    static func resetAfter(of usage: ClaudeUsage) -> TimeInterval {
+        usage.weeklyResetTime.timeIntervalSince(usage.lastUpdated)
+    }
+}
 
 // MARK: - Settings (`weeklyPrimePolicy_v1`)
 
@@ -66,13 +113,18 @@ struct WeeklyPrimePolicy: Codable, Equatable {
 // MARK: - Ledger (`weeklyPrimeLedger_v1`)
 
 /// One profile's priming bookkeeping. An EPISODE is one closed window: it
-/// opens when a fetch first shows no window and ends when a fetch shows one
-/// again (primed or used by somebody). Attempts count within the episode.
+/// opens when a fetch first shows the window closed and ends when a fetch
+/// shows it running (primed, or used by somebody). Attempts count within the
+/// episode.
 struct WeeklyPrimeRecord: Codable, Equatable {
     enum Outcome: String, Codable {
-        /// The verifying fetch reported a window: the reset moved to ≈ now + 7 d.
+        /// `codex exec` exited cleanly; the next fetches decide whether the
+        /// clock started (a fetch inside the placeholder tolerance still reads
+        /// closed, so verification cannot be immediate).
+        case sent
+        /// A later fetch showed the window running: the clock started.
         case moved
-        /// The request ran, the verifying fetch still showed no window.
+        /// The request ran and the window still read closed after the grace.
         case noMovement
         /// `codex exec` did not run to a clean exit.
         case failed
@@ -83,9 +135,9 @@ struct WeeklyPrimeRecord: Codable, Equatable {
     var attempts: Int
     var lastAttemptAt: Date?
     var lastOutcome: Outcome?
-    /// The last attempt's log line ("window reset moved … → …, used 1%").
+    /// The last attempt's log line ("window started: reset_after 604800 → 604650 s").
     var lastDetail: String?
-    /// The last prime that opened a window: when it ran, the reset the
+    /// The last prime that started a window: when it ran, the reset the
     /// verifying fetch reported — the window it is "primed for" — and the used
     /// percentage that fetch read. Measured values, never synthetic.
     var lastPrimedAt: Date?
@@ -121,16 +173,19 @@ struct WeeklyPrimeRecord: Codable, Equatable {
         primedForWindowEndingAt = try c.decodeIfPresent(Date.self, forKey: .primedForWindowEndingAt)
         lastVerifiedUsedPercent = try c.decodeIfPresent(Double.self, forKey: .lastVerifiedUsedPercent)
     }
+
+    /// A prime whose verification is still riding the fetches.
+    var isAwaitingVerification: Bool { lastOutcome == .sent }
 }
 
 // MARK: - Window state
 
 /// What the last fetch said about a profile's weekly window.
 enum WeeklyWindowState: Equatable {
-    /// The provider reported a window ending at `resetAt`.
+    /// The provider reported a running window ending at `resetAt`.
     case open(resetAt: Date)
-    /// The provider reported NO window (`ClaudeUsage.weeklyWindowOpen == false`):
-    /// the account idled past its reset. Only a request opens the next one.
+    /// The window is CLOSED (`ClaudeUsage.weeklyWindowOpen == false`): the
+    /// account idled past its reset. Only a request opens the next one.
     case closed
     /// The cached stamp has passed and nothing has been fetched since — the
     /// next fetch says whether the window closed or a new one opened.
@@ -166,10 +221,12 @@ struct WeeklyPrimeCandidate: Equatable {
 enum WeeklyPrimeVerdict: Equatable {
     enum Wait: Equatable {
         case windowOpen(resetAt: Date)
-        /// The open window is the one the last prime opened.
+        /// The running window is the one the last prime started.
         case alreadyPrimed(resetAt: Date)
         case awaitingFetch(resetAt: Date)
         case unknownWindow
+        /// A request was sent; the next fetches decide whether the clock started.
+        case verifying(since: Date)
         /// Both attempts of this episode are spent; the next window gets two more.
         case attemptsExhausted
     }
@@ -218,7 +275,9 @@ enum WeeklyPrimeSchedule {
     }
 
     /// Opens or ends the record's episode from what the last fetch showed.
-    /// Returns true when the record changed (the caller persists it).
+    /// Returns true when the record changed (the caller persists it). A sent
+    /// prime keeps its episode: the window reads closed until the clock has
+    /// run past the placeholder tolerance, and that is not a new window.
     static func observe(_ state: WeeklyWindowState, record: inout WeeklyPrimeRecord, now: Date) -> Bool {
         switch state {
         case .closed:
@@ -246,6 +305,7 @@ enum WeeklyPrimeSchedule {
         if candidate.isOwner { return .excluded(.owner) }
         guard policy.isEnabled(for: candidate.provider) else { return .excluded(.providerOff) }
         if policy.neverPrime.contains(candidate.id) { return .excluded(.neverPrime) }
+        if record.isAwaitingVerification, let since = record.lastAttemptAt { return .waiting(.verifying(since: since)) }
 
         switch WeeklyWindowState.of(candidate.usage, provider: candidate.provider, now: now) {
         case .open(let reset):
@@ -271,9 +331,19 @@ enum WeeklyPrimeSchedule {
 
 // MARK: - Verification
 
-/// What the fetch after a prime proved. "Moved" means the provider now reports
-/// a window it did not report before (or a different one): the clock started.
+/// What the fetches after a prime prove. A fetch inside the placeholder
+/// tolerance still reads the window as closed (reset_after has only dropped
+/// by the seconds since the request), so a sent prime is booked as `sent`
+/// and resolved by a LATER fetch: "moved" when the window reads running —
+/// `reset_after` below the window length by more than the tolerance, or a
+/// non-zero used percentage — "no movement" when it still reads closed after
+/// `grace`.
 enum WeeklyPrimeVerification {
+    /// How long a sent prime may keep reading closed before it counts as no
+    /// movement. Codex profiles are fetched every sweep, so the clock shows
+    /// within ~3 minutes when it started at all.
+    static let grace: TimeInterval = 10 * 60
+
     struct Result: Equatable {
         var outcome: WeeklyPrimeRecord.Outcome
         var detail: String
@@ -290,48 +360,59 @@ enum WeeklyPrimeVerification {
     static func describe(_ state: WeeklyWindowState, clock: DateFormatter = clock) -> String {
         switch state {
         case .open(let reset): return "resets \(clock.string(from: reset))"
-        case .closed: return "no window"
+        case .closed: return "no window (idle)"
         case .expired(let reset): return "stamp passed \(clock.string(from: reset))"
         case .unknown: return "unknown"
         }
     }
 
-    static func compare(before: ClaudeUsage?, after: ClaudeUsage, provider: Profile.ProviderKind,
-                        now: Date, clock: DateFormatter = clock) -> Result {
-        let old = WeeklyWindowState.of(before, provider: provider, now: now)
-        let new = WeeklyWindowState.of(after, provider: provider, now: now)
-        let used = Int(after.weeklyPercentage.rounded())
-        guard case .open(let reset) = new else {
-            return Result(outcome: .noMovement,
-                          detail: "no window movement (\(describe(new, clock: clock)) — semantics differ?)",
-                          resetAt: nil, usedPercent: after.weeklyPercentage)
-        }
-        if case .open(let previous) = old, abs(previous.timeIntervalSince(reset)) <= WeeklyPrimeSchedule.sameWindowTolerance {
-            return Result(outcome: .noMovement,
-                          detail: "window already open (\(describe(new, clock: clock)), used \(used)%)",
-                          resetAt: reset, usedPercent: after.weeklyPercentage)
-        }
-        let from: String
-        switch old {
-        case .open(let previous): from = clock.string(from: previous)
-        case .closed: from = "none"
-        case .expired(let previous): from = clock.string(from: previous) + " (passed)"
-        case .unknown: from = "unknown"
-        }
-        return Result(outcome: .moved,
-                      detail: "window reset moved \(from) → \(clock.string(from: reset)), used \(used)%",
-                      resetAt: reset, usedPercent: after.weeklyPercentage)
-    }
-
-    /// Books one attempt. A move also records the window it opened, which is
-    /// what keeps the next tick from priming it again (`alreadyPrimed`).
-    static func record(_ result: Result, into record: inout WeeklyPrimeRecord, now: Date) {
+    /// Books a clean `codex exec` exit: one attempt, outcome `sent`.
+    static func recordSent(into record: inout WeeklyPrimeRecord, now: Date) {
         record.attempts += 1
         record.lastAttemptAt = now
+        record.lastOutcome = .sent
+        record.lastDetail = "request sent; the next fetches verify the clock started"
+    }
+
+    /// Books a run that did not exit cleanly: one attempt, outcome `failed`.
+    static func recordFailure(_ detail: String, into record: inout WeeklyPrimeRecord, now: Date) {
+        record.attempts += 1
+        record.lastAttemptAt = now
+        record.lastOutcome = .failed
+        record.lastDetail = detail
+    }
+
+    /// Reads a later fetch against a sent prime. nil = nothing to conclude
+    /// yet (no fetch since the request, or still inside the grace).
+    static func resolve(sent record: WeeklyPrimeRecord, usage: ClaudeUsage?, provider: Profile.ProviderKind,
+                        now: Date, clock: DateFormatter = clock) -> Result? {
+        guard record.isAwaitingVerification, let sentAt = record.lastAttemptAt,
+              let usage, usage.lastUpdated > sentAt else { return nil }
+        let state = WeeklyWindowState.of(usage, provider: provider, now: now)
+        let used = Int(usage.weeklyPercentage.rounded())
+        switch state {
+        case .open(let reset):
+            let window = Int(usage.weeklyWindowSeconds ?? CodexWindowPlaceholder.defaultWindowSeconds)
+            let after = Int(CodexWindowPlaceholder.resetAfter(of: usage).rounded())
+            return Result(outcome: .moved,
+                          detail: "window started: reset_after \(window) → \(after) s, resets \(clock.string(from: reset)), used \(used)%",
+                          resetAt: reset, usedPercent: usage.weeklyPercentage)
+        case .closed, .expired, .unknown:
+            guard now.timeIntervalSince(sentAt) >= grace else { return nil }
+            return Result(outcome: .noMovement,
+                          detail: "no window movement \(Int(grace / 60)) min after the request (\(describe(state, clock: clock)) — semantics differ?)",
+                          resetAt: nil, usedPercent: usage.weeklyPercentage)
+        }
+    }
+
+    /// Books a resolution. The attempt was counted when the request was sent;
+    /// a move also records the window it started, which is what keeps the
+    /// next tick from priming it again (`alreadyPrimed`).
+    static func record(_ result: Result, into record: inout WeeklyPrimeRecord) {
         record.lastOutcome = result.outcome
         record.lastDetail = result.detail
         guard result.outcome == .moved else { return }
-        record.lastPrimedAt = now
+        record.lastPrimedAt = record.lastAttemptAt
         record.primedForWindowEndingAt = result.resetAt
         record.lastVerifiedUsedPercent = result.usedPercent
     }

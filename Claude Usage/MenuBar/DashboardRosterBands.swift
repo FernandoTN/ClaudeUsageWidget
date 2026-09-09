@@ -23,6 +23,9 @@ extension DashboardFormatting {
     static func resetCountdown(_ reset: ResetCountdown?, now: Date = Date(), short: Bool = false) -> String {
         guard let reset else { return "" }
         let label = gaugeTitle(reset.window == .fable ? .fable : .weekly, compact: true) + " "
+        // A closed Codex window: "W no window (idle)" — a fact, not a
+        // missing stamp, and nothing to count down to.
+        if reset.idle { return label + "dashboard.reset_idle".localized }
         guard let at = reset.resetAt else { return label + "dashboard.reset_unknown".localized }
         if at <= now { return label + "dashboard.reset_now".localized }
         let clock = (reset.projected ? "~" : "") + at.timeRemainingString(from: now)
@@ -58,6 +61,7 @@ extension DashboardFormatting {
     static func resetHelp(_ reset: ResetCountdown, now: Date = Date()) -> String {
         let window = reset.window == .fable
             ? "dashboard.reset_window_fable".localized : "dashboard.reset_window_weekly".localized
+        if reset.idle { return "dashboard.reset_help_idle".localized(with: window) }
         guard let at = reset.resetAt else { return "dashboard.reset_help_unknown".localized(with: window) }
         var text = "dashboard.reset_help_at".localized(with: window, at.resetTimeString(from: now))
         if reset.projected { text += " " + "dashboard.reset_help_projected".localized }
@@ -105,7 +109,8 @@ struct RosterResetText: View {
         Text(DashboardFormatting.resetLine(row, now: now))
             .font(.system(size: 8.5, weight: emphasized ? .medium : .regular))
             .monospacedDigit()
-            .foregroundColor(row.weeklyReset?.resetAt == nil ? DesignRole.caution.color : (emphasized ? .primary : .secondary))
+            .foregroundColor(row.weeklyReset?.resetAt == nil && row.weeklyReset?.idle != true
+                             ? DesignRole.caution.color : (emphasized ? .primary : .secondary))
             .lineLimit(1)
             .fixedSize()
             .help(DashboardFormatting.resetHelp(row, now: now))
@@ -125,6 +130,7 @@ extension DashboardFormatting {
             return "prime.status_primed".localized(with: clockTime(at), resetsAt.resetTimeString(from: now))
         case .pending(let at): return "prime.status_pending".localized(with: clockTime(at))
         case .retry(let at): return "prime.status_retry".localized(with: clockTime(at))
+        case .verifying(let at): return "prime.status_verifying".localized(with: clockTime(at))
         case .failed(_, let spent) where spent: return "prime.status_spent".localized
         case .failed(let at, _): return "prime.status_failed".localized(with: clockTime(at))
         case .noMovement(let at): return "prime.status_no_movement".localized(with: clockTime(at))
@@ -140,7 +146,7 @@ extension DashboardFormatting {
     static func primeRole(_ status: WeeklyPrimeStatus) -> DesignRole? {
         switch status {
         case .failed, .noMovement: return .caution
-        case .pending, .retry: return .informational
+        case .pending, .retry, .verifying: return .informational
         case .primed, .excluded: return nil
         }
     }
