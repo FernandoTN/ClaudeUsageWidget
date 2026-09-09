@@ -285,9 +285,11 @@ final class CodexLoginService {
     }
 
     /// The runtime resolver. Blocking (it spawns a login shell) — call it off
-    /// the main thread.
-    nonisolated static func locateCodexBinary() -> String? {
+    /// the main thread. `wellKnown` lets a caller put a path ahead of Homebrew's
+    /// (the primer tries the standalone build in the Codex home first).
+    nonisolated static func locateCodexBinary(wellKnown: [String] = CodexLoginService.wellKnownBinaryPaths) -> String? {
         codexBinaryPath(
+            wellKnown: wellKnown,
             isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
             loginShellLookup: { runLoginShell(command: "command -v codex") }
         )

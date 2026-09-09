@@ -111,3 +111,68 @@ struct RosterResetText: View {
             .help(DashboardFormatting.resetHelp(row, now: now))
     }
 }
+
+// MARK: - Weekly-window priming line (docs/specs/weekly-window-priming.md)
+
+extension DashboardFormatting {
+    /// The row's fourth line on a Codex account: "primed 08:12 · resets Sep 16"
+    /// (both measured — the prime's time and the reset the verifying fetch
+    /// reported), "prime pending 08:15", "prime retry 08:45", "prime failed
+    /// 08:12", or the exclusion word. Empty when there is nothing to say.
+    static func primeLine(_ status: WeeklyPrimeStatus, now: Date = Date()) -> String {
+        switch status {
+        case .primed(let at, let resetsAt):
+            return "prime.status_primed".localized(with: clockTime(at), resetsAt.resetTimeString(from: now))
+        case .pending(let at): return "prime.status_pending".localized(with: clockTime(at))
+        case .retry(let at): return "prime.status_retry".localized(with: clockTime(at))
+        case .failed(_, let spent) where spent: return "prime.status_spent".localized
+        case .failed(let at, _): return "prime.status_failed".localized(with: clockTime(at))
+        case .noMovement(let at): return "prime.status_no_movement".localized(with: clockTime(at))
+        case .excluded(.providerOff): return "prime.status_off".localized
+        case .excluded(.neverPrime): return "prime.status_never".localized
+        case .excluded(.owner): return "prime.status_owner".localized
+        case .excluded(.deadLogin), .excluded(.noCredentials), .excluded(.providerUnsupported): return ""
+        }
+    }
+
+    /// The role the line is drawn in: a spent or failed episode is a caution,
+    /// a pending prime informational; nil (secondary text) for the rest.
+    static func primeRole(_ status: WeeklyPrimeStatus) -> DesignRole? {
+        switch status {
+        case .failed, .noMovement: return .caution
+        case .pending, .retry: return .informational
+        case .primed, .excluded: return nil
+        }
+    }
+
+    /// "08:12" in the user's locale — the same short clock the reset tooltips use.
+    static func clockTime(_ date: Date) -> String {
+        shortClock.string(from: date)
+    }
+
+    private static let shortClock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
+
+/// The priming line under a Codex row's reset countdown.
+struct RosterPrimeText: View {
+    let status: WeeklyPrimeStatus
+    var now = Date()
+
+    var body: some View {
+        let text = DashboardFormatting.primeLine(status, now: now)
+        if !text.isEmpty {
+            Text(text)
+                .font(.system(size: 8.5))
+                .monospacedDigit()
+                .foregroundColor(DashboardFormatting.primeRole(status)?.color ?? .secondary)
+                .lineLimit(1)
+                .fixedSize()
+                .help("prime.status_help".localized)
+        }
+    }
+}

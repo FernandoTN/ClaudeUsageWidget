@@ -173,6 +173,53 @@ struct RosterRow: Hashable {
     /// the row prints it before the weekly countdown ("S resets in 2h 10m ·
     /// W in 2 days") and the sort key and the printed reset never differ.
     var sessionReturnsAt: Date? = nil
+    /// Codex rows: what weekly-window priming did or will do for the account
+    /// (`WeeklyPrimeStatus`) — "primed HH:MM · resets <date>", "prime pending".
+    var prime: WeeklyPrimeStatus? = nil
+}
+
+/// The priming line a Codex row and the inspector print, derived from the
+/// ledger record and the last tick's verdict (docs/specs/weekly-window-
+/// priming.md). Dates are raw so the view formats them; every "primed" is a
+/// verified move of the reported reset, never a synthetic value.
+enum WeeklyPrimeStatus: Hashable {
+    /// The last prime opened the window that is running now.
+    case primed(at: Date, resetsAt: Date)
+    case pending(at: Date)
+    case retry(at: Date)
+    /// The last attempt this episode failed (or did not move the window);
+    /// `spent` when both attempts are gone.
+    case failed(at: Date, spent: Bool)
+    case noMovement(at: Date)
+    case excluded(WeeklyPrimeVerdict.Exclusion)
+
+    static func make(record: WeeklyPrimeRecord?, verdict: WeeklyPrimeVerdict?, now: Date) -> WeeklyPrimeStatus? {
+        switch verdict {
+        case .excluded(let why)?:
+            return why == .providerUnsupported ? nil : .excluded(why)
+        case .due(let at)?:
+            return (record?.attempts ?? 0) > 0 ? .retry(at: at) : .pending(at: at)
+        case .waiting(.attemptsExhausted)?:
+            return record?.lastAttemptAt.map { .failed(at: $0, spent: true) }
+        case .waiting(.alreadyPrimed(let resetsAt))?:
+            return record?.lastPrimedAt.map { .primed(at: $0, resetsAt: resetsAt) }
+        case .waiting(.windowOpen)?, .waiting(.awaitingFetch)?, .waiting(.unknownWindow)?:
+            // A window somebody else opened, or one still being read: an older
+            // prime says nothing about it.
+            return nil
+        case nil:
+            // Before the first tick of this process: the ledger alone.
+            guard let record, let at = record.lastAttemptAt else { return nil }
+            switch record.lastOutcome {
+            case .moved?:
+                guard let resetsAt = record.primedForWindowEndingAt, resetsAt > now else { return nil }
+                return .primed(at: at, resetsAt: resetsAt)
+            case .noMovement?: return record.episodeObservedAt == nil ? nil : .noMovement(at: at)
+            case .failed?: return record.episodeObservedAt == nil ? nil : .failed(at: at, spent: record.attempts >= WeeklyPrimeSchedule.maxAttemptsPerEpisode)
+            case nil: return nil
+            }
+        }
+    }
 }
 
 struct ProviderSection: Hashable {
@@ -298,6 +345,9 @@ struct DashboardSnapshot: Hashable {
         /// `CodexDaemonService.holdText` — the red "still on the previous
         /// login" line under it, while a hold stands.
         var codexTerminalsHold: String? = nil
+        /// Weekly-window priming per profile (`WeeklyPrimeStatus.make` from
+        /// the primer's ledger and last verdicts) — the roster row's line.
+        var primeStatuses: [UUID: WeeklyPrimeStatus] = [:]
     }
 
     static func build(_ inputs: Inputs) -> DashboardSnapshot {
@@ -424,6 +474,7 @@ struct DashboardSnapshot: Hashable {
                                                 queuePosition: inputs.queue.firstIndex(of: id).map { $0 + 1 },
                                                 thresholds: thresholds, now: now)
                             row.sameAccountAs = duplicates[id] ?? []
+                            row.prime = inputs.primeStatuses[id]
                             if let candidate = candidates[id] {
                                 row.candidateStatus = candidate.status
                                 row.isNext = candidate.isNext

@@ -69,6 +69,10 @@ struct ActiveSwitchView: View {
                 SettingsSectionCard(title: "auto_switch.eligible_profiles".localized, subtitle: "auto_switch.eligible_profiles_hint".localized) {
                     eligibilityList
                 }
+
+                SettingsSectionCard(title: "prime.title".localized, subtitle: "prime.subtitle".localized) {
+                    WeeklyPrimeSettingsCard(profiles: profileManager.profiles.filter { $0.providerKind == .codex })
+                }
             }
             .padding()
         }

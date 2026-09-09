@@ -115,6 +115,10 @@ struct FleetInsights: Hashable {
             case headerRescue
             /// A burst-class 429 backed the fetch off.
             case burst429(streak: Int)
+            /// A weekly-window prime attempt (docs/specs/weekly-window-priming.md):
+            /// the window moved, the request ran without moving it, or the
+            /// CLI run failed. `detail` carries the moved stamps.
+            case primed(outcome: WeeklyPrimeRecord.Outcome)
         }
         /// For `.tripwire` rows: whose window the event was attributed to and
         /// what became of it (`TranscriptLimitAttribution`). The row is filed

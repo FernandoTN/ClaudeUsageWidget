@@ -709,6 +709,30 @@ class NotificationManager {
         }
     }
 
+    /// Weekly-window priming spent both attempts of an episode without opening
+    /// the account's window (docs/specs/weekly-window-priming.md). Routine
+    /// primes are log-and-dashboard only; this is the one notice, once per
+    /// closed-window episode (the identifier carries the episode's start).
+    func sendWeeklyPrimeFailedNotification(profileName: String, detail: String, episodeStartedAt: Date?) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.weekly_prime_failed.title".localized
+        content.body = "notification.weekly_prime_failed.message".localized(with: profileName, detail)
+        content.sound = nil
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let episode = Int(episodeStartedAt?.timeIntervalSince1970 ?? 0)
+        let request = UNNotificationRequest(
+            identifier: "weekly_prime_failed_\(profileName)_\(episode)",
+            content: content,
+            trigger: nil
+        )
+        deliver(request, profile: profileName) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send weekly-prime-failed notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Grok refresh token was revoked and the account
     /// needs a fresh `grok` CLI login + re-sync (the app cannot repair it itself).
     func sendGrokReloginNotification(profileName: String) {

@@ -81,6 +81,8 @@ When any window of the active account crosses its threshold — **95 %** for the
 
 When the active account's usage endpoint refuses (per-IP 429 bursts are common with many accounts), the app reads the live counters from the rate-limit headers of a Messages API request instead, so the switch decision never goes blind. Duplicates of one account (two profiles holding the same login) are detected and never switched between.
 
+**Weekly window priming (Codex).** A Codex weekly window is rolling: it opens on the first real request after the previous one ended, so an idle account has no window at all and its next reset lands 7 days after whenever the rotation happens to reach it. When a non-active Codex account's window is seen closed, the app sends one tiny request through the CLI 2–10 minutes later (`codex exec` in the account's own isolated `CODEX_HOME`, never the shared daemon, never the active account) so the 7-day clock runs while the account waits; the next fetch verifies that the reported reset moved, and the roster row and the account's Overview say `primed 08:12 · resets Sep 16` (measured, never synthetic) or `prime pending`. Once per window, one retry after 30 minutes, one notice if both fail. On by default in **Settings › Active & Auto-switch**, with a per-account "Never prime" list and a **Prime now** action in the Overview. Claude accounts are not primed. Spec: `docs/specs/weekly-window-priming.md`.
+
 ![Switch confirmation](docs/images/switch-confirm.png)
 
 ## Codex accounts
@@ -177,7 +179,7 @@ Tests are hosted in the app, so the suite briefly launches a menu-bar instance. 
 Claude Usage/
 ├── App/                    App lifecycle, setup wizard trigger, telemetry start hook
 ├── MenuBar/
-│   ├── MenuBarManager      Sweeps, auto-switch, preflight, header rescue, incidents
+│   ├── MenuBarManager      Sweeps, auto-switch, preflight, header rescue, incidents, priming tick
 │   ├── StatusBarUIManager  Provider status items, in-place repaint, saved positions
 │   ├── MenuBarSummaryRenderer / FleetSummary   Active + dots / counts layouts
 │   ├── DashboardModel / DashboardView          The fleet dashboard and Insights
@@ -188,7 +190,8 @@ Claude Usage/
 └── Shared/
     ├── Services/           ClaudeAPIService, ClaudeCodeSyncService, CodexUsageService,
     │                       CodexLoginService, CodexResetCredits, GrokUsageService,
-    │                       KeychainService, ProfileManager, NotificationManager
+    │                       KeychainService, ProfileManager, NotificationManager,
+    │                       WeeklyWindowPrimer (Codex weekly-window priming)
     ├── Storage/            ProfileStore (profiles + last-known-good preference cache)
     ├── Models/             Profile, ClaudeUsage, FleetInsights, ProviderActiveSelection …
     └── Utilities/          Constants, validators, formatters, Retry-After parsing

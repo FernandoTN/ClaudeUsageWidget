@@ -54,6 +54,11 @@ extension Notification.Name {
     /// dashboard's Codex block repaints its red line. No object, no userInfo.
     static let codexDaemonStateChanged = Notification.Name("codexDaemonStateChanged")
 
+    /// Posted by `WeeklyWindowPrimer` after a prime attempt was booked (any
+    /// outcome), so the dashboard roster row and the inspector repaint their
+    /// "primed HH:MM · resets …" line. object = the profile `UUID`.
+    static let weeklyPrimeStateChanged = Notification.Name("weeklyPrimeStateChanged")
+
     /// Posted when the setup wizard should be shown manually (for testing)
     static let showSetupWizard = Notification.Name("showSetupWizard")
 
