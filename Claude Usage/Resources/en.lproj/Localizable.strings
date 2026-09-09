@@ -1327,3 +1327,8 @@
 "insights.kind_primed" = "weekly window primed";
 "insights.kind_prime_no_movement" = "prime sent, window did not move";
 "insights.kind_prime_failed" = "prime failed";
+"dashboard.reset_idle" = "no window (idle)";
+"dashboard.reset_help_idle" = "%@: closed. A Codex weekly window opens on the first real request after the previous one ended; this account has been idle since its reset, so there is no boundary to count down to. Weekly-window priming sends that request.";
+"prime.status_verifying" = "prime sent %@ · verifying";
+"prime.outcome_sent" = "Request sent. The next fetches verify that the 7-day clock started (the reset_after countdown drops below the window length).";
+"insights.kind_prime_sent" = "prime sent, verifying";

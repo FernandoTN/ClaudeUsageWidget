@@ -1056,13 +1056,16 @@ class CodexUsageService {
             throw AppError(code: .apiParsingFailed, message: "Failed to parse Codex usage data", isRecoverable: false)
         }
 
-        func window(_ key: String) -> (percent: Double, reset: Date)? {
+        let now = Date()
+        func window(_ key: String) -> (percent: Double, reset: Date, resetAfter: TimeInterval?, seconds: TimeInterval?)? {
             guard let w = rateLimit[key] as? [String: Any] else { return nil }
             let percent = (w["used_percent"] as? Double) ?? Double(w["used_percent"] as? Int ?? 0)
+            let resetAfter = w["reset_after_seconds"] as? TimeInterval
+            let seconds = w["limit_window_seconds"] as? TimeInterval
             guard let resetAt = w["reset_at"] as? TimeInterval else {
-                return (percent, Date().addingTimeInterval((w["reset_after_seconds"] as? TimeInterval) ?? 0))
+                return (percent, now.addingTimeInterval(resetAfter ?? 0), resetAfter, seconds)
             }
-            return (percent, Date(timeIntervalSince1970: resetAt))
+            return (percent, Date(timeIntervalSince1970: resetAt), resetAfter, seconds)
         }
 
         let primary = window("primary_window")
@@ -1082,14 +1085,21 @@ class CodexUsageService {
         let weeklyWindow = primaryIsWeekly ? primary : secondary
 
         let weeklyPercentage = weeklyWindow?.percent ?? 0
-        // No weekly window in the payload means the window is CLOSED: Codex's
-        // weekly window is rolling and opens on the first real request after
-        // the previous one ended (docs/specs/weekly-window-priming.md). The
-        // parser used to invent "now + 7 d" here and present it as measured —
-        // an idle account's stored stamp drifted with every fetch. Store the
-        // sentinel and say so with `weeklyWindowOpen`; `healMissingResetStamps`
-        // projects the display boundary and marks it projected.
-        let weeklyResetTime = weeklyWindow?.reset ?? ClaudeUsage.unknownResetSentinel
+        // Codex's weekly window is rolling and opens on the first real request
+        // after the previous one ended (docs/specs/weekly-window-priming.md).
+        // An idle account is reported with a PLACEHOLDER window — 0 %,
+        // reset_after == limit_window_seconds, reset_at = now + 7 d, advancing
+        // with every poll (verified 2026-09-09 09:12) — or, on some plans, no
+        // window at all. Both are the CLOSED state: the stamp is the
+        // sentinel, `weeklyWindowOpen` says so, and `healMissingResetStamps`
+        // projects a display boundary marked projected. The parser used to
+        // store the placeholder's reset as a measurement.
+        let weeklyPlaceholder = weeklyWindow.map {
+            CodexWindowPlaceholder.isPlaceholder(usedPercent: $0.percent, resetAfter: $0.resetAfter, resetAt: $0.reset,
+                                                 windowSeconds: $0.seconds, now: now)
+        } ?? false
+        let weeklyOpen = weeklyWindow != nil && !weeklyPlaceholder
+        let weeklyResetTime = weeklyOpen ? (weeklyWindow?.reset ?? ClaudeUsage.unknownResetSentinel) : ClaudeUsage.unknownResetSentinel
         // No session window (current API): mirror the Grok convention — 0% with
         // the weekly boundary as its reset — and mark hasSessionWindow=false so
         // the UI collapses to one gauge.
@@ -1100,7 +1110,9 @@ class CodexUsageService {
         // no request and no new failure mode. nil is UNKNOWN, not zero.
         let resetCreditsAvailable = Self.resetCreditCount(inUsagePayload: json)
 
-        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"), resets: \(resetCreditsAvailable.map(String.init) ?? "unknown"))\(weeklyWindow == nil ? " — no weekly window open" : "")")
+        let windowNote = weeklyWindow == nil ? " — no weekly window in the payload"
+            : (weeklyPlaceholder ? " — weekly window closed (idle placeholder, reset_after \(Int(weeklyWindow?.resetAfter ?? 0)) s)" : "")
+        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"), resets: \(resetCreditsAvailable.map(String.init) ?? "unknown"))\(windowNote)")
 
         return ClaudeUsage(
             sessionTokensUsed: 0,
@@ -1110,7 +1122,8 @@ class CodexUsageService {
             hasSessionWindow: sessionWindow != nil,
             codexResetCreditsAvailable: resetCreditsAvailable,
             codexResetCreditsMeasuredAt: resetCreditsAvailable == nil ? nil : Date(),
-            weeklyWindowOpen: weeklyWindow != nil,
+            weeklyWindowOpen: weeklyOpen,
+            weeklyWindowSeconds: weeklyWindow?.seconds,
             weeklyTokensUsed: 0,
             weeklyLimit: Constants.weeklyLimit,
             weeklyPercentage: weeklyPercentage,

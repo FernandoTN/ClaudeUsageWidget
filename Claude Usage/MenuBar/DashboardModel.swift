@@ -69,12 +69,16 @@ enum RowChip: Hashable {
 /// the exhausted window. `resetAt` nil means the API never reported a
 /// boundary (`ClaudeUsage.unknownResetSentinel`); `projected` marks one
 /// carried forward from a previous week — shown with a "~", never as
-/// measured (owner ruling: no synthetic values).
+/// measured (owner ruling: no synthetic values). `idle` is a Codex account
+/// whose weekly window is CLOSED (`ClaudeUsage.weeklyWindowOpen == false`):
+/// there is no boundary to count down to until a request opens one, so the
+/// row says "no window (idle)" rather than a projected date.
 struct ResetCountdown: Hashable {
     enum Window: Hashable { case weekly, fable }
     var window: Window
     var resetAt: Date?
     var projected: Bool = false
+    var idle: Bool = false
 }
 
 /// The three bands of a provider's roster, in reading order: who the
@@ -183,10 +187,12 @@ struct RosterRow: Hashable {
 /// priming.md). Dates are raw so the view formats them; every "primed" is a
 /// verified move of the reported reset, never a synthetic value.
 enum WeeklyPrimeStatus: Hashable {
-    /// The last prime opened the window that is running now.
+    /// The last prime started the window that is running now.
     case primed(at: Date, resetsAt: Date)
     case pending(at: Date)
     case retry(at: Date)
+    /// A request was sent; the next fetches decide whether the clock started.
+    case verifying(at: Date)
     /// The last attempt this episode failed (or did not move the window);
     /// `spent` when both attempts are gone.
     case failed(at: Date, spent: Bool)
@@ -199,6 +205,8 @@ enum WeeklyPrimeStatus: Hashable {
             return why == .providerUnsupported ? nil : .excluded(why)
         case .due(let at)?:
             return (record?.attempts ?? 0) > 0 ? .retry(at: at) : .pending(at: at)
+        case .waiting(.verifying(let since))?:
+            return .verifying(at: since)
         case .waiting(.attemptsExhausted)?:
             return record?.lastAttemptAt.map { .failed(at: $0, spent: true) }
         case .waiting(.alreadyPrimed(let resetsAt))?:
@@ -211,6 +219,7 @@ enum WeeklyPrimeStatus: Hashable {
             // Before the first tick of this process: the ledger alone.
             guard let record, let at = record.lastAttemptAt else { return nil }
             switch record.lastOutcome {
+            case .sent?: return .verifying(at: at)
             case .moved?:
                 guard let resetsAt = record.primedForWindowEndingAt, resetsAt > now else { return nil }
                 return .primed(at: at, resetsAt: resetsAt)
@@ -552,6 +561,9 @@ struct DashboardSnapshot: Hashable {
             return ResetCountdown(window: .fable, resetAt: usage.fableWeeklyResetTime,
                                   projected: usage.fableWeeklyResetProjected == true)
         }
+        // A closed Codex window has no boundary to count down to: the healed
+        // "now + 7 d" is the ranking's key, not something to print.
+        if usage.weeklyWindowOpen == false { return ResetCountdown(window: .weekly, resetAt: nil, idle: true) }
         let reset = usage.weeklyResetTime
         if reset == ClaudeUsage.unknownResetSentinel { return ResetCountdown(window: .weekly, resetAt: nil) }
         if reset < now {

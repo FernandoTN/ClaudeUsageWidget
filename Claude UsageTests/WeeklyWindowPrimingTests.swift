@@ -3,12 +3,13 @@
 //  Claude UsageTests
 //
 //  Weekly-window priming (docs/specs/weekly-window-priming.md), the pure
-//  parts: the parser's "no window" reading and its healing, the window state,
-//  the schedule (exclusions, jitter, episodes, once per window, one retry),
-//  the verification bookkeeping, the CLI command, and the two settings
-//  records' decoding. No test runs `codex`, touches a home directory, the
-//  network or the preferences store. Fixture names follow the synthetic
-//  roster (Atlas, Cedar).
+//  parts: the parser's closed / running reading and its healing, the window
+//  state, the schedule (exclusions, jitter, episodes, once per window, one
+//  retry), the verification of a sent prime by later fetches, the CLI
+//  command, and the two settings records' decoding. No test runs `codex`,
+//  touches a home directory, the network or the preferences store. Fixture
+//  names follow the synthetic roster (Atlas, Cedar). The three real payload
+//  shapes live in WeeklyWindowPrimingPayloadTests.
 //
 
 import XCTest
@@ -22,14 +23,16 @@ final class WeeklyWindowPrimingTests: XCTestCase {
     private let week: TimeInterval = 7 * 24 * 3600
 
     /// A Codex usage as the parser + healer would leave it.
-    private func codexUsage(windowOpen: Bool?, reset: Date? = nil, weekly: Double = 0, projected: Bool? = nil) -> ClaudeUsage {
+    private func codexUsage(windowOpen: Bool?, reset: Date? = nil, weekly: Double = 0, projected: Bool? = nil,
+                            updated: Date? = nil) -> ClaudeUsage {
         var usage = ClaudeUsage.empty
         usage.hasSessionWindow = false
         usage.weeklyWindowOpen = windowOpen
+        usage.weeklyWindowSeconds = week
         usage.weeklyPercentage = weekly
         usage.weeklyResetTime = reset ?? now.addingTimeInterval(week)
         usage.weeklyResetProjected = projected
-        usage.lastUpdated = now
+        usage.lastUpdated = updated ?? now
         return usage
     }
 
@@ -42,15 +45,16 @@ final class WeeklyWindowPrimingTests: XCTestCase {
 
     // MARK: - Parser and healer
 
-    func testCodexParserReportsAMissingWindowAsClosedAndAReportedOneAsOpen() throws {
+    func testCodexParserReadsAPlaceholderAsClosedAndARunningWindowAsOpen() throws {
         let service = CodexUsageService.shared
-        let idle = try service.parseUsageResponse(Data(#"{"rate_limit":{"primary_window":null,"secondary_window":null},"plan_type":"pro"}"#.utf8))
+        let idle = try service.parseUsageResponse(Data(#"{"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":604800,"reset_after_seconds":604800},"secondary_window":null},"plan_type":"pro"}"#.utf8))
         XCTAssertEqual(idle.weeklyWindowOpen, false)
-        XCTAssertEqual(idle.weeklyResetTime, ClaudeUsage.unknownResetSentinel, "no invented boundary")
+        XCTAssertEqual(idle.weeklyResetTime, ClaudeUsage.unknownResetSentinel, "a placeholder's stamp is not a measurement")
+        XCTAssertEqual(idle.weeklyWindowSeconds, 604800)
         XCTAssertEqual(idle.weeklyPercentage, 0)
 
         let resetAt = now.addingTimeInterval(3 * 86400)
-        let payload = #"{"rate_limit":{"primary_window":{"used_percent":16,"reset_at":\#(Int(resetAt.timeIntervalSince1970)),"limit_window_seconds":604800},"secondary_window":null}}"#
+        let payload = #"{"rate_limit":{"primary_window":{"used_percent":16,"reset_at":\#(Int(resetAt.timeIntervalSince1970)),"reset_after_seconds":259200,"limit_window_seconds":604800},"secondary_window":null}}"#
         let open = try service.parseUsageResponse(Data(payload.utf8))
         XCTAssertEqual(open.weeklyWindowOpen, true)
         XCTAssertEqual(open.weeklyResetTime.timeIntervalSince1970, resetAt.timeIntervalSince1970, accuracy: 1)
@@ -149,7 +153,8 @@ final class WeeklyWindowPrimingTests: XCTestCase {
 
     func testAPrimedWindowIsNeverPrimedAgainUntilANewOneCloses() {
         let reset = now.addingTimeInterval(week - 600)
-        let primed = WeeklyPrimeRecord(lastPrimedAt: now.addingTimeInterval(-600), primedForWindowEndingAt: reset.addingTimeInterval(45))
+        let primed = WeeklyPrimeRecord(lastOutcome: .moved, lastPrimedAt: now.addingTimeInterval(-600),
+                                       primedForWindowEndingAt: reset.addingTimeInterval(45))
         let open = codexUsage(windowOpen: true, reset: reset, weekly: 1)
         XCTAssertEqual(WeeklyPrimeSchedule.verdict(candidate(usage: open), policy: WeeklyPrimePolicy(), record: primed, now: now),
                        .waiting(.alreadyPrimed(resetAt: reset)))
@@ -162,6 +167,12 @@ final class WeeklyWindowPrimingTests: XCTestCase {
                        .waiting(.awaitingFetch(resetAt: now.addingTimeInterval(-10))))
         XCTAssertEqual(WeeklyPrimeSchedule.verdict(candidate(usage: nil), policy: WeeklyPrimePolicy(), record: primed, now: now),
                        .waiting(.unknownWindow))
+        // A request in flight outranks the window's reading: it is being verified.
+        let sent = WeeklyPrimeRecord(episodeObservedAt: now.addingTimeInterval(-400), attempts: 1,
+                                     lastAttemptAt: now.addingTimeInterval(-40), lastOutcome: .sent)
+        XCTAssertEqual(WeeklyPrimeSchedule.verdict(candidate(usage: codexUsage(windowOpen: false, projected: true)),
+                                                   policy: WeeklyPrimePolicy(), record: sent, now: now),
+                       .waiting(.verifying(since: now.addingTimeInterval(-40))))
     }
 
     func testAFailureIsRetriedOnceAfterThirtyMinutesThenTheEpisodeIsSpent() {
@@ -179,53 +190,69 @@ final class WeeklyWindowPrimingTests: XCTestCase {
 
     // MARK: - Verification
 
-    func testVerificationTellsAMovedWindowFromNoMovement() {
+    func testASentPrimeIsVerifiedByALaterFetchThatShowsTheClockRunning() {
         let clock = DateFormatter()
         clock.dateFormat = "MMM d HH:mm"
         clock.timeZone = TimeZone(identifier: "UTC")
-        let closed = codexUsage(windowOpen: false, projected: true)
-        let opened = codexUsage(windowOpen: true, reset: now.addingTimeInterval(week - 40), weekly: 1)
+        let sentAt = now.addingTimeInterval(-150)
+        let sent = WeeklyPrimeRecord(episodeObservedAt: now.addingTimeInterval(-600), attempts: 1, lastAttemptAt: sentAt, lastOutcome: .sent)
 
-        let moved = WeeklyPrimeVerification.compare(before: closed, after: opened, provider: .codex, now: now, clock: clock)
-        XCTAssertEqual(moved.outcome, .moved)
-        XCTAssertEqual(moved.resetAt, opened.weeklyResetTime)
-        XCTAssertEqual(moved.usedPercent, 1)
-        XCTAssertEqual(moved.detail, "window reset moved none → \(clock.string(from: opened.weeklyResetTime)), used 1%")
+        // A fetch from before the request proves nothing.
+        let stale = codexUsage(windowOpen: false, projected: true, updated: sentAt.addingTimeInterval(-10))
+        XCTAssertNil(WeeklyPrimeVerification.resolve(sent: sent, usage: stale, provider: .codex, now: now, clock: clock))
+        // A fetch inside the tolerance still reads closed: keep verifying.
+        let early = codexUsage(windowOpen: false, projected: true, updated: sentAt.addingTimeInterval(30))
+        XCTAssertNil(WeeklyPrimeVerification.resolve(sent: sent, usage: early, provider: .codex, now: now, clock: clock))
 
-        let stuck = WeeklyPrimeVerification.compare(before: closed, after: closed, provider: .codex, now: now, clock: clock)
-        XCTAssertEqual(stuck.outcome, .noMovement)
-        XCTAssertNil(stuck.resetAt)
-        XCTAssertTrue(stuck.detail.hasPrefix("no window movement (no window"), stuck.detail)
+        // The clock is running: reset_after dropped below the window length.
+        let fetchedAt = sentAt.addingTimeInterval(150)
+        let running = codexUsage(windowOpen: true, reset: sentAt.addingTimeInterval(week), weekly: 0, updated: fetchedAt)
+        let moved = WeeklyPrimeVerification.resolve(sent: sent, usage: running, provider: .codex, now: now, clock: clock)
+        XCTAssertEqual(moved?.outcome, .moved)
+        XCTAssertEqual(moved?.resetAt, running.weeklyResetTime)
+        XCTAssertEqual(moved?.detail, "window started: reset_after 604800 → 604650 s, resets \(clock.string(from: running.weeklyResetTime)), used 0%")
 
-        let same = WeeklyPrimeVerification.compare(before: opened, after: opened, provider: .codex, now: now, clock: clock)
-        XCTAssertEqual(same.outcome, .noMovement)
-        XCTAssertTrue(same.detail.hasPrefix("window already open"), same.detail)
-
-        let previous = codexUsage(windowOpen: true, reset: now.addingTimeInterval(-3 * 86400))
-        let replaced = WeeklyPrimeVerification.compare(before: previous, after: opened, provider: .codex, now: now, clock: clock)
-        XCTAssertEqual(replaced.outcome, .moved)
-        XCTAssertTrue(replaced.detail.contains("(passed) →"), replaced.detail)
+        // Still closed after the grace: no movement.
+        let late = now.addingTimeInterval(WeeklyPrimeVerification.grace)
+        let stuck = codexUsage(windowOpen: false, projected: true, updated: late.addingTimeInterval(-5))
+        let none = WeeklyPrimeVerification.resolve(sent: sent, usage: stuck, provider: .codex, now: late, clock: clock)
+        XCTAssertEqual(none?.outcome, .noMovement)
+        XCTAssertTrue(none?.detail.hasPrefix("no window movement 10 min after the request (no window (idle)") == true, none?.detail ?? "nil")
+        XCTAssertNil(WeeklyPrimeVerification.resolve(sent: WeeklyPrimeRecord(lastAttemptAt: sentAt, lastOutcome: .moved), usage: running,
+                                                     provider: .codex, now: now, clock: clock), "only a sent prime resolves")
     }
 
-    func testRecordingAnAttemptBooksOnlyAMoveAsAPrime() {
+    func testBookingTheAttemptsAndTheirResolution() {
         var record = WeeklyPrimeRecord(episodeObservedAt: now.addingTimeInterval(-300))
-        let failure = WeeklyPrimeVerification.Result(outcome: .failed, detail: "codex exec exited 1", resetAt: nil, usedPercent: nil)
-        WeeklyPrimeVerification.record(failure, into: &record, now: now)
+        WeeklyPrimeVerification.recordFailure("codex exec exited 1", into: &record, now: now)
         XCTAssertEqual(record.attempts, 1)
         XCTAssertEqual(record.lastAttemptAt, now)
         XCTAssertEqual(record.lastOutcome, .failed)
         XCTAssertEqual(record.lastDetail, "codex exec exited 1")
         XCTAssertNil(record.lastPrimedAt)
-        XCTAssertNil(record.primedForWindowEndingAt)
 
-        let reset = now.addingTimeInterval(week)
-        let move = WeeklyPrimeVerification.Result(outcome: .moved, detail: "moved", resetAt: reset, usedPercent: 2)
-        WeeklyPrimeVerification.record(move, into: &record, now: now.addingTimeInterval(1800))
+        let sentAt = now.addingTimeInterval(1800)
+        WeeklyPrimeVerification.recordSent(into: &record, now: sentAt)
         XCTAssertEqual(record.attempts, 2)
-        XCTAssertEqual(record.lastPrimedAt, now.addingTimeInterval(1800))
+        XCTAssertEqual(record.lastOutcome, .sent)
+        XCTAssertTrue(record.isAwaitingVerification)
+
+        let reset = sentAt.addingTimeInterval(week)
+        let move = WeeklyPrimeVerification.Result(outcome: .moved, detail: "window started", resetAt: reset, usedPercent: 0)
+        WeeklyPrimeVerification.record(move, into: &record)
+        XCTAssertEqual(record.attempts, 2, "a resolution is not a new attempt")
+        XCTAssertEqual(record.lastPrimedAt, sentAt, "primed at the request time, not at the fetch")
         XCTAssertEqual(record.primedForWindowEndingAt, reset)
-        XCTAssertEqual(record.lastVerifiedUsedPercent, 2)
+        XCTAssertEqual(record.lastVerifiedUsedPercent, 0)
         XCTAssertEqual(record.lastOutcome, .moved)
+        XCTAssertFalse(record.isAwaitingVerification)
+
+        WeeklyPrimeVerification.recordSent(into: &record, now: sentAt.addingTimeInterval(60))
+        let none = WeeklyPrimeVerification.Result(outcome: .noMovement, detail: "no window movement", resetAt: nil, usedPercent: 0)
+        WeeklyPrimeVerification.record(none, into: &record)
+        XCTAssertEqual(record.lastOutcome, .noMovement)
+        XCTAssertEqual(record.lastPrimedAt, sentAt, "an unmoved attempt never touches the primed stamps")
+        XCTAssertEqual(record.primedForWindowEndingAt, reset)
     }
 
     // MARK: - The CLI command
@@ -300,8 +327,8 @@ final class WeeklyWindowPrimingTests: XCTestCase {
         let bare = try decoder.decode(WeeklyPrimeRecord.self, from: Data("{}".utf8))
         XCTAssertEqual(bare, WeeklyPrimeRecord())
         XCTAssertEqual(bare.attempts, 0)
-        let record = WeeklyPrimeRecord(episodeObservedAt: now, attempts: 1, lastAttemptAt: now, lastOutcome: .moved,
-                                       lastDetail: "window reset moved none → later, used 1%", lastPrimedAt: now,
+        let record = WeeklyPrimeRecord(episodeObservedAt: now, attempts: 1, lastAttemptAt: now, lastOutcome: .sent,
+                                       lastDetail: "request sent", lastPrimedAt: now,
                                        primedForWindowEndingAt: now.addingTimeInterval(week), lastVerifiedUsedPercent: 1)
         XCTAssertEqual(try decoder.decode(WeeklyPrimeRecord.self, from: JSONEncoder().encode(record)), record)
         XCTAssertEqual(SettingsKeyRegistry.lookup("weeklyPrimePolicy_v1")?.status, .live)
