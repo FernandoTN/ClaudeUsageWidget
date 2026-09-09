@@ -6,10 +6,10 @@ twice, Release green. Stage 2 `fix/weekly-priming-placeholder`, PR #170,
 **merged** `cf484e7` (squash), deployed 2026-09-09 09:32:42 as pid 36421 with
 clean probes — suites 664 / 0 twice, Release green: the stage-1 detector
 never fired in the field because an idle account is reported with a
-PLACEHOLDER window, not with no window (see "Semantics"). The first live
-prime (xLucifer (dev)) is being watched by the orchestrating session; its
-outcome goes under "First live prime". See the status rows in
-`docs/specs/ux-revamp-status.md`. **Scope: Codex only, by owner decision
+PLACEHOLDER window, not with no window (see "Semantics"). **The first live
+prime (xLucifer (dev), 09:36:57) was verified at 09:39** — the placeholder
+became a running window pinned to the request time; see "First live prime".
+See the status rows in `docs/specs/ux-revamp-status.md`. **Scope: Codex only, by owner decision
 (2026-09-09).** Claude accounts are not primed: no Messages API call, no
 toggle, no Fable verification. (The original brief covered both providers;
 the owner narrowed it before any Claude-side code existed.)
@@ -221,14 +221,32 @@ in the healer (advancing reset → closed; a fixed reset stays open; a
 projected previous stamp is no evidence); the placeholder rule's boundaries;
 the dashboard's idle countdown line and tooltip.
 
-## First live prime — what to check
+## First live prime — verified 2026-09-09
 
-The first scheduled prime after the stage-2 deploy targets xLucifer (dev)
-(idle, placeholder window) within 2–10 min of the first sweep. Expected in
-the log, in order: `weekly window seen closed (idle placeholder)`, `priming
-due HH:MM`, `starting attempt 1`, `codex exec exited 0 in N s: OK; the next
-fetches verify the clock started`, then within ~3 min `window started:
-reset_after 604800 → N s`. If the last line reads `no window movement`, the
-request did not charge the primary window — try `-m` with the account's
-default model named explicitly, or a different effort, and record the
-finding here.
+The first scheduled prime after the stage-2 deploy (`cf484e7`, 09:32:42, pid
+36421) targeted xLucifer (dev), idle with a placeholder window, and did
+exactly what the design says (log, then an independent `wham/usage` read
+with the account's own token by the orchestrating session):
+
+| When | Line |
+|---|---|
+| 09:32:51 | `Prime: codex 'xLucifer(dev)' — weekly window seen closed (idle placeholder)` — the first sweep after the deploy |
+| 09:32:51 | `priming due Sep 9 09:36` — jitter ≈ 4 min |
+| 09:36:53 | `starting attempt 1 (scheduled; window before: no window (idle))` |
+| 09:36:57 | `codex exec exited 0 in 4.8 s: OK … 3,137 tokens; the next fetches verify the clock started` |
+| 09:39:23 | `window started: reset_after 604800 → 604654 s, resets Sep 16 09:36, used 0%` — the third fetch after the request, once the countdown had run past the 120 s tolerance |
+| 09:39:49 | independent `wham/usage` read: `used_percent 0`, `reset_after_seconds 604628`, `reset_at 2026-09-16 09:36:57` — pinned to the request time, no longer drifting with the poll |
+
+Findings recorded: the account's default model at `low` effort charges the
+primary window (the placeholder became a running window on the first
+request; no `-m` needed); the tiny request rounds to 0 % used, which is why
+verification reads the countdown, not the percentage; the isolated home
+gained `~/.codex-accounts/xlucifer-dev/sessions` — the exec's rollout,
+exactly as real use would write it; the ledger now carries `lastPrimedAt`
+09:36:57 and `primedForWindowEndingAt` 09-16 09:36 for the profile, and the
+roster row reads `primed 09:36 · resets Sep 16`.
+
+What to check on later primes: the same five log lines in the same order.
+`no window movement` after the request would mean the request did not
+charge the primary window — try `-m` with the account's default model named
+explicitly, or a different effort, and record the finding here.
