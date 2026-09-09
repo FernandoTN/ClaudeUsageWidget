@@ -1293,3 +1293,37 @@
 "insights.timeline_more" = "+%d more";
 "counts.session_hit_short" = "%d session hit";
 "counts.weekly_hit_short" = "%d weekly hit";
+
+/* Weekly window priming (docs/specs/weekly-window-priming.md) — Codex only */
+"notification.weekly_prime_failed.title" = "Codex weekly window not primed";
+"notification.weekly_prime_failed.message" = "'%1$@' could not be primed twice after its weekly reset (%2$@). Its 7-day clock starts on its first real request; the next switch to it, or Prime now in its Overview, starts it.";
+"prime.title" = "Weekly window priming";
+"prime.subtitle" = "Start an idle Codex account's 7-day clock the moment its weekly window resets";
+"prime.codex_toggle" = "Prime Codex weekly windows after reset";
+"prime.codex_toggle_desc" = "A Codex weekly window opens on the first real request after the previous one ended, so an idle account's next reset is 7 days after whoever uses it next. When a non-active account's window is seen closed, the app sends one tiny request through the CLI (codex exec in the account's own isolated CODEX_HOME, 2–10 minutes later) so the clock runs while the account waits. The quota per window is unchanged; only the reset comes sooner. Never through the shared daemon, never the active account.";
+"prime.never_title" = "Never prime";
+"prime.never_hint" = "Accounts switched off here are never primed automatically. Prime now in an account's Overview still works.";
+"prime.never_row" = "Prime %@ after reset";
+"prime.fact_label" = "Weekly prime";
+"prime.now" = "Prime now";
+"prime.now_help" = "Send one tiny request through codex exec in this account's isolated CODEX_HOME so its 7-day window starts now. The next fetch verifies it; the outcome is shown here.";
+"prime.status_primed" = "primed %1$@ · resets %2$@";
+"prime.status_pending" = "prime pending %@";
+"prime.status_retry" = "prime retry %@";
+"prime.status_failed" = "prime failed %@";
+"prime.status_no_movement" = "prime sent %@ · window did not move";
+"prime.status_spent" = "prime failed twice this window";
+"prime.status_off" = "priming off";
+"prime.status_never" = "never primed (excluded)";
+"prime.status_owner" = "active — not primed";
+"prime.status_none" = "not primed yet";
+"prime.status_help" = "Codex weekly windows open on the first real request after the previous one ended. Priming sends one tiny request through codex exec in the account's own isolated CODEX_HOME 2–10 minutes after the window is seen closed, so the 7-day clock runs while the account idles. \"primed\" is verified by the next fetch: the reported reset moved. Never a synthetic value.";
+"prime.outcome_no_profile" = "Profile not found.";
+"prime.outcome_unsupported" = "Priming exists for Codex accounts only.";
+"prime.outcome_no_credentials" = "No Codex credentials stored for this account.";
+"prime.outcome_dead" = "This login is flagged dead — log in again first.";
+"prime.outcome_switching" = "A switch is in progress; try again in a moment.";
+"prime.outcome_busy" = "A prime is already running.";
+"insights.kind_primed" = "weekly window primed";
+"insights.kind_prime_no_movement" = "prime sent, window did not move";
+"insights.kind_prime_failed" = "prime failed";

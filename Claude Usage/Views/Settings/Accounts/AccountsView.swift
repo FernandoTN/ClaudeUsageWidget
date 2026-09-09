@@ -459,6 +459,10 @@ struct AccountOverviewTab: View {
                         }
                         fact("accounts.fact.terminals".localized, CodexDaemonService.shared.terminalsText,
                              help: "codex_daemon.terminals_help".localized)
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("prime.fact_label".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary).frame(width: 84, alignment: .trailing)
+                            WeeklyPrimeRow(profile: profile)
+                        }
                     }
                     fact("accounts.fact.history".localized, historyText)
                 }

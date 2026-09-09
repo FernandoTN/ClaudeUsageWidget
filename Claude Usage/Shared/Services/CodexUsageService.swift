@@ -93,12 +93,22 @@ class CodexUsageService {
 
     /// Writes credentials JSON to ~/.codex/auth.json (0600, like the CLI's own file).
     private func writeAuthFile(_ json: String) throws {
-        let dir = authFileURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Self.writeAuthFile(json, inHome: Self.defaultCodexHome)
+    }
+
+    /// Writes credentials JSON to `<home>/auth.json` (0600; the home itself
+    /// 0700 when created). The default home is the switch path's target; a
+    /// profile's OWN isolated home is where `WeeklyWindowPrimer` runs `codex
+    /// exec` — nothing else ever writes an auth.json anywhere.
+    nonisolated static func writeAuthFile(_ json: String, inHome home: URL) throws {
+        let file = authFileURL(inHome: home)
+        if !FileManager.default.fileExists(atPath: home.path) {
+            try FileManager.default.createDirectory(
+                at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+            )
         }
-        try json.write(to: authFileURL, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authFileURL.path)
+        try json.write(to: file, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     // MARK: - Credential Introspection
@@ -457,13 +467,15 @@ class CodexUsageService {
     /// fresher login (the `codex` CLI refreshes tokens silently in that file,
     /// exactly like Claude Code does in the Keychain). Safe to call when leaving a
     /// profile or before a fetch — the account_id match prevents cross-account mixups.
-    /// Returns true if the stored credentials changed.
+    /// Returns true if the stored credentials changed. `home` is the default
+    /// home for the switch paths; the primer passes the profile's own isolated
+    /// home, where `codex exec` may have rotated the tokens just the same.
     @discardableResult
-    func adoptAuthFileIfSameAccount(for profileId: UUID) -> Bool {
+    func adoptAuthFileIfSameAccount(for profileId: UUID, inHome home: URL = CodexUsageService.defaultCodexHome) -> Bool {
         var profiles = ProfileStore.shared.loadProfiles()
         guard let index = profiles.firstIndex(where: { $0.id == profileId }),
               let stored = profiles[index].codexCredentialsJSON,
-              let fileJSON = readAuthFile(),
+              let fileJSON = readAuthFile(inHome: home),
               let fileAccount = extractAccountId(from: fileJSON),
               fileAccount == extractAccountId(from: stored) else {
             return false
@@ -1070,7 +1082,14 @@ class CodexUsageService {
         let weeklyWindow = primaryIsWeekly ? primary : secondary
 
         let weeklyPercentage = weeklyWindow?.percent ?? 0
-        let weeklyResetTime = weeklyWindow?.reset ?? Date().addingTimeInterval(7 * 24 * 3600)
+        // No weekly window in the payload means the window is CLOSED: Codex's
+        // weekly window is rolling and opens on the first real request after
+        // the previous one ended (docs/specs/weekly-window-priming.md). The
+        // parser used to invent "now + 7 d" here and present it as measured —
+        // an idle account's stored stamp drifted with every fetch. Store the
+        // sentinel and say so with `weeklyWindowOpen`; `healMissingResetStamps`
+        // projects the display boundary and marks it projected.
+        let weeklyResetTime = weeklyWindow?.reset ?? ClaudeUsage.unknownResetSentinel
         // No session window (current API): mirror the Grok convention — 0% with
         // the weekly boundary as its reset — and mark hasSessionWindow=false so
         // the UI collapses to one gauge.
@@ -1081,7 +1100,7 @@ class CodexUsageService {
         // no request and no new failure mode. nil is UNKNOWN, not zero.
         let resetCreditsAvailable = Self.resetCreditCount(inUsagePayload: json)
 
-        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"), resets: \(resetCreditsAvailable.map(String.init) ?? "unknown"))")
+        LoggingService.shared.log("Codex: usage parsed - \(sessionWindow == nil ? "weekly-only" : "session+weekly") - session: \(sessionPercentage)%, weekly: \(weeklyPercentage)% (plan: \(json["plan_type"] as? String ?? "?"), resets: \(resetCreditsAvailable.map(String.init) ?? "unknown"))\(weeklyWindow == nil ? " — no weekly window open" : "")")
 
         return ClaudeUsage(
             sessionTokensUsed: 0,
@@ -1091,6 +1110,7 @@ class CodexUsageService {
             hasSessionWindow: sessionWindow != nil,
             codexResetCreditsAvailable: resetCreditsAvailable,
             codexResetCreditsMeasuredAt: resetCreditsAvailable == nil ? nil : Date(),
+            weeklyWindowOpen: weeklyWindow != nil,
             weeklyTokensUsed: 0,
             weeklyLimit: Constants.weeklyLimit,
             weeklyPercentage: weeklyPercentage,

@@ -120,6 +120,18 @@ struct ClaudeUsage: Codable, Equatable {
     /// Optional with nil default so previously cached usage JSON still decodes.
     var codexResetCreditsMeasuredAt: Date? = nil
 
+    /// Whether the provider reported a weekly window at all on the last fetch.
+    /// Codex's weekly window is ROLLING: it opens on the first real request
+    /// after the previous one ended, and until then `wham/usage` reports no
+    /// window (`primary_window` null — measured live 2026-09-09 on an idle
+    /// account, whose stored stamp drifted with every fetch while the parser
+    /// invented "now + 7 d"). `false` is that state: the window is CLOSED and
+    /// only a request will open it (`WeeklyWindowPrimer`). `true` is a
+    /// reported window; nil is legacy data or a provider that says nothing
+    /// (Claude reports a window whenever one exists). Optional with nil
+    /// default so previously cached usage JSON still decodes.
+    var weeklyWindowOpen: Bool? = nil
+
     // Weekly data (all models)
     var weeklyTokensUsed: Int
     var weeklyLimit: Int
@@ -277,7 +289,14 @@ struct ClaudeUsage: Codable, Equatable {
             }
         }
         if weeklyResetTime == Self.unknownResetSentinel {
-            if let prev = previous?.weeklyResetTime, prev != Self.unknownResetSentinel {
+            if weeklyWindowOpen == false {
+                // The provider said there is NO window (an idle Codex account):
+                // the window the next request opens would end 7 days out, which
+                // is the ranking's "when does this quota come back" for an
+                // account that has all of it. A previous boundary means nothing
+                // to a rolling window, so it is not carried forward.
+                weeklyResetTime = now.addingTimeInterval(7 * 24 * 3600)
+            } else if let prev = previous?.weeklyResetTime, prev != Self.unknownResetSentinel {
                 weeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)
             } else {
                 weeklyResetTime = now.addingTimeInterval(7 * 24 * 3600)

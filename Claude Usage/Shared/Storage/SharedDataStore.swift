@@ -24,6 +24,10 @@ class SharedDataStore {
         // Codex daemon (docs/specs/codex-daemon-awareness.md)
         static let codexDaemonRestartOnSwitch = "codexDaemonRestartOnSwitch_v1"
 
+        // Weekly window priming (docs/specs/weekly-window-priming.md)
+        static let weeklyPrimePolicy = "weeklyPrimePolicy_v1"
+        static let weeklyPrimeLedger = "weeklyPrimeLedger_v1"
+
         // Keyboard Shortcuts
         static let shortcutTogglePopover = "shortcutTogglePopover"
         static let shortcutRefresh = "shortcutRefresh"
@@ -78,6 +82,8 @@ class SharedDataStore {
     private var lastKnownGoodMeasuredSessionHistory: [UUID: [(at: Date, pct: Double)]]?
     private var lastKnownGoodAutoSwitchQueue: [UUID]?
     private var lastKnownGoodFleetAlertDefaults: NotificationSettings?
+    private var lastKnownGoodWeeklyPrimePolicy: WeeklyPrimePolicy?
+    private var lastKnownGoodWeeklyPrimeLedger: [UUID: WeeklyPrimeRecord]?
 
     /// Keys already logged this degradation episode; cleared by the next live
     /// read of that key so a later episode speaks up again.
@@ -105,6 +111,8 @@ class SharedDataStore {
         lastKnownGoodMeasuredSessionHistory = nil
         lastKnownGoodAutoSwitchQueue = nil
         lastKnownGoodFleetAlertDefaults = nil
+        lastKnownGoodWeeklyPrimePolicy = nil
+        lastKnownGoodWeeklyPrimeLedger = nil
         nilReadLoggedKeys.removeAll()
     }
 
@@ -194,6 +202,59 @@ class SharedDataStore {
 
     func saveCodexDaemonRestartOnSwitch(_ enabled: Bool) {
         writeSingleShot(enabled, forKey: Keys.codexDaemonRestartOnSwitch)
+    }
+
+    // MARK: - Weekly window priming (docs/specs/weekly-window-priming.md)
+
+    /// The priming policy. An ABSENT key is the type default — priming ON,
+    /// nobody excluded — so an install that never opened the toggle primes.
+    /// A nil read after a good one is served from the shadow: defaulting there
+    /// would silently re-enable priming for an account the owner excluded.
+    func loadWeeklyPrimePolicy() -> WeeklyPrimePolicy {
+        guard let data = defaults.data(forKey: Keys.weeklyPrimePolicy) else {
+            if let cached = lastKnownGoodWeeklyPrimePolicy {
+                logNilReadOnce(Keys.weeklyPrimePolicy)
+                return cached
+            }
+            return WeeklyPrimePolicy()
+        }
+        let decoded = (try? JSONDecoder().decode(WeeklyPrimePolicy.self, from: data)) ?? WeeklyPrimePolicy()
+        lastKnownGoodWeeklyPrimePolicy = decoded
+        noteLiveRead(Keys.weeklyPrimePolicy)
+        return decoded
+    }
+
+    func saveWeeklyPrimePolicy(_ policy: WeeklyPrimePolicy) {
+        guard let data = try? JSONEncoder().encode(policy) else { return }
+        writeSingleShot(data, forKey: Keys.weeklyPrimePolicy)
+        lastKnownGoodWeeklyPrimePolicy = policy
+    }
+
+    /// Per-profile priming bookkeeping, keyed by profile id. Losing it to a
+    /// wedged read would re-prime every window the process already primed,
+    /// so a nil read after a good one is served from the shadow.
+    func loadWeeklyPrimeLedger() -> [UUID: WeeklyPrimeRecord] {
+        guard let data = defaults.data(forKey: Keys.weeklyPrimeLedger) else {
+            if let cached = lastKnownGoodWeeklyPrimeLedger {
+                logNilReadOnce(Keys.weeklyPrimeLedger)
+                return cached
+            }
+            return [:]
+        }
+        let decoded = (try? JSONDecoder().decode([String: WeeklyPrimeRecord].self, from: data)) ?? [:]
+        let ledger = Dictionary(uniqueKeysWithValues: decoded.compactMap { key, record in
+            UUID(uuidString: key).map { ($0, record) }
+        })
+        lastKnownGoodWeeklyPrimeLedger = ledger
+        noteLiveRead(Keys.weeklyPrimeLedger)
+        return ledger
+    }
+
+    func saveWeeklyPrimeLedger(_ ledger: [UUID: WeeklyPrimeRecord]) {
+        let encodable = Dictionary(uniqueKeysWithValues: ledger.map { ($0.key.uuidString, $0.value) })
+        guard let data = try? JSONEncoder().encode(encodable) else { return }
+        writeSingleShot(data, forKey: Keys.weeklyPrimeLedger)
+        lastKnownGoodWeeklyPrimeLedger = ledger
     }
 
     // MARK: - Keyboard Shortcuts
@@ -508,6 +569,8 @@ class SharedDataStore {
         RegisteredKey("fleetAlertDefaults_v1", .sharedDataStore, .live, ui: "Alerts › Fleet defaults"),
         RegisteredKey("activeSelectorItem_v1", .sharedDataStore, .live, ui: "Display › Active-account selector"),
         RegisteredKey(Keys.codexDaemonRestartOnSwitch, .sharedDataStore, .live, ui: "Advanced › Codex daemon"),
+        RegisteredKey(Keys.weeklyPrimePolicy, .sharedDataStore, .live, ui: "Active & Auto-switch › Weekly window priming"),
+        RegisteredKey(Keys.weeklyPrimeLedger, .sharedDataStore, .live, ui: "Dashboard roster row; Accounts › Overview (primed / pending)"),
     ]
 
     // MARK: - Fleet alert defaults (docs/specs/ux-revamp.md §5.2, D11)

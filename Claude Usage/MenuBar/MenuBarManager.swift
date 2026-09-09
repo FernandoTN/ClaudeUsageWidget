@@ -184,6 +184,7 @@ class MenuBarManager: NSObject, ObservableObject {
     private var manualActivationObserver: NSObjectProtocol?
     private var profileDeletedObserver: NSObjectProtocol?
     private var codexDaemonStateObserver: NSObjectProtocol?
+    private var weeklyPrimeStateObserver: NSObjectProtocol?
 
     // Observer for display mode changes (single/multi profile) — legacy posters
     private var displayModeObserver: NSObjectProtocol?
@@ -241,6 +242,25 @@ class MenuBarManager: NSObject, ObservableObject {
         ) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
+                guard self.usesDashboardSurface else { return }
+                self.rebuildDashboardSnapshot()
+            }
+        }
+        // Every booked prime attempt is an Insights incident with its moved
+        // stamps, and repaints the roster row's priming line.
+        weeklyPrimeStateObserver = NotificationCenter.default.addObserver(
+            forName: .weeklyPrimeStateChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self = self, let id = note.object as? UUID else { return }
+            Task { @MainActor in
+                if let profile = self.profileManager.profiles.first(where: { $0.id == id }),
+                   let record = WeeklyWindowPrimer.shared.record(for: id),
+                   let outcome = record.lastOutcome {
+                    self.incidentRing.record(FleetInsights.Incident(
+                        at: record.lastAttemptAt ?? Date(), profileId: id, name: profile.name,
+                        provider: profile.providerKind, kind: .primed(outcome: outcome), detail: record.lastDetail
+                    ))
+                }
                 guard self.usesDashboardSurface else { return }
                 self.rebuildDashboardSnapshot()
             }
@@ -486,6 +506,10 @@ class MenuBarManager: NSObject, ObservableObject {
         if let codexDaemonStateObserver {
             NotificationCenter.default.removeObserver(codexDaemonStateObserver)
             self.codexDaemonStateObserver = nil
+        }
+        if let weeklyPrimeStateObserver {
+            NotificationCenter.default.removeObserver(weeklyPrimeStateObserver)
+            self.weeklyPrimeStateObserver = nil
         }
         if let displayModeObserver = displayModeObserver {
             NotificationCenter.default.removeObserver(displayModeObserver)
@@ -2031,6 +2055,13 @@ private func observeCredentialChanges() {
             // account_id and adopt a fresher login into it. File read + JSON
             // parse, no network (audit H4).
             await self.profileManager.adoptCodexLoginByAccountId()
+
+            // Prime a Codex weekly window seen closed (docs/specs/
+            // weekly-window-priming.md): one idle non-owner account per sweep,
+            // 2–10 min after its window was first seen gone, never mid-switch.
+            // Runs `codex exec` in the profile's own isolated home off the main
+            // actor, then verifies through a fetch that stages + publishes.
+            await WeeklyWindowPrimer.shared.tick(self.makeWeeklyPrimeContext())
 
             // Which account the Codex DAEMON is serving — from its newest
             // rollout's rate-limit stamp, files read off the main actor.
@@ -4301,12 +4332,63 @@ private func observeCredentialChanges() {
             manuallyPinned: autoSwitchedProfileIds,
             needsRelogin: profileManager.profilesNeedingAccountRelogin,
             codexTerminals: CodexDaemonService.shared.terminalsText,
-            codexTerminalsHold: CodexDaemonService.shared.holdText
+            codexTerminalsHold: CodexDaemonService.shared.holdText,
+            primeStatuses: weeklyPrimeStatuses()
         ))
         // Same paint, same inputs shape: the insights ride inside the
         // snapshot so the view observes one value and the frame harness
         // renders them from a fixture like everything else.
         dashboardStore.snapshot?.insights = makeFleetInsights()
+    }
+
+    // MARK: - Weekly window priming (docs/specs/weekly-window-priming.md)
+
+    /// What the primer reads each tick: the roster, the provider owners (never
+    /// primed), the dead-login rule the dashboard uses, the switch flag read
+    /// LIVE, and the verifying fetch — a real own-credential read that stages
+    /// and publishes like the sweep's, so the moved reset is what the tiles
+    /// and the dashboard show.
+    func makeWeeklyPrimeContext() -> WeeklyWindowPrimer.Context {
+        let profiles = profileManager.profiles
+        return WeeklyWindowPrimer.Context(
+            profiles: profiles,
+            ownerIds: profileManager.activeAccountIds(among: profiles),
+            isLoginDead: { profile in
+                ProfileCredentialStatusCache.hasDeadLogin(profile)
+                    || (profile.isGrokOnlyProfile && GrokUsageService.shared.isLoginMarkedDead(profile.id))
+            },
+            isSwitching: { [weak self] in self?.profileManager.isSwitchingProfile ?? true },
+            fetch: { [weak self] profile in
+                guard let self else { throw AppError(code: .apiGenericError, message: "menu bar manager gone", isRecoverable: false) }
+                return try await self.fetchAndPublishUsage(for: profile)
+            }
+        )
+    }
+
+    /// The roster rows' priming lines, one per Codex profile the primer has a
+    /// verdict or a record for.
+    private func weeklyPrimeStatuses() -> [UUID: WeeklyPrimeStatus] {
+        let primer = WeeklyWindowPrimer.shared
+        let now = Date()
+        var statuses: [UUID: WeeklyPrimeStatus] = [:]
+        for profile in profileManager.profiles where profile.providerKind == .codex {
+            if let status = WeeklyPrimeStatus.make(record: primer.record(for: profile.id), verdict: primer.verdict(for: profile.id), now: now) {
+                statuses[profile.id] = status
+            }
+        }
+        return statuses
+    }
+
+    /// One forced fetch for one profile, on the sweep's own path: healed reset
+    /// stamps, staged, published in one objectWillChange, the open dashboard
+    /// rebuilt. The disk flush happens at the sweep's usual boundary.
+    private func fetchAndPublishUsage(for profile: Profile) async throws -> ClaudeUsage {
+        let usage = try await fetchUsageForProfile(profile)
+        profileManager.stageClaudeUsage(usage, for: profile.id)
+        profileManager.publishStagedUsage()
+        recordClaudeUsageSuccess(profile, usage: usage)
+        refreshViewedProfileUsage()
+        return profileManager.profiles.first(where: { $0.id == profile.id })?.claudeUsage ?? usage
     }
 
     /// The readiness / candidate / verdict context both the fleet tiles and

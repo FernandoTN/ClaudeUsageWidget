@@ -814,6 +814,10 @@ struct DashboardView: View {
                             RosterResetText(row: row, emphasized: row.group == .capacityReturns)
                                 .padding(.leading, 16)
                         }
+                        if let prime = row.prime {
+                            RosterPrimeText(status: prime)
+                                .padding(.leading, 16)
+                        }
                     }
                     Spacer(minLength: 4)
                     VStack(alignment: .trailing, spacing: 3) {
