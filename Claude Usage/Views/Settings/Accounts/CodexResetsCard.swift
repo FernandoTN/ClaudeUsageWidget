@@ -56,8 +56,7 @@ struct CodexResetsCard: View {
         let count = resolved.count
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(CodexResetsFormatting.countLine(count, usableNow: profile.claudeUsage?.codexResetCreditsApplicable))
-                    .font(DesignTokens.Typography.body).monospacedDigit()
+                Text(CodexResetsFormatting.countLine(count)).font(DesignTokens.Typography.body).monospacedDigit()
                 Spacer()
                 Button("resets.details".localized) { Task { await loadDetails(force: resolved.details != nil) } }
                     .buttonStyle(.link).disabled(busy)
@@ -65,6 +64,12 @@ struct CodexResetsCard: View {
                     .controlSize(.small)
                     .disabled(busy || !CodexResetsFormatting.canRedeem(count: count, readiness: readiness, measurement: measurement))
                     .help(CodexResetsFormatting.redeemHelp(count: count, readiness: readiness, measurement: measurement))
+            }
+            // The server's own "applicable right now" count, on its own line:
+            // the header row has ~370 pt for text plus two buttons at the
+            // Settings window's 760 pt minimum, and a longer count line wraps.
+            if let usableNow = CodexResetsFormatting.usableNowLine(profile.claudeUsage?.codexResetCreditsApplicable) {
+                Text(usableNow).font(DesignTokens.Typography.caption).foregroundColor(.secondary).monospacedDigit()
             }
             // F1: the unmet gate in plain sight, not only on hover.
             if !CodexResetsFormatting.canRedeem(count: count, readiness: readiness, measurement: measurement) {
@@ -146,12 +151,17 @@ extension CodexResetsCard {
 
 enum CodexResetsFormatting {
     /// "Usage limit resets: 2 available" — or "none or unknown": the payload's
-    /// null cannot tell the two apart, so the copy never claims zero. With the
-    /// server's applicable count known too: "3 available · 2 usable now".
-    static func countLine(_ count: Int?, usableNow: Int? = nil) -> String {
+    /// null cannot tell the two apart, so the copy never claims zero.
+    static func countLine(_ count: Int?) -> String {
         guard let count else { return "resets.count_unknown".localized }
-        if let usableNow { return "resets.count_usable".localized(with: count, usableNow) }
         return "selector.resets_available".localized(with: count)
+    }
+
+    /// "Usable now: 2" — the server's applicable count, a stated 0 included
+    /// (xFme read 3 available / 0 usable while idle, 2026-09-09); nil, the
+    /// unknown, prints nothing rather than a zero the payload never stated.
+    static func usableNowLine(_ usableNow: Int?) -> String? {
+        usableNow.map { "resets.usable_now".localized(with: $0) }
     }
 
     /// Redeem is offered only with a grant in hand and a measurement that says

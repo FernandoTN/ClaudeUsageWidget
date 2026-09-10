@@ -49,7 +49,7 @@ enum DesignFrameHarness {
         emit(DashboardInsightsView(insights: crowded, now: now).padding(14), width: 400, name: "dashboard-insights-overflow", to: dir, index: &index)
         emit(ViewingPickerFacsimile(name: "Cedar"), width: 190, name: "settings-viewing-picker", to: dir, index: &index)
         for (state, name) in [("owner", "Atlas"), ("viewed-non-owner", "Cedar"), ("dead", "Echo"), ("suspected", "Kite"),
-                              ("duplicate", "Beacon"), ("at-limit", "Harbor"), ("never-measured", "Pebble"), ("codex-owner", "Marlin")] {
+                              ("duplicate", "Beacon"), ("at-limit", "Harbor"), ("never-measured", "Pebble"), ("codex-owner", "Marlin (dev)")] {
             guard let profile = Fixture.profiles.first(where: { $0.name == name }),
                   let selection = sel.first(where: { $0.provider == profile.providerKind }) else { continue }
             let isOwner = selection.owner?.id == profile.id

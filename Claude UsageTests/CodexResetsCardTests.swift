@@ -85,10 +85,9 @@ final class CodexResetsCardTests: XCTestCase {
         XCTAssertEqual(CodexResetsCard.Resolution.resolve(viewed: xFenrir, fetched: nil, cached: nil, sweepCount: nil), .init(count: nil, details: nil))
     }
 
-    func testCountLineShowsUsableNowOnlyBesideAKnownBalance() {
-        XCTAssertEqual(CodexResetsFormatting.countLine(3, usableNow: 0), "Usage limit resets: 3 available · 0 usable now", "xFme live: grants in hand, none applicable while idle")
-        XCTAssertEqual(CodexResetsFormatting.countLine(2, usableNow: 2), "Usage limit resets: 2 available · 2 usable now")
-        XCTAssertEqual(CodexResetsFormatting.countLine(2, usableNow: nil), "Usage limit resets: 2 available")
-        XCTAssertEqual(CodexResetsFormatting.countLine(nil, usableNow: 3), "Usage limit resets: none or unknown", "a usable count without a balance claims nothing")
+    func testUsableNowLinePrintsAStatedZeroAndHidesTheUnknown() {
+        XCTAssertEqual(CodexResetsFormatting.usableNowLine(0), "Usable now: 0", "xFme live: grants in hand, none applicable while idle")
+        XCTAssertEqual(CodexResetsFormatting.usableNowLine(2), "Usable now: 2")
+        XCTAssertNil(CodexResetsFormatting.usableNowLine(nil), "unknown prints nothing, never a zero")
     }
 }
