@@ -115,6 +115,14 @@ struct ClaudeUsage: Codable, Equatable {
     /// Optional with nil default so previously cached usage JSON still decodes.
     var codexResetCreditsAvailable: Int? = nil
 
+    /// How many of those grants the server says can be applied RIGHT NOW —
+    /// `rate_limit_reset_credits.applicable_available_count` in the same
+    /// payload. Measured 2026-09-09 across the five local Codex homes: an idle
+    /// account reads 0 with grants in hand, an account in its window reads the
+    /// full count. A hint beside the balance, never a gate. Same rule as the
+    /// balance: **nil is UNKNOWN, never zero.**
+    var codexResetCreditsApplicable: Int? = nil
+
     /// When `codexResetCreditsAvailable` was measured. Stamped only alongside a
     /// non-nil count, so a stamp is never evidence about an unknown value.
     /// Optional with nil default so previously cached usage JSON still decodes.

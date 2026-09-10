@@ -266,38 +266,52 @@ struct AccountsDetailView: View {
     @ObservedObject var store: AccountsInspectorStore
     @StateObject private var profileManager = ProfileManager.shared
     @Binding var tab: AccountTab
-    @State private var switchNote: String?
+    /// The last switch outcome, stamped with the account whose pane showed it:
+    /// this is the pane's OWN state, outside the per-account identity below, so
+    /// the stamp is what keeps one account's note from captioning the next.
+    @State private var switchNote: AccountKeyed<String>?
 
     private var profile: Profile? { profileManager.activeProfile }
 
     var body: some View {
-        if let profile, let selection = store.selection(for: profile.providerKind) {
-            let isOwner = selection.owner?.id == profile.id
-            let candidate = selection.candidates.first { $0.id == profile.id }
-            ScrollView {
-                VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
-                    header(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate)
-                    switch tab {
-                    case .overview:
-                        AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate,
-                                           onRepair: { tab = .login })
-                    case .login:
-                        AccountLoginTab(profile: profile)
-                    case .alerts:
-                        AccountAlertsTab(profile: profile)
-                    case .monitoring:
-                        AccountMonitoringTab(profile: profile)
+        Group {
+            if let profile, let selection = store.selection(for: profile.providerKind) {
+                let isOwner = selection.owner?.id == profile.id
+                let candidate = selection.candidates.first { $0.id == profile.id }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: DesignTokens.Spacing.medium) {
+                        header(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate)
+                        switch tab {
+                        case .overview:
+                            AccountOverviewTab(profile: profile, selection: selection, isOwner: isOwner, candidate: candidate,
+                                               onRepair: { tab = .login })
+                        case .login:
+                            AccountLoginTab(profile: profile)
+                        case .alerts:
+                            AccountAlertsTab(profile: profile)
+                        case .monitoring:
+                            AccountMonitoringTab(profile: profile)
+                        }
+                        Divider().padding(.top, 8)
+                        AccountFooter(profile: profile)
                     }
-                    Divider().padding(.top, 8)
-                    AccountFooter(profile: profile)
+                    .padding(DesignTokens.Spacing.settingsCardPadding)
                 }
-                .padding(DesignTokens.Spacing.settingsCardPadding)
-            }
-        } else {
-            VStack {
-                Spacer()
-                Text("accounts.nothing_viewed".localized).font(DesignTokens.Typography.body).foregroundColor(.secondary)
-                Spacer()
+                // The pane is one VIEW per viewed account, not one view updated
+                // in place: every per-account `@State` below (the resets card's
+                // fetched details, the prime row's note, the login tab's probe
+                // results, the monitoring drafts, the footer's rename/delete)
+                // is discarded when the viewed profile changes — without this,
+                // one Details click showed that account's grants on every other
+                // Codex account (owner report 2026-09-09). The selected tab
+                // lives in the parent on purpose and survives the change.
+                .id(profile.id)
+            } else {
+                VStack {
+                    Spacer()
+                    Text("accounts.nothing_viewed".localized).font(DesignTokens.Typography.body).foregroundColor(.secondary)
+                    Spacer()
+                }
             }
         }
     }
@@ -335,7 +349,7 @@ struct AccountsDetailView: View {
                 }
                 Button("accounts.open_dashboard".localized) { MenuBarManager.current?.openDashboard() }
                     .disabled(MenuBarManager.current == nil)
-                if let switchNote {
+                if let switchNote = switchNote?.value(for: profile.id) {
                     Text(switchNote).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
                 }
             }
@@ -353,8 +367,11 @@ struct AccountsDetailView: View {
         let outcome = await SwitchConfirmation.confirmAndSwitch(
             provider: selection.provider, candidate: candidate, owner: selection.owner,
             makeActive: { id in await profileManager.activateProfileDetailed(id, userInitiated: true) })
-        if let outcome {
-            switchNote = DashboardFormatting.outcome(outcome, name: candidate.name)
+        // Stamped with whichever account the pane shows once the switch has
+        // settled (the target after a switch or a user-initiated refusal, the
+        // outgoing account when nothing moved) — never assumed in advance.
+        if let outcome, let shown = profile?.id {
+            switchNote = AccountKeyed(profileId: shown, value: DashboardFormatting.outcome(outcome, name: candidate.name))
         }
         store.refresh()
     }

@@ -1109,6 +1109,7 @@ class CodexUsageService {
         // Usage-limit resets ride along in this same payload — the count costs
         // no request and no new failure mode. nil is UNKNOWN, not zero.
         let resetCreditsAvailable = Self.resetCreditCount(inUsagePayload: json)
+        let resetCreditsApplicable = Self.resetCreditApplicableCount(inUsagePayload: json)
 
         let windowNote = weeklyWindow == nil ? " — no weekly window in the payload"
             : (weeklyPlaceholder ? " — weekly window closed (idle placeholder, reset_after \(Int(weeklyWindow?.resetAfter ?? 0)) s)" : "")
@@ -1121,6 +1122,7 @@ class CodexUsageService {
             sessionResetTime: sessionResetTime,
             hasSessionWindow: sessionWindow != nil,
             codexResetCreditsAvailable: resetCreditsAvailable,
+            codexResetCreditsApplicable: resetCreditsApplicable,
             codexResetCreditsMeasuredAt: resetCreditsAvailable == nil ? nil : Date(),
             weeklyWindowOpen: weeklyOpen,
             weeklyWindowSeconds: weeklyWindow?.seconds,

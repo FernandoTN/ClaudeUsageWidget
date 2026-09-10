@@ -312,8 +312,19 @@ extension CodexUsageService {
     /// missing/nonsense count, or a negative one. Never returns 0 for a payload
     /// that did not state 0.
     nonisolated static func resetCreditCount(inUsagePayload json: [String: Any]) -> Int? {
+        resetCreditField("available_count", inUsagePayload: json)
+    }
+
+    /// Reads `rate_limit_reset_credits.applicable_available_count` — the grants
+    /// the server says can be applied right now — under the same rules: nil is
+    /// UNKNOWN, never zero, and a payload without the field states nothing.
+    nonisolated static func resetCreditApplicableCount(inUsagePayload json: [String: Any]) -> Int? {
+        resetCreditField("applicable_available_count", inUsagePayload: json)
+    }
+
+    private nonisolated static func resetCreditField(_ key: String, inUsagePayload json: [String: Any]) -> Int? {
         guard let summary = json["rate_limit_reset_credits"] as? [String: Any],
-              let raw = summary["available_count"] else { return nil }
+              let raw = summary[key] else { return nil }
         let count: Int?
         if let intValue = raw as? Int {
             count = intValue
@@ -625,6 +636,7 @@ extension CodexUsageService {
             // The count is stale by exactly the credit just spent, and this
             // payload cannot say what the new one is — unknown, not a guess.
             usage.codexResetCreditsAvailable = nil
+            usage.codexResetCreditsApplicable = nil
             usage.codexResetCreditsMeasuredAt = nil
             ProfileStore.shared.applyUsagePatches([profileId: .init(claudeUsage: usage)])
         }
