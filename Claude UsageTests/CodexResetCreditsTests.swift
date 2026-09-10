@@ -90,6 +90,26 @@ final class CodexResetCreditsTests: XCTestCase {
         ))
     }
 
+    /// `applicable_available_count` — the grants the server says can be used
+    /// right now — follows the balance's rule: absent or null is unknown, a
+    /// stated zero is a measurement (xFme and xLucifer read 3 / 0 and 2 / 0
+    /// live on 2026-09-09 while holding grants), and it never touches the balance.
+    func testUsagePayloadApplicableCountFollowsTheNullIsUnknownRule() throws {
+        let service = CodexUsageService.shared
+        let idle = try service.parseUsageResponse(usagePayload(resetCredits: #"{"available_count": 3, "applicable_available_count": 0}"#))
+        XCTAssertEqual(idle.codexResetCreditsAvailable, 3)
+        XCTAssertEqual(idle.codexResetCreditsApplicable, 0, "a stated zero is a measurement")
+        let inWindow = try service.parseUsageResponse(usagePayload(resetCredits: #"{"available_count": 2, "applicable_available_count": 2}"#))
+        XCTAssertEqual(inWindow.codexResetCreditsApplicable, 2)
+        let balanceOnly = try service.parseUsageResponse(usagePayload(resetCredits: #"{"available_count": 2}"#))
+        XCTAssertEqual(balanceOnly.codexResetCreditsAvailable, 2)
+        XCTAssertNil(balanceOnly.codexResetCreditsApplicable, "absent is unknown, never zero")
+        XCTAssertNil(try service.parseUsageResponse(usagePayload(resetCredits: "null")).codexResetCreditsApplicable)
+        XCTAssertNil(CodexUsageService.resetCreditApplicableCount(
+            inUsagePayload: ["rate_limit_reset_credits": ["applicable_available_count": -1]]
+        ))
+    }
+
     // MARK: - Detail payload
 
     /// The canonical shape from the CLI's own fixture, plus the two things the

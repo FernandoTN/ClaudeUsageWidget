@@ -136,7 +136,8 @@ enum DesignFrameHarness {
     enum Fixture {
         static let now = Date()
         static func usage(session: Double = 0, weekly: Double = 0, fable: Double? = nil, sessionWindow: Bool = true,
-                          age: TimeInterval = 30, suspected: Bool = false, projected: Double? = nil, resets: Int? = nil) -> ClaudeUsage {
+                          age: TimeInterval = 30, suspected: Bool = false, projected: Double? = nil, resets: Int? = nil,
+                          usableNow: Int? = nil) -> ClaudeUsage {
             var u = ClaudeUsage.empty
             u.sessionPercentage = session; u.sessionResetTime = now.addingTimeInterval(4 * 3600 + 120)
             u.weeklyPercentage = weekly; u.weeklyResetTime = now.addingTimeInterval(3 * 86400)
@@ -145,6 +146,7 @@ enum DesignFrameHarness {
             u.lastUpdated = now.addingTimeInterval(-age)
             if suspected { u.rateLimitedUntil = now.addingTimeInterval(300); u.rateLimitedInferred = true; u.projectedSessionPercentage = projected }
             u.codexResetCreditsAvailable = resets
+            u.codexResetCreditsApplicable = usableNow
             return u
         }
         static func claude(_ name: String, _ u: ClaudeUsage?, email: String, account: String? = nil, autoSwitch: Bool = true) -> Profile {
@@ -163,7 +165,7 @@ enum DesignFrameHarness {
             claude("Pebble", nil, email: "pebble@example.com"),
             claude("Granite", usage(session: 93, weekly: 20), email: "edu@example.com"),
             Profile(name: "Marlin (dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-a@example.com", codexAccountId: "c-1",
-                    claudeUsage: usage(weekly: 95, sessionWindow: false, resets: 2)),
+                    claudeUsage: usage(weekly: 95, sessionWindow: false, resets: 2, usableNow: 2)),
             Profile(name: "Juniper (dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-b@example.com", codexAccountId: "c-2",
                     claudeUsage: usage(weekly: 10, sessionWindow: false)),
             Profile(name: "Petrel", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex@example.com", codexAccountId: "c-3",

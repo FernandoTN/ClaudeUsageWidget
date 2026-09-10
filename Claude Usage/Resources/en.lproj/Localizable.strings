@@ -1239,6 +1239,7 @@
 
 // MARK: - Codex usage limit resets (stage 4.1, spec §4.1, §12.9)
 "resets.count_unknown" = "Usage limit resets: none or unknown";
+"resets.count_usable" = "Usage limit resets: %d available · %d usable now";
 "resets.details" = "Details";
 "resets.use_one" = "Use one usage limit reset…";
 "resets.none_listed" = "No usable grant listed.";

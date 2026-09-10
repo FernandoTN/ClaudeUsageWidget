@@ -8,9 +8,26 @@
 //  strictly user-initiated, gated on a measurement that says the account is at
 //  its limit, never automatic. A null count reads "none or unknown", never "0".
 //
+//  Everything this card remembers is stamped with the profile it was learned
+//  for and resolved against the VIEWED profile on every render (`Resolution`).
+//  The inspector pane is re-identified per account, so a change of viewed
+//  profile normally discards this state outright; the stamps are the second
+//  line of defence — before either existed, one Details click showed that
+//  account's grants on every other Codex account (owner report 2026-09-09).
+//
 
 import SwiftUI
 import AppKit
+
+/// A value remembered for one profile, so a later render for another profile
+/// can tell it is not theirs.
+struct AccountKeyed<Value> {
+    let profileId: UUID
+    let value: Value
+
+    /// The value if it belongs to `profileId`, else nothing.
+    func value(for profileId: UUID) -> Value? { self.profileId == profileId ? value : nil }
+}
 
 struct CodexResetsCard: View {
     let profile: Profile
@@ -20,29 +37,31 @@ struct CodexResetsCard: View {
     /// Preloaded details (frames / previews); the live card fetches on demand.
     var preloaded: CodexResetCredits? = nil
 
-    @State private var details: CodexResetCredits?
-    @State private var note: String?
+    @State private var fetched: AccountKeyed<CodexResetCredits>?
+    @State private var note: AccountKeyed<String>?
     @State private var busy = false
 
-    init(profile: Profile, measurement: UsageMeasurement?, readiness: AccountReadiness, preloaded: CodexResetCredits? = nil) {
-        self.profile = profile
-        self.measurement = measurement
-        self.readiness = readiness
-        self.preloaded = preloaded
-        // The last on-demand answer this process holds, without a fetch.
-        _details = State(initialValue: preloaded ?? CodexUsageService.shared.cachedResetCredits(for: profile.id))
+    /// What this render shows for the viewed account: the pure decision, with
+    /// the service's per-profile cache read for the VIEWED profile each time
+    /// rather than seeded once at construction.
+    private var resolution: Resolution {
+        Resolution.resolve(viewed: profile.id,
+                           fetched: fetched.map { ($0.profileId, $0.value) } ?? preloaded.map { (profile.id, $0) },
+                           cached: CodexUsageService.shared.cachedResetCredits(for: profile.id),
+                           sweepCount: profile.claudeUsage?.codexResetCreditsAvailable)
     }
 
-    private var count: Int? { details?.availableCount ?? profile.claudeUsage?.codexResetCreditsAvailable }
-
     var body: some View {
+        let resolved = resolution
+        let count = resolved.count
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(CodexResetsFormatting.countLine(count)).font(DesignTokens.Typography.body).monospacedDigit()
+                Text(CodexResetsFormatting.countLine(count, usableNow: profile.claudeUsage?.codexResetCreditsApplicable))
+                    .font(DesignTokens.Typography.body).monospacedDigit()
                 Spacer()
-                Button("resets.details".localized) { Task { await loadDetails(force: details != nil) } }
+                Button("resets.details".localized) { Task { await loadDetails(force: resolved.details != nil) } }
                     .buttonStyle(.link).disabled(busy)
-                Button("resets.use_one".localized) { Task { await redeem() } }
+                Button("resets.use_one".localized) { Task { await redeem(count: count) } }
                     .controlSize(.small)
                     .disabled(busy || !CodexResetsFormatting.canRedeem(count: count, readiness: readiness, measurement: measurement))
                     .help(CodexResetsFormatting.redeemHelp(count: count, readiness: readiness, measurement: measurement))
@@ -53,7 +72,7 @@ struct CodexResetsCard: View {
                     .font(DesignTokens.Typography.caption).foregroundColor(DesignRole.caution.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let details {
+            if let details = resolved.details {
                 ForEach(details.availableCreditsByExpiry) { credit in
                     Text(CodexResetsFormatting.creditLine(credit)).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
                 }
@@ -62,25 +81,29 @@ struct CodexResetsCard: View {
                 }
                 Text("resets.fetched".localized(with: DashboardFormatting.age(details.fetchedAt))).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
             }
-            if let note { Text(note).font(DesignTokens.Typography.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true) }
+            if let note = note?.value(for: profile.id) {
+                Text(note).font(DesignTokens.Typography.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Text("resets.rule".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func loadDetails(force: Bool) async {
+        let target = profile.id
         busy = true; defer { busy = false }
         do {
-            details = try await CodexUsageService.shared.fetchResetCredits(for: profile.id, force: force)
+            fetched = AccountKeyed(profileId: target, value: try await CodexUsageService.shared.fetchResetCredits(for: target, force: force))
             note = nil
         } catch let error as CodexResetCreditsError {
-            note = CodexResetsFormatting.errorText(error)
+            note = AccountKeyed(profileId: target, value: CodexResetsFormatting.errorText(error))
         } catch {
-            note = error.localizedDescription
+            note = AccountKeyed(profileId: target, value: error.localizedDescription)
         }
     }
 
-    private func redeem() async {
+    private func redeem(count: Int?) async {
         guard let measurement else { return }
+        let target = profile.id
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         let alert = NSAlert()
         alert.messageText = "resets.confirm_title".localized(with: profile.name)
@@ -92,22 +115,42 @@ struct CodexResetsCard: View {
         let evidence = CodexResetActivationEvidence(measuredAtLimit: readiness.isAtLimit, measuredAt: measurement.measuredAt,
                                                     source: String(describing: measurement.provenance))
         do {
-            let outcome = try await CodexUsageService.shared.activateReset(for: profile.id, evidence: evidence)
-            note = CodexResetsFormatting.outcomeText(outcome)
-            details = try? await CodexUsageService.shared.fetchResetCredits(for: profile.id, force: true)
+            let outcome = try await CodexUsageService.shared.activateReset(for: target, evidence: evidence)
+            note = AccountKeyed(profileId: target, value: CodexResetsFormatting.outcomeText(outcome))
+            fetched = (try? await CodexUsageService.shared.fetchResetCredits(for: target, force: true))
+                .map { AccountKeyed(profileId: target, value: $0) }
         } catch let error as CodexResetCreditsError {
-            note = CodexResetsFormatting.errorText(error)
+            note = AccountKeyed(profileId: target, value: CodexResetsFormatting.errorText(error))
         } catch {
-            note = error.localizedDescription
+            note = AccountKeyed(profileId: target, value: error.localizedDescription)
+        }
+    }
+}
+
+extension CodexResetsCard {
+    /// What the card shows for the viewed profile. Pure so the identity rule is
+    /// assertable without a view: details fetched for ANOTHER profile are
+    /// discarded (never shown, never counted), then the viewed profile's own
+    /// cached details, then the sweep's count with no details at all.
+    struct Resolution: Equatable {
+        let count: Int?
+        let details: CodexResetCredits?
+
+        static func resolve(viewed: UUID, fetched: (profileId: UUID, credits: CodexResetCredits)?,
+                            cached: CodexResetCredits?, sweepCount: Int?) -> Resolution {
+            let own = fetched.flatMap { $0.profileId == viewed ? $0.credits : nil } ?? cached
+            return Resolution(count: own?.availableCount ?? sweepCount, details: own)
         }
     }
 }
 
 enum CodexResetsFormatting {
     /// "Usage limit resets: 2 available" — or "none or unknown": the payload's
-    /// null cannot tell the two apart, so the copy never claims zero.
-    static func countLine(_ count: Int?) -> String {
+    /// null cannot tell the two apart, so the copy never claims zero. With the
+    /// server's applicable count known too: "3 available · 2 usable now".
+    static func countLine(_ count: Int?, usableNow: Int? = nil) -> String {
         guard let count else { return "resets.count_unknown".localized }
+        if let usableNow { return "resets.count_usable".localized(with: count, usableNow) }
         return "selector.resets_available".localized(with: count)
     }
 

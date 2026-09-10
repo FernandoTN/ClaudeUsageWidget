@@ -38,4 +38,57 @@ final class CodexResetsCardTests: XCTestCase {
         XCTAssertEqual(CodexResetsFormatting.outcomeText(.alreadyRedeemed), "That reset was already used.")
         XCTAssertEqual(CodexResetsFormatting.errorText(.resetCreditsUnavailable(retryAfter: 30)), "Unknown right now — the resets endpoint is rate-limited; try again in a few minutes.")
     }
+
+    // MARK: - Identity (owner report 2026-09-09: every Codex account read "3 available")
+
+    private func iso(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+    private func credit(_ id: String, expires: String) -> CodexResetCredit {
+        CodexResetCredit(id: id, resetType: "codex_rate_limits", status: "available", grantedAt: nil, expiresAt: iso(expires), title: nil, description: nil)
+    }
+    private func details(_ count: Int, _ credits: [CodexResetCredit]) -> CodexResetCredits {
+        CodexResetCredits(availableCount: count, credits: credits, totalEarnedCount: nil, immediateResetPurchaseEligible: nil, fetchedAt: now)
+    }
+    /// Measured live on 2026-09-09 (UTC expiries): xFho holds 3 grants, xFenrir 2.
+    private var xFhoDetails: CodexResetCredits {
+        details(3, [credit("a", expires: "2026-09-21T00:07:00Z"), credit("b", expires: "2026-10-04T02:16:00Z"), credit("c", expires: "2026-10-05T04:19:00Z")])
+    }
+    private var xFenrirDetails: CodexResetCredits {
+        details(2, [credit("d", expires: "2026-10-04T06:05:00Z"), credit("e", expires: "2026-10-05T04:19:00Z")])
+    }
+
+    func testResolutionDiscardsDetailsFetchedForAnotherAccount() {
+        let xFho = UUID(), xFenrir = UUID()
+        let fetched = (profileId: xFho, credits: xFhoDetails)
+        // Viewing xFenrir after one Details click on xFho: its own sweep count, no borrowed expiry lines.
+        let fenrir = CodexResetsCard.Resolution.resolve(viewed: xFenrir, fetched: fetched, cached: nil, sweepCount: 2)
+        XCTAssertEqual(fenrir.count, 2, "the report: xFenrir read xFho's 3")
+        XCTAssertNil(fenrir.details, "xFho's three expiry lines must not caption xFenrir")
+        // The account the details were fetched for keeps them, soonest expiry first.
+        let fho = CodexResetsCard.Resolution.resolve(viewed: xFho, fetched: fetched, cached: nil, sweepCount: 3)
+        XCTAssertEqual(fho.count, 3)
+        XCTAssertEqual(fho.details?.availableCreditsByExpiry.map(\.id), ["a", "b", "c"])
+    }
+
+    func testResolutionRanksOwnFetchOverOwnCacheOverSweepCount() {
+        let xFho = UUID(), xFenrir = UUID()
+        // xFenrir's own earlier answer, held by the service cache, beats both the sweep and a foreign fetch.
+        let cached = CodexResetsCard.Resolution.resolve(viewed: xFenrir, fetched: (xFho, xFhoDetails), cached: xFenrirDetails, sweepCount: 2)
+        XCTAssertEqual(cached.count, 2)
+        XCTAssertEqual(cached.details?.availableCreditsByExpiry.map(\.expiresAt), [iso("2026-10-04T06:05:00Z"), iso("2026-10-05T04:19:00Z")])
+        // A fresh fetch for the viewed account outranks its cache (one grant just spent).
+        let spent = CodexResetsCard.Resolution.resolve(viewed: xFenrir, fetched: (xFenrir, details(1, [credit("e", expires: "2026-10-05T04:19:00Z")])),
+                                                       cached: xFenrirDetails, sweepCount: 2)
+        XCTAssertEqual(spent.count, 1)
+        XCTAssertEqual(spent.details?.credits.count, 1)
+        // Only the sweep: the count stands alone. Nothing at all: unknown, never zero.
+        XCTAssertEqual(CodexResetsCard.Resolution.resolve(viewed: xFenrir, fetched: nil, cached: nil, sweepCount: 2), .init(count: 2, details: nil))
+        XCTAssertEqual(CodexResetsCard.Resolution.resolve(viewed: xFenrir, fetched: nil, cached: nil, sweepCount: nil), .init(count: nil, details: nil))
+    }
+
+    func testCountLineShowsUsableNowOnlyBesideAKnownBalance() {
+        XCTAssertEqual(CodexResetsFormatting.countLine(3, usableNow: 0), "Usage limit resets: 3 available · 0 usable now", "xFme live: grants in hand, none applicable while idle")
+        XCTAssertEqual(CodexResetsFormatting.countLine(2, usableNow: 2), "Usage limit resets: 2 available · 2 usable now")
+        XCTAssertEqual(CodexResetsFormatting.countLine(2, usableNow: nil), "Usage limit resets: 2 available")
+        XCTAssertEqual(CodexResetsFormatting.countLine(nil, usableNow: 3), "Usage limit resets: none or unknown", "a usable count without a balance claims nothing")
+    }
 }
