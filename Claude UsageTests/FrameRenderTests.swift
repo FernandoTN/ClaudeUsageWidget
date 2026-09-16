@@ -152,6 +152,29 @@ final class FrameRenderTests: XCTestCase {
         )
     }
 
+    /// The same 22-account fleet as `fleet(members: 22, ready: 6, dead: 2, …)`
+    /// with `hidden` of its weekly-maxed accounts turned off "Show in the
+    /// menu bar", through the painter's own membership seam.
+    private func fleetFromRoster(total: Int, ready: Int, dead: Int, hidden: Range<Int>,
+                                 next: NextCandidate?, keyed: Double) -> ProviderSummary {
+        let profiles: [Profile] = (0..<total).map { i in
+            var p = claude(String(format: "C%02d", i + 1), usage(weekly: 10))
+            p.isShownOnMenuBar = !hidden.contains(i)
+            return p
+        }
+        var readiness: [UUID: AccountReadiness] = [:]
+        for (i, p) in profiles.enumerated() {
+            readiness[p.id] = i < ready ? .ready : (i < ready + dead ? .dead : .weeklyHit)
+        }
+        let owner = profiles[0].id
+        return ProviderSummary.build(
+            provider: .claude,
+            orderedMembers: StatusBarUIManager.fleetPaintOrder(for: profiles, activeIds: [owner], now: now),
+            activeId: owner, readiness: readiness, keyedPercentage: keyed, next: next,
+            preferencesDegraded: false, activeLastMeasured: now.addingTimeInterval(-20), now: now
+        )
+    }
+
     // MARK: Writing
 
     private func write<V: View>(_ view: V, surface: String, state: String, size: NSSize, note: String) {
@@ -268,11 +291,16 @@ final class FrameRenderTests: XCTestCase {
         let renderer = MenuBarIconRenderer()
         let verified = NextCandidate(id: UUID(), label: "Ced", queued: false, queueHeadBlocked: false, readiness: .ready, verdict: .verified)
         let blockedQueue = NextCandidate(id: UUID(), label: "Del", queued: true, queueHeadBlocked: true, readiness: .ready, verdict: .unverified)
+        let heldHidden = fleetFromRoster(total: 22, ready: 6, dead: 2, hidden: 8..<15, next: verified, keyed: 40)
+        XCTAssertEqual(heldHidden.members.count, 14)
+        XCTAssertEqual(heldHidden.markCount, 15)
         let blocks: [(String, ProviderSummary, MenuBarLayout, String)] = [
             ("dots-armed", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78), .fleetDots, "12 accounts, armed, → Ced ✓"),
             ("dots-queue-blocked", fleet(members: 12, ready: 4, dead: 1, next: blockedQueue, keyed: 78), .fleetDots, "queue head blocked (red Q)"),
             ("dots-nobody", fleet(members: 6, ready: 0, dead: 2, next: nil, keyed: 91), .fleetDots, "nobody with headroom (→—)"),
             ("dots-21", fleet(members: 22, ready: 6, dead: 2, next: verified, keyed: 40), .fleetDots, "22 accounts (the owner's fleet, 2026-09-15): 21 dots in 11 × 2, no +N"),
+            ("dots-22-hidden-7", heldHidden, .fleetDots, "the same 22 accounts with 7 weekly-maxed ones hidden from the menu bar: 14 dots in 7 × 2, mark 15 (compare dots-21)"),
+            ("counts-22-hidden-7", heldHidden, .fleetCounts, "counts row for the same roster: the hidden 7 are not counted"),
             ("dots-overflow", fleet(members: 30, ready: 9, dead: 3, next: verified, keyed: 40), .fleetDots, "30 accounts: two dot rows + overflow +N"),
             ("dots-stale", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78, stale: true), .fleetDots, "every reading stale (dimmed)"),
             ("counts-armed", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78), .fleetCounts, "counts row, armed"),

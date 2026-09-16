@@ -107,6 +107,24 @@ struct Profile: Codable, Identifiable, Equatable {
         set { includeInAutoSwitch = newValue }
     }
 
+    // MARK: - Menu-bar visibility
+    /// Whether the owner hid this account from the menu bar (fleet dots,
+    /// counts and tiles). Optional so profiles saved before the field existed
+    /// decode as nil — which means shown. Use `isShownOnMenuBar`.
+    ///
+    /// Visibility ONLY: the refresh sweep, alerts, rotation and the
+    /// auto-switch never read it (that is what separates it from
+    /// `isSelectedForDisplay`, which also gates fetching).
+    var hideFromMenuBar: Bool?
+
+    /// Menu-bar visibility with the nil-means-shown default applied. The
+    /// provider-active account is drawn even when this is false
+    /// (`StatusBarUIManager.multiProfileCreationOrder(alwaysShown:)`).
+    var isShownOnMenuBar: Bool {
+        get { !(hideFromMenuBar ?? false) }
+        set { hideFromMenuBar = !newValue }
+    }
+
     // MARK: - Alerts: fleet defaults or own settings
     /// Whether alerts come from the fleet defaults (`fleetAlertDefaults_v1`)
     /// instead of this profile's `notificationSettings`. Optional so profiles
@@ -151,6 +169,7 @@ struct Profile: Codable, Identifiable, Equatable {
         case isSelectedForDisplay
         case menuBarLabel
         case includeInAutoSwitch
+        case hideFromMenuBar
         case usesFleetAlertDefaults
         case createdAt
         case lastUsedAt
@@ -189,6 +208,7 @@ struct Profile: Codable, Identifiable, Equatable {
         isSelectedForDisplay: Bool = true,
         menuBarLabel: String? = nil,
         includeInAutoSwitch: Bool? = nil,
+        hideFromMenuBar: Bool? = nil,
         usesFleetAlertDefaults: Bool? = true,
         createdAt: Date = Date(),
         lastUsedAt: Date = Date()
@@ -223,6 +243,7 @@ struct Profile: Codable, Identifiable, Equatable {
         self.isSelectedForDisplay = isSelectedForDisplay
         self.menuBarLabel = menuBarLabel
         self.includeInAutoSwitch = includeInAutoSwitch
+        self.hideFromMenuBar = hideFromMenuBar
         self.usesFleetAlertDefaults = usesFleetAlertDefaults
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt

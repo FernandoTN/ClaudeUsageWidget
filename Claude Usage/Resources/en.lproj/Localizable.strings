@@ -929,6 +929,7 @@
 "accounts.roster.profiles_accounts" = "%d profiles · %d accounts";
 "accounts.relogin_needed" = "re-login needed";
 "accounts.not_measured" = "not measured";
+"accounts.hidden_from_bar" = "hidden from the menu bar";
 "accounts.nothing_viewed" = "Pick an account in the list to view it.";
 "accounts.not_active" = "not active · %@: %@";
 "accounts.make_active_help" = "Switch this provider's CLI login to this account — a confirmation states the cost first.";
@@ -1007,8 +1008,11 @@
 "accounts.alerts.fleet_note" = "Alerts fire once per account, threshold and window; a session reset or weekly rollover re-arms them.";
 "accounts.monitoring.refresh" = "Refreshed every %d s";
 "accounts.monitoring.refresh_note" = "One sweep timer serves the whole fleet; the interval of the account being viewed drives it.";
-"accounts.monitoring.show_on_bar" = "Show on the menu bar";
-"accounts.monitoring.show_on_bar_desc" = "A tile for this account in the every-account layout; the fleet layouts include every account regardless.";
+"accounts.monitoring.show_in_bar" = "Show in the menu bar";
+"accounts.monitoring.show_in_bar_desc" = "This account's fleet dot, its share of the counts and its tile. A hidden account is still fetched, alerted on and eligible for the auto-switch. The active account stays on the bar while any account of its provider is shown.";
+"accounts.monitoring.show_in_bar_all" = "Show or hide several accounts…";
+"accounts.monitoring.show_on_bar" = "Monitor this account";
+"accounts.monitoring.show_on_bar_desc" = "Fetches usage, sends alerts and draws a tile in the every-account layout. Turned off, the account goes stale and the auto-switch picks it without fresh numbers. To only take it off the bar, turn off Show in the menu bar instead.";
 "accounts.monitoring.label" = "Tile label";
 "accounts.monitoring.label_desc" = "Up to three letters on the menu-bar tile; empty = the first three letters of the name.";
 "accounts.monitoring.label_clash" = "Same three letters as %@";
@@ -1055,6 +1059,8 @@
 "active.disabled_note" = "Auto-switch is off — this provider only changes account when you switch it.";
 "selector.switching_short" = "switching…";
 "counts.none_measured" = "nothing measured yet";
+"counts.hidden_from_bar" = "%d hidden";
+"counts.hidden_from_bar_long" = "%d hidden from the menu bar";
 
 // MARK: - Settings › Alerts (stage 3b, spec §5.2 D11, §12.4)
 "section.alerts_title" = "Alerts";
@@ -1093,13 +1099,18 @@
 "section.advanced_title" = "Advanced";
 "section.advanced_desc" = "Startup, shortcuts, diagnostics and stored settings";
 "display.title" = "Display";
-"display.subtitle" = "How the menu bar and the popover are drawn — which accounts show is set per account";
+"display.subtitle" = "How the menu bar and the popover are drawn, and which accounts the bar shows";
 "display.bar_title" = "Menu bar";
 "display.bar_subtitle" = "One tile per account, or one summary tile per provider";
 "display.mode" = "Mode";
 "display.mode_single" = "Single account";
 "display.mode_multi" = "Multiple accounts";
-"display.mode_note" = "Which accounts appear is each account's own choice: Accounts › Monitoring › Show on the menu bar.";
+"display.mode_note" = "Which accounts appear: Menu bar accounts below, or Accounts › Monitoring › Show in the menu bar.";
+"display.accounts_title" = "Menu bar accounts";
+"display.accounts_subtitle" = "Which accounts the multi-account bar draws. Hidden ones are still fetched and switchable";
+"display.accounts_show_all" = "Show all";
+"display.accounts_note" = "Off: no dot, no count, no tile. The active account stays on the bar while any account of its provider is shown; hiding every account of a provider takes it off the bar.";
+"display.accounts_single_note" = "Applies to the multi-account bar; the single-account bar shows only the viewed account.";
 "display.popover_title" = "Popover";
 "display.popover_subtitle" = "Times shown in the classic popover";
 "display.single_title" = "Single-account bar";

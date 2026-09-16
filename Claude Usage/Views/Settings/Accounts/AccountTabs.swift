@@ -98,6 +98,19 @@ struct AccountMonitoringTab: View {
             }
             SettingsContentCard {
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.cardPadding) {
+                    // Visibility only; the bulk list is Display › Menu bar accounts.
+                    VStack(alignment: .leading, spacing: 4) {
+                        SettingToggle(
+                            title: "accounts.monitoring.show_in_bar".localized,
+                            description: "accounts.monitoring.show_in_bar_desc".localized,
+                            isOn: Binding(get: { profile.isShownOnMenuBar }, set: { profileManager.setShownOnMenuBar($0, for: profile.id) })
+                        )
+                        Button("accounts.monitoring.show_in_bar_all".localized) {
+                            NotificationCenter.default.post(name: .settingsSectionRequested, object: SettingsRoute(section: .display))
+                        }
+                        .buttonStyle(.link)
+                    }
+                    Divider()
                     SettingToggle(
                         title: "accounts.monitoring.show_on_bar".localized,
                         description: "accounts.monitoring.show_on_bar_desc".localized,

@@ -217,6 +217,8 @@ struct AccountsRosterRow: View {
                     .lineLimit(1)
                 if row.needsRelogin {
                     Text("accounts.relogin_needed".localized).font(.system(size: 9)).foregroundColor(DesignRole.blocking.color)
+                } else if row.hiddenFromBar {
+                    Text("accounts.hidden_from_bar".localized).font(.system(size: 9)).foregroundColor(.secondary)
                 } else if let email = row.email {
                     Text(email).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
                 }
@@ -238,7 +240,9 @@ struct AccountsRosterRow: View {
                 }
             }
         }
-        .frame(height: row.email == nil && !row.needsRelogin ? 22 : 30)
+        .frame(height: row.email == nil && !row.needsRelogin && !row.hiddenFromBar ? 22 : 30)
+        // Hidden from the menu bar: still listed, still switchable, dimmed.
+        .opacity(row.hiddenFromBar ? 0.55 : 1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
     }
@@ -256,6 +260,7 @@ struct AccountsRosterRow: View {
         var parts = [row.name, row.stateWords.first ?? ""]
         if case .activeFor(let provider) = row.badge { parts.append(ActiveVocabulary.activeFor(provider)) }
         parts.append(row.percentageText == "—" ? "accounts.not_measured".localized : row.percentageText + " %")
+        if row.hiddenFromBar { parts.append("accounts.hidden_from_bar".localized) }
         return parts.filter { !$0.isEmpty }.joined(separator: ", ")
     }
 }

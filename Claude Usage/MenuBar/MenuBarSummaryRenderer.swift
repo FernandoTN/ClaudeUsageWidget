@@ -83,13 +83,14 @@ extension MenuBarIconRenderer {
         defer { image.unlockFocus() }
         opaqueEventShapeBackdrop(in: image)
 
-        // Provider mark over the provider's TOTAL account count (owner round
+        // Provider mark over the provider's account count (owner round
         // 2026-09-04, B1: "5 accounts but only 4 showing" — the fifth is the
-        // active tile). Two 6 pt rows in the mark column, top-aligned with
-        // the dot rows.
+        // active tile), counting only accounts shown on the menu bar
+        // (`ProviderSummary.markCount`). Two 6 pt rows in the mark column,
+        // top-aligned with the dot rows.
         let markAttributes: [NSAttributedString.Key: Any] = [.font: Self.markFont, .foregroundColor: Self.dimText]
         (Self.providerMark(summary.provider) as NSString).draw(at: NSPoint(x: 0, y: height - 7), withAttributes: markAttributes)
-        ("\(summary.members.count + (summary.activeId == nil ? 0 : 1))" as NSString).draw(
+        ("\(summary.markCount)" as NSString).draw(
             at: NSPoint(x: 0, y: height - 14), withAttributes: markAttributes)
 
         // The matrix is RIGHT-aligned inside the block: the soonest weekly

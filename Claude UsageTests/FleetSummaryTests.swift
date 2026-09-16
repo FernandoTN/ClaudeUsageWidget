@@ -136,6 +136,54 @@ final class FleetSummaryTests: XCTestCase {
         XCTAssertEqual(s.alert, .deadLogins)
     }
 
+    /// Hidden accounts ("Show in the menu bar" off) never enter `members`, so
+    /// the dots, the counts, `+N` and the mark number all shrink — while the
+    /// provider-active account keeps its block even when hidden, and a hidden
+    /// account can still be the next candidate (hiding never changes
+    /// candidacy). Membership goes through the painter's own seam.
+    @MainActor
+    func testHiddenAccountsLeaveMembersCountsAndTheMarkButTheActiveOneStays() {
+        func claude(_ name: String, hidden: Bool = false, selected: Bool = true) -> Profile {
+            var p = Profile(name: name, claudeSessionKey: "sk-ant-sid01-test", organizationId: "org",
+                            claudeUsage: usage(weekly: 10), isSelectedForDisplay: selected)
+            p.isShownOnMenuBar = !hidden
+            return p
+        }
+        let owner = claude("Owner", hidden: true)
+        let ready = claude("Ready")
+        let quiet = claude("Quiet", selected: false)
+        let heldReady = claude("Held-Ready", hidden: true)
+        let heldDead = claude("Held-Dead", hidden: true)
+        let profiles = [owner, ready, quiet, heldReady, heldDead]
+        let readiness: [UUID: AccountReadiness] = [
+            owner.id: .ready, ready.id: .ready, quiet.id: .readyLight, heldReady.id: .ready, heldDead.id: .dead,
+        ]
+
+        let order = StatusBarUIManager.fleetPaintOrder(for: profiles, activeIds: [owner.id], now: now)
+        XCTAssertEqual(Set(order), [owner.id, ready.id, quiet.id])
+        let s = build(members: order, active: owner.id, readiness: readiness, keyed: 10,
+                      next: candidate(heldReady.id), activeMeasured: now)
+        XCTAssertEqual(s.activeId, owner.id, "the hidden owner keeps its active block")
+        XCTAssertEqual(Set(s.members.map(\.id)), [ready.id, quiet.id])
+        XCTAssertEqual(s.counts, [.ready: 1, .readyLight: 1])
+        XCTAssertEqual(s.dotMembers().overflow, 0)
+        XCTAssertEqual(s.markCount, 3, "the mark counts what the bar shows: 5 accounts, 2 hidden")
+        XCTAssertNil(s.alert, "a dead login on a hidden account raises no bar alert")
+        XCTAssertEqual(s.next?.id, heldReady.id, "a hidden account can still be next")
+        XCTAssertEqual(
+            FleetBlockGeometry.fleetWidth(memberCount: s.members.count, layout: .fleetDots),
+            FleetBlockGeometry.fleetWidth(memberCount: 2, layout: .fleetDots))
+
+        let hidden = StatusBarUIManager.hiddenFromBarCount(profiles, provider: .claude, activeIds: [owner.id])
+        XCTAssertEqual(hidden, 2)
+        let tooltip = StatusBarUIManager.summaryTooltip(s, activeName: owner.name, byId: [:], hidden: hidden)
+        XCTAssertTrue(tooltip.contains("· 2 hidden"), tooltip)
+        XCTAssertFalse(StatusBarUIManager.summaryTooltip(s, activeName: owner.name, byId: [:]).contains("hidden"))
+
+        XCTAssertFalse(StatusBarUIManager.fleetPaintOrder(for: profiles, activeIds: [], now: now).contains(owner.id),
+                       "the exception is the active id, nothing else")
+    }
+
     func testAffixArmsAtSeventyFivePercentOrOnAQueuedTarget() {
         let a = UUID(), active = UUID()
         let idle = build(members: [a, active], active: active, readiness: [:], keyed: 74,

@@ -71,7 +71,8 @@ extension Notification.Name {
     static let profileDeleted = Notification.Name("profileDeleted")
 
     /// Posted after a structural multi-profile display change: single↔multi mode
-    /// or selection add/remove (anything that changes WHICH status items exist).
+    /// or selection add/remove (anything that changes WHICH status items exist),
+    /// and an account shown on or hidden from the menu bar.
     /// userInfo may include "addedProfileIds": [String] (UUID strings) when
     /// selection grew — observers should fetch only those lacking cached usage.
     static let profileDisplayStructureChanged = Notification.Name("profileDisplayStructureChanged")

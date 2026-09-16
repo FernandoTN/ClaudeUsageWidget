@@ -108,7 +108,13 @@ enum ActiveVocabulary {
         if counts.duplicateProfiles > 0 { parts.append("counts.duplicates_short".localized(with: counts.duplicateProfiles)) }
         // A count never wraps away from its word; the line breaks only at the separators.
         let glued = parts.map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }
-        return glued.isEmpty ? "counts.none_measured".localized : glued.joined(separator: " · ")
+        var out = glued.isEmpty ? "counts.none_measured".localized : glued.joined(separator: " · ")
+        // Last, so the line's tail truncation drops it first.
+        if counts.hiddenFromBar > 0 {
+            out += " · " + "counts.hidden_from_bar".localized(with: counts.hiddenFromBar)
+                .replacingOccurrences(of: " ", with: "\u{00A0}")
+        }
+        return out
     }
 
     /// The strings key for one readiness count ("%d ready" …).
@@ -144,6 +150,9 @@ enum ActiveVocabulary {
             out += " · " + "counts.duplicates".localized(with: counts.duplicateProfiles)
         }
         out += " · " + "counts.eligible".localized(with: counts.autoSwitchEligible)
+        if counts.hiddenFromBar > 0 {
+            out += " · " + "counts.hidden_from_bar_long".localized(with: counts.hiddenFromBar)
+        }
         return out
     }
 }
@@ -324,7 +333,7 @@ struct ProviderActiveSelection: Hashable {
         let counts = FleetCounts.build(
             profiles: inputs.profiles, readiness: readiness, stale: stale,
             duplicateGroups: inputs.duplicateGroups, needsRelogin: inputs.needsRelogin,
-            queue: inputs.queue, pinned: inputs.manuallyPinned, now: now
+            queue: inputs.queue, pinned: inputs.manuallyPinned, activeIds: inputs.activeIds, now: now
         )
         let policy = AutoSwitchPolicy(
             enabled: inputs.autoSwitchEnabled,

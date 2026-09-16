@@ -404,6 +404,12 @@ struct ProviderSummary: Hashable {
     var next: NextCandidate?
     var alert: FleetAlert?
 
+    /// The number under the provider mark: every account the block stands
+    /// for — the dots plus the active tile. Accounts hidden from the menu bar
+    /// are not members, so 7 hidden of 22 reads "15", never "15/22" (the
+    /// 10 pt column has no room; the tooltip names the hidden count).
+    var markCount: Int { members.count + (activeId == nil ? 0 : 1) }
+
     /// How many members are in each readiness state (zero-count states omitted).
     var counts: [AccountReadiness: Int] {
         members.reduce(into: [:]) { $0[$1.readiness, default: 0] += 1 }
@@ -458,8 +464,9 @@ struct ProviderSummary: Hashable {
     ///
     /// - Parameters:
     ///   - orderedMembers: every account of the provider (selected or not —
-    ///     the switch walk considers them all), left-to-right as the bar
-    ///     paints them (soonest weekly reset rightmost).
+    ///     the switch walk considers them all) except those hidden from the
+    ///     menu bar, left-to-right as the bar paints them (soonest weekly
+    ///     reset rightmost; `StatusBarUIManager.fleetPaintOrder`).
     ///   - readiness / stale: per-account classification (already computed).
     ///   - keyedPercentage: the active account's window percentage the
     ///     preflight milestones key off (`MenuBarManager.preflightMilestonePercentage`).

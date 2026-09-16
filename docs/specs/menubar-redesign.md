@@ -135,8 +135,14 @@ whenever it fits (one dot row, or counts, beside a 16 pt weekly-only tile),
 - **Fleet block** (right): a 6 pt provider mark (`Cl` / `Cx` / `Gk` — not
   `C/X/G`, X is ambiguous between Codex and xAI) in a 10 pt column, then one
   4 pt mark per OTHER account of the provider — every profile of the
-  provider, selected or not, exactly the population the switch walk ranks —
-  at 6 pt pitch. One row up to ten accounts, two balanced rows beyond
+  provider, selected or not, exactly the population the switch walk ranks,
+  **minus the accounts the owner hid from the menu bar** (`hideFromMenuBar`,
+  2026-09-16; the provider-active account is drawn even when hidden, and a
+  provider with no shown account has no item) — at 6 pt pitch. The number
+  under the mark counts the same population plus the active tile
+  (`ProviderSummary.markCount`): 22 accounts with 7 hidden read `15`, never
+  `15/22`; the group tooltip ends `· 7 hidden`. Hidden accounts keep their
+  readiness, so one can still be the candidate row's target. One row up to ten accounts, two balanced rows beyond
   (17 → 9 columns), filled **column-major from the right edge of the block**
   so the wrap never moves the soonest reset off the right edge and the
   soonest reset sits where the every-account layout puts it. Past 24 (two
@@ -421,7 +427,10 @@ implementation." B, A as compact fallback, drop C. Real-font width measurement;
 reserve widths; candidate row separate from the active label; `Cl/Cx/Gk` mark;
 `+N` past 20 dots rather than a representation flip; dots = the switch-relevant
 fleet, not the selected subset, and the active account shown even when
-deselected. Separate operability / capacity / evidence axes; `ready`
+deselected. *(Amended 2026-09-16: the owner can now hide accounts from the
+bar — `hideFromMenuBar` — and hidden accounts leave the dots; the active
+account is still shown even when hidden. See §2.)* Separate operability /
+capacity / evidence axes; `ready`
 over-claims eligibility; `→ Q→ ✓ ? × →—` notation; label tint = quota
 evidence, glyph = login evidence; publish evidence type, not a Bool
 (`isSafeToApplyLogin` returns true on an inconclusive probe); report a blocked
@@ -453,7 +462,8 @@ evidence-typed verdicts fed by preflight, walk AND sweep outcomes; arming on
 `keyedDisplayPercentage`; right-aligned column-major dots with `+N`; provider
 marks kept (two of three reviewers wanted them; 9 pt); no alert dot; tooltip
 + accessibility label; whole-provider membership with the active shown even
-when deselected; D1 as revised in §3; Stage C as revised in §5; Stage A split
+when deselected (amended 2026-09-16: minus the accounts hidden from the menu
+bar, the active one excepted); D1 as revised in §3; Stage C as revised in §5; Stage A split
 into A1/A2. Deferred: the shared `AutoSwitchPlan` resolver (Stage B), ETA to
 threshold and right-click candidate menu (Stage B), per-window verdict TTL
 (30 min holds while sweep successes refresh verdicts continuously).

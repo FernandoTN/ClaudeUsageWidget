@@ -22,6 +22,8 @@ Three layouts, chosen in **Settings › Display**:
 
 In the dot layouts the dots are **ordered by time to the weekly reset**: the rightmost dot resets soonest, the leftmost is farthest away, and accounts with no known reset (dead, never measured) sit together at the far left. Every provider block keeps its designed order on the bar (Codex, Grok, Claude), followed by the **⇄ item**.
 
+Accounts you are not using can be **hidden from the bar** — per account in **Accounts › Monitoring › Show in the menu bar**, or all at once in **Settings › Display › Menu bar accounts** ("Show all" brings a provider back). Hiding is visibility only: a hidden account is still fetched, alerted on and eligible for the auto-switch, and the active account is always drawn.
+
 ### Colours — one meaning everywhere
 
 The same colour means the same thing on a dot, a roster row, a dashboard chip. Bright always means *more relief available*; faded means less.
