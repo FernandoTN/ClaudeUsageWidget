@@ -1883,6 +1883,38 @@ class ProfileManager: ObservableObject {
         }
     }
 
+    /// Shows or hides one account on the menu bar (Accounts › Monitoring).
+    func setShownOnMenuBar(_ shown: Bool, for profileId: UUID) {
+        setShownOnMenuBar(shown, for: [profileId])
+    }
+
+    /// Shows or hides accounts on the menu bar — the fleet dots, counts and
+    /// tiles (Settings › Display lists every account; "Show all" passes a
+    /// provider's hidden ones in one call, so one save and one repaint).
+    ///
+    /// Visibility only: nothing here touches fetching, alerts, rotation or
+    /// auto-switch candidacy. The change is structural like a selection
+    /// change (the fleet block's width moves, and a provider whose last shown
+    /// account goes loses its item) but posts NO `addedProfileIds`: that key
+    /// asks for a fetch, and a hidden account was being fetched all along.
+    func setShownOnMenuBar(_ shown: Bool, for profileIds: [UUID]) {
+        var changed: [String] = []
+        for id in profileIds {
+            guard let index = profiles.firstIndex(where: { $0.id == id }),
+                  profiles[index].isShownOnMenuBar != shown else { continue }
+            profiles[index].isShownOnMenuBar = shown
+            if activeProfile?.id == id {
+                activeProfile = profiles[index]
+            }
+            changed.append(profiles[index].name)
+        }
+        guard !changed.isEmpty else { return }
+        profileStore.saveProfiles(profiles)
+        LoggingService.shared.log(
+            "ProfileManager: \(shown ? "Shown on" : "Hidden from") the menu bar: \(changed.joined(separator: ", "))")
+        NotificationCenter.default.post(name: .profileDisplayStructureChanged, object: nil)
+    }
+
     /// Updates check overage limit setting for a profile
     func updateCheckOverageLimitEnabled(_ enabled: Bool, for profileId: UUID) {
         if let index = profiles.firstIndex(where: { $0.id == profileId }) {

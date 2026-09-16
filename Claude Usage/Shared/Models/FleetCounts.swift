@@ -40,6 +40,9 @@ struct FleetCounts: Hashable {
         var needsRelogin: Int
         var queued: Int
         var onBar: Int
+        /// Rows the owner hid from the menu bar that the bar is not drawing
+        /// (a hidden provider-active account is still drawn, so not counted).
+        var hiddenFromBar: Int = 0
         var pinned: Int
         /// Distinct accounts whose login is not dead. An account excluded from
         /// the rotation is still the owner's to use, so it counts.
@@ -142,6 +145,7 @@ struct FleetCounts: Hashable {
     ///   - needsRelogin: `ProfileManager.profilesNeedingAccountRelogin`.
     ///   - pinned: profiles the user activated by hand while over a threshold
     ///     (`MenuBarManager.autoSwitchedProfileIds`).
+    ///   - activeIds: provider owners, drawn on the bar even when hidden.
     static func build(
         profiles: [Profile],
         readiness: [UUID: AccountReadiness],
@@ -150,6 +154,7 @@ struct FleetCounts: Hashable {
         needsRelogin: Set<UUID> = [],
         queue: [UUID] = [],
         pinned: Set<UUID> = [],
+        activeIds: Set<UUID> = [],
         now: Date
     ) -> FleetCounts {
         let duplicateIds = Set(duplicateGroups.flatMap { $0 })
@@ -204,6 +209,7 @@ struct FleetCounts: Hashable {
                 needsRelogin: rows.filter { needsRelogin.contains($0.id) }.count,
                 queued: rows.filter { queued.contains($0.id) }.count,
                 onBar: rows.filter(\.isSelectedForDisplay).count,
+                hiddenFromBar: rows.filter { !$0.isShownOnMenuBar && !activeIds.contains($0.id) }.count,
                 pinned: rows.filter { pinned.contains($0.id) }.count,
                 loginLive: loginLive,
                 capacityRemaining: capacity

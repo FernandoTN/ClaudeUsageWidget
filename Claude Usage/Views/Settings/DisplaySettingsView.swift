@@ -4,8 +4,9 @@
 //
 //  Settings › Display (docs/specs/ux-revamp.md §5.1; design pass §12.5): how the
 //  menu bar is drawn (mode, per-provider layout, what a click opens, tile
-//  cosmetics), the ⇄ selector item, the popover's time display. WHICH accounts
-//  show is each account's own choice (Accounts › Monitoring). The single-account
+//  cosmetics), which accounts the bar draws (Menu bar accounts — the bulk twin
+//  of Accounts › Monitoring › Show in the menu bar), the ⇄ selector item, the
+//  popover's time display. The single-account
 //  icon configuration (`SingleAccountBarCards`) is here since stage 3d.
 //
 
@@ -18,6 +19,9 @@ struct DisplaySettingsView: View {
                 SettingsPageHeader(title: "display.title".localized, subtitle: "display.subtitle".localized)
                 SettingsSectionCard(title: "display.bar_title".localized, subtitle: "display.bar_subtitle".localized) {
                     DisplayMenuBarCard()
+                }
+                SettingsSectionCard(title: "display.accounts_title".localized, subtitle: "display.accounts_subtitle".localized) {
+                    DisplayBarAccountsCard()
                 }
                 SettingsSectionCard(title: "selector.setting_title".localized, subtitle: "selector.setting_subtitle".localized) {
                     DisplaySelectorCard()
@@ -106,6 +110,67 @@ struct DisplayMenuBarCard: View {
             if let note {
                 Text(note).font(.system(size: 10)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Menu bar accounts
+
+/// Which accounts the multi-account bar draws, one switch per account under
+/// its provider — the bulk twin of Accounts › Monitoring › Show in the menu
+/// bar, laid out like the auto-switch eligibility list (Active &
+/// Auto-switch). Visibility only: hidden accounts keep being fetched, alerted
+/// on and switched to. "Show all" brings a provider's hidden accounts back in
+/// one save.
+struct DisplayBarAccountsCard: View {
+    @StateObject private var profileManager = ProfileManager.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.small) {
+            if profileManager.displayMode != .multi {
+                Text("display.accounts_single_note".localized)
+                    .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach([Profile.ProviderKind.claude, .codex, .grok], id: \.self) { provider in
+                let members = profileManager.profiles.filter { $0.providerKind == provider }
+                if !members.isEmpty {
+                    let hidden = members.filter { !$0.isShownOnMenuBar }.map(\.id)
+                    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Spacing.small) {
+                        Text(ActiveVocabulary.providerName(provider).uppercased())
+                            .font(.system(size: 10, weight: .bold)).foregroundColor(.secondary)
+                        if !hidden.isEmpty {
+                            Text("counts.hidden_from_bar".localized(with: hidden.count))
+                                .font(.system(size: 10)).foregroundColor(.secondary)
+                            Spacer()
+                            Button("display.accounts_show_all".localized) {
+                                profileManager.setShownOnMenuBar(true, for: hidden)
+                            }
+                            .buttonStyle(.link).font(.system(size: 10))
+                        }
+                    }
+                    .padding(.top, 4)
+                    ForEach(members) { profile in
+                        Toggle(isOn: Binding(get: { profile.isShownOnMenuBar },
+                                             set: { profileManager.setShownOnMenuBar($0, for: profile.id) })) {
+                            HStack(spacing: DesignTokens.Spacing.small) {
+                                Text(profile.name).font(DesignTokens.Typography.body).lineLimit(1)
+                                if profileManager.isProviderActive(profile) { ActivePill(provider: provider) }
+                                // Held accounts are usually the ones excluded from the rotation.
+                                if !profile.isAutoSwitchEnabled {
+                                    Text("accounts.badge.excluded".localized)
+                                        .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .toggleStyle(.switch).controlSize(.mini)
+                    }
+                }
+            }
+            Text("display.accounts_note".localized)
+                .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

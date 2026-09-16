@@ -1640,7 +1640,7 @@ private func observeCredentialChanges() {
             return
         }
 
-        let allSelected = profileManager.profiles.filter { $0.isSelectedForDisplay && $0.hasUsageCredentials }
+        let allSelected = Self.sweepPopulation(profileManager.profiles)
 
         guard !allSelected.isEmpty else {
             LoggingService.shared.log("MenuBarManager: No selected profiles with usage credentials to refresh")
@@ -4048,6 +4048,42 @@ private func observeCredentialChanges() {
             .filter { !$0.isEmpty })
     }
 
+    /// Why the walk rejects `candidate` before its plan check, or nil when it
+    /// may be a target.
+    enum CandidateRejection: Equatable {
+        case noUsageCredentials
+        case excludedByCaller
+        /// Same-provider rule: never cross between Claude, Codex and Grok.
+        case otherProvider
+        /// The per-profile eligibility toggle (Settings › Active & Auto-switch).
+        case autoSwitchOff
+    }
+
+    /// The walk's per-profile rules, pure. Menu-bar visibility
+    /// (`Profile.isShownOnMenuBar`) is deliberately NOT one of them: a hidden
+    /// account stays a legal target, and only the eligibility toggle
+    /// excludes it.
+    static func candidateRejection(
+        _ candidate: Profile,
+        provider: Profile.ProviderKind,
+        excluding: Set<UUID>
+    ) -> CandidateRejection? {
+        guard candidate.hasUsageCredentials else { return .noUsageCredentials }
+        guard !excluding.contains(candidate.id) else { return .excludedByCaller }
+        guard candidate.providerKind == provider else { return .otherProvider }
+        guard candidate.isAutoSwitchEnabled else { return .autoSwitchOff }
+        return nil
+    }
+
+    /// The profiles a refresh sweep fetches (and so alerts on and schedules
+    /// rotation for): monitored accounts with usable credentials. Menu-bar
+    /// visibility is deliberately NOT part of it — a hidden account keeps
+    /// being measured, or it would decay to stale and become a blind
+    /// auto-switch pick.
+    static func sweepPopulation(_ profiles: [Profile]) -> [Profile] {
+        profiles.filter { $0.isSelectedForDisplay && $0.hasUsageCredentials }
+    }
+
     /// Drops candidates whose stored login belongs to an account already in
     /// use. Pure so the walk's same-account rule is testable without a live
     /// profile manager; an unstamped candidate (nil uuid) is never dropped —
@@ -4081,15 +4117,8 @@ private func observeCredentialChanges() {
         let weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
 
         let candidates = profileManager.profiles.filter { candidate in
-            guard candidate.hasUsageCredentials,
-                  !excluding.contains(candidate.id) else { return false }
-
-            // Same-provider rule: never cross between Claude, Codex, and Grok accounts
-            guard candidate.providerKind == switchingProvider else { return false }
-
-            // Respect the per-profile eligibility toggle (Settings → Profiles → Auto-Switch)
-            guard candidate.isAutoSwitchEnabled else {
-                if !quiet {
+            if let rejection = Self.candidateRejection(candidate, provider: switchingProvider, excluding: excluding) {
+                if rejection == .autoSwitchOff, !quiet {
                     LoggingService.shared.log("AutoSwitch: Skipping '\(candidate.name)' (excluded by per-profile toggle)")
                 }
                 return false
@@ -4646,13 +4675,13 @@ private func observeCredentialChanges() {
         let provider = current.providerKind
         // Painted order when the group is on the bar and includes the viewed
         // account; otherwise the same ranking the bar would paint, over every
-        // account of the provider (selected or not), so an unselected viewed
-        // account still has a "next".
+        // account of the provider (selected or not, shown or hidden), so an
+        // unselected or hidden viewed account still has a "next".
         var order = paintedGroupMembers(for: provider)
         if !order.contains(current.id) {
             order = StatusBarUIManager.compositePaintOrder(
                 StatusBarUIManager.multiProfileCreationOrder(
-                    for: profileManager.profiles, now: Date(), includeUnselected: true)
+                    for: profileManager.profiles, now: Date(), includeUnselected: true, includeHidden: true)
                     .filter { $0.providerKind == provider }
                     .map(\.id)
             )

@@ -503,10 +503,19 @@ final class StatusBarUIManager {
     /// to burn first. Name breaks ties so equal resets (e.g. two profiles with
     /// no cached usage) don't reshuffle. Static and `now`-injectable so the
     /// ordering/quantization rules are unit-testable.
+    ///
+    /// Accounts hidden from the menu bar (`Profile.isShownOnMenuBar`) are
+    /// left out unless `includeHidden` — the dashboard and the next-account
+    /// hotkey rank the whole provider — or their id is in `alwaysShown`: the
+    /// bar passes the provider-active accounts, which it draws even when
+    /// hidden (a group without its active block is forbidden,
+    /// docs/specs/menubar-redesign.md).
     static func multiProfileCreationOrder(
         for profiles: [Profile],
         now: Date = Date(),
-        includeUnselected: Bool = false
+        includeUnselected: Bool = false,
+        includeHidden: Bool = false,
+        alwaysShown: Set<UUID> = []
     ) -> [Profile] {
         // The usage API reports the SAME weekly boundary with ±1s jitter between
         // fetches (22:59:59.8 one sweep, 23:00:00.1 the next), and two accounts can
@@ -527,11 +536,47 @@ final class StatusBarUIManager {
         }
         // Fleet-summary layouts rank the WHOLE provider (the switch walk
         // considers every profile, selected or not); the per-account layout
-        // keeps selection as its display filter.
-        let selected = includeUnselected ? profiles : profiles.filter { $0.isSelectedForDisplay }
+        // keeps selection as its display filter. Both drop what the owner hid.
+        let selected = (includeUnselected ? profiles : profiles.filter { $0.isSelectedForDisplay })
+            .filter { includeHidden || $0.isShownOnMenuBar || alwaysShown.contains($0.id) }
         return ranked(selected.filter { $0.providerKind == .claude })
             + ranked(selected.filter { $0.providerKind == .grok })
             + ranked(selected.filter { $0.providerKind == .codex })
+    }
+
+    /// Providers that get a status item: at least one account monitored
+    /// (`isSelectedForDisplay`) AND shown on the menu bar. The active
+    /// account's always-drawn exception does not create a group, so hiding
+    /// every account of a provider takes the provider off the bar.
+    static func barProviders(_ profiles: [Profile]) -> Set<Profile.ProviderKind> {
+        Set(profiles.filter { $0.isSelectedForDisplay && $0.isShownOnMenuBar }.map(\.providerKind))
+    }
+
+    /// Whether `profile` gets a tile in the every-account layout: monitored,
+    /// and shown on the menu bar unless it is a provider-active account.
+    static func isTileMember(_ profile: Profile, activeIds: Set<UUID>) -> Bool {
+        profile.isSelectedForDisplay && (profile.isShownOnMenuBar || activeIds.contains(profile.id))
+    }
+
+    /// Every account the fleet-summary layouts summarise, LEFT-TO-RIGHT as
+    /// painted, across providers: the whole roster, selected or not, minus
+    /// the accounts hidden from the menu bar — the provider-active ones stay,
+    /// the block needs them for its active tile. The dot count, the counts
+    /// row, `+N`, the block width and the mark number all follow from this.
+    static func fleetPaintOrder(for profiles: [Profile], activeIds: Set<UUID>, now: Date = Date()) -> [UUID] {
+        compositePaintOrder(
+            multiProfileCreationOrder(for: profiles, now: now, includeUnselected: true, alwaysShown: activeIds).map(\.id)
+        )
+    }
+
+    /// How many of `provider`'s accounts the owner hid and the bar is NOT
+    /// drawing (a hidden provider-active account is drawn, so not counted).
+    static func hiddenFromBarCount(
+        _ profiles: [Profile],
+        provider: Profile.ProviderKind,
+        activeIds: Set<UUID>
+    ) -> Int {
+        profiles.filter { $0.providerKind == provider && !$0.isShownOnMenuBar && !activeIds.contains($0.id) }.count
     }
 
     /// Paint order for one provider group's composite image.
@@ -673,7 +718,8 @@ final class StatusBarUIManager {
 
     /// True when the live composite group items already match the providers
     /// `profiles` needs, so a "structural" setup call is really just a repaint.
-    /// Selecting or deselecting an account is a MEMBERSHIP change, which a
+    /// Selecting or deselecting an account — or showing or hiding it on the
+    /// menu bar — is a MEMBERSHIP change, which a
     /// composite absorbs by re-drawing one image — but the notification that
     /// carries it routes through `setupMultiProfile`, which would otherwise
     /// tear down and recreate every group item. Each teardown+recreate
@@ -683,11 +729,11 @@ final class StatusBarUIManager {
         guard Self.useCompositeTiles, isMultiProfileMode, !groupItems.isEmpty else { return false }
         // Every live item must still have a button (a lost button needs a rebuild).
         guard groupItems.values.allSatisfy({ $0.button != nil }) else { return false }
-        let selected = profiles.filter { $0.isSelectedForDisplay }
-        guard !selected.isEmpty else { return false }
+        let providers = Self.barProviders(profiles)
+        guard !providers.isEmpty else { return false }
         // The placeholder item is keyed under .claude but hosts no tiles.
         guard !multiProfileOrder.isEmpty else { return false }
-        return Set(selected.map(\.providerKind)) == Set(groupItems.keys)
+        return providers == Set(groupItems.keys)
     }
 
     /// Sets up status bar for multi-profile display mode.
@@ -702,7 +748,8 @@ final class StatusBarUIManager {
         if !forceRecreate, canReuseCompositeGroups(for: profiles) {
             multiProfileTarget = target
             multiProfileAction = action
-            multiProfileOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
+            multiProfileOrder = Self.multiProfileCreationOrder(
+                for: profiles, alwaysShown: ProfileManager.shared.activeAccountIds(among: profiles)).map(\.id)
             LoggingService.shared.logUIEvent(
                 "Multi-profile: composite membership change — reused \(distinctGroupItems.count) host item(s) for \(groupItems.count) provider(s) (no window changes)")
             return
@@ -721,10 +768,8 @@ final class StatusBarUIManager {
             return
         }
 
-        // Filter to only profiles selected for display
-        let selectedProfiles = profiles.filter { $0.isSelectedForDisplay }
-
-        if selectedProfiles.isEmpty {
+        // Only profiles selected for display and shown on the bar get items
+        if Self.barProviders(profiles).isEmpty {
             // No profiles selected - show default logo
             let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             if let button = statusItem.button {
@@ -738,7 +783,8 @@ final class StatusBarUIManager {
             multiProfileStatusItems[UUID()] = statusItem
             LoggingService.shared.logUIEvent("Multi-profile: No profiles selected, showing default logo")
         } else {
-            let orderedProfiles = Self.multiProfileCreationOrder(for: profiles)
+            let orderedProfiles = Self.multiProfileCreationOrder(
+                for: profiles, alwaysShown: ProfileManager.shared.activeAccountIds(among: profiles))
             multiProfileOrder = orderedProfiles.map(\.id)
 
             // Create one status item per selected profile. Deliberately NO
@@ -761,7 +807,7 @@ final class StatusBarUIManager {
                 multiProfileStatusItems[profile.id] = statusItem
             }
 
-            LoggingService.shared.logUIEvent("Multi-profile: Created \(selectedProfiles.count) status items")
+            LoggingService.shared.logUIEvent("Multi-profile: Created \(orderedProfiles.count) status items")
         }
 
         observeAppearanceChanges()
@@ -838,14 +884,15 @@ final class StatusBarUIManager {
         item.autosaveName = fleetAutosaveName
     }
 
-    /// Composite mode: create ONE status item per provider that has selected
-    /// profiles. Creation order Claude → Grok → Codex (each new item lands
-    /// LEFT of existing ones, so Claude ends up rightmost and Codex clips
-    /// first on overflow — same policy as the legacy per-tile layout).
+    /// Composite mode: create ONE status item per provider that has selected,
+    /// shown profiles (`barProviders`). Creation order Claude → Grok → Codex
+    /// (each new item lands LEFT of existing ones, so Claude ends up rightmost
+    /// and Codex clips first on overflow — same policy as the legacy per-tile
+    /// layout).
     private func setupCompositeGroups(profiles: [Profile], target: AnyObject, action: Selector) {
-        let selectedProfiles = profiles.filter { $0.isSelectedForDisplay }
+        let providers = Self.barProviders(profiles)
 
-        guard !selectedProfiles.isEmpty else {
+        guard !providers.isEmpty else {
             // No profiles selected: one placeholder item keyed under .claude,
             // painted by `paintPlaceholderLogo` (NOT by updateAllButtons, whose
             // logo path only covers single-profile `statusItems`).
@@ -861,7 +908,8 @@ final class StatusBarUIManager {
             return
         }
 
-        let orderedProfiles = Self.multiProfileCreationOrder(for: profiles)
+        let orderedProfiles = Self.multiProfileCreationOrder(
+            for: profiles, alwaysShown: ProfileManager.shared.activeAccountIds(among: profiles))
         multiProfileOrder = orderedProfiles.map(\.id)
 
         if Self.useSingleFleetItem {
@@ -878,21 +926,19 @@ final class StatusBarUIManager {
                 LoggingService.shared.logWarning("Fleet status bar button is nil - screens: \(NSScreen.screens.count)")
             }
             fleetItem = statusItem
-            for provider in GroupExposure.intendedOrder
-            where selectedProfiles.contains(where: { $0.providerKind == provider }) {
+            for provider in GroupExposure.intendedOrder where providers.contains(provider) {
                 groupItems[provider] = statusItem
             }
             LoggingService.shared.logUIEvent(
                 "Multi-profile: fleet item — one status item hosting "
                     + GroupExposure.intendedOrder.filter { groupItems[$0] != nil }.map { "\($0)" }.joined(separator: ",")
-                    + (hostedSelector == nil ? "" : "+⇄") + " for \(selectedProfiles.count) profiles")
+                    + (hostedSelector == nil ? "" : "+⇄") + " for \(orderedProfiles.count) profiles")
             observeExposureTriggers()
             logPlacementAtCreation()
             return
         }
 
-        for provider in [Profile.ProviderKind.claude, .grok, .codex]
-        where selectedProfiles.contains(where: { $0.providerKind == provider }) {
+        for provider in [Profile.ProviderKind.claude, .grok, .codex] where providers.contains(provider) {
             // A FIXED initial length, never `variableLength`: a variable-length
             // item is zero-wide until its first image, and zero-wide items tie
             // on placement — once another fixed-length item of this app exists
@@ -917,7 +963,7 @@ final class StatusBarUIManager {
         }
 
         LoggingService.shared.logUIEvent(
-            "Multi-profile: composite mode — \(groupItems.count) group items for \(selectedProfiles.count) profiles")
+            "Multi-profile: composite mode — \(groupItems.count) group items for \(orderedProfiles.count) profiles")
         observeExposureTriggers()
         logPlacementAtCreation()
     }
@@ -1148,18 +1194,19 @@ final class StatusBarUIManager {
         // per rebuild, never reclaimed) — and the WindowServer iterates every
         // registered context on each remote-context datagram, so rebuild-per-
         // reshuffle turned ranking jitter into an unbounded main-thread tax.
-        let desiredOrder = Self.multiProfileCreationOrder(for: profiles).map(\.id)
+        let activeIds = ProfileManager.shared.activeAccountIds(among: profiles)
+        let desiredOrder = Self.multiProfileCreationOrder(for: profiles, alwaysShown: activeIds).map(\.id)
 
         if Self.useCompositeTiles {
             // Composite mode: items exist per provider GROUP, so ranking and
             // membership changes are pure repaint/re-composite. Only a change
-            // in WHICH PROVIDERS have selected profiles (or the empty↔non-empty
-            // transition) needs item recreation — a rare user action.
-            let selected = profiles.filter { $0.isSelectedForDisplay }
-            let desiredProviders = Set(selected.map(\.providerKind))
+            // in WHICH PROVIDERS have selected, shown profiles (or the
+            // empty↔non-empty transition) needs item recreation — a rare user
+            // action.
+            let desiredProviders = Self.barProviders(profiles)
             let currentProviders = Set(groupItems.keys)
             let placeholderActive = groupItems.count == 1 && multiProfileOrder.isEmpty
-            let needsRebuild = selected.isEmpty
+            let needsRebuild = desiredProviders.isEmpty
                 ? !placeholderActive
                 : (desiredProviders != currentProviders || placeholderActive)
             if needsRebuild, let target = multiProfileTarget, let action = multiProfileAction {
@@ -1180,7 +1227,7 @@ final class StatusBarUIManager {
                 LoggingService.shared.logUIEvent(
                     "Multi-profile: ranking reshuffled — composite paint order updated (no window changes)")
             }
-            if selected.isEmpty {
+            if desiredProviders.isEmpty {
                 // Placeholder state: there are no tiles to paint, and nothing
                 // else ever paints this item.
                 pruneTileState(keeping: [])
@@ -1193,7 +1240,7 @@ final class StatusBarUIManager {
             } else {
                 clearFleetSummaryState()
                 paintTiles(profiles: profiles, config: config)
-                pruneTileState(keeping: Set(selected.map(\.id)))
+                pruneTileState(keeping: Set(profiles.filter { Self.isTileMember($0, activeIds: activeIds) }.map(\.id)))
             }
             assembleComposites(profiles: profiles)
             scheduleExposureProbe(reason: "paint")
@@ -1250,7 +1297,7 @@ final class StatusBarUIManager {
             }
         }
 
-        if profiles.contains(where: { $0.isSelectedForDisplay }) {
+        if !Self.barProviders(profiles).isEmpty {
             paintTiles(profiles: profiles, config: config)
         } else {
             paintPlaceholderLogo()
@@ -1319,7 +1366,7 @@ final class StatusBarUIManager {
             uniquingKeysWith: { first, _ in first }
         )
 
-        for profile in profiles where profile.isSelectedForDisplay {
+        for profile in profiles where Self.isTileMember(profile, activeIds: activeIds) {
             let button: NSStatusBarButton?
             if Self.useCompositeTiles {
                 // Composite: the group button supplies appearance/backing
@@ -2362,8 +2409,11 @@ final class StatusBarUIManager {
     /// account's tile (rendered by the configured style, unchanged) plus the
     /// fleet block. The whole provider is summarised — every profile of the
     /// provider, selected or not, exactly the population the switch walk
-    /// ranks — and the active account is shown even when deselected: a fleet
+    /// ranks — except the accounts the owner hid from the menu bar, and the
+    /// active account is shown even when deselected or hidden: a fleet
     /// summary whose active block is missing would be a semantic failure.
+    /// Hidden accounts still get a readiness (the next candidate may be one
+    /// of them — hiding never changes candidacy); they just draw no dot.
     private func paintFleetSummaries(
         profiles: [Profile],
         config: MultiProfileDisplayConfig,
@@ -2419,16 +2469,14 @@ final class StatusBarUIManager {
         fleetDotMemory.forget(except: painted)
 
         // The active tiles come from the unchanged per-tile pipeline (render
-        // keys, style renderers). A deselected owner is painted anyway.
+        // keys, style renderers). A deselected or hidden owner is painted anyway.
         let activeProfiles: [Profile] = profiles
             .filter { activeIds.contains($0.id) && groupItems[$0.providerKind] != nil }
-            .map { var p = $0; p.isSelectedForDisplay = true; return p }
+            .map { var p = $0; p.isSelectedForDisplay = true; p.isShownOnMenuBar = true; return p }
         paintTiles(profiles: activeProfiles, config: config)
         pruneTileState(keeping: Set(activeProfiles.map(\.id)))
 
-        let paintOrder = Self.compositePaintOrder(
-            Self.multiProfileCreationOrder(for: profiles, now: now, includeUnselected: true).map(\.id)
-        )
+        let paintOrder = Self.fleetPaintOrder(for: profiles, activeIds: activeIds, now: now)
         let groupAppearance = NSAppearance(named: .darkAqua) ?? NSApp.effectiveAppearance
 
         for (provider, statusItem) in groupItems {
@@ -2503,7 +2551,9 @@ final class StatusBarUIManager {
             // can spell the summary out (per-dot tooltips are not possible on
             // a status item; the dashboard is the lookup).
             // The host item applies it (per hovered segment on the fleet item).
-            providerTooltips[provider] = Self.summaryTooltip(summary, activeName: activeProfile?.name, byId: byId)
+            providerTooltips[provider] = Self.summaryTooltip(
+                summary, activeName: activeProfile?.name, byId: byId,
+                hidden: Self.hiddenFromBarCount(profiles, provider: provider, activeIds: activeIds))
 
             if lastSummaryKey[provider] == key, summaryImages[provider] != nil { continue }
 
@@ -2535,11 +2585,14 @@ final class StatusBarUIManager {
         }
     }
 
-    /// "Claude: Atlas 78 % → Cedar ✓ · 4 ready · 1 low · 11 exhausted · 1 dead".
-    private static func summaryTooltip(
+    /// "Claude: Atlas 78 % → Cedar ✓ · 4 ready · 1 low · 11 exhausted · 1 dead · 7 hidden".
+    /// `hidden` accounts are off the bar by the owner's choice — absent from
+    /// the dots, the counts and the mark number — so the tooltip says so.
+    static func summaryTooltip(
         _ summary: ProviderSummary,
         activeName: String?,
-        byId: [UUID: Profile]
+        byId: [UUID: Profile],
+        hidden: Int = 0
     ) -> String {
         let providerName: String
         switch summary.provider {
@@ -2576,6 +2629,7 @@ final class StatusBarUIManager {
         for state in AccountReadiness.legendOrder where counts[state, default: 0] > 0 {
             parts.append("\(counts[state]!) \(state.legendWord)")
         }
+        if hidden > 0 { parts.append("\(hidden) hidden") }
         // The words behind the glyphs (round 1, B4/G2): the tooltip is where
         // the bar spells out what a 22 pt strip can only encode.
         return parts.joined(separator: " · ") + "\n" + DesignLegend.line

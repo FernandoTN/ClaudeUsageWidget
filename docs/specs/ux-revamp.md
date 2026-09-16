@@ -656,7 +656,8 @@ defaults for all / selected" bulk action, the list of always-on system alerts wi
 their one-per-episode rule stated, "Test notification". **Display**: display mode,
 the multi-profile config (icon style, week, label, monochrome, time/pace markers,
 pace coloring, **Menu bar layout**, **Click opens** — the redesign session's two
-pickers, same bindings), the ⇄ selector on/off, the popover time settings, the
+pickers, same bindings), **Menu bar accounts** (one switch per account for
+`hideFromMenuBar`, added 2026-09-16), the ⇄ selector on/off, the popover time settings, the
 single-account icon config when relevant. **Advanced**: launch at login,
 shortcuts, diagnostics (preferences-degraded state and the last write check,
 "Re-assert settings now", "Open log", debug API logging — a key with no UI today),
@@ -671,7 +672,8 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | ↳ `refreshInterval` | Profile | yes | unchanged | Accounts › Monitoring (one-timer caption) |
 | ↳ `checkOverageLimitEnabled` | Profile | yes (no UI today, none after) | unchanged | — |
 | ↳ `notificationSettings` | Profile | yes | unchanged; a profile whose **new** `usesFleetAlertDefaults == true` reads `fleetAlertDefaults_v1` instead. Migration: `decodeIfPresent`; absent → `true` iff `notificationSettings == NotificationSettings()` (untouched defaults follow the fleet, customized ones keep their override); new profiles `true` | Accounts › Alerts |
-| ↳ `isSelectedForDisplay` | Profile | yes | unchanged | Accounts › Monitoring ("Show on the menu bar") |
+| ↳ `isSelectedForDisplay` | Profile | yes | unchanged (gates the fetch sweep, alerts and rotation too, which is why it is not the hide lever) | Accounts › Monitoring ("Monitor this account"; titled "Show on the menu bar" until 2026-09-16) |
+| ↳ `hideFromMenuBar` | Profile | **new 2026-09-16** | `Bool?`, absent/nil = shown (`isShownOnMenuBar`), no migration. Visibility only: leaves the fleet dots, counts, `+N`, mark number and every-account tiles; the provider-active account is drawn anyway while its provider has any account shown; a provider with nothing shown loses its item. Never read by the sweep, alerts, rotation or the auto-switch | Accounts › Monitoring ("Show in the menu bar"); Display › Menu bar accounts (every account, "Show all" per provider) |
 | ↳ `menuBarLabel` | Profile | yes | unchanged (first UI for it: audit M3) | Accounts › Monitoring |
 | ↳ `includeInAutoSwitch` | Profile | yes | unchanged | Active & Auto-switch (primary); read-only line on the account |
 | ↳ identity/metadata fields | Profile | yes | unchanged | Accounts › Overview (read-only) |

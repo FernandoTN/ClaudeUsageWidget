@@ -43,6 +43,11 @@ enum AccountsRosterModel {
         var percentageText: String
         var badge: Badge
         var needsRelogin: Bool
+        /// Hidden from the menu bar and not drawn there (the provider-active
+        /// row never is: the bar draws its owner regardless). The row is
+        /// dimmed and captioned; it is a caption, not the row's ONE badge,
+        /// because a held account usually carries "excluded" as well.
+        var hiddenFromBar: Bool = false
         var isDead: Bool { readiness == .dead }
         /// Words the filter matches besides name/email.
         var stateWords: [String]
@@ -95,13 +100,16 @@ enum AccountsRosterModel {
             }
             for candidate in selection.candidates {
                 let badge = self.badge(for: candidate)
+                let hidden = byId[candidate.id].map { !$0.isShownOnMenuBar } ?? false
                 rows.append(Row(
                     id: candidate.id, name: candidate.name, email: byId[candidate.id].flatMap(email(of:)),
                     readiness: candidate.readiness, isStale: candidate.isStale,
                     percentageText: percentageText(candidate.gauges, readiness: candidate.readiness),
                     badge: badge, needsRelogin: candidate.needsRelogin,
+                    hiddenFromBar: hidden,
                     stateWords: stateWords(readiness: candidate.readiness, badge: badge, pinned: false)
                         + (candidate.needsRelogin ? ["relogin", "re-login"] : [])
+                        + (hidden ? ["hidden", "off the bar"] : [])
                 ))
             }
             // Candidates arrive eligible-first; the bar's order is the rank

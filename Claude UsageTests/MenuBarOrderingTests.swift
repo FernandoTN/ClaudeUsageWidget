@@ -93,6 +93,65 @@ final class MenuBarOrderingTests: XCTestCase {
         XCTAssertEqual(order(profiles), ["Shown"])
     }
 
+    /// Accounts the owner hid ("Show in the menu bar" off) leave BOTH layouts:
+    /// the every-account tiles, the fleet ranking (which otherwise keeps
+    /// unselected accounts), the popover navigator's fallback and — once a
+    /// provider has nothing shown — the provider's status item. The dashboard
+    /// and the next-account hotkey still rank them (`includeHidden`).
+    func testAccountsHiddenFromTheMenuBarLeaveEveryLayout() {
+        var held = claudeProfile("Held", weeklyReset: now.addingTimeInterval(60))
+        held.isShownOnMenuBar = false
+        var heldCodex = codexProfile("Held-Codex", weeklyReset: now.addingTimeInterval(60))
+        heldCodex.isShownOnMenuBar = false
+        let shown = claudeProfile("Shown", weeklyReset: now.addingTimeInterval(3600))
+        let quiet = claudeProfile("Quiet", weeklyReset: now.addingTimeInterval(7200), selected: false)
+        let profiles = [held, shown, heldCodex, quiet]
+
+        XCTAssertEqual(order(profiles), ["Shown"])
+        XCTAssertEqual(
+            StatusBarUIManager.multiProfileCreationOrder(for: profiles, now: now, includeUnselected: true).map(\.name),
+            ["Shown", "Quiet"], "fleet layouts keep unselected accounts, never hidden ones")
+        XCTAssertEqual(StatusBarUIManager.fleetPaintOrder(for: profiles, activeIds: [], now: now), [quiet.id, shown.id])
+        XCTAssertEqual(
+            StatusBarUIManager.onScreenGroupMembers(for: profiles, provider: .claude, now: now).map(\.name), ["Shown"])
+        XCTAssertTrue(StatusBarUIManager.onScreenGroupMembers(for: profiles, provider: .codex, now: now).isEmpty)
+        XCTAssertEqual(StatusBarUIManager.barProviders(profiles), [.claude],
+                       "a provider whose every account is hidden has no status item")
+        XCTAssertEqual(StatusBarUIManager.hiddenFromBarCount(profiles, provider: .claude, activeIds: []), 1)
+        XCTAssertEqual(StatusBarUIManager.hiddenFromBarCount(profiles, provider: .codex, activeIds: []), 1)
+
+        XCTAssertEqual(
+            StatusBarUIManager.multiProfileCreationOrder(
+                for: profiles, now: now, includeUnselected: true, includeHidden: true).map(\.name),
+            ["Held", "Shown", "Quiet", "Held-Codex"], "the dashboard and the hotkey rank the whole provider")
+    }
+
+    /// The provider-active account is drawn even when hidden — a group
+    /// without its active block is forbidden — but it does not keep a
+    /// provider on the bar by itself: hiding every account removes the group.
+    func testAHiddenActiveAccountStaysDrawnWhileItsProviderIsShown() {
+        var owner = claudeProfile("Owner", weeklyReset: now.addingTimeInterval(60))
+        owner.isShownOnMenuBar = false
+        var other = claudeProfile("Other", weeklyReset: now.addingTimeInterval(3600))
+
+        XCTAssertEqual(
+            StatusBarUIManager.multiProfileCreationOrder(for: [owner, other], now: now, alwaysShown: [owner.id]).map(\.name),
+            ["Owner", "Other"])
+        XCTAssertEqual(order([owner, other]), ["Other"], "without the exception the owner is just a hidden account")
+        XCTAssertTrue(StatusBarUIManager.isTileMember(owner, activeIds: [owner.id]))
+        XCTAssertFalse(StatusBarUIManager.isTileMember(owner, activeIds: []))
+        var deselectedOwner = owner
+        deselectedOwner.isSelectedForDisplay = false
+        XCTAssertFalse(StatusBarUIManager.isTileMember(deselectedOwner, activeIds: [owner.id]),
+                       "the every-account layout still leaves a deselected owner out (unchanged)")
+        XCTAssertEqual(StatusBarUIManager.hiddenFromBarCount([owner, other], provider: .claude, activeIds: [owner.id]), 0,
+                       "a drawn owner is not reported as hidden")
+        XCTAssertEqual(StatusBarUIManager.barProviders([owner, other]), [.claude])
+
+        other.isShownOnMenuBar = false
+        XCTAssertEqual(StatusBarUIManager.barProviders([owner, other]), [])
+    }
+
     // MARK: jitter quantization
 
     func testSubMinuteJitterDoesNotFlipTheOrder() {

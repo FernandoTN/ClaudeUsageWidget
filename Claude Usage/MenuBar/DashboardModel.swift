@@ -516,6 +516,8 @@ struct DashboardSnapshot: Hashable {
 
     /// Every account of the provider, left-to-right as the bar paints them
     /// (soonest weekly reset rightmost); the painted order wins when known.
+    /// Accounts hidden from the menu bar stay listed here — hiding is a bar
+    /// setting — ahead of the painted ones, like any unpainted account.
     private static func orderedMembers(provider: Profile.ProviderKind, inputs: Inputs, now: Date) -> [UUID] {
         let inProvider = Set(inputs.profiles.filter { $0.providerKind == provider }.map(\.id))
         if let painted = inputs.paintedOrder[provider]?.filter({ inProvider.contains($0) }), !painted.isEmpty {
@@ -523,7 +525,8 @@ struct DashboardSnapshot: Hashable {
             return missing + painted
         }
         return StatusBarUIManager.compositePaintOrder(
-            StatusBarUIManager.multiProfileCreationOrder(for: inputs.profiles, now: now, includeUnselected: true)
+            StatusBarUIManager.multiProfileCreationOrder(
+                for: inputs.profiles, now: now, includeUnselected: true, includeHidden: true)
                 .filter { $0.providerKind == provider }
                 .map(\.id)
         )
