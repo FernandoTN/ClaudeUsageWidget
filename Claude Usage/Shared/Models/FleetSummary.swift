@@ -375,10 +375,13 @@ struct ProviderSummary: Hashable {
     /// account's digits and the next candidate — the preflight's own 75 %
     /// milestone.
     nonisolated static let armThreshold: Double = 75
-    /// Fleet dots hold at most this many OTHER accounts (2 rows × 10). Beyond
-    /// that the last slot becomes a `+N` overflow mark — the representation
-    /// never flips wholesale at account 21.
-    nonisolated static let maxDotMembers = 20
+    /// Fleet dots hold at most this many OTHER accounts: two rows of
+    /// `FleetBlockGeometry.maxDotColumns` (12 × 2 = 24). Beyond that the two
+    /// leftmost columns become a `+N` overflow mark — the representation
+    /// never flips wholesale at account 25. Raised from 20 on 2026-09-15: the
+    /// owner's Claude fleet reached 22 accounts and its 21 others folded into
+    /// 18 dots + `+3`; the cap has to clear the live fleet.
+    nonisolated static let maxDotMembers = 2 * FleetBlockGeometry.maxDotColumns
     /// The active account's reading counts as stale after this long.
     nonisolated static let activeStaleAfter: TimeInterval = 600
 
@@ -436,7 +439,7 @@ struct ProviderSummary: Hashable {
     /// ones kept; the overflow mark takes two reserved columns on the left.
     nonisolated func dotMembers() -> (shown: [FleetMember], overflow: Int) {
         guard members.count > Self.maxDotMembers else { return (members, 0) }
-        let shown = Array(members.suffix(Self.maxDotMembers - 2))
+        let shown = Array(members.suffix(FleetBlockGeometry.shownDotCount(memberCount: members.count)))
         return (shown, members.count - shown.count)
     }
 
@@ -528,7 +531,12 @@ enum FleetBlockGeometry {
     /// 22 pt bar with the candidate row underneath (2 × 7 + 7 = 21).
     nonisolated static let dotDiameter: CGFloat = 5
     nonisolated static let dotPitch: CGFloat = 7
-    nonisolated static let dotsPerRow = 10
+    /// Widest dot matrix: `ProviderSummary.maxDotMembers` is two rows of this
+    /// (12 × 2 = 24; 10 × 2 until 2026-09-15, when the owner's Claude fleet
+    /// reached 22 accounts and folded into `+3`). `dotGrid` never caps by
+    /// itself — `shownDotCount` never hands it more than the cap — so the
+    /// next bump is this one number.
+    nonisolated static let maxDotColumns = 12
     nonisolated static let rowPitch: CGFloat = 7
     /// Rosters of this many other accounts or more use two rows.
     nonisolated static let twoRowsFrom = 4
@@ -567,10 +575,12 @@ enum FleetBlockGeometry {
     nonisolated static let overflowColumns = 2
 
     /// Columns × rows for `count` dots: one row up to three accounts, else
-    /// two rows balanced (4 → 2 × 2, 18 → 9 × 2), capped at `dotsPerRow`
-    /// columns. The renderer fills COLUMN-major from the RIGHT edge, so the
-    /// rightmost column always holds the soonest weekly resets — "rightmost
-    /// = next to burn" survives the wrap.
+    /// two rows balanced (4 → 2 × 2, 18 → 9 × 2, 21 → 11 × 2). There is no
+    /// column cap here: callers pass `shownDotCount`, which never exceeds
+    /// `ProviderSummary.maxDotMembers`, so a matrix is at most
+    /// `maxDotColumns` wide. The renderer fills ROW-major from the RIGHT
+    /// edge (`dotPosition`), so the rightmost column always holds the
+    /// soonest weekly resets — "rightmost = next to burn" survives the wrap.
     nonisolated static func dotGrid(count: Int) -> (columns: Int, rows: Int) {
         guard count > 0 else { return (0, 0) }
         let rows = count >= twoRowsFrom ? 2 : 1

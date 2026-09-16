@@ -139,9 +139,15 @@ whenever it fits (one dot row, or counts, beside a 16 pt weekly-only tile),
   at 6 pt pitch. One row up to ten accounts, two balanced rows beyond
   (17 → 9 columns), filled **column-major from the right edge of the block**
   so the wrap never moves the soonest reset off the right edge and the
-  soonest reset sits where the every-account layout puts it. Past 20, the
-  two leftmost columns become `+N` (11 pt at 6 pt); the representation never
-  flips wholesale at account 21.
+  soonest reset sits where the every-account layout puts it. Past 24 (two
+  rows of `FleetBlockGeometry.maxDotColumns` = 12; raised from 2 × 10 on
+  2026-09-15, when the owner's Claude fleet reached 22 accounts and its 21
+  others folded into 18 dots + `+3` — the cap has to clear the live fleet),
+  the two leftmost columns become `+N` (11 pt at 6 pt); the representation
+  never flips wholesale at account 25. The matrix is `(columns − 1) × 7 + 5`
+  pt wide: 21 others = 11 × 2 = 75 pt (2 pt narrower than the old 18 dots +
+  `+3` at 77), 24 = 12 × 2 = 82 pt, and an overflowed roster (25 or more) =
+  22 dots + two `+N` columns + the 2 pt gap = 91 pt.
 - **Row 3 of the fleet block** is the candidate row (§2.4). It lives UNDER the
   dots, so it adds no height: the block is `10 + max(dot matrix, 52)` pt and
   **fixed for a given roster and layout** — arming, digits ticking and

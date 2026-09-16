@@ -215,20 +215,38 @@ final class FleetSummaryTests: XCTestCase {
     }
 
     func testDotOverflowKeepsTheSoonestAccountsAndReservesPlusNColumns() {
-        let ids = (0..<25).map { _ in UUID() }
+        // The cap is two rows of `maxDotColumns`: 12 × 2 = 24 since 2026-09-15.
+        XCTAssertEqual(ProviderSummary.maxDotMembers, 24)
+        XCTAssertEqual(ProviderSummary.maxDotMembers, 2 * FleetBlockGeometry.maxDotColumns)
+        let ids = (0..<30).map { _ in UUID() }
         let s = build(members: ids, active: nil, readiness: [:], keyed: nil, next: nil)
         let (shown, overflow) = s.dotMembers()
-        XCTAssertEqual(shown.count, 18)
-        XCTAssertEqual(overflow, 7)
-        XCTAssertEqual(shown.map(\.id), Array(ids.suffix(18)),
+        XCTAssertEqual(shown.count, 22, "the cap minus the two +N columns")
+        XCTAssertEqual(overflow, 8)
+        XCTAssertEqual(shown.map(\.id), Array(ids.suffix(22)),
                        "the soonest-reset (rightmost) accounts are the ones kept")
-        let small = build(members: Array(ids.prefix(20)), active: nil, readiness: [:], keyed: nil, next: nil)
-        XCTAssertEqual(small.dotMembers().overflow, 0)
-        XCTAssertEqual(small.dotMembers().shown.count, 20)
-        // 18 dots in 9 columns + 2 reserved columns for "+N" = 11 columns,
-        // plus the gap between "+N" and the matrix (round 1, B3).
-        // 18 dots in 9 columns + 2 reserved columns at a 7 pt pitch with 5 pt dots.
-        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 25), 75 + FleetBlockGeometry.overflowGap)
+        // The owner's live fleet (2026-09-15): 21 other Claude accounts show
+        // in full, 11 × 2, with no +N — the case the cap was raised for.
+        let live = build(members: Array(ids.prefix(21)), active: nil, readiness: [:], keyed: nil, next: nil)
+        XCTAssertEqual(live.dotMembers().overflow, 0)
+        XCTAssertEqual(live.dotMembers().shown.count, 21)
+        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 21).columns, 11)
+        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 21).rows, 2)
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 21), 75, "10 × 7 + 5")
+        // Boundary: 24 fills the grid (12 × 2); 25 is the first roster to fold.
+        let full = build(members: Array(ids.prefix(24)), active: nil, readiness: [:], keyed: nil, next: nil)
+        XCTAssertEqual(full.dotMembers().overflow, 0)
+        XCTAssertEqual(full.dotMembers().shown.count, 24)
+        XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 24).columns, FleetBlockGeometry.maxDotColumns)
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 24), 82, "11 × 7 + 5")
+        let first = build(members: Array(ids.prefix(25)), active: nil, readiness: [:], keyed: nil, next: nil)
+        XCTAssertEqual(first.dotMembers().shown.count, 22)
+        XCTAssertEqual(first.dotMembers().overflow, 3)
+        XCTAssertEqual(FleetBlockGeometry.shownDotCount(memberCount: 25), 22)
+        // 22 dots in 11 columns + 2 reserved columns for "+N" = 13 columns at
+        // a 7 pt pitch with 5 pt dots, plus the gap between "+N" and the
+        // matrix (round 1, B3): 12 × 7 + 5 + 2.
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 25), 89 + FleetBlockGeometry.overflowGap)
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 40, layout: .fleetDots),
                        FleetBlockGeometry.fleetWidth(memberCount: 25, layout: .fleetDots),
                        "fixed once the roster overflows the grid")
@@ -256,6 +274,11 @@ final class FleetSummaryTests: XCTestCase {
         XCTAssertEqual(FleetBlockGeometry.dotGrid(count: 4).rows, 2)
         XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 10), 33)
         XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 17), 61)
+        // The cap raise (2026-09-15): 21 others = 11 × 2, 24 = 12 × 2.
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 21), 75)
+        XCTAssertEqual(FleetBlockGeometry.dotMatrixWidth(memberCount: 24), 82)
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 21, layout: .fleetDots), 85, "the owner's 2026-09-15 Claude block")
+        XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 24, layout: .fleetDots), 92, "the widest unfolded block")
         // 17 others: mark (10) + max(dots 52, candidate row 52) = 62; arming never widens it.
         XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: 17, layout: .fleetDots), 71, "width follows the count")
         // 2 others: mark (10) + max(dots 10, candidate row 52) = 62 — reserved even while idle.
