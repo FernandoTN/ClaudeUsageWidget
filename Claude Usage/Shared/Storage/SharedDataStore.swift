@@ -38,6 +38,7 @@ class SharedDataStore {
         static let autoSwitchProfileEnabled = "autoSwitchProfileEnabled"
         static let autoSwitchThreshold = "autoSwitchThreshold"
         static let autoSwitchWeeklyThreshold = "autoSwitchWeeklyThreshold"
+        static let autoSwitchIgnoreFableWeekly = "autoSwitchIgnoreFableWeekly"
 
         // Popover Settings
         static let popoverShowRemainingTime = "popoverShowRemainingTime" // legacy bool key
@@ -78,6 +79,7 @@ class SharedDataStore {
     // what a first launch needs.
 
     private var lastKnownGoodAutoSwitchEnabled: Bool?
+    private var lastKnownGoodIgnoreFableWeekly: Bool?
     private var lastKnownGoodSwitchHistory: [SwitchEvent]?
     private var lastKnownGoodMeasuredSessionHistory: [UUID: [(at: Date, pct: Double)]]?
     private var lastKnownGoodAutoSwitchQueue: [UUID]?
@@ -107,6 +109,7 @@ class SharedDataStore {
     /// the next test's deliberately-absent key and reads as a stale value.
     func resetPreferencesResilienceStateForTesting() {
         lastKnownGoodAutoSwitchEnabled = nil
+        lastKnownGoodIgnoreFableWeekly = nil
         lastKnownGoodSwitchHistory = nil
         lastKnownGoodMeasuredSessionHistory = nil
         lastKnownGoodAutoSwitchQueue = nil
@@ -349,6 +352,39 @@ class SharedDataStore {
                    Self.autoSwitchThresholdRange.upperBound)
     }
 
+    func saveAutoSwitchIgnoreFableWeekly(_ ignore: Bool) {
+        writeSingleShot(ignore, forKey: Keys.autoSwitchIgnoreFableWeekly)
+        lastKnownGoodIgnoreFableWeekly = ignore
+    }
+
+    /// Takes the Fable weekly window OUT of the auto-switch decision, on BOTH
+    /// sides: the trigger no longer ends an account's turn because its Fable
+    /// week is spent, and the candidate filter no longer refuses such an
+    /// account as a target. For a fleet deliberately running on another model,
+    /// a spent Fable window is not exhaustion — the 2026-09-21 episode had an
+    /// account switched away from at 62% of its overall week, 38 points of
+    /// usable capacity abandoned, because Fable alone read 100%. The
+    /// all-models weekly and the 5-hour session arms are untouched.
+    ///
+    /// Read live on every sweep (no relaunch to take effect), and absence is
+    /// checked explicitly rather than trusted to `bool(forKey:)`: a wedged
+    /// read would otherwise silently reinstate the policy the owner turned
+    /// off, exactly the audit-H8 failure `loadAutoSwitchProfileEnabled`
+    /// guards against. Default OFF — Fable counts, as it always has.
+    func loadAutoSwitchIgnoreFableWeekly() -> Bool {
+        if defaults.object(forKey: Keys.autoSwitchIgnoreFableWeekly) != nil {
+            let live = defaults.bool(forKey: Keys.autoSwitchIgnoreFableWeekly)
+            lastKnownGoodIgnoreFableWeekly = live
+            noteLiveRead(Keys.autoSwitchIgnoreFableWeekly)
+            return live
+        }
+        if let cached = lastKnownGoodIgnoreFableWeekly {
+            logNilReadOnce(Keys.autoSwitchIgnoreFableWeekly)
+            return cached
+        }
+        return false
+    }
+
     // MARK: - Popover Settings
 
     func savePopoverTimeDisplay(_ display: PopoverTimeDisplay) {
@@ -560,6 +596,7 @@ class SharedDataStore {
         RegisteredKey(Keys.autoSwitchProfileEnabled, .sharedDataStore, .live, ui: "Active & Auto-switch"),
         RegisteredKey(Keys.autoSwitchThreshold, .sharedDataStore, .live, ui: "Active & Auto-switch"),
         RegisteredKey(Keys.autoSwitchWeeklyThreshold, .sharedDataStore, .live, ui: "Active & Auto-switch"),
+        RegisteredKey(Keys.autoSwitchIgnoreFableWeekly, .sharedDataStore, .live, ui: "Active & Auto-switch"),
         RegisteredKey(Keys.popoverShowRemainingTime, .sharedDataStore, .migrationFlag),
         RegisteredKey(Keys.popoverTimeDisplay, .sharedDataStore, .live, ui: "Display › Popover"),
         RegisteredKey(Keys.timeFormatPreference, .sharedDataStore, .live, ui: "Display › Popover"),

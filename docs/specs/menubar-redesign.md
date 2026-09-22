@@ -37,7 +37,10 @@ wrong answer is:
 
 1. **Is the account my CLI sessions are on about to stall?** — the
    provider-active account's *session* window (5 h) is what stalls sessions;
-   its weekly and Fable windows are what the auto-switch fires on at 99 %.
+   its weekly and Fable windows are what the auto-switch fires on at 99 %
+   (the Fable arm can be switched off — `autoSwitchIgnoreFableWeekly`,
+   2026-09-21 — for a fleet running on another model; the bar still paints a
+   spent Fable window as spent, because it is).
    Cost of being wrong: the fleet dies on the wall (2026-08-13 incident).
 2. **When it stalls, is there somewhere to go, and where?** — the predicted
    next candidate and whether its login is *proven* live (a probe, a refresh,

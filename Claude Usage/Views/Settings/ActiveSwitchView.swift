@@ -18,6 +18,7 @@ struct ActiveSwitchView: View {
     @State private var autoSwitchEnabled = SharedDataStore.shared.loadAutoSwitchProfileEnabled()
     @State private var sessionThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
     @State private var weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+    @State private var ignoreFableWeekly = SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()
     @State private var queue: [UUID] = SharedDataStore.shared.loadAutoSwitchQueue()
     @State private var queueFilter: Profile.ProviderKind?
     @State private var switchNote: String?
@@ -57,6 +58,17 @@ struct ActiveSwitchView: View {
                         ThresholdField(title: "auto_switch.weekly_threshold_title".localized,
                                        description: "auto_switch.weekly_threshold_description".localized,
                                        value: $weeklyThreshold) { SharedDataStore.shared.saveAutoSwitchWeeklyThreshold($0) }
+                        // Both sides of the decision at once: the trigger stops
+                        // ending a turn on Fable alone, and the candidate filter
+                        // stops refusing such an account as a target.
+                        SettingToggle(
+                            title: "auto_switch.ignore_fable_title".localized,
+                            description: "auto_switch.ignore_fable_description".localized,
+                            isOn: Binding(get: { ignoreFableWeekly }, set: { on in
+                                ignoreFableWeekly = on
+                                SharedDataStore.shared.saveAutoSwitchIgnoreFableWeekly(on)
+                            })
+                        )
                         Text("active.rules".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -79,6 +91,7 @@ struct ActiveSwitchView: View {
         .onReceive(NotificationCenter.default.publisher(for: .credentialsChanged)) { _ in
             queue = SharedDataStore.shared.loadAutoSwitchQueue()
             autoSwitchEnabled = SharedDataStore.shared.loadAutoSwitchProfileEnabled()
+            ignoreFableWeekly = SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()
         }
     }
 

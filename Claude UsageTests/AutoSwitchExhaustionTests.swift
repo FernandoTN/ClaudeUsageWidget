@@ -61,6 +61,14 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         return p
     }
 
+    /// A candidate carrying an arbitrary reading — the candidate-side checks
+    /// take a Profile, not a ClaudeUsage.
+    private func candidate(_ name: String, _ reading: ClaudeUsage?) -> Profile {
+        var p = Profile(id: UUID(), name: name)
+        p.claudeUsage = reading
+        return p
+    }
+
     func testRankDefaultsToSoonestWeeklyReset() {
         let a = profile("A", weeklyResetIn: 3 * 86_400)
         let b = profile("B", weeklyResetIn: 1 * 86_400)
@@ -260,4 +268,147 @@ final class AutoSwitchExhaustionTests: XCTestCase {
         XCTAssertFalse(ProfileManager.ActivationOutcome.credentialsRefused.didActivate)
         XCTAssertFalse(ProfileManager.ActivationOutcome.profileNotFound.didActivate)
     }
+
+    // MARK: - Ignoring the Fable weekly window (owner preference, default OFF)
+    //
+    // 2026-09-21: the active account was at 62 % of its overall week — 38
+    // points of usable capacity — and its FABLE week read 100 %. The trigger
+    // called that exhausted and handed the CLI over; the same predicate's
+    // mirror then made that account (and four others at Fable 100 %)
+    // unreachable as a target. With the fleet deliberately running on another
+    // model, a spent Fable window must be able to stop counting. The flag
+    // drops the Fable arm on BOTH sides and nothing else.
+
+    func testFableArmIsDroppedWhenIgnored() {
+        let reading = usage(session: 20, weekly: 62, fable: 100, fableResetIn: 86_400)
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            reading, sessionThreshold: 95, weeklyThreshold: 99, now: now),
+            "default: a spent Fable week still ends the account's turn")
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(
+            reading, sessionThreshold: 95, weeklyThreshold: 99, ignoreFableWeekly: true, now: now),
+            "ignored: 38 points of overall-weekly headroom is not exhaustion")
+    }
+
+    /// The flag must disable ONE arm. A flag that quietly disabled all three
+    /// would look like a working feature while the fleet ran past its real
+    /// limits, so each surviving arm is asserted on its own.
+    func testIgnoringFableLeavesTheSessionAndWeeklyArmsWorking() {
+        // Session arm alone, Fable healthy and Fable spent.
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            usage(session: 95, weekly: 20), sessionThreshold: 95, weeklyThreshold: 99,
+            ignoreFableWeekly: true, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            usage(session: 100, weekly: 20, fable: 100, fableResetIn: 86_400),
+            sessionThreshold: 95, weeklyThreshold: 99, ignoreFableWeekly: true, now: now))
+        // All-models weekly arm alone.
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            usage(session: 20, weekly: 99), sessionThreshold: 95, weeklyThreshold: 99,
+            ignoreFableWeekly: true, now: now))
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            usage(session: 20, weekly: 100, fable: 100, fableResetIn: 86_400),
+            sessionThreshold: 95, weeklyThreshold: 99, ignoreFableWeekly: true, now: now))
+        // Below both surviving thresholds: not exhausted, as before.
+        XCTAssertFalse(MenuBarManager.isQuotaExhausted(
+            usage(session: 94.9, weekly: 98.9), sessionThreshold: 95, weeklyThreshold: 99,
+            ignoreFableWeekly: true, now: now))
+    }
+
+    /// The threshold the orchestrator actually runs (weekly 100) and the
+    /// documented default (99) must behave the same way under the flag.
+    func testIgnoringFableHoldsAtBothWeeklyThresholds() {
+        let maxed = usage(session: 20, weekly: 62, fable: 100, fableResetIn: 86_400)
+        for weeklyThreshold in [99.0, 100.0] {
+            XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+                maxed, sessionThreshold: 95, weeklyThreshold: weeklyThreshold, now: now),
+                "weekly threshold \(weeklyThreshold): Fable 100 is exhaustion by default")
+            XCTAssertFalse(MenuBarManager.isQuotaExhausted(
+                maxed, sessionThreshold: 95, weeklyThreshold: weeklyThreshold,
+                ignoreFableWeekly: true, now: now),
+                "weekly threshold \(weeklyThreshold): the Fable arm is dropped")
+            // The all-models arm still fires AT the threshold either way.
+            XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+                usage(session: 20, weekly: weeklyThreshold), sessionThreshold: 95,
+                weeklyThreshold: weeklyThreshold, ignoreFableWeekly: true, now: now))
+        }
+    }
+
+    // MARK: - Candidate side (the mirror)
+
+    func testFableHeadroomHonorsTheIgnoreFlag() {
+        let spent = candidate("Stanford", usage(session: 20, weekly: 62, fable: 100, fableResetIn: 86_400))
+        XCTAssertFalse(MenuBarManager.hasFableWeeklyHeadroom(spent, threshold: 99, now: now),
+                       "default: a Fable-maxed account is not a legal target")
+        XCTAssertTrue(MenuBarManager.hasFableWeeklyHeadroom(
+            spent, threshold: 99, ignoreFableWeekly: true, now: now),
+            "ignored: Fable never disqualifies a target")
+    }
+
+    func testFableHeadroomUnchangedWhereFableCannotDisqualify() {
+        // No Fable window reported at all (Codex/Grok, plans without one).
+        let noFable = candidate("Codex", usage(session: 20, weekly: 40, fable: nil))
+        // No cached usage at all.
+        let unmeasured = candidate("Fresh", nil)
+        // A Fable reset already in the past — the window rolled over since the
+        // data was cached, so it is full quota again with or without the flag.
+        let rolledOver = candidate("Cedar", usage(session: 20, weekly: 40, fable: 100, fableResetIn: -60))
+        for profile in [noFable, unmeasured, rolledOver] {
+            XCTAssertTrue(MenuBarManager.hasFableWeeklyHeadroom(profile, threshold: 99, now: now),
+                          "\(profile.name): headroom with the flag off")
+            XCTAssertTrue(MenuBarManager.hasFableWeeklyHeadroom(
+                profile, threshold: 99, ignoreFableWeekly: true, now: now),
+                "\(profile.name): headroom with the flag on")
+        }
+    }
+
+    /// Walk level: `candidateHasHeadroom` is the predicate all four
+    /// eligibility sites call (ranked walk, stale re-verify, queued peek,
+    /// fleet prediction), so this is the switch's own answer about a
+    /// candidate, not a re-implementation of it.
+    func testWalkTakesAFableMaxedCandidateOnlyWhenFableIsIgnored() {
+        let stanford = candidate("Stanford", usage(session: 20, weekly: 62, fable: 100, fableResetIn: 86_400))
+
+        XCTAssertFalse(MenuBarManager.candidateHasHeadroom(
+            stanford, sessionThreshold: 95, weeklyThreshold: 99,
+            ignoreFableWeekly: false, now: now),
+            "default: unreachable by auto-switch, which is what stranded five accounts")
+        XCTAssertTrue(MenuBarManager.candidateHasHeadroom(
+            stanford, sessionThreshold: 95, weeklyThreshold: 99,
+            ignoreFableWeekly: true, now: now),
+            "ignored: a legal candidate again")
+
+        // The mirror: exactly the accounts the trigger keeps are the accounts
+        // the walk will take. Asserted as an equivalence so neither side can
+        // be changed alone into a ping-pong.
+        for ignore in [false, true] {
+            for reading in [
+                usage(session: 20, weekly: 62, fable: 100, fableResetIn: 86_400),
+                usage(session: 96, weekly: 20),
+                usage(session: 20, weekly: 99),
+                usage(session: 20, weekly: 40, fable: 50, fableResetIn: 86_400),
+            ] {
+                let exhausted = MenuBarManager.isQuotaExhausted(
+                    reading, sessionThreshold: 95, weeklyThreshold: 99,
+                    ignoreFableWeekly: ignore, now: now)
+                let eligible = MenuBarManager.candidateHasHeadroom(
+                    candidate("mirror", reading), sessionThreshold: 95, weeklyThreshold: 99,
+                    ignoreFableWeekly: ignore, now: now)
+                XCTAssertEqual(exhausted, !eligible,
+                               "trigger and candidate filter disagree (ignoreFableWeekly: \(ignore))")
+            }
+        }
+    }
+
+    /// The flag reaches the walk from the store, so the default a wedged or
+    /// never-written key produces is the behaviour that ships.
+    func testStoreDefaultKeepsTodaysBehaviour() {
+        UserDefaults(suiteName: "com.claudeusagewidget.tests")?
+            .removeObject(forKey: "autoSwitchIgnoreFableWeekly")
+        // A fresh store, so no shadow from another suite answers instead.
+        let ignore = SharedDataStore().loadAutoSwitchIgnoreFableWeekly()
+        XCTAssertFalse(ignore)
+        XCTAssertTrue(MenuBarManager.isQuotaExhausted(
+            usage(session: 20, weekly: 62, fable: 100, fableResetIn: 86_400),
+            sessionThreshold: 95, weeklyThreshold: 99, ignoreFableWeekly: ignore, now: now))
+    }
+
 }
