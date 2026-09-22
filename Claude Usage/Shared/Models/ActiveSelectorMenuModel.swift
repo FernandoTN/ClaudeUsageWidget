@@ -155,8 +155,11 @@ enum ActiveSelectorMenuModel {
         if let policy = selections.first?.autoSwitch {
             // A state the user can act on (S5): a checkmark item that toggles
             // the fleet-wide auto-switch; the thresholds stay in Settings.
+            let policyKey = policy.ignoreFableWeekly
+                ? "selector.policy_toggle_no_fable"
+                : "selector.policy_toggle"
             rows.append(Row(kind: .action,
-                            title: "selector.policy_toggle".localized(with: Int(policy.sessionThreshold), Int(policy.weeklyThreshold)),
+                            title: policyKey.localized(with: Int(policy.sessionThreshold), Int(policy.weeklyThreshold)),
                             action: .toggleAutoSwitch(enabled: !policy.enabled), checked: policy.enabled))
         }
         rows.append(Row(kind: .action, title: "selector.open_active_settings".localized, action: .openActiveSettings))

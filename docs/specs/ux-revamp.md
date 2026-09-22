@@ -649,7 +649,9 @@ Alerts · Display · Advanced · About**, plus a Quit button.
 
 **Active & Auto-switch**: the three "Active for" cards (owner, headroom +
 provenance/age, next + verdict kind, manual pin, `Switch…` → same confirmation),
-the enable toggle, the two thresholds, the queue editor (today's, with a
+the enable toggle, the two thresholds, **“Ignore the Fable weekly limit when
+switching accounts”** (`autoSwitchIgnoreFableWeekly`, added 2026-09-21; off by
+default), the queue editor (today's, with a
 **provider filter**), the eligibility list (the ONE primary location), and the two
 rules as text. **Alerts**: fleet default thresholds + sound (new key), "Use fleet
 defaults for all / selected" bulk action, the list of always-on system alerts with
@@ -686,6 +688,7 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | `debugAPILoggingEnabled` | SharedDataStore | yes | unchanged | Advanced › Diagnostics (first UI) |
 | `shortcutTogglePopover`, `shortcutRefresh`, `shortcutOpenSettings`, `shortcutNextProfile` | SharedDataStore | yes | unchanged; `nextProfile` now means "view next" | Advanced › Shortcuts |
 | `autoSwitchProfileEnabled`, `autoSwitchThreshold`, `autoSwitchWeeklyThreshold` | SharedDataStore | yes | unchanged | Active & Auto-switch |
+| **`autoSwitchIgnoreFableWeekly`** | SharedDataStore | **new** (2026-09-21), journaled + shadowed | Bool; **absent reads as OFF** (the Fable weekly window keeps counting). On, the Fable arm is dropped from BOTH `MenuBarManager.isQuotaExhausted` and `hasFableWeeklyHeadroom` — an account whose only spent window is Fable keeps serving AND stays a legal target. Session and all-models weekly are untouched | Active & Auto-switch |
 | `autoSwitchQueue` | SharedDataStore | yes | unchanged (provider filter is view-side) | Active & Auto-switch, selector, dashboard |
 | `popoverShowRemainingTime` (legacy) → `popoverTimeDisplay`, `timeFormatPreference` | SharedDataStore | yes | unchanged (existing one-time migration kept) | Display › Popover |
 | `switchHistory_v1`, `measuredSessionHistory_v1` | SharedDataStore | yes | unchanged; read by stage 4 | Dashboard |
@@ -969,7 +972,10 @@ rows disabled with their reason; ⌥ turns an eligible row into "Queue X next");
 submenu "Queue next ▸" (eligible rows; explicit path, ⌥ is not the only one); a
 disabled queue row "Queue: Fjord › Ridge" when the queue has entries for this
 provider, with "Edit queue…" beside it. Footer: "Auto-switch on · 95 % session /
-99 % weekly" (disabled) + "Active & Auto-switch…"; "Accounts…", "Dashboard…",
+99 % weekly" (disabled; "· Fable ignored" appended while
+`autoSwitchIgnoreFableWeekly` is on, since a Fable-maxed account IS a legal
+target then and the row would otherwise read as the whole rule) +
+"Active & Auto-switch…"; "Accounts…", "Dashboard…",
 "Token usage…". Counts sentence appears as a disabled row under the owner only
 when something is dead, duplicated or has no candidate (frame 2) — a healthy
 group does not need to be told it is healthy.

@@ -21,6 +21,7 @@ final class SettingsKeyRegistryTests: XCTestCase {
         "hasCompletedSetup", "hasShownWizardOnce", "debugAPILoggingEnabled",
         "shortcutTogglePopover", "shortcutRefresh", "shortcutOpenSettings", "shortcutNextProfile",
         "autoSwitchProfileEnabled", "autoSwitchThreshold", "autoSwitchWeeklyThreshold", "autoSwitchQueue",
+        "autoSwitchIgnoreFableWeekly",
         "popoverShowRemainingTime", "popoverTimeDisplay", "timeFormatPreference",
         "switchHistory_v1", "measuredSessionHistory_v1",
         "claudeDeadLogins_v1", "codexDeadLogins_v1", "grokDeadLogins_v1", "claudeContaminatedLogins_v1",

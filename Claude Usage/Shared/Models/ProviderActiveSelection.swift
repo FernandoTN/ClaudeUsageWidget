@@ -241,6 +241,11 @@ struct AutoSwitchPolicy: Hashable {
     var enabled: Bool
     var sessionThreshold: Double
     var weeklyThreshold: Double
+    /// The owner took the Fable weekly window out of the decision
+    /// (`SharedDataStore.loadAutoSwitchIgnoreFableWeekly`). The ⇄ policy row
+    /// says so: while it is on, a Fable-maxed account IS a legal target, and
+    /// the row would otherwise read as the whole rule.
+    var ignoreFableWeekly: Bool = false
 }
 
 // MARK: - Selection
@@ -294,6 +299,9 @@ struct ProviderActiveSelection: Hashable {
         /// `ProfileManager.profilesNeedingAccountRelogin`.
         var needsRelogin: Set<UUID> = []
         var autoSwitchEnabled: Bool = true
+        /// `SharedDataStore.loadAutoSwitchIgnoreFableWeekly` — reported on the
+        /// policy row, never re-derived here.
+        var autoSwitchIgnoreFableWeekly: Bool = false
     }
 
     /// Builds one selection per provider that has at least one profile.
@@ -338,7 +346,8 @@ struct ProviderActiveSelection: Hashable {
         let policy = AutoSwitchPolicy(
             enabled: inputs.autoSwitchEnabled,
             sessionThreshold: thresholds.session,
-            weeklyThreshold: thresholds.weekly
+            weeklyThreshold: thresholds.weekly,
+            ignoreFableWeekly: inputs.autoSwitchIgnoreFableWeekly
         )
 
         var selections: [ProviderActiveSelection] = []

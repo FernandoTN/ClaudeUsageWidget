@@ -75,7 +75,8 @@ final class AccountsInspectorStore: ObservableObject {
             queue: SharedDataStore.shared.loadAutoSwitchQueue(),
             duplicateGroups: FleetCounts.duplicateGroups(in: profiles, published: manager.duplicateClaudeAccountGroups),
             needsRelogin: manager.profilesNeedingAccountRelogin,
-            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled()))
+            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled(),
+            autoSwitchIgnoreFableWeekly: SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()))
     }
 
     func selection(for provider: Profile.ProviderKind) -> ProviderActiveSelection? {

@@ -18,6 +18,7 @@ final class SharedDataStoreTests: XCTestCase {
         Self.testDefaults.removeObject(forKey: "hasCompletedSetup")
         Self.testDefaults.removeObject(forKey: "autoSwitchThreshold")
         Self.testDefaults.removeObject(forKey: "autoSwitchWeeklyThreshold")
+        Self.testDefaults.removeObject(forKey: "autoSwitchIgnoreFableWeekly")
         Self.testDefaults.removeObject(forKey: "autoSwitchProfileEnabled")
         Self.testDefaults.removeObject(forKey: "switchHistory_v1")
         Self.testDefaults.removeObject(forKey: "measuredSessionHistory_v1")
@@ -47,6 +48,38 @@ final class SharedDataStoreTests: XCTestCase {
         XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 90)
         sharedDataStore.saveAutoSwitchThreshold(100)
         XCTAssertEqual(sharedDataStore.loadAutoSwitchThreshold(), 100)
+    }
+
+    /// Absent means OFF: with nothing written the Fable weekly window keeps
+    /// counting in the auto-switch decision, exactly as it always has.
+    func testAutoSwitchIgnoreFableWeeklyDefaultsOffAndRoundTrips() {
+        Self.testDefaults.removeObject(forKey: "autoSwitchIgnoreFableWeekly")
+        // A store that has never seen a value: absence is OFF, so an install
+        // that never touched the toggle keeps counting the Fable window.
+        XCTAssertFalse(SharedDataStore().loadAutoSwitchIgnoreFableWeekly())
+
+        sharedDataStore.saveAutoSwitchIgnoreFableWeekly(true)
+        XCTAssertTrue(sharedDataStore.loadAutoSwitchIgnoreFableWeekly())
+        sharedDataStore.saveAutoSwitchIgnoreFableWeekly(false)
+        XCTAssertFalse(sharedDataStore.loadAutoSwitchIgnoreFableWeekly())
+    }
+
+    /// Same shape as the auto-switch enable toggle (audit H8): a cfprefsd
+    /// episode that makes the key unreadable must not silently reinstate the
+    /// policy the owner turned off.
+    func testAutoSwitchIgnoreFableWeeklyServesLastKnownGoodOnNilRead() {
+        let store = SharedDataStore()
+        store.saveAutoSwitchIgnoreFableWeekly(true)
+        XCTAssertTrue(store.loadAutoSwitchIgnoreFableWeekly())
+
+        Self.testDefaults.removeObject(forKey: "autoSwitchIgnoreFableWeekly")
+        XCTAssertTrue(store.loadAutoSwitchIgnoreFableWeekly())
+
+        // A real "off" still wins — the shadow tracks writes.
+        store.saveAutoSwitchIgnoreFableWeekly(false)
+        XCTAssertFalse(store.loadAutoSwitchIgnoreFableWeekly())
+        Self.testDefaults.removeObject(forKey: "autoSwitchIgnoreFableWeekly")
+        XCTAssertFalse(store.loadAutoSwitchIgnoreFableWeekly())
     }
 
     func testAutoSwitchQueueRoundTripAndDefault() {
