@@ -178,19 +178,48 @@ struct ReadinessThresholds: Hashable {
     /// shades of green (session available) and orange (session hit).
     var comfortableRemaining: Double = 50
     var staleAfter: TimeInterval = 180
+    /// The owner took the Fable weekly window out of the auto-switch decision
+    /// (`SharedDataStore.loadAutoSwitchIgnoreFableWeekly`). Readiness travels
+    /// with it, because "ready" on the bar means exactly "the auto-switch
+    /// would accept this account": with it on, a spent Fable window alone no
+    /// longer reads as a limit hit — the dot stays green, the row stays in
+    /// `next up`, and the ⇄ submenu row is clickable. What it does NOT do is
+    /// hide the spent window: the remaining-Fable shade below still turns the
+    /// dot LIGHT green, and the Fable gauge is drawn as measured. Session and
+    /// all-models weekly are judged exactly as before.
+    var ignoreFableWeekly: Bool = false
 
     nonisolated init(
         session: Double,
         weekly: Double,
         weeklyResetSoon: TimeInterval = 24 * 3600,
         comfortableRemaining: Double = 50,
-        staleAfter: TimeInterval = 180
+        staleAfter: TimeInterval = 180,
+        ignoreFableWeekly: Bool = false
     ) {
         self.session = session
         self.weekly = weekly
         self.weeklyResetSoon = weeklyResetSoon
         self.comfortableRemaining = comfortableRemaining
         self.staleAfter = staleAfter
+        self.ignoreFableWeekly = ignoreFableWeekly
+    }
+}
+
+/// The ONE place a display surface reads the owner's switch policy from.
+/// The thresholds and `ignoreFableWeekly` have to arrive together: a surface
+/// that took the thresholds but not the flag would judge readiness by half
+/// the rule, which is exactly the 2026-09-21 split — the ⇄ menu named a
+/// Fable-maxed account `next →` while that same account's row, its dot and
+/// its dashboard band all read "Fable weekly maxed".
+@MainActor
+extension ReadinessThresholds {
+    static func fromSettings() -> ReadinessThresholds {
+        ReadinessThresholds(
+            session: SharedDataStore.shared.loadAutoSwitchThreshold(),
+            weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold(),
+            ignoreFableWeekly: SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()
+        )
     }
 }
 
@@ -211,12 +240,16 @@ extension AccountReadiness {
         let affirmedStamp = stampLive && usage.rateLimitedInferred != true
 
         // A weekly or Fable limit hit blocks the account regardless of the
-        // session window; the shade says how far the reset is.
+        // session window; the shade says how far the reset is. The Fable arm
+        // is skipped while the owner has taken that window out of the switch
+        // decision (`ignoreFableWeekly`) — the bar must not paint as limit-hit
+        // an account the auto-switch will take on the next sweep.
         var hitResets: [Date] = []
         if usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.weekly {
             hitResets.append(usage.weeklyResetTime)
         }
-        if let fable = usage.fableWeeklyPercentage,
+        if !thresholds.ignoreFableWeekly,
+           let fable = usage.fableWeeklyPercentage,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true,
            fable >= thresholds.weekly {
             hitResets.append(usage.fableWeeklyResetTime ?? .distantFuture)
@@ -225,7 +258,10 @@ extension AccountReadiness {
             return soonest.timeIntervalSince(now) <= thresholds.weeklyResetSoon ? .weeklyHitSoon : .weeklyHit
         }
 
-        // How much of the weekly windows is left decides the shade.
+        // How much of the weekly windows is left decides the shade. Fable is
+        // read here even while it is ignored above, deliberately: a spent
+        // Fable window is true and worth showing, and the LIGHT shade of
+        // green/orange reports it without blocking the account.
         let weeklyLeft = usage.weeklyResetTime >= now ? 100 - usage.weeklyPercentage : 100
         let fableLeft = usage.fableWeeklyPercentage.map {
             (usage.fableWeeklyResetTime.map { $0 >= now } ?? true) ? 100 - $0 : 100

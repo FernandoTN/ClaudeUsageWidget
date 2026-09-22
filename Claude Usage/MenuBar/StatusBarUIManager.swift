@@ -1354,6 +1354,7 @@ final class StatusBarUIManager {
         // Precedence: maxed-red beats active-cyan — "unusable this week" is the
         // more urgent fact about an account.
         let weeklyMaxThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
+        let weeklyMaxIgnoresFable = SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()
 
         let activeIds = ProfileManager.shared.activeAccountIds(among: profiles)
 
@@ -1386,7 +1387,9 @@ final class StatusBarUIManager {
 
             let renderAppearance = groupAppearance
             let isActiveAccount = activeIds.contains(profile.id)
-            let isWeeklyMaxed = MenuBarManager.isWeeklyMaxed(profile.claudeUsage, weeklyThreshold: weeklyMaxThreshold)
+            let isWeeklyMaxed = MenuBarManager.isWeeklyMaxed(
+                profile.claudeUsage, weeklyThreshold: weeklyMaxThreshold,
+                ignoreFableWeekly: weeklyMaxIgnoresFable)
             let isSuspected = profile.claudeUsage?.isSuspectedRateLimited ?? false
             let menuBarIsDark = renderAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
@@ -2420,10 +2423,7 @@ final class StatusBarUIManager {
         context: FleetSummaryContext?
     ) {
         let now = context?.now ?? Date()
-        let thresholds = context?.thresholds ?? ReadinessThresholds(
-            session: SharedDataStore.shared.loadAutoSwitchThreshold(),
-            weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
-        )
+        let thresholds = context?.thresholds ?? .fromSettings()
         let activeIds = ProfileManager.shared.activeAccountIds(among: profiles)
         let byId = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
 

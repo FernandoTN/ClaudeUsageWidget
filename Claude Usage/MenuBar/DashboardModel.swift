@@ -554,12 +554,16 @@ struct DashboardSnapshot: Hashable {
 
     /// The countdown a roster row prints: the all-models weekly boundary,
     /// or the Fable weekly's when Fable alone is the exhausted window (the
-    /// same two windows the dot colour judges). A sentinel is unknown; a
+    /// same two windows the dot colour judges) — and never the Fable one
+    /// while `ignoreFableWeekly` is on, because that row is in `next up` and
+    /// counting down a window the switch no longer waits for would be the
+    /// contradiction the flag exists to remove. A sentinel is unknown; a
     /// boundary already behind `now` is projected a week at a time forward
     /// and marked so, exactly like a healed stamp.
     static func weeklyReset(for usage: ClaudeUsage, thresholds: ReadinessThresholds, now: Date) -> ResetCountdown {
         let weeklyHit = usage.weeklyResetTime >= now && usage.weeklyPercentage >= thresholds.weekly
-        if !weeklyHit, let fable = usage.fableWeeklyPercentage, fable >= thresholds.weekly,
+        if !weeklyHit, !thresholds.ignoreFableWeekly,
+           let fable = usage.fableWeeklyPercentage, fable >= thresholds.weekly,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
             return ResetCountdown(window: .fable, resetAt: usage.fableWeeklyResetTime,
                                   projected: usage.fableWeeklyResetProjected == true)
@@ -578,7 +582,11 @@ struct DashboardSnapshot: Hashable {
     /// When the auto-switch could take an exhausted account again: the
     /// LATEST reset among its hit windows (every window must have headroom;
     /// a server-affirmed throttle stamp counts as one). nil when the account
-    /// is not at a limit, or a hit window has no known boundary.
+    /// is not at a limit, or a hit window has no known boundary. A window the
+    /// switch decision ignores is not a window capacity waits for, so the
+    /// Fable arm is skipped while `ignoreFableWeekly` is on — otherwise a
+    /// session-capped account would be told to wait days for its Fable reset
+    /// when the switch will take it again in hours.
     static func capacityReturnsAt(_ usage: ClaudeUsage?, readiness: AccountReadiness,
                                   thresholds: ReadinessThresholds, now: Date) -> Date? {
         guard let usage, readiness.isAtLimit else { return nil }
@@ -588,7 +596,8 @@ struct DashboardSnapshot: Hashable {
             resets.append(usage.sessionResetTime)
         }
         if usage.weeklyResetTime >= now, usage.weeklyPercentage >= thresholds.weekly { resets.append(usage.weeklyResetTime) }
-        if let fable = usage.fableWeeklyPercentage, fable >= thresholds.weekly,
+        if !thresholds.ignoreFableWeekly,
+           let fable = usage.fableWeeklyPercentage, fable >= thresholds.weekly,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true {
             guard let reset = usage.fableWeeklyResetTime else { return nil }
             resets.append(reset)

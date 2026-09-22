@@ -688,7 +688,7 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | `debugAPILoggingEnabled` | SharedDataStore | yes | unchanged | Advanced › Diagnostics (first UI) |
 | `shortcutTogglePopover`, `shortcutRefresh`, `shortcutOpenSettings`, `shortcutNextProfile` | SharedDataStore | yes | unchanged; `nextProfile` now means "view next" | Advanced › Shortcuts |
 | `autoSwitchProfileEnabled`, `autoSwitchThreshold`, `autoSwitchWeeklyThreshold` | SharedDataStore | yes | unchanged | Active & Auto-switch |
-| **`autoSwitchIgnoreFableWeekly`** | SharedDataStore | **new** (2026-09-21), journaled + shadowed | Bool; **absent reads as OFF** (the Fable weekly window keeps counting). On, the Fable arm is dropped from BOTH `MenuBarManager.isQuotaExhausted` and `hasFableWeeklyHeadroom` — an account whose only spent window is Fable keeps serving AND stays a legal target. Session and all-models weekly are untouched | Active & Auto-switch |
+| **`autoSwitchIgnoreFableWeekly`** | SharedDataStore | **new** (2026-09-21), journaled + shadowed | Bool; **absent reads as OFF** (the Fable weekly window keeps counting). On, the Fable arm is dropped from BOTH `MenuBarManager.isQuotaExhausted` and `hasFableWeeklyHeadroom` — an account whose only spent window is Fable keeps serving AND stays a legal target — and from readiness with it, via `ReadinessThresholds.ignoreFableWeekly` (see §2.1a). Every display surface reads the pair through `ReadinessThresholds.fromSettings()`; session and all-models weekly are untouched | Active & Auto-switch |
 | `autoSwitchQueue` | SharedDataStore | yes | unchanged (provider filter is view-side) | Active & Auto-switch, selector, dashboard |
 | `popoverShowRemainingTime` (legacy) → `popoverTimeDisplay`, `timeFormatPreference` | SharedDataStore | yes | unchanged (existing one-time migration kept) | Display › Popover |
 | `switchHistory_v1`, `measuredSessionHistory_v1` | SharedDataStore | yes | unchanged; read by stage 4 | Dashboard |
@@ -961,6 +961,28 @@ its system colour, name in 13 pt semibold, gauges in 12 pt monospaced-digit
 regular ("S 78 % · W 16 % · F 16 %"), evidence in 11 pt secondary. Rows stay
 under 380 pt; nothing wraps. Dark/light: system colours only
 (`systemGreen/Orange/Red/Purple/Cyan`, `secondaryLabelColor`).
+
+**Ignoring the Fable weekly window (§2.1a).** `autoSwitchIgnoreFableWeekly`
+lives on `ReadinessThresholds`, so the switch decision and everything that
+paints a verdict about capacity read ONE value. While it is on, a spent Fable
+window alone no longer classifies an account as `weeklyHit`
+(`AccountReadiness.classify`), no longer reddens the tile label
+(`MenuBarManager.isWeeklyMaxed`), no longer files the row under **capacity
+returns** and no longer supplies its countdown or its return time
+(`DashboardSnapshot.weeklyReset` / `capacityReturnsAt` — a window the switch
+ignores is not one capacity waits for). Because such an account is then
+`ready`, it reaches `eligibleCandidates` and its ⇄ **Switch to ▸** row is
+clickable through the ordinary `.switchTo` path — the flag reopens the manual
+route, not only the automatic one, with no special case in the menu model.
+
+Two things it deliberately does NOT do. The remaining-capacity **shade** still
+counts Fable, so a Fable-spent account reads light green rather than bright
+(the window is spent; that is true and worth showing), and the Fable **gauge**
+is drawn as measured everywhere. And it moves only the Fable arm: an account
+out of its all-models weekly, or session-capped, reads as limit-hit and stays
+unclickable exactly as before — the discriminator asserted in
+`FableIgnoreDisplayTests`, since a flag that made everything read ready would
+look like a working feature while hiding real exhaustion.
 
 **Frame 1 — healthy.** Per provider: header; owner row (disabled; ● cyan-marked
 name, gauges, provenance + age "measured 28 s ago" / "via API headers · 3 m ago",

@@ -59,9 +59,7 @@ final class AccountsInspectorStore: ObservableObject {
     static func fallbackSelections(_ profiles: [Profile]) -> [ProviderActiveSelection] {
         let manager = ProfileManager.shared
         let context = FleetSummaryContext(
-            thresholds: ReadinessThresholds(
-                session: SharedDataStore.shared.loadAutoSwitchThreshold(),
-                weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()),
+            thresholds: .fromSettings(),
             isLoginDead: { ProfileCredentialStatusCache.hasDeadLogin($0) },
             isExcluded: { !$0.isAutoSwitchEnabled },
             nextCandidates: [:], preflightVerdicts: [:],
@@ -75,8 +73,7 @@ final class AccountsInspectorStore: ObservableObject {
             queue: SharedDataStore.shared.loadAutoSwitchQueue(),
             duplicateGroups: FleetCounts.duplicateGroups(in: profiles, published: manager.duplicateClaudeAccountGroups),
             needsRelogin: manager.profilesNeedingAccountRelogin,
-            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled(),
-            autoSwitchIgnoreFableWeekly: SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()))
+            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled()))
     }
 
     func selection(for provider: Profile.ProviderKind) -> ProviderActiveSelection? {
