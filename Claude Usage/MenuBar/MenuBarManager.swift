@@ -4293,8 +4293,7 @@ private func observeCredentialChanges() {
                 CodexUsageService.shared.cachedResetCredits(for: profile.id).map { (profile.id, $0) }
             }),
             needsRelogin: profileManager.profilesNeedingAccountRelogin,
-            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled(),
-            autoSwitchIgnoreFableWeekly: SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()
+            autoSwitchEnabled: SharedDataStore.shared.loadAutoSwitchProfileEnabled()
         ))
     }
 
@@ -4435,10 +4434,7 @@ private func observeCredentialChanges() {
             }
         }
         return FleetSummaryContext(
-            thresholds: ReadinessThresholds(
-                session: SharedDataStore.shared.loadAutoSwitchThreshold(),
-                weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
-            ),
+            thresholds: .fromSettings(),
             isLoginDead: { profile in
                 // Same definition the profile switcher menu uses (flag, or
                 // expired with no refresh token) plus the Grok flag.
@@ -4548,16 +4544,23 @@ private func observeCredentialChanges() {
     /// the past means the window rolled over since the data was cached — full
     /// quota again, not maxed. No cached usage -> not maxed. Static +
     /// injectable so the tile-color rule is unit-testable.
+    ///
+    /// `ignoreFableWeekly` is the owner's switch policy
+    /// (`SharedDataStore.loadAutoSwitchIgnoreFableWeekly`): while it is on, a
+    /// spent Fable window alone must not paint the label red, because the
+    /// account is still serving and is still a legal switch target.
     nonisolated static func isWeeklyMaxed(
         _ usage: ClaudeUsage?,
         weeklyThreshold: Double,
+        ignoreFableWeekly: Bool = false,
         now: Date = Date()
     ) -> Bool {
         guard let usage else { return false }
         if usage.weeklyResetTime >= now, usage.weeklyPercentage >= weeklyThreshold {
             return true
         }
-        if let fable = usage.fableWeeklyPercentage,
+        if !ignoreFableWeekly,
+           let fable = usage.fableWeeklyPercentage,
            usage.fableWeeklyResetTime.map({ $0 >= now }) ?? true,
            fable >= weeklyThreshold {
             return true

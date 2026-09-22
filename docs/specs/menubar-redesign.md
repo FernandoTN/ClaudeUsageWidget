@@ -39,8 +39,10 @@ wrong answer is:
    provider-active account's *session* window (5 h) is what stalls sessions;
    its weekly and Fable windows are what the auto-switch fires on at 99 %
    (the Fable arm can be switched off — `autoSwitchIgnoreFableWeekly`,
-   2026-09-21 — for a fleet running on another model; the bar still paints a
-   spent Fable window as spent, because it is).
+   2026-09-21 — for a fleet running on another model, and readiness follows
+   it, so the bar never paints as limit-hit an account the switch will take;
+   the spent window still shows in the remaining-capacity shade and in the
+   Fable bar).
    Cost of being wrong: the fleet dies on the wall (2026-08-13 incident).
 2. **When it stalls, is there somewhere to go, and where?** — the predicted
    next candidate and whether its login is *proven* live (a probe, a refresh,
@@ -92,7 +94,7 @@ pure, tested). First match wins:
 |---|---|---|
 | `dead` | provider login flagged dead, or expired with no refresh token (`ProfileCredentialStatusCache.hasDeadLogin`, hydration-aware, no Keychain) | orange **×** — a human must `/login` |
 | `excluded` | the switch walk's own exclusions: per-profile auto-switch toggle off, or a free-plan CLI login | grey dash |
-| `exhausted` | server-affirmed throttle stamp live, OR measured session ≥ session threshold (live window), OR `isWeeklyMaxed` (all-models / Fable ≥ weekly threshold) | red dot |
+| `exhausted` | server-affirmed throttle stamp live, OR measured session ≥ session threshold (live window), OR `isWeeklyMaxed` (all-models / Fable ≥ weekly threshold — the Fable arm is skipped while `ReadinessThresholds.ignoreFableWeekly` is on, so readiness and the switch decision never disagree) | red dot |
 | `suspected` | inferred throttle stamp live — *after* exhausted, so a measured exhaustion can never disappear behind a suspicion (same precedence the tile tints use) | purple dot |
 | `unknown` | never fetched (`claudeUsage == nil`) | grey hollow ring |
 | `low` | session ≥ 80 % or weekly/Fable ≥ 90 %, below the switch thresholds | orange dot |

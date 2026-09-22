@@ -148,10 +148,7 @@ struct PopoverContentView: View {
 
     private func makeActiveRow(_ profile: Profile) -> some View {
         let owner = profileManager.profiles.first { $0.providerKind == profile.providerKind && activeAccountIds.contains($0.id) }
-        let thresholds = ReadinessThresholds(
-            session: SharedDataStore.shared.loadAutoSwitchThreshold(),
-            weekly: SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
-        )
+        let thresholds = ReadinessThresholds.fromSettings()
         func headline(_ usage: ClaudeUsage?) -> String? {
             usage.flatMap { DashboardFormatting.headline(DashboardSnapshot.gauges(for: $0, thresholds: thresholds)) }
         }
