@@ -1996,6 +1996,10 @@ private func observeCredentialChanges() {
             // then repaint the tiles from the fresh array.
             self.profileManager.publishStagedUsage()
 
+            // The Claude pool as it stands after this sweep's measurements —
+            // the series the capacity forecast fits its burn rate to.
+            self.recordFleetCapacitySample()
+
             // An open popover is showing one account's snapshot — re-read it
             // from this sweep's fresh data.
             self.refreshViewedProfileUsage()
@@ -4433,32 +4437,68 @@ private func observeCredentialChanges() {
                 next[provider] = candidate
             }
         }
+        let now = Date()
         return FleetSummaryContext(
             thresholds: .fromSettings(),
-            isLoginDead: { profile in
-                // Same definition the profile switcher menu uses (flag, or
-                // expired with no refresh token) plus the Grok flag.
-                ProfileCredentialStatusCache.hasDeadLogin(profile)
-                    || (profile.isGrokOnlyProfile && GrokUsageService.shared.isLoginMarkedDead(profile.id))
-            },
-            isExcluded: { profile in
-                // The walk's own eligibility rules (findNextAvailableProfile),
-                // so a green dot means exactly "the auto-switch would take it".
-                if !profile.isAutoSwitchEnabled { return true }
-                if profile.providerKind == .claude, !profile.hasClaudeAI,
-                   let cliJSON = profile.cliCredentialsJSON,
-                   let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),
-                   info.type.lowercased() == "free" {
-                    return true
-                }
-                return false
-            },
+            isLoginDead: { profile in Self.isFleetLoginDead(profile) },
+            isExcluded: { profile in Self.isExcludedFromRotation(profile) },
             nextCandidates: next,
             preflightVerdicts: preflightVerdicts,
             preferencesDegraded: profileManager.preferencesDegraded,
             isSwitching: profileManager.isSwitchingProfile,
-            now: Date()
+            now: now,
+            capacity: makeFleetCapacityForecast(now: now)
         )
+    }
+
+    /// Same definition the profile switcher menu uses (flag, or expired with
+    /// no refresh token) plus the Grok flag.
+    private static func isFleetLoginDead(_ profile: Profile) -> Bool {
+        ProfileCredentialStatusCache.hasDeadLogin(profile)
+            || (profile.isGrokOnlyProfile && GrokUsageService.shared.isLoginMarkedDead(profile.id))
+    }
+
+    /// The walk's own eligibility rules (findNextAvailableProfile), so a green
+    /// dot means exactly "the auto-switch would take it".
+    private static func isExcludedFromRotation(_ profile: Profile) -> Bool {
+        if !profile.isAutoSwitchEnabled { return true }
+        if profile.providerKind == .claude, !profile.hasClaudeAI,
+           let cliJSON = profile.cliCredentialsJSON,
+           let info = ClaudeCodeSyncService.shared.extractSubscriptionInfo(from: cliJSON),
+           info.type.lowercased() == "free" {
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Fleet weekly capacity (docs/specs/fleet-capacity-forecast.md)
+
+    /// The rolling Claude pool series the burn rate is fitted to: loaded once,
+    /// appended at most every 5 minutes at sweep end, 24 hours kept.
+    private lazy var fleetCapacitySeries: [FleetCapacitySample] =
+        SharedDataStore.shared.loadFleetCapacitySeries()
+
+    /// `FleetCapacity.isUsable` with the dots' own dead / excluded rules.
+    private static func isCapacityUsable(_ profile: Profile) -> Bool {
+        FleetCapacity.isUsable(profile, isLoginDead: isFleetLoginDead, isExcluded: isExcludedFromRotation)
+    }
+
+    /// The Claude fleet's pool, ceiling, burn and runway, from the current
+    /// roster and the series; nil while no usable account has been measured.
+    func makeFleetCapacityForecast(now: Date = Date()) -> FleetCapacityForecast? {
+        let usable = FleetCapacity.accounts(from: profileManager.profiles, isUsable: Self.isCapacityUsable)
+        return FleetCapacity.forecast(accounts: usable.accounts, unmeasured: usable.unmeasured,
+                                      series: fleetCapacitySeries, now: now)
+    }
+
+    /// Appends this moment's pool to the series — at most one sample per
+    /// `FleetCapacity.sampleInterval`, so a 30 s sweep writes one in ten.
+    private func recordFleetCapacitySample(now: Date = Date()) {
+        let usable = FleetCapacity.accounts(from: profileManager.profiles, isUsable: Self.isCapacityUsable)
+        guard let sample = FleetCapacity.sample(usable.accounts, now: now),
+              let series = FleetCapacity.appending(sample, to: fleetCapacitySeries) else { return }
+        fleetCapacitySeries = series
+        SharedDataStore.shared.saveFleetCapacitySeries(series)
     }
 
     /// Selects the next queued auto-switch target for this provider WITHOUT

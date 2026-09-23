@@ -341,4 +341,138 @@ final class FrameRenderTests: XCTestCase {
             .joined(separator: "\n")
         try text.write(to: dir.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
     }
+
+    // MARK: Capacity text (docs/specs/menubar-redesign.md §2.8)
+
+    /// RGBA pixels of `image` at 2×, row 0 at the TOP.
+    private func pixels(_ image: NSImage) throws -> NSBitmapImageRep {
+        let size = image.size
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        rep.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    /// The Claude pool·runway text lives in what the candidate row leaves
+    /// free and NEVER widens the block — the September `+3` (PR #174) is the
+    /// failure this guards against. For each roster: the block is exactly
+    /// `FleetBlockGeometry.fleetWidth` with and without the text; the fit is
+    /// the one the measured fonts dictate (full → pool alone → nothing); and
+    /// every pixel the text adds lies in the bottom row's right-hand corner.
+    func testCapacityTextTakesNoWidthAndDegrades() throws {
+        if let dir = ProcessInfo.processInfo.environment["CUW_RENDER_FRAMES"], !dir.isEmpty {
+            outputDir = URL(fileURLWithPath: dir, isDirectory: true)
+            try FileManager.default.createDirectory(at: outputDir!, withIntermediateDirectories: true)
+        }
+        let renderer = MenuBarIconRenderer()
+        func candidate(_ label: String) -> NextCandidate {
+            NextCandidate(id: UUID(), label: label, queued: false, queueHeadBlocked: false, readiness: .ready, verdict: .verified)
+        }
+        let soon = CapacityAffix(pool: "609", runway: "31h", urgency: .soon)
+        let fourDigits = CapacityAffix(pool: "1450", runway: "31h", urgency: .calm)
+        let noRunway = CapacityAffix(pool: "609", runway: nil, urgency: .calm)
+
+        let cases: [(state: String, accounts: Int, next: NextCandidate?, keyed: Double, capacity: CapacityAffix,
+                     fit: FleetBlockGeometry.CapacityFit, note: String)] = [
+            ("capacity-24-armed", 24, candidate("Fjo"), 96, soon, .full,
+             "the owner's 24 accounts, armed `96 →Fjo✓`: `609·31h` beside it (runway within a day, orange)"),
+            ("capacity-24-idle", 24, candidate("Fjo"), 40, soon, .full, "idle (no candidate row): the text alone on the bottom row"),
+            ("capacity-24-four-digit-pool", 24, candidate("Fjo"), 96, fourDigits, .full, "after a renewal cluster: `1450·31h` still fits"),
+            ("capacity-24-widest-row", 24, candidate("WWW"), 100, fourDigits, .poolOnly,
+             "the widest candidate row `100 →WWW ✓` leaves room for the pool alone"),
+            ("capacity-24-no-runway", 24, candidate("Fjo"), 96, noRunway, .poolOnly,
+             "no runway (insufficient history, or burn at/below the ceiling): the pool alone"),
+            ("capacity-12-armed", 12, candidate("Fjo"), 96, soon, .poolOnly, "12 accounts, compressed `→Fjo`: the pool alone"),
+            ("capacity-3", 3, candidate("Fjo"), 96, soon, .none, "3 accounts: no room, nothing drawn"),
+        ]
+
+        for c in cases {
+            let without = fleet(members: c.accounts, ready: c.accounts / 2, dead: 0, next: c.next, keyed: c.keyed)
+            var with = without
+            with.capacity = c.capacity
+            let width = FleetBlockGeometry.fleetWidth(memberCount: without.members.count, layout: .fleetDots)
+            let height = FleetBlockGeometry.blockHeight(activeHeight: 22, memberCount: without.members.count, layout: .fleetDots)
+
+            // The fit the renderer takes, from the same segments it draws.
+            let row = MenuBarIconRenderer.candidateRowSegments(with, available: width - FleetBlockGeometry.markWidth)
+            let rowEnd = FleetBlockGeometry.markWidth + MenuBarIconRenderer.rowWidth(row, font: FleetBlockFonts.affix)
+            let layout = MenuBarIconRenderer.capacityLayout(c.capacity, rowEnd: rowEnd, rightEdge: width)
+            XCTAssertEqual(layout.fit, c.fit, c.state)
+
+            var plain: NSImage?
+            var shown: NSImage?
+            NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+                plain = renderer.createFleetBlock(summary: without, layout: .fleetDots, height: height)
+                shown = renderer.createFleetBlock(summary: with, layout: .fleetDots, height: height)
+            }
+            let a = try XCTUnwrap(plain)
+            let b = try XCTUnwrap(shown)
+            XCTAssertEqual(a.size, b.size, "\(c.state): the text never changes the block's size")
+            XCTAssertEqual(b.size.width, width, "\(c.state): width is the dot matrix's, nothing more")
+
+            // Every pixel the text changed is on the bottom row, right of the
+            // row's end — never on a dot, the mark, or the candidate row.
+            let textWidth = MenuBarIconRenderer.rowWidth(layout.segments, font: FleetBlockFonts.capacity)
+            let pa = try pixels(a)
+            let pb = try pixels(b)
+            var changed = 0
+            var stray = 0
+            for py in 0..<pa.pixelsHigh {
+                for px in 0..<pa.pixelsWide {
+                    guard pa.colorAt(x: px, y: py) != pb.colorAt(x: px, y: py) else { continue }
+                    changed += 1
+                    let x = CGFloat(px) / 2
+                    let yFromBottom = height - CGFloat(py) / 2
+                    if x < width - textWidth - 1 || yFromBottom > 9 { stray += 1 }
+                }
+            }
+            if c.fit == .none {
+                XCTAssertEqual(changed, 0, "\(c.state): nothing fits, nothing drawn")
+            } else {
+                XCTAssertGreaterThan(changed, 0, "\(c.state): the text is drawn")
+                XCTAssertGreaterThanOrEqual(width - rowEnd - FleetBlockGeometry.capacityGap, textWidth, c.state)
+            }
+            XCTAssertEqual(stray, 0, "\(c.state): drawn only in the bottom row's right-hand corner")
+            write(b, surface: "fleet", state: c.state, note: c.note + " (block \(width) pt wide, as without the text)")
+        }
+
+        // The dashboard card, in the three runway states.
+        let accounts = (0..<24).map { i in
+            FleetCapacityAccount(id: UUID(), name: ["Harbor", "Iris", "Kite", "Last"][i % 4] + "\(i)",
+                                 weeklyPercentage: i < 6 ? 60 : 99, weeklyResetTime: now.addingTimeInterval(Double(3 + i * 6) * 3600))
+        }
+        func samples(burn: Double, count: Int) -> [FleetCapacitySample] {
+            (0..<count).map { i in
+                FleetCapacitySample(at: now.addingTimeInterval(-Double(count - 1 - i) * 600), pool: 900 - burn * Double(i) / 6,
+                                    accounts: 24, scheduleKey: 1)
+            }
+        }
+        let cards: [(String, [FleetCapacitySample], String)] = [
+            ("draining", samples(burn: 37, count: 12), "burn 37 pt/h, 2.6× the ceiling: the pool's zero, and the renewal it misses"),
+            ("sustainable", samples(burn: 9, count: 12), "burn under the ceiling: no runway"),
+            ("measuring", samples(burn: 37, count: 3), "three samples: measuring, the pool alone"),
+        ]
+        let cardWidth = DashboardSurface.dashboardSize.width - 24
+        for (state, series, note) in cards {
+            let forecast = try XCTUnwrap(FleetCapacity.forecast(accounts: accounts, series: series, now: now))
+            let card = FleetCapacityCard(forecast: forecast).frame(width: cardWidth)
+            let host = NSHostingView(rootView: card)
+            host.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(host.fittingSize.width, cardWidth + 0.5, "\(state): the card fits the dashboard")
+            // On the window colour: the dashboard's material is what sits
+            // behind the card in the app, and a transparent PNG hides dark text.
+            write(card.padding(12).background(Color(nsColor: .windowBackgroundColor)), surface: "capacity-card", state: state,
+                  size: NSSize(width: cardWidth + 24, height: host.fittingSize.height + 24), note: note)
+        }
+
+        guard let dir = outputDir else { return }
+        let text = (["# Frames — capacity text — \(now)", ""] + index).joined(separator: "\n")
+        try text.write(to: dir.appendingPathComponent("index-capacity.md"), atomically: true, encoding: .utf8)
+    }
 }

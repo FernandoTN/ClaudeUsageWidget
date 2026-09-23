@@ -18,4 +18,8 @@ enum FleetBlockFonts {
     static let affix = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .semibold)
     /// The counts row: `●12 ◐3 ▲11 ×2`.
     static let counts = NSFont.monospacedDigitSystemFont(ofSize: 6, weight: .semibold)
+    /// The Claude capacity text right of the candidate row: `609·31h`. One
+    /// step smaller than the row it sits beside (it is the secondary fact);
+    /// `FrameRenderTests` measures the owner's 24-account block with it.
+    static let capacity = NSFont.monospacedDigitSystemFont(ofSize: 6, weight: .semibold)
 }

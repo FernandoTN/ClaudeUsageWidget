@@ -439,6 +439,11 @@ struct ProviderSummary: Hashable {
     var armed: Bool
     var next: NextCandidate?
     var alert: FleetAlert?
+    /// Claude only: the fleet's weekly pool and runway, drawn right of the
+    /// candidate row as `609·31h` when there is room
+    /// (docs/specs/fleet-capacity-forecast.md). Nil for Codex / Grok and
+    /// while no usable account has been measured.
+    var capacity: CapacityAffix? = nil
 
     /// The number under the provider mark: every account the block stands
     /// for — the dots plus the active tile. Accounts hidden from the menu bar
@@ -519,6 +524,7 @@ struct ProviderSummary: Hashable {
         isSwitching: Bool = false,
         preferencesDegraded: Bool,
         activeLastMeasured: Date?,
+        capacity: CapacityAffix? = nil,
         now: Date
     ) -> ProviderSummary {
         let others = orderedMembers
@@ -553,7 +559,8 @@ struct ProviderSummary: Hashable {
             members: others,
             armed: armed,
             next: next,
-            alert: alerts.min()
+            alert: alerts.min(),
+            capacity: capacity
         )
     }
 }
@@ -616,6 +623,33 @@ enum FleetBlockGeometry {
     /// Columns reserved at the LEFT of the matrix for the `+N` mark when the
     /// roster is larger than the grid (`+17` at 6 pt is 11 pt wide).
     nonisolated static let overflowColumns = 2
+    /// Least clearance between the candidate row's last glyph and the
+    /// capacity text right-aligned after it.
+    nonisolated static let capacityGap: CGFloat = 3
+
+    /// Which form of the capacity text the candidate row's leftover room
+    /// takes. The capacity text NEVER claims width of its own: the block is
+    /// exactly as wide as its dots or counts (nothing here moves a dot, a
+    /// pitch or a column cap), and the text lives in whatever the candidate
+    /// row leaves free on its right.
+    enum CapacityFit: Hashable {
+        /// `609·31h`.
+        case full
+        /// `609` — no runway to state, or no room for it.
+        case poolOnly
+        /// Not even the pool fits.
+        case none
+    }
+
+    /// - Parameters:
+    ///   - fullWidth: the measured `pool·runway`, nil when there is no runway.
+    ///   - poolWidth: the measured pool alone.
+    ///   - free: room between the candidate row's end and the block's right
+    ///     edge, `capacityGap` already taken off.
+    nonisolated static func capacityFit(fullWidth: CGFloat?, poolWidth: CGFloat, free: CGFloat) -> CapacityFit {
+        if let fullWidth, fullWidth <= free { return .full }
+        return poolWidth <= free ? .poolOnly : .none
+    }
 
     /// Columns × rows for `count` dots: one row up to three accounts, else
     /// two rows balanced (4 → 2 × 2, 18 → 9 × 2, 21 → 11 × 2). There is no
@@ -718,4 +752,8 @@ struct FleetSummaryContext {
     var preferencesDegraded: Bool
     var isSwitching: Bool
     var now: Date
+    /// The Claude fleet's weekly capacity forecast
+    /// (`MenuBarManager.makeFleetCapacityForecast`); nil with no usable
+    /// measured account.
+    var capacity: FleetCapacityForecast? = nil
 }

@@ -258,6 +258,10 @@ struct ProviderSection: Hashable {
     /// that did not restart it (`CodexDaemonService.holdText`) — shown in red
     /// with a Restart button until the daemon is seen gone.
     var terminalsHold: String? = nil
+    /// Claude only: the fleet's weekly pool, burn against the sustainable
+    /// ceiling, runway and renewal profile — the full picture behind the
+    /// bar's `609·31h` (docs/specs/fleet-capacity-forecast.md).
+    var capacity: FleetCapacityForecast? = nil
 }
 
 struct RecentSwitch: Hashable {
@@ -436,6 +440,7 @@ struct DashboardSnapshot: Hashable {
                 isSwitching: inputs.context.isSwitching,
                 preferencesDegraded: inputs.context.preferencesDegraded,
                 activeLastMeasured: activeProfile?.claudeUsage?.lastUpdated,
+                capacity: provider == .claude ? inputs.context.capacity.map { CapacityAffix($0) } : nil,
                 now: now
             )
             if summary.alert == .noCandidate { banners.append(.noCandidate(provider)) }
@@ -500,7 +505,8 @@ struct DashboardSnapshot: Hashable {
                 summary: summary,
                 selection: selection,
                 terminalsLine: provider == .codex ? inputs.codexTerminals : nil,
-                terminalsHold: provider == .codex ? inputs.codexTerminalsHold : nil
+                terminalsHold: provider == .codex ? inputs.codexTerminalsHold : nil,
+                capacity: provider == .claude ? inputs.context.capacity : nil
             ))
         }
 

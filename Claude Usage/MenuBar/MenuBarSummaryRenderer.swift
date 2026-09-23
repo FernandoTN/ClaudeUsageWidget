@@ -15,6 +15,8 @@
 //    50 % alpha                                  reading is stale
 //    "+N"                                        more accounts than dot slots
 //    row 3        91→Fjo✓ | Q→Fjo? | Q→Fjo× (red Q: queue head blocked) | →— | ⇄
+//    row 3, right 609·31h  Claude weekly pool · runway to zero (pool alone
+//                          when there is no runway or no room)
 //
 
 import Cocoa
@@ -104,7 +106,10 @@ extension MenuBarIconRenderer {
             drawFleetDots(summary, originX: matrixX, rightEdge: width, top: height)
         }
 
-        drawCandidateRow(summary, at: NSPoint(x: matrixX, y: 0), available: width - matrixX)
+        let rowEnd = drawCandidateRow(summary, at: NSPoint(x: matrixX, y: 0), available: width - matrixX)
+        if let capacity = summary.capacity {
+            drawCapacity(capacity, after: rowEnd, rightEdge: width)
+        }
         return image
     }
 
@@ -196,27 +201,33 @@ extension MenuBarIconRenderer {
         }
     }
 
+    /// One drawn run of the bottom row: its text, its tint, and the space
+    /// after it.
+    struct RowSegment {
+        var text: String
+        var color: NSColor
+        var gapAfter: CGFloat = 0
+    }
+
     /// Row 3: the active account's digits (tinted by ITS evidence), the
     /// arrow (tinted by the QUEUE state: white ranked, accent queued, red
     /// when the queue head is blocked and this is the fallback), the
     /// candidate's name (tinted by its quota evidence) and the verdict glyph
     /// (tinted by the login evidence), each segment separated by
-    /// `FleetBlockGeometry.candidateGap` (round 1, B2/B4). Nothing while idle.
-    private func drawCandidateRow(_ summary: ProviderSummary, at origin: NSPoint, available: CGFloat) {
-        guard let affix = summary.affix else { return }
+    /// `FleetBlockGeometry.candidateGap` (round 1, B2/B4). Empty while idle.
+    /// Pure, so the capacity text's fit is testable against the same runs
+    /// the renderer draws.
+    static func candidateRowSegments(_ summary: ProviderSummary, available: CGFloat) -> [RowSegment] {
+        guard let affix = summary.affix else { return [] }
         // Nothing is reserved for this row (owner, 2026-09-04): the full row
         // when the block is wide enough, the arrow and tag when only that
         // fits, nothing when neither does — the ⇄ menu carries it. The
         // width of the block never depends on this decision.
         let full = available >= FleetBlockGeometry.affixWidth
         let compressed = !full && available >= FleetBlockGeometry.affixCompressedWidth
-        guard full || compressed || summary.next == nil || summary.isSwitching else { return }
-        var x = origin.x
-        func draw(_ string: String, _ color: NSColor, gapAfter: CGFloat = FleetBlockGeometry.candidateGap) {
-            let attributes: [NSAttributedString.Key: Any] = [.font: Self.affixFont, .foregroundColor: color]
-            (string as NSString).draw(at: NSPoint(x: x, y: origin.y), withAttributes: attributes)
-            x += (string as NSString).size(withAttributes: attributes).width + gapAfter
-        }
+        guard full || compressed || summary.next == nil || summary.isSwitching else { return [] }
+        let gap = FleetBlockGeometry.candidateGap
+        var segments: [RowSegment] = []
         if let digits = summary.activeDigits, !summary.isSwitching, full {
             let color: NSColor
             switch summary.activeReadiness {
@@ -225,29 +236,100 @@ extension MenuBarIconRenderer {
             case .sessionHit?, .sessionHitLight?: color = DesignRole.caution.nsColor
             default: color = Self.brightText
             }
-            draw("\(digits)", color)
+            segments.append(RowSegment(text: "\(digits)", color: color, gapAfter: gap))
         }
         if let next = summary.next, !summary.isSwitching {
             let arrowColor: NSColor = next.queueHeadBlocked
                 ? DesignRole.blocking.nsColor
                 : (next.queued ? DesignRole.action.nsColor : Self.brightText)
-            draw(DesignGlyph.next, arrowColor, gapAfter: 0)
+            segments.append(RowSegment(text: DesignGlyph.next, color: arrowColor))
             let labelColor: NSColor
             switch next.readiness {
             case .ready, .readyLight, .sessionHit, .sessionHitLight, .weeklyHit, .weeklyHitSoon:
                 labelColor = next.readiness.role.nsColor
             default: labelColor = Self.dimText
             }
-            draw(String(affix.dropFirst(DesignGlyph.next.count)), labelColor)
+            segments.append(RowSegment(text: String(affix.dropFirst(DesignGlyph.next.count)), color: labelColor, gapAfter: gap))
             if let glyph = summary.verdictGlyph, full {
-                draw(glyph, Self.verdictColor(next.verdict), gapAfter: 0)
+                segments.append(RowSegment(text: glyph, color: Self.verdictColor(next.verdict)))
             }
         } else {
             // "→—" (nobody) and "⇄" (switching) are short; draw them whenever
             // they fit the block at all.
-            let attributes: [NSAttributedString.Key: Any] = [.font: Self.affixFont]
-            guard (affix as NSString).size(withAttributes: attributes).width <= available else { return }
-            draw(affix, summary.isSwitching ? Self.dimText : DesignRole.blocking.nsColor, gapAfter: 0)
+            guard (affix as NSString).size(withAttributes: [.font: Self.affixFont]).width <= available else { return segments }
+            segments.append(RowSegment(text: affix, color: summary.isSwitching ? Self.dimText : DesignRole.blocking.nsColor))
+        }
+        return segments
+    }
+
+    /// Width of `segments` set in `font`, the gaps included.
+    static func rowWidth(_ segments: [RowSegment], font: NSFont) -> CGFloat {
+        segments.reduce(0) { $0 + ($1.text as NSString).size(withAttributes: [.font: font]).width + $1.gapAfter }
+    }
+
+    /// Draws the candidate row and returns where it ENDS (its origin when
+    /// nothing was drawn), so the capacity text knows what is still free.
+    @discardableResult
+    private func drawCandidateRow(_ summary: ProviderSummary, at origin: NSPoint, available: CGFloat) -> CGFloat {
+        var x = origin.x
+        for segment in Self.candidateRowSegments(summary, available: available) {
+            let attributes: [NSAttributedString.Key: Any] = [.font: Self.affixFont, .foregroundColor: segment.color]
+            (segment.text as NSString).draw(at: NSPoint(x: x, y: origin.y), withAttributes: attributes)
+            x += (segment.text as NSString).size(withAttributes: attributes).width + segment.gapAfter
+        }
+        return x
+    }
+
+    /// The Claude fleet's weekly pool and runway, `609·31h`, RIGHT-aligned
+    /// on the candidate row's baseline in whatever the row leaves free
+    /// (docs/specs/menubar-redesign.md §2.8). It degrades rather than
+    /// crowds: the pool alone when there is no runway to state or no room
+    /// for one, nothing when not even the pool fits. The block's width is
+    /// never touched — the text takes no room of its own.
+    ///
+    /// Tints: the pool and the separator in the dim label grey; the runway
+    /// grey while it is more than a day out, orange within a day, red within
+    /// six hours; an empty pool red.
+    static func capacityLayout(
+        _ capacity: CapacityAffix,
+        rowEnd: CGFloat,
+        rightEdge: CGFloat
+    ) -> (fit: FleetBlockGeometry.CapacityFit, segments: [RowSegment]) {
+        let font = FleetBlockFonts.capacity
+        func width(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: [.font: font]).width }
+        let fit = FleetBlockGeometry.capacityFit(
+            fullWidth: capacity.runway == nil ? nil : width(capacity.full),
+            poolWidth: width(capacity.pool),
+            free: rightEdge - rowEnd - FleetBlockGeometry.capacityGap
+        )
+        guard fit != .none else { return (fit, []) }
+
+        let runwayColor: NSColor
+        switch capacity.urgency {
+        case .calm: runwayColor = Self.dimText
+        case .soon: runwayColor = DesignRole.caution.nsColor
+        case .imminent: runwayColor = DesignRole.blocking.nsColor
+        }
+        let poolColor = capacity.runway == nil && capacity.urgency == .imminent ? runwayColor : Self.dimText
+        var segments = [RowSegment(text: capacity.pool, color: poolColor)]
+        if fit == .full, let runway = capacity.runway {
+            segments.append(RowSegment(text: CapacityAffix.separator, color: Self.dimText.withAlphaComponent(0.7)))
+            segments.append(RowSegment(text: runway, color: runwayColor))
+        }
+        return (fit, segments)
+    }
+
+    private func drawCapacity(_ capacity: CapacityAffix, after rowEnd: CGFloat, rightEdge: CGFloat) {
+        let font = FleetBlockFonts.capacity
+        let segments = Self.capacityLayout(capacity, rowEnd: rowEnd, rightEdge: rightEdge).segments
+        guard !segments.isEmpty else { return }
+        // Same baseline as the 7 pt candidate row drawn at y = 0.
+        let y = -Self.affixFont.descender + font.descender
+        var x = rightEdge - Self.rowWidth(segments, font: font)
+        for segment in segments {
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: segment.color]
+            (segment.text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attributes)
+            x += (segment.text as NSString).size(withAttributes: attributes).width
         }
     }
 

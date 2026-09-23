@@ -266,6 +266,44 @@ there is no Codex item left to clip first — so the degrade ladder must
 shrink the fleet image (drop the candidate rows, then counts, then
 active-only) rather than count on the host clipping a provider.
 
+### 2.8 The capacity text — `609·31h` (Claude only)
+
+The Claude block's bottom row carries, right of the candidate row, the
+fleet's weekly **pool** and its **runway**: `609·31h` = 609 points left
+across the usable accounts, zero in 31 hours at the measured burn. The model
+and the maths are in `docs/specs/fleet-capacity-forecast.md`.
+
+**It takes no width of its own.** The block stays exactly
+`FleetBlockGeometry.fleetWidth` wide: no dot pitch, diameter, row pitch or
+column cap moved (the September `+3` overflow, PR #174, is the failure this
+avoids). The text is drawn RIGHT-aligned in whatever the candidate row leaves
+free (`MenuBarIconRenderer.capacityLayout`), `capacityGap` = 3 pt clear of
+it, and degrades instead of crowding:
+
+| Room left of the row | Drawn |
+|---|---|
+| `pool·runway` fits | `609·31h` |
+| no runway to state (under an hour of history, burn at or below the ceiling, not draining), or only the pool fits | `609` |
+| not even the pool fits | nothing — the tooltip and the dashboard carry it |
+
+Measured with the shipped fonts (`FrameRenderTests.testCapacityTextTakesNoWidthAndDegrades`):
+
+| Roster (fleetDots) | Block width, before → after | Row | Capacity |
+|---|---|---|---|
+| 24 accounts, armed `96 →Fjo✓` | 92 → 92 pt | 36.8 pt | `609·31h` (27.0 pt) |
+| 24 accounts, idle | 92 → 92 pt | — | `609·31h` |
+| 24 accounts, `1450·31h` | 92 → 92 pt | 36.8 pt | `1450·31h` (31.2 pt) |
+| 24 accounts, widest row `100 →WWW ✓` | 92 → 92 pt | 52.3 pt | `1450` |
+| 12 accounts, compressed `→Fjo` | 50 → 50 pt | 19.2 pt | `609` |
+| 3 accounts | 22 → 22 pt | — | nothing |
+
+Set in 6 pt semibold monospaced digits (`FleetBlockFonts.capacity`), one
+step under the 7 pt row it sits beside, on the row's baseline. Tints: the
+pool and `·` in the dim label grey; the runway grey beyond a day, orange
+within a day, red within six hours; an empty pool red. The text is part of
+`SummaryRenderKey` as drawn (`CapacityAffix`), so a burn refit that leaves
+the text unchanged does not repaint.
+
 ## 3. The dashboard: what is one click away (Stage B)
 
 ### D1 — Fleet board popover (380 pt wide, scrollable, detachable) — **recommended**
