@@ -93,6 +93,12 @@ enum DesignFrameHarness {
             emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .readyLight).padding(16),
                  width: 560, name: "codex-resets-headroom", to: dir, index: &index)
         }
+        emit(ClaudeLimitResetsCard(usage: Fixture.withLimitResets(Fixture.usage(session: 100, weekly: 60)), now: now).padding(16), width: 560, name: "claude-limit-resets-known", to: dir, index: &index)
+        var surfaceUsage = ClaudeUsage.empty
+        surfaceUsage.claudeLimitResets = ClaudeLimitResets(bank: ClaudeLimitResetBank(
+            eligible: false, ineligibleReason: "surface", atLimit: false, exhausted: [], grants: [], hasUnreadableGrant: false,
+            nextGrantId: nil, weeklyResetsAt: nil, cooldownUntil: nil), weeklySessionReset: nil)
+        emit(ClaudeLimitResetsCard(usage: surfaceUsage, now: now).padding(16), width: 560, name: "claude-limit-resets-unknown", to: dir, index: &index)
         emit(DashboardInsightsView(insights: .fixture(now: now), now: now).padding(14), width: 400, name: "dashboard-insights", to: dir, index: &index)
         emit(DashboardInsightsView(insights: FleetInsights(resetTimeline: [], blindness: [], drift: [], switchLog: [], burn: [], incidents: [], capacity: [:], whyNotOthers: []), now: now).padding(14),
              width: 400, name: "dashboard-insights-empty", to: dir, index: &index)
@@ -149,12 +155,27 @@ enum DesignFrameHarness {
             u.codexResetCreditsApplicable = usableNow
             return u
         }
+        /// `u` holding two Claude limit-reset grants, decoded from the wire shape.
+        static func withLimitResets(_ u: ClaudeUsage) -> ClaudeUsage {
+            let iso = ISO8601DateFormatter()
+            let payload: [String: Any] = [
+                "cedar_ember": ["eligible": true, "grants": [
+                    ["id": "welcome", "label": "Welcome reset", "resets_left": 1, "resets_total": 2,
+                     "ends_at": iso.string(from: now.addingTimeInterval(9 * 86400)), "clears": ["five_hour", "seven_day"], "usable_now": false],
+                    ["id": "bonus", "resets_left": 1, "clears": ["five_hour"], "use_requires_limit": false, "usable_now": true],
+                ]],
+                "juniper_tide": ["eligible": true, "available": false, "next_available_at": iso.string(from: now.addingTimeInterval(4 * 86400))],
+            ]
+            var u = u
+            u.applyLimitResets(ClaudeLimitResets.decode(usagePayload: payload), measuredAt: now.addingTimeInterval(-30))
+            return u
+        }
         static func claude(_ name: String, _ u: ClaudeUsage?, email: String, account: String? = nil, autoSwitch: Bool = true) -> Profile {
             Profile(name: name, claudeSessionKey: "sk-ant-sid01-fixture", organizationId: "org", claudeAccountUUID: account,
                     claudeAccountEmail: email, claudeUsage: u, includeInAutoSwitch: autoSwitch)
         }
         static let profiles: [Profile] = [
-            claude("Atlas", usage(session: 78, weekly: 16, fable: 16), email: "owner@example.com", account: "acct-1"),
+            claude("Atlas", withLimitResets(usage(session: 78, weekly: 16, fable: 16)), email: "owner@example.com", account: "acct-1"),
             claude("Cedar", usage(session: 12, weekly: 70, fable: 90, age: 180), email: "cedar@example.com"),
             claude("Fjord", usage(session: 40, weekly: 55), email: "fjord@example.com"),
             claude("Harbor", usage(session: 10, weekly: 99.5), email: "harbor@example.com"),

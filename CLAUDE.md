@@ -644,6 +644,28 @@ guard: sweeps can outlast the timer interval, and overlapping sweeps double API
 load (429s) and race token redemptions. Both services also hold a per-profile
 refresh mutex and back off dead (revoked) refresh tokens until re-sync.
 
+## Claude limit resets (read only)
+
+The `oauth/usage` payload carries two reset programs as top-level keys:
+`cedar_ember` (a bank of grants with `resets_left`, `ends_at`, `clears`) and
+`juniper_tide` (one weekly session reset). A plain read returns both as null.
+So the sweep sends the CLI's own program reads, built ONLY by
+`ClaudeUsageRead.url`: `?cedar_ember=1&skip_spend=1`, or `?at_wall=1&skip_spend=1`
+while the account's last measurement is at a limit (`ClaudeUsageRead.choose`).
+`skip_spend=1` is appended there for every case, and
+`testUsageURLIsBuiltInExactlyOnePlace` fails if any other string literal names
+the endpoint. The request identity (User-Agent, headers) is unchanged, by the
+owner's decision (2026-09-22). `ClaudeLimitResets.decode` never throws, so a
+block it cannot read leaves the count unknown and the usage intact. Today the
+server answers this app `eligible: false`, `ineligible_reason: "surface"` with
+`grants: []` on every account. **An empty grant list is UNKNOWN, never zero**:
+`ClaudeUsage.claudeLimitResetsAvailable` is set only when grants arrive. It is
+shown in the ⇄ selector's Claude owner row (count > 0), in the Claude segment's
+tooltip and in the Accounts inspector's Resets fact. It never appears in the bar
+itself. There is no claim path: `POST …/reset_rate_limits` spends a grant
+irreversibly, and the app never calls it. Research:
+`docs/research/2026-09-22-claude-reset-credits.md`.
+
 ## Layout
 
 `README.md` has the directory tree. Key areas:

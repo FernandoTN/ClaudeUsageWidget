@@ -128,6 +128,30 @@ struct ClaudeUsage: Codable, Equatable {
     /// Optional with nil default so previously cached usage JSON still decodes.
     var codexResetCreditsMeasuredAt: Date? = nil
 
+    /// How many Claude "limit resets" the account holds: the sum of
+    /// `resets_left` over the `cedar_ember` grants in the SAME `oauth/usage`
+    /// payload the sweep already fetches (`ClaudeLimitResets`).
+    ///
+    /// **nil means UNKNOWN, never zero** — the Codex rule above, for a stronger
+    /// reason: the server tells this app `eligible: false`, reason `surface`,
+    /// with an EMPTY grant list on every account (measured 2026-09-22), so an
+    /// empty list says nothing about the bank. Set only when grants arrive.
+    /// Optional with nil default so previously cached usage JSON still decodes.
+    var claudeLimitResetsAvailable: Int? = nil
+
+    /// Of those, the resets the server marks `usable_now`. Same rule: nil is
+    /// UNKNOWN. A hint beside the balance, never a gate.
+    var claudeLimitResetsUsableNow: Int? = nil
+
+    /// When `claudeLimitResetsAvailable` was measured. Stamped only alongside a
+    /// non-nil count, so a stamp is never evidence about an unknown value.
+    var claudeLimitResetsMeasuredAt: Date? = nil
+
+    /// Both program blocks as the last read decoded them — grants, use-by
+    /// dates, what each refills, and the server's reason when there is no
+    /// count. nil when the payload carried neither block.
+    var claudeLimitResets: ClaudeLimitResets? = nil
+
     /// Whether the account's weekly window is RUNNING. Codex's weekly window
     /// is rolling: it opens on the first real request after the previous one
     /// ended. Until then `wham/usage` reports a PLACEHOLDER — `used_percent`

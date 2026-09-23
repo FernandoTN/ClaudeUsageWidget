@@ -2640,9 +2640,13 @@ final class StatusBarUIManager {
         // The Claude capacity forecast, one line each for the pool, the burn
         // against the ceiling and the runway — the bar can only fit `609·31h`.
         let capacityLines = capacity.map { FleetCapacityFormatting.tooltipLines($0) } ?? []
+        // Claude limit resets, only for accounts the server reported grants
+        // for — the bar has no room for them, and an unknown is not listed.
+        let resetLines = summary.provider == .claude
+            ? [ClaudeLimitResetsFormatting.tooltipLine(profiles: Array(byId.values))].compactMap { $0 } : []
         // The words behind the glyphs (round 1, B4/G2): the tooltip is where
         // the bar spells out what a 22 pt strip can only encode.
-        return ([parts.joined(separator: " · ")] + capacityLines + [DesignLegend.line]).joined(separator: "\n")
+        return ([parts.joined(separator: " · ")] + resetLines + capacityLines + [DesignLegend.line]).joined(separator: "\n")
     }
 
     /// The active block for a provider with NO active login right now:

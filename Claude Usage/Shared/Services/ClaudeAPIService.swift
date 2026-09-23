@@ -115,9 +115,10 @@ class ClaudeAPIService {
 
     // MARK: - API Requests
 
-    /// Fetches usage data via OAuth access token (CLI credential flow)
-    func fetchUsageData(oauthAccessToken: String) async throws -> ClaudeUsage {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+    /// Fetches usage data via OAuth access token (CLI credential flow). The
+    /// URL comes only from `read` — see `ClaudeUsageRead.url`.
+    func fetchUsageData(oauthAccessToken: String, read: ClaudeUsageRead) async throws -> ClaudeUsage {
+        guard let url = read.url else {
             throw AppError(code: .urlMalformed, message: "Invalid OAuth usage endpoint", isRecoverable: false)
         }
 
@@ -324,7 +325,7 @@ class ClaudeAPIService {
 
     // MARK: - Response Parsing
 
-    private func parseUsageResponse(_ data: Data) throws -> ClaudeUsage {
+    func parseUsageResponse(_ data: Data) throws -> ClaudeUsage {
         // Parse Claude's actual API response structure
 
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -410,7 +411,7 @@ class ClaudeAPIService {
             let opusTokens = Int(Double(weeklyLimit) * (opusPercentage / 100.0))
             let sonnetTokens = Int(Double(weeklyLimit) * (sonnetPercentage / 100.0))
 
-            let usage = ClaudeUsage(
+            var usage = ClaudeUsage(
                 sessionTokensUsed: sessionTokens,
                 sessionLimit: sessionLimit,
                 sessionPercentage: sessionPercentage,
@@ -432,6 +433,14 @@ class ClaudeAPIService {
                 lastUpdated: Date(),
                 userTimezone: .current
             )
+
+            // Limit resets ride along in this same payload. The decode never
+            // throws; a block it cannot read leaves the count unknown and the
+            // usage above untouched.
+            usage.applyLimitResets(ClaudeLimitResets.decode(usagePayload: json), measuredAt: Date())
+            if let count = usage.claudeLimitResetsAvailable {
+                LoggingService.shared.log("ClaudeAPIService: limit resets reported - \(count) left in \(usage.claudeLimitResets?.bank?.grants.count ?? 0) grant(s)")
+            }
 
             return usage
         }
@@ -579,4 +588,54 @@ class ClaudeAPIService {
         return 0.0
     }
 
+}
+
+/// Which read of `api/oauth/usage` the sweep makes. Both are the Claude Code
+/// CLI's own reads, verbatim from its path table
+/// (docs/research/2026-09-22-claude-reset-credits.md §1), and both return the
+/// full usage payload plus the limit-reset blocks a plain read leaves null.
+/// The request presents the app exactly as before — only the query differs.
+nonisolated enum ClaudeUsageRead: CaseIterable {
+    /// `?cedar_ember=1`: the CLI's `/limit-reset` status read, made when NOT
+    /// at a limit. Populates the grant bank (`cedar_ember`); `juniper_tide`
+    /// stays null (verified live 2026-09-22).
+    case status
+    /// `?at_wall=1`: the read the CLI makes on its own when a session hits a
+    /// limit. Also populates `juniper_tide`, the weekly session reset.
+    case atWall
+
+    /// The only construction of the usage endpoint's URL in the app.
+    /// `skip_spend=1` is appended HERE, unconditionally, for every case: the
+    /// CLI never sends a program read without it, and no caller can build one
+    /// without it. (Its observed effect is that the payload's `spend` and
+    /// `extra_usage` blocks come back null; the app reads neither.) The read
+    /// itself is a GET; a reset is spent only by a POST to
+    /// `reset_rate_limits`, which the app never makes.
+    var url: URL? {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "api.anthropic.com"
+        components.path = "/api/oauth/usage"
+        components.queryItems = [URLQueryItem(name: programFlag, value: "1"),
+                                 URLQueryItem(name: "skip_spend", value: "1")]
+        return components.url
+    }
+
+    private var programFlag: String {
+        switch self {
+        case .status: return "cedar_ember"
+        case .atWall: return "at_wall"
+        }
+    }
+
+    /// `.atWall` only while the account's last measurement says it is AT a
+    /// limit — the moment the CLI makes that read — so the app never tells the
+    /// server an account is at its wall when the numbers say it is not.
+    static func choose(previous: ClaudeUsage?, now: Date = Date()) -> ClaudeUsageRead {
+        guard let usage = previous else { return .status }
+        let session = usage.sessionResetTime > now && usage.sessionPercentage >= 100
+        let weekly = usage.weeklyResetTime > now && usage.weeklyPercentage >= 100
+        let fable = (usage.fableWeeklyPercentage ?? 0) >= 100 && (usage.fableWeeklyResetTime.map { $0 > now } ?? true)
+        return session || weekly || fable ? .atWall : .status
+    }
 }
