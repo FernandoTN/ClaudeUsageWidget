@@ -186,12 +186,14 @@ struct OwnerRow: Hashable {
     var isManuallyPinned: Bool
     /// Other profiles that hold the SAME account (one quota).
     var sameAccountAs: [String]
-    /// Codex only: usage-limit reset credits the usage payload reported
-    /// (nil = none / unknown — indistinguishable on the wire, spec §4.1).
+    /// Resets the usage payload reported: Codex usage-limit reset credits, or
+    /// Claude limit resets (nil = none / unknown — indistinguishable on the
+    /// wire, spec §4.1; for Claude, an ineligible caller gets no grants).
     var resetCreditsAvailable: Int? = nil
-    /// The last on-demand detail answer this process fetched for the account
-    /// (`CodexUsageService.cachedResetCredits`), if any — the only source of an
-    /// expiry; nil until the owner has opened the account's Overview once.
+    /// Codex: the last on-demand detail answer this process fetched for the
+    /// account (`CodexUsageService.cachedResetCredits`), if any — the only
+    /// source of an expiry; nil until the owner has opened the account's
+    /// Overview once. Claude: the grants' soonest use-by, from the sweep.
     var resetsDetail: ResetsDetail? = nil
 
     struct ResetsDetail: Hashable {
@@ -464,11 +466,37 @@ struct ProviderActiveSelection: Hashable {
             keyedPercentage: usage.map { ProviderSummary.keyedDisplayPercentage($0) },
             etaToThreshold: firing.flatMap { DashboardSnapshot.etaToThreshold($0, now: now) },
             isManuallyPinned: pinned, sameAccountAs: sameAccountAs,
-            resetCreditsAvailable: profile.providerKind == .codex ? usage?.codexResetCreditsAvailable : nil,
-            resetsDetail: cachedResets.map {
+            resetCreditsAvailable: resetCount(profile),
+            resetsDetail: resetsDetail(profile, cachedCodex: cachedResets, now: now)
+        )
+    }
+
+    /// The owner's reset count, per provider: Codex usage limit resets or
+    /// Claude limit resets, both straight from the sweep. nil is unknown.
+    private static func resetCount(_ profile: Profile) -> Int? {
+        switch profile.providerKind {
+        case .codex: return profile.claudeUsage?.codexResetCreditsAvailable
+        case .claude: return profile.claudeUsage?.claudeLimitResetsAvailable
+        case .grok: return nil
+        }
+    }
+
+    /// Codex's expiry comes from the on-demand detail cache; Claude's grants
+    /// ride in the sweep's own payload, so its use-by is always at hand.
+    private static func resetsDetail(_ profile: Profile, cachedCodex: CodexResetCredits?, now: Date) -> OwnerRow.ResetsDetail? {
+        switch profile.providerKind {
+        case .codex:
+            return cachedCodex.map {
                 OwnerRow.ResetsDetail(soonestExpiry: $0.availableCreditsByExpiry.first?.expiresAt, fetchedAt: $0.fetchedAt, availableCount: $0.availableCount)
             }
-        )
+        case .claude:
+            guard let usage = profile.claudeUsage, let count = usage.claudeLimitResetsAvailable,
+                  let measuredAt = usage.claudeLimitResetsMeasuredAt else { return nil }
+            return OwnerRow.ResetsDetail(soonestExpiry: usage.claudeLimitResets?.bank?.soonestUseBy(at: now),
+                                         fetchedAt: measuredAt, availableCount: count)
+        case .grok:
+            return nil
+        }
     }
 
     private static func repairAction(for profile: Profile) -> RepairAction {

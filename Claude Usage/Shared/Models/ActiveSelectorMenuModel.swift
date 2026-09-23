@@ -94,8 +94,15 @@ enum ActiveSelectorMenuModel {
                 rows.append(Row(kind: .banner, title: ActiveVocabulary.changedOutside(provider, newOwner: newOwner),
                                 glyph: "↺", glyphTint: .cyan, titleTint: .cyan, enabled: false))
             }
-            if let owner = selection.owner, provider == .codex, let resets = owner.resetCreditsAvailable, resets > 0 {
-                rows.append(Row(kind: .info, title: resetsRowTitle(count: resets, detail: owner.resetsDetail), glyph: "↻", glyphTint: .secondary, enabled: false))
+            if let owner = selection.owner, let resets = owner.resetCreditsAvailable, resets > 0 {
+                switch provider {
+                case .codex:
+                    rows.append(Row(kind: .info, title: resetsRowTitle(count: resets, detail: owner.resetsDetail), glyph: "↻", glyphTint: .secondary, enabled: false))
+                case .claude:
+                    rows.append(Row(kind: .info, title: limitResetsRowTitle(count: resets, useBy: owner.resetsDetail?.soonestExpiry), glyph: "↻", glyphTint: .secondary, enabled: false))
+                case .grok:
+                    break
+                }
             }
 
             let deadCount = selection.counts.count(.dead)
@@ -305,6 +312,14 @@ enum ActiveSelectorMenuModel {
             return base + " · " + "selector.resets_expires".localized(with: Self.expiryFormatter.string(from: expiry), asOf)
         }
         return base + " · " + "selector.resets_never_expires".localized(with: asOf)
+    }
+
+    /// "Limit resets: 2 left · use by Oct 3, 2026 at 9:00" — Claude's row. The
+    /// grants ride in every sweep, so there is no "as of" to qualify.
+    static func limitResetsRowTitle(count: Int, useBy: Date?) -> String {
+        let base = "selector.limit_resets_left".localized(with: count)
+        guard let useBy else { return base }
+        return base + " · " + "selector.limit_resets_use_by".localized(with: Self.expiryFormatter.string(from: useBy))
     }
 
     static let expiryFormatter: DateFormatter = {

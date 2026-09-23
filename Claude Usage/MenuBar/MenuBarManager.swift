@@ -2117,7 +2117,7 @@ private func observeCredentialChanges() {
         if let cliJSON = profile.cliCredentialsJSON,
            !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: cliJSON) {
-            return try await apiService.fetchUsageData(oauthAccessToken: accessToken)
+            return try await apiService.fetchUsageData(oauthAccessToken: accessToken, read: .choose(previous: profile.claudeUsage))
         }
 
         // Priority 2: System Keychain CLI OAuth token — the shared Keychain item always
@@ -2128,7 +2128,7 @@ private func observeCredentialChanges() {
            let systemCredentials = try? await ClaudeCodeSyncService.shared.readSystemCredentialsOffMain(),
            !ClaudeCodeSyncService.shared.isTokenExpired(systemCredentials),
            let accessToken = ClaudeCodeSyncService.shared.extractAccessToken(from: systemCredentials) {
-            return try await apiService.fetchUsageData(oauthAccessToken: accessToken)
+            return try await apiService.fetchUsageData(oauthAccessToken: accessToken, read: .choose(previous: profile.claudeUsage))
         }
 
         // Distinguish "credentials exist but are unusable" (expired access
