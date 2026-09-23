@@ -2381,6 +2381,9 @@ final class StatusBarUIManager {
         var activeReadiness: AccountReadiness?
         var nextReadiness: AccountReadiness?
         var activeIsStale: Bool
+        /// The Claude `609·31h` text as drawn (never the raw forecast: a
+        /// burn refit that leaves the text unchanged must not repaint).
+        var capacity: CapacityAffix?
         var layout: MenuBarLayout
         var config: MultiProfileDisplayConfig
         var appearanceName: String
@@ -2521,6 +2524,7 @@ final class StatusBarUIManager {
                 isSwitching: context?.isSwitching ?? false,
                 preferencesDegraded: context?.preferencesDegraded ?? false,
                 activeLastMeasured: activeProfile?.claudeUsage?.lastUpdated,
+                capacity: provider == .claude ? context?.capacity.map { CapacityAffix($0) } : nil,
                 now: now
             )
             let layout = config.barLayout
@@ -2538,6 +2542,7 @@ final class StatusBarUIManager {
                 activeReadiness: summary.activeReadiness,
                 nextReadiness: summary.next?.readiness,
                 activeIsStale: summary.activeIsStale,
+                capacity: summary.capacity,
                 layout: layout,
                 config: config,
                 appearanceName: groupAppearance.name.rawValue,
@@ -2553,7 +2558,8 @@ final class StatusBarUIManager {
             // The host item applies it (per hovered segment on the fleet item).
             providerTooltips[provider] = Self.summaryTooltip(
                 summary, activeName: activeProfile?.name, byId: byId,
-                hidden: Self.hiddenFromBarCount(profiles, provider: provider, activeIds: activeIds))
+                hidden: Self.hiddenFromBarCount(profiles, provider: provider, activeIds: activeIds),
+                capacity: provider == .claude ? context?.capacity : nil)
 
             if lastSummaryKey[provider] == key, summaryImages[provider] != nil { continue }
 
@@ -2592,7 +2598,8 @@ final class StatusBarUIManager {
         _ summary: ProviderSummary,
         activeName: String?,
         byId: [UUID: Profile],
-        hidden: Int = 0
+        hidden: Int = 0,
+        capacity: FleetCapacityForecast? = nil
     ) -> String {
         let providerName: String
         switch summary.provider {
@@ -2630,9 +2637,12 @@ final class StatusBarUIManager {
             parts.append("\(counts[state]!) \(state.legendWord)")
         }
         if hidden > 0 { parts.append("\(hidden) hidden") }
+        // The Claude capacity forecast, one line each for the pool, the burn
+        // against the ceiling and the runway — the bar can only fit `609·31h`.
+        let capacityLines = capacity.map { FleetCapacityFormatting.tooltipLines($0) } ?? []
         // The words behind the glyphs (round 1, B4/G2): the tooltip is where
         // the bar spells out what a 22 pt strip can only encode.
-        return parts.joined(separator: " · ") + "\n" + DesignLegend.line
+        return ([parts.joined(separator: " · ")] + capacityLines + [DesignLegend.line]).joined(separator: "\n")
     }
 
     /// The active block for a provider with NO active login right now:

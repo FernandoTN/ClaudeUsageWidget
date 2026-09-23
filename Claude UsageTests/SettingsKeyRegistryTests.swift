@@ -36,7 +36,7 @@ final class SettingsKeyRegistryTests: XCTestCase {
         "menuBarLayoutDefault_v1", "debugTileLayout", "debugGroupExposure", "NSQuitAlwaysKeepsWindows",
         "autoSwitchCustomOrder", "autoSwitchCustomOrderEnabled", "cuwSlotPinsVersion",
         "fleetAlertDefaults_v1", "activeSelectorItem_v1", "codexDaemonRestartOnSwitch_v1",
-        "weeklyPrimePolicy_v1", "weeklyPrimeLedger_v1",
+        "weeklyPrimePolicy_v1", "weeklyPrimeLedger_v1", "fleetCapacitySeries_v1",
     ]
 
     func testEveryKeyInTheMigrationMapIsRegistered() {

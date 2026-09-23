@@ -573,6 +573,10 @@ struct DashboardView: View {
             }
             nextAndQueue(section)
                 .padding(.horizontal, 16)
+            if let capacity = section.capacity {
+                FleetCapacityCard(forecast: capacity)
+                    .padding(.horizontal, 12)
+            }
             if !section.roster.isEmpty {
                 roster(section)
             }

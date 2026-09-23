@@ -28,6 +28,9 @@ class SharedDataStore {
         static let weeklyPrimePolicy = "weeklyPrimePolicy_v1"
         static let weeklyPrimeLedger = "weeklyPrimeLedger_v1"
 
+        // Fleet weekly capacity (docs/specs/fleet-capacity-forecast.md)
+        static let fleetCapacitySeries = "fleetCapacitySeries_v1"
+
         // Keyboard Shortcuts
         static let shortcutTogglePopover = "shortcutTogglePopover"
         static let shortcutRefresh = "shortcutRefresh"
@@ -86,6 +89,7 @@ class SharedDataStore {
     private var lastKnownGoodFleetAlertDefaults: NotificationSettings?
     private var lastKnownGoodWeeklyPrimePolicy: WeeklyPrimePolicy?
     private var lastKnownGoodWeeklyPrimeLedger: [UUID: WeeklyPrimeRecord]?
+    private var lastKnownGoodFleetCapacitySeries: [FleetCapacitySample]?
 
     /// Keys already logged this degradation episode; cleared by the next live
     /// read of that key so a later episode speaks up again.
@@ -116,6 +120,7 @@ class SharedDataStore {
         lastKnownGoodFleetAlertDefaults = nil
         lastKnownGoodWeeklyPrimePolicy = nil
         lastKnownGoodWeeklyPrimeLedger = nil
+        lastKnownGoodFleetCapacitySeries = nil
         nilReadLoggedKeys.removeAll()
     }
 
@@ -258,6 +263,44 @@ class SharedDataStore {
         guard let data = try? JSONEncoder().encode(encodable) else { return }
         writeSingleShot(data, forKey: Keys.weeklyPrimeLedger)
         lastKnownGoodWeeklyPrimeLedger = ledger
+    }
+
+    // MARK: - Fleet weekly capacity (docs/specs/fleet-capacity-forecast.md)
+
+    /// The rolling Claude pool series the burn rate is fitted to: one sample
+    /// per ~5 minutes, 24 hours kept (≈ 288 samples, a few KB). Stored as
+    /// `[[epochSeconds, pool, accounts, scheduleKey]]` — numbers only, no
+    /// account names, no credentials. An unreadable key is not "no history":
+    /// read that way, the runway would vanish until an hour of new samples
+    /// accrued, so a nil read after a good one is served from the shadow.
+    func loadFleetCapacitySeries() -> [FleetCapacitySample] {
+        guard let data = defaults.data(forKey: Keys.fleetCapacitySeries),
+              let decoded = try? JSONDecoder().decode([[Double]].self, from: data) else {
+            if let cached = lastKnownGoodFleetCapacitySeries {
+                logNilReadOnce(Keys.fleetCapacitySeries)
+                return cached
+            }
+            return []
+        }
+        let series = decoded.compactMap { row -> FleetCapacitySample? in
+            guard row.count == 4, row.allSatisfy(\.isFinite) else { return nil }
+            return FleetCapacitySample(at: Date(timeIntervalSince1970: row[0]), pool: row[1],
+                                       accounts: Int(row[2]), scheduleKey: Int(row[3]))
+        }
+        lastKnownGoodFleetCapacitySeries = series
+        noteLiveRead(Keys.fleetCapacitySeries)
+        return series
+    }
+
+    /// Written at most once per sample interval, through the journal like the
+    /// other single-shot writers: a rejected write would otherwise strand the
+    /// series at its last good value with nothing noticing.
+    func saveFleetCapacitySeries(_ series: [FleetCapacitySample]) {
+        // Whole seconds: sub-second digits would add a third to the ~12 KB.
+        let rows = series.map { [$0.at.timeIntervalSince1970.rounded(), $0.pool, Double($0.accounts), Double($0.scheduleKey)] }
+        guard let data = try? JSONEncoder().encode(rows) else { return }
+        writeSingleShot(data, forKey: Keys.fleetCapacitySeries)
+        lastKnownGoodFleetCapacitySeries = series
     }
 
     // MARK: - Keyboard Shortcuts
@@ -608,6 +651,7 @@ class SharedDataStore {
         RegisteredKey(Keys.codexDaemonRestartOnSwitch, .sharedDataStore, .live, ui: "Advanced › Codex daemon"),
         RegisteredKey(Keys.weeklyPrimePolicy, .sharedDataStore, .live, ui: "Active & Auto-switch › Weekly window priming"),
         RegisteredKey(Keys.weeklyPrimeLedger, .sharedDataStore, .live, ui: "Dashboard roster row; Accounts › Overview (primed / pending)"),
+        RegisteredKey(Keys.fleetCapacitySeries, .sharedDataStore, .live, ui: "Menu bar (Claude pool·runway); Dashboard › Weekly capacity"),
     ]
 
     // MARK: - Fleet alert defaults (docs/specs/ux-revamp.md §5.2, D11)
