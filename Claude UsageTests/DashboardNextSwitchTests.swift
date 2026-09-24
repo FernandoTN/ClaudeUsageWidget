@@ -224,9 +224,29 @@ final class DashboardNextSwitchTests: XCTestCase {
                                          onRefresh: {}, onNextSwitch: { _ in }, onTokenUsage: {}, onSettings: {})
             let ideal = NSHostingView(rootView: header.fixedSize()).fittingSize
             let atWidth = NSHostingView(rootView: header.frame(width: DashboardSurface.dashboardSize.width)).fittingSize
+            // A zero measurement would satisfy both bounds below silently.
+            XCTAssertGreaterThan(ideal.width, 0, "fittingSize measured nothing")
+            XCTAssertGreaterThan(ideal.height, 0, "fittingSize measured nothing")
             XCTAssertLessThanOrEqual(ideal.width, DashboardSurface.dashboardSize.width,
                                      "header wants \(ideal.width) pt untruncated; the dashboard is \(DashboardSurface.dashboardSize.width)")
             XCTAssertEqual(atWidth.height, ideal.height, accuracy: 0.5, "no line wraps at the dashboard width")
         }
+
+        // The CONTROL that proves the fit assertion above can fail: the same
+        // header with a last-switch line too long for 380 pt must measure
+        // wider than the dashboard (482 pt when this was written). If
+        // `fittingSize` ever stops discriminating, this fails instead of the
+        // fit check passing vacuously.
+        let tooLong = snapshot(profiles, active: [profiles[0].id], next: [.claude: ranked(profiles[1])],
+                               history: [SwitchEvent(at: wall.addingTimeInterval(-(23 * 3600 + 59 * 60)),
+                                                     from: "Juniper (dev) Juniper", to: "Atlas (dev) Atlas (dev)",
+                                                     trigger: .auto, reason: nil)],
+                               now: wall.addingTimeInterval(-59))
+        let control = DashboardHeader(title: "Fleet", snapshot: tooLong, isRefreshing: false,
+                                      nextSwitch: NextSwitchAction.make(snapshot: tooLong),
+                                      onRefresh: {}, onNextSwitch: { _ in }, onTokenUsage: {}, onSettings: {})
+        let controlIdeal = NSHostingView(rootView: control.fixedSize()).fittingSize
+        XCTAssertGreaterThan(controlIdeal.width, DashboardSurface.dashboardSize.width,
+                             "the control must NOT fit (measured \(controlIdeal.width) pt), or the fit check proves nothing")
     }
 }
