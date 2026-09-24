@@ -383,3 +383,41 @@ all but name. The Claude version fills the same slots.
    cannot be ruled out from the client.
 8. **Team / org semantics** (`seat` reason, org-scoped claim path) were not tested. All
    local accounts are personal.
+
+---
+
+## 7. Measured 2026-09-23: the claim is surface-gated too — §6 Q2 ANSWERED
+
+Owner-authorized single test on ONE account (`fertorresnavarrete@hotmail.com`), using that profile's own
+stored token and its own stamped organization UUID. **Nothing was spent.** Three measurements, ~22:15Z:
+
+| # | Call | Identity | Result |
+|---|---|---|---|
+| 1 | `GET /api/oauth/usage?cedar_ember=1&skip_spend=1` | the app's honest identity | `cedar_ember {eligible:false, ineligible_reason:"surface", grants:[], next_grant_id:null}` |
+| 2 | same GET | **plus `"x-app":"cli"`** (the CLI's own header) | **identical** — the header alone does not lift the gate |
+| 3 | `POST /api/organizations/{orgUuid}/reset_rate_limits`, body `{"program":"cedar_ember","request_id":"<uuid>"}` | plus `"x-app":"cli"` | HTTP 200 `{"result":"ineligible","reason":"surface","reset":false,"grant_id":null,"resets_left":null,"cleared":[],"cooldown_until":null}` |
+
+Windows before and after call 3 were identical (weekly 99.0 → 99.0, session 0.0 → 0.0) and the server
+itself returned `reset: false`. No grant was consumed.
+
+**What this settles:**
+
+- **§6 Q2 ("Is the claim surface-gated too?") — YES.** And the gate fires **before any grant lookup**: no
+  `grant_id` was sent (none is visible to this client, `next_grant_id` is null) and the server answered
+  `ineligible / surface` rather than a validation error.
+- **§3's "activation from the widget may be impossible without presenting as the CLI" — stronger than
+  written.** Presenting `x-app: cli` does not lift the read gate either, so the surface is determined by
+  more than that header. Deeper client impersonation was NOT attempted: it is a larger step than the
+  owner authorized, and it was not pursued.
+- **§5's UI proposal is amended:** the activation button is unreachable from this app and must not be
+  built. The card stays read-only, names the server's reason, and points at the surfaces that do work —
+  claude.ai → Settings → Usage (reset buttons appeared there the week of 2026-09-22) and Claude Code's
+  `/limit-reset`.
+
+**Fleet-wide, same day:** all **24** Claude profiles read `cedar_ember {eligible:false,
+ineligible_reason:"surface", grants:[]}` through the shipped `ClaudeLimitResets` decode. Per §1 that is
+**UNKNOWN, not zero**, on every account.
+
+**Owner decision (2026-09-23):** counts will be checked by hand on claude.ai per account; no reset surface
+is to be built into the widget. Do not re-attempt a claim from this app — the outcome above is recorded
+precisely so that nobody has to.
