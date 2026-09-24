@@ -331,6 +331,67 @@ extension DashboardBanner {
     }
 }
 
+// MARK: - Header
+
+/// The dashboard's title block and its row of icon buttons. A view of its
+/// own so the render tests can measure it: the buttons take 4 × 28 pt of the
+/// 380 pt width, and the left column's lines must still fit beside them.
+struct DashboardHeader: View {
+    var title: String
+    var snapshot: DashboardSnapshot?
+    var isRefreshing: Bool
+    var nextSwitch: NextSwitchAction
+    var onRefresh: () -> Void
+    var onNextSwitch: (NextSwitchAction) -> Void
+    var onTokenUsage: () -> Void
+    var onSettings: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .bold))
+                if let snapshot {
+                    Text("\(snapshot.accountCount) accounts · updated \(DashboardFormatting.age(snapshot.generatedAt))")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                    if let last = snapshot.recentSwitches.first {
+                        Text("last switch: \(last.from) → \(last.to) · \(DashboardFormatting.age(last.at))")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Spacer()
+            HStack(spacing: 0) {
+                // Leading: the row is right-aligned, so Refresh, Token usage
+                // and Settings keep exactly the positions they had. Disabled
+                // rather than hidden, so nothing in the row ever moves.
+                headerButton("forward.end.fill", help: nextSwitch.help, refreshing: nextSwitch.showsProgress,
+                             enabled: nextSwitch.isEnabled) { onNextSwitch(nextSwitch) }
+                headerButton("arrow.clockwise", help: "Refresh the viewed accounts", refreshing: isRefreshing, action: onRefresh)
+                headerButton("chart.bar.xaxis", help: "popover.token_usage".localized, action: onTokenUsage)
+                headerButton("gearshape.fill", help: "Settings", action: onSettings)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    /// 28 pt hit area and a tooltip on every header icon (round 1, D11). The
+    /// tooltip sits outside `.disabled` so a disabled button still says why.
+    private func headerButton(_ icon: String, help: String, refreshing: Bool = false, enabled: Bool = true,
+                              action: @escaping () -> Void) -> some View {
+        HeaderIconButton(icon: icon, fontSize: 12, isRefreshing: refreshing, action: action)
+            .opacity(enabled || refreshing ? 1 : 0.35)
+            .disabled(refreshing || !enabled)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+            .help(help)
+    }
+}
+
 // MARK: - View
 
 struct DashboardView: View {
@@ -349,6 +410,10 @@ struct DashboardView: View {
     @State private var route: Route = .fleet
     @State private var pendingSwitch: UUID?
     @State private var switchNote: String?
+    /// The header's one-click switch: the target's name while it runs, and
+    /// its result afterwards — never shared with the roster's `switchNote`.
+    @State private var switchingTo: String?
+    @State private var headerNote: HeaderSwitchNote?
     @State private var showInsights: Bool?
     /// The harness seeds the Insights block open to render it in situ.
     var insightsExpanded = false
@@ -362,6 +427,9 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             PopoverDivider()
+            if let note = headerNote {
+                headerNoteLine(note)
+            }
             if let snapshot = store.snapshot {
                 switch route {
                 case .fleet:
@@ -384,47 +452,61 @@ struct DashboardView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(route == .fleet ? "Fleet" : "Account")
-                    .font(.system(size: 13, weight: .bold))
-                if let snapshot = store.snapshot {
-                    Text("\(snapshot.accountCount) accounts · updated \(DashboardFormatting.age(snapshot.generatedAt))")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                    if let last = snapshot.recentSwitches.first {
-                        Text("last switch: \(last.from) → \(last.to) · \(DashboardFormatting.age(last.at))")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
+        DashboardHeader(
+            title: route == .fleet ? "Fleet" : "Account",
+            snapshot: store.snapshot,
+            isRefreshing: isRefreshing,
+            nextSwitch: NextSwitchAction.make(snapshot: store.snapshot, switchingTo: switchingTo),
+            onRefresh: {
+                withAnimation(.easeInOut(duration: 0.3)) { isRefreshing = true }
+                actions.refresh()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    withAnimation(.easeInOut(duration: 0.3)) { isRefreshing = false }
                 }
-            }
-            Spacer()
-            HStack(spacing: 0) {
-                headerButton("arrow.clockwise", help: "Refresh the viewed accounts", refreshing: isRefreshing) {
-                    withAnimation(.easeInOut(duration: 0.3)) { isRefreshing = true }
-                    actions.refresh()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        withAnimation(.easeInOut(duration: 0.3)) { isRefreshing = false }
-                    }
-                }
-                headerButton("chart.bar.xaxis", help: "popover.token_usage".localized) { actions.openTokenUsage(nil, nil) }
-                headerButton("gearshape.fill", help: "Settings") { actions.openSettings(nil) }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+            },
+            onNextSwitch: switchToNext,
+            onTokenUsage: { actions.openTokenUsage(nil, nil) },
+            onSettings: { actions.openSettings(nil) }
+        )
     }
 
-    /// 28 pt hit area and a tooltip on every header icon (round 1, D11).
-    private func headerButton(_ icon: String, help: String, refreshing: Bool = false,
-                              action: @escaping () -> Void) -> some View {
-        HeaderIconButton(icon: icon, fontSize: 12, isRefreshing: refreshing, action: action)
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
-            .help(help)
-            .disabled(refreshing)
+    /// The header's one-click switch: no confirmation (the owner asked for
+    /// "immediately"); the roster row keeps its confirm-with-cost flow. The
+    /// target is the candidate the header is SHOWING, so the tooltip and the
+    /// action cannot disagree; a stale one is caught by the activation seam,
+    /// which re-verifies the login and reports a typed outcome.
+    private func switchToNext(_ next: NextSwitchAction) {
+        // `switchingTo` is read live here, so a second click queued before
+        // the re-render that disables the button starts nothing.
+        guard next.isEnabled, switchingTo == nil, let id = next.target, let name = next.name else { return }
+        switchingTo = name
+        headerNote = nil
+        Task { @MainActor in
+            let outcome = await actions.makeActive(id)
+            switchingTo = nil
+            let note = HeaderSwitchNote(outcome: outcome, name: name)
+            headerNote = note
+            DispatchQueue.main.asyncAfter(deadline: .now() + note.lifetime) {
+                if headerNote?.id == note.id { headerNote = nil }
+            }
+        }
+    }
+
+    /// The header switch's result, directly under the divider — styled like
+    /// a status-strip line.
+    private func headerNoteLine(_ note: HeaderSwitchNote) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: note.icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(note.role.color)
+                .frame(width: 14)
+            Text(note.text)
+                .font(.system(size: 10))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 
     // MARK: Fleet
