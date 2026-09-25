@@ -166,6 +166,13 @@ enum ProfileCredentialStatusCache {
     }
 
     static func hasDeadLogin(_ profile: Profile) -> Bool {
+        // The server's verdict, read LIVE and never memoized. `entry(for:)`
+        // recomputes from the credentials fingerprint, and that fingerprint
+        // does not change when the server starts refusing a token (that is
+        // the whole defect), so a verdict stored in the entry would be
+        // recomputed away or never picked up. It is server evidence, so
+        // hydration does not gate it either.
+        if ObservedDeadLogins.shared.isCondemned(profile.id) { return true }
         // Unhydrated profiles are not dead — credentials simply have not loaded.
         guard isCredentialHydrationSettled else { return false }
         return entry(for: profile).hasDeadLogin

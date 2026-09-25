@@ -1946,6 +1946,10 @@ private func observeCredentialChanges() {
                             // enough that the retry IS the confirmation, since
                             // a 200 clears the dead flag.
                             self.registerAuthBackoff(for: profile)
+                            // The server refused a login whose stored token
+                            // may look perfectly healthy. Two in a row
+                            // condemn it (ObservedDeadLogins).
+                            self.noteClaudeReadRefused(profile, error: appError)
                         }
                         // An account-level 429 IS usage information: the account is
                         // out of capacity and its cached percentages are frozen at
@@ -2042,8 +2046,11 @@ private func observeCredentialChanges() {
             let idsToCheck = self.profileManager.activeAccountIds(among: self.profileManager.profiles)
 
             for profileId in idsToCheck {
+                // A condemned owner is checked even with nothing cached: its
+                // turn is over because of the login, not the numbers.
                 if let candidate = self.profileManager.profiles.first(where: { $0.id == profileId }),
-                   let candidateUsage = candidate.claudeUsage {
+                   let candidateUsage = candidate.claudeUsage
+                       ?? (self.observedDeadLogins.isCondemned(profileId) ? .empty : nil) {
                     self.checkAutoSwitchIfNeeded(usage: candidateUsage, currentProfile: candidate)
                 }
             }
@@ -2054,6 +2061,11 @@ private func observeCredentialChanges() {
             // relaunching the app. Identity is cached per token, so this only
             // touches the network when the CLI's login actually changes.
             await self.profileManager.adoptSystemLoginByIdentity()
+
+            // Detector B, after the adoption on purpose: a `/login` that just
+            // replaced the shared login must start a fresh epoch before the
+            // failures of the login it replaced are counted against it.
+            self.evaluateFleetAuthFailures(self.fleetAuthFailureMarkers)
 
             // The Codex twin, and the reason a CLI-side `codex login` can revive
             // a dead Codex profile: re-derive auth.json's owner from its
@@ -2575,6 +2587,7 @@ private func observeCredentialChanges() {
                 self.lastRefreshError = appError.message
                 if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
                     self.credentialErrorProfileIds.insert(profile.id)
+                    self.noteClaudeReadRefused(profile, error: appError)
                 }
                 // Mirror the sweep's 429 taxonomy: a long account-level
                 // Retry-After stamps exhaustion; a burst-class 429 re-arms
@@ -2907,6 +2920,10 @@ private func observeCredentialChanges() {
     /// `lastTripwireEventAt` are already handled.
     private var lastTripwireScan: Date = Date().addingTimeInterval(-600)
     private var lastTripwireEventAt: Date = .distantPast
+    /// This sweep's `authentication_failed` markers (transcripts plus the
+    /// StopFailure journal), harvested at sweep start and judged at sweep end
+    /// by `evaluateFleetAuthFailures`.
+    private var fleetAuthFailureMarkers: [FleetAuthFailureMarker] = []
 
     /// Harvests Claude Code's own on-disk limit signals at the top of every
     /// sweep — zero network cost, and immune to the 429 blindness that hits
@@ -2918,12 +2935,19 @@ private func observeCredentialChanges() {
     /// - `~/.claude.json`'s cachedUsageUtilization is the CLI's own last
     ///   usage fetch — adopted as a free measurement when fresher than ours.
     private func harvestLocalLimitSignals() async {
-        let since = min(lastTripwireScan, Date().addingTimeInterval(-90))
+        // At least the fleet auth window: detector B needs every marker in
+        // its last 120 s, not only those since the previous scan. Rate-limit
+        // events are unaffected — `lastTripwireEventAt` below keeps them
+        // applied once.
+        let since = min(lastTripwireScan, Date().addingTimeInterval(-max(90, ObservedDeadLogins.fleetWindow)))
         lastTripwireScan = Date()
         let signals = await Task.detached(priority: .utility) {
-            (events: LocalLimitSignalService.scanRateLimitEvents(since: since),
-             cliCache: LocalLimitSignalService.readCLICachedUsage())
+            let transcripts = LocalLimitSignalService.scanTranscriptSignals(since: since)
+            return (events: transcripts.rateLimits,
+                    authFailures: transcripts.authFailures + StopFailureJournal.read(),
+                    cliCache: LocalLimitSignalService.readCLICachedUsage())
         }.value
+        fleetAuthFailureMarkers = signals.authFailures
 
         if let event = signals.events.last, event.at > lastTripwireEventAt {
             lastTripwireEventAt = event.at
@@ -3277,6 +3301,11 @@ private func observeCredentialChanges() {
         } catch {
             let refusal = AppError.wrap(error)
             LoggingService.shared.log("MenuBarManager: header rescue probe for '\(profile.name)' failed — \(refusal.message)")
+            // A 401/403 here comes from the endpoint the fleet's own requests
+            // use. It is the clearest refusal there is, and it can arrive
+            // while oauth/usage only ever answers 429 (both 2026-09-24
+            // incidents looked like that).
+            noteClaudeReadRefused(profile, error: refusal)
             incidentRing.record(FleetInsights.Incident(
                 at: Date(), profileId: profile.id, name: profile.name, provider: .claude, kind: .headerProbe429,
                 detail: "\(refusal.code.rawValue)\(refusal.retryAfterSeconds.map { ", retry-after \(clampedInt($0))s" } ?? "")"))
@@ -3497,6 +3526,80 @@ private func observeCredentialChanges() {
             lastClaudeUsageSuccess = (profile.id, Date())
         }
         recordMeasuredSession(usage, for: profile.id)
+        // A header rescue counts too: the Messages API accepting the login is
+        // stronger proof it works than oauth/usage accepting it.
+        noteClaudeReadAnswered(profile)
+    }
+
+    // MARK: - Server-Rejected Claude Logins (ObservedDeadLogins)
+
+    private let observedDeadLogins = ObservedDeadLogins.shared
+
+    /// A usage read of this Claude profile answered, so the login works: end
+    /// its refusal run and lift any verdict. This is also the path a login
+    /// repaired with `/login` takes back into rotation (the adoption writes
+    /// the fresh token, and the next read answers).
+    private func noteClaudeReadAnswered(_ profile: Profile) {
+        guard profile.providerKind == .claude else { return }
+        if observedDeadLogins.recordSuccessfulRead(profile.id) {
+            LoggingService.shared.log("MenuBarManager: '\(profile.name)' login answered a usage read — server-rejected verdict lifted, back in rotation")
+        }
+    }
+
+    /// Detector A: one failed usage read of this Claude profile. Only a 401/403
+    /// counts (`ObservedDeadLogins.isLoginRefusal`). The control is the latest
+    /// `oauth/usage` success of a DIFFERENT account.
+    private func noteClaudeReadRefused(_ profile: Profile, error: AppError) {
+        guard profile.providerKind == .claude,
+              ObservedDeadLogins.isLoginRefusal(error) else { return }
+        let control = lastClaudeUsageSuccess.flatMap { $0.profileId == profile.id ? nil : $0.at }
+        guard let verdict = observedDeadLogins.recordFailedRead(
+            profile.id,
+            error: error,
+            credentialRevision: ProfileStore.shared.credentialRevision(for: profile.id),
+            otherAccountSuccessAt: control
+        ) else { return }
+        loginCondemned(profile, verdict: verdict)
+    }
+
+    /// Detector B: the fleet's `authentication_failed` markers against the
+    /// ACTIVE Claude login. Runs once per sweep after the identity adoption,
+    /// so a `/login` that just replaced the shared login starts a fresh epoch
+    /// before its predecessor's failures are counted against it.
+    private func evaluateFleetAuthFailures(_ markers: [FleetAuthFailureMarker]) {
+        guard !profileManager.isSwitchingProfile,
+              let ownerId = profileManager.providerOwnerId(for: .claude),
+              let owner = profileManager.profiles.first(where: { $0.id == ownerId }) else { return }
+        switch observedDeadLogins.evaluateFleetMarkers(
+            markers,
+            ownerId: ownerId,
+            ownerCredentialRevision: ProfileStore.shared.credentialRevision(for: ownerId)
+        ) {
+        case .none, .suppressed:
+            break
+        case .condemned(let verdict):
+            loginCondemned(owner, verdict: verdict)
+        case .breakerTripped:
+            LoggingService.shared.log("⛔️ MenuBarManager: CLI sessions keep failing authentication after \(ObservedDeadLogins.fleetBreakerLimit) logins were condemned in \(Int(ObservedDeadLogins.fleetBreakerWindow / 60)) min — the failures do not follow one login, so automatic recovery is paused for '\(owner.name)'")
+            NotificationManager.shared.sendLoginRecoveryPausedNotification(profileName: owner.name)
+        }
+    }
+
+    /// Condemn, tell the owner once, and, for the account the CLI is signed
+    /// into, run the ordinary switch check now. `isQuotaExhausted` reads the
+    /// verdict, so the candidate walk moves the fleet to a healthy account.
+    /// Nothing here re-authenticates or touches any credential.
+    private func loginCondemned(_ profile: Profile, verdict: ObservedDeadLogins.Verdict) {
+        let isOwner = mayTriggerAutoSwitch(profile.id)
+        LoggingService.shared.log("⛔️ MenuBarManager: '\(profile.name)' login rejected by the server (\(verdict.evidence.summary)) — \(isOwner ? "switching the fleet away from it" : "no longer a switch candidate"); /login with that account brings it back")
+        // A login already flagged dead (revoked refresh token) has had its
+        // re-login notice; a second one for the same repair is noise.
+        if !ClaudeCodeSyncService.shared.isLoginMarkedDead(profile.id) {
+            NotificationManager.shared.sendClaudeLoginRejectedNotification(profileName: profile.name, isActive: isOwner)
+        }
+        guard isOwner else { return }
+        let current = profileManager.profiles.first(where: { $0.id == profile.id }) ?? profile
+        checkAutoSwitchIfNeeded(usage: current.claudeUsage ?? .empty, currentProfile: current)
     }
 
     // MARK: - Account-Level Throttle Stamping (header-based)
@@ -3625,12 +3728,14 @@ private func observeCredentialChanges() {
         let sessionThreshold = SharedDataStore.shared.loadAutoSwitchThreshold()
         let weeklyThreshold = SharedDataStore.shared.loadAutoSwitchWeeklyThreshold()
         let ignoreFableWeekly = SharedDataStore.shared.loadAutoSwitchIgnoreFableWeekly()
+        let condemnation = observedDeadLogins.verdict(for: profileId)
 
         // If every quota window regained headroom (session reset, weekly rollover),
         // re-arm the trigger for this profile.
         if !Self.isQuotaExhausted(usage, sessionThreshold: sessionThreshold,
                                   weeklyThreshold: weeklyThreshold,
-                                  ignoreFableWeekly: ignoreFableWeekly) {
+                                  ignoreFableWeekly: ignoreFableWeekly,
+                                  loginCondemned: condemnation != nil) {
             autoSwitchedProfileIds.remove(profileId)
             return
         }
@@ -3699,11 +3804,13 @@ private func observeCredentialChanges() {
                         self.burstBackoffs.removeValue(forKey: nextProfile.id)
                         var verified = nextProfile
                         verified.claudeUsage = fresh
+                        self.noteClaudeReadAnswered(nextProfile)
                         guard Self.candidateHasHeadroom(
                             verified,
                             sessionThreshold: sessionThreshold,
                             weeklyThreshold: weeklyThreshold,
                             ignoreFableWeekly: ignoreFableWeekly,
+                            loginCondemned: self.observedDeadLogins.isCondemned(nextProfile.id),
                             now: Date()
                         ) else {
                             excluded.insert(nextProfile.id)
@@ -3712,6 +3819,18 @@ private func observeCredentialChanges() {
                         }
                     } catch {
                         let appError = AppError.wrap(error)
+                        if ObservedDeadLogins.isLoginRefusal(appError) {
+                            // The server just refused this candidate's login.
+                            // Switching the fleet into it would hand every
+                            // session a login the server refused a second ago,
+                            // so skip it for this walk. One refusal is not a
+                            // condemnation (a refresh race can cause one), but
+                            // it does count toward one.
+                            self.noteClaudeReadRefused(nextProfile, error: appError)
+                            excluded.insert(nextProfile.id)
+                            LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' usage read was refused as unauthorized — not switching into that login, trying next candidate")
+                            continue
+                        }
                         if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: nextProfile) {
                             // Account-level throttle = exhausted: never switch onto it.
                             _ = stamped
@@ -3728,7 +3847,11 @@ private func observeCredentialChanges() {
                         LoggingService.shared.log("AutoSwitch: could not verify '\(nextProfile.name)' usage (\(appError.code.rawValue)) — proceeding on cached estimate")
                     }
                 }
-                LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
+                if let condemnation {
+                    LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (login rejected by the server: \(condemnation.evidence.summary))")
+                } else {
+                    LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
+                }
 
                 let outcome = await self.profileManager.activateProfileDetailed(nextProfile.id)
                 switch Self.walkReaction(to: outcome) {
@@ -3743,7 +3866,8 @@ private func observeCredentialChanges() {
                     // measurements).
                     SharedDataStore.shared.amendLastSwitchEvent(
                         trigger: cameFromQueue ? .queued : .auto,
-                        reason: "session \(Int(usage.effectiveSessionPercentage))% / weekly \(Int(usage.weeklyPercentage))% crossed threshold"
+                        reason: condemnation.map { "login rejected by the server (\($0.evidence.summary))" }
+                            ?? "session \(Int(usage.effectiveSessionPercentage))% / weekly \(Int(usage.weeklyPercentage))% crossed threshold"
                     )
                     // Send notification
                     NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextProfile.name)
@@ -3833,13 +3957,23 @@ private func observeCredentialChanges() {
     /// fleet deliberately running on another model forfeits real capacity
     /// otherwise: on 2026-09-21 an account with 38 points of its overall week
     /// left was switched away from because Fable alone read 100%.
+    ///
+    /// `loginCondemned` is the server-rejected-login arm (`ObservedDeadLogins`):
+    /// a login the server refuses has no usable quota, whatever its cached
+    /// percentages say. A refused login generates no usage, so without this
+    /// arm it never crossed a threshold and the fleet sat on it until the
+    /// owner ran `/login` by hand (2026-09-24, twice). `candidateHasHeadroom`
+    /// takes the same flag, so the mirror holds: an account switched away from
+    /// for a dead login is never switched straight back into.
     nonisolated static func isQuotaExhausted(
         _ usage: ClaudeUsage,
         sessionThreshold: Double = 100,
         weeklyThreshold: Double = 100,
         ignoreFableWeekly: Bool = false,
+        loginCondemned: Bool = false,
         now: Date = Date()
     ) -> Bool {
+        if loginCondemned { return true }
         if usage.effectiveSessionPercentage >= sessionThreshold { return true }
         if usage.weeklyResetTime >= now && usage.weeklyPercentage >= weeklyThreshold { return true }
         if !ignoreFableWeekly,
@@ -4181,14 +4315,20 @@ private func observeCredentialChanges() {
         let ranked = Self.rankAutoSwitchCandidates(distinctAccounts, customOrder: nil, now: now)
 
         for candidate in ranked {
+            let condemned = observedDeadLogins.isCondemned(candidate.id)
             if Self.candidateHasHeadroom(candidate, sessionThreshold: sessionThreshold,
                                          weeklyThreshold: weeklyThreshold,
-                                         ignoreFableWeekly: ignoreFableWeekly, now: now) {
+                                         ignoreFableWeekly: ignoreFableWeekly,
+                                         loginCondemned: condemned, now: now) {
                 return candidate
             }
             if !quiet {
-                let windows = ignoreFableWeekly ? "session or weekly" : "session, weekly or Fable"
-                LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no \(windows) headroom, trying next")
+                if condemned {
+                    LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but its login was rejected by the server, trying next")
+                } else {
+                    let windows = ignoreFableWeekly ? "session or weekly" : "session, weekly or Fable"
+                    LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no \(windows) headroom, trying next")
+                }
             }
         }
         return nil
@@ -4216,6 +4356,7 @@ private func observeCredentialChanges() {
         // misrepresent the user's hand-off plan (consult, 2026-09-03).
         var queueHeadBlocked = false
         if !queue.isEmpty {
+            let condemned = observedDeadLogins.condemnedIds
             let (queued, _) = Self.selectQueuedSwitchTarget(
                 queue: queue,
                 profiles: profiles,
@@ -4225,7 +4366,8 @@ private func observeCredentialChanges() {
                     profile.hasUsageCredentials
                         && Self.candidateHasHeadroom(profile, sessionThreshold: sessionThreshold,
                                                      weeklyThreshold: weeklyThreshold,
-                                                     ignoreFableWeekly: ignoreFableWeekly, now: now)
+                                                     ignoreFableWeekly: ignoreFableWeekly,
+                                                     loginCondemned: condemned.contains(profile.id), now: now)
                 }
             )
             if let queued {
@@ -4545,6 +4687,7 @@ private func observeCredentialChanges() {
         let queue = SharedDataStore.shared.loadAutoSwitchQueue()
         guard !queue.isEmpty else { return nil }
         let now = Date()
+        let condemned = observedDeadLogins.condemnedIds
         let (target, cleaned) = Self.selectQueuedSwitchTarget(
             queue: queue,
             profiles: profileManager.profiles,
@@ -4554,7 +4697,8 @@ private func observeCredentialChanges() {
                 profile.hasUsageCredentials
                     && Self.candidateHasHeadroom(profile, sessionThreshold: sessionThreshold,
                                                  weeklyThreshold: weeklyThreshold,
-                                                 ignoreFableWeekly: ignoreFableWeekly, now: now)
+                                                 ignoreFableWeekly: ignoreFableWeekly,
+                                                 loginCondemned: condemned.contains(profile.id), now: now)
             }
         )
         if cleaned != queue {
@@ -4683,14 +4827,19 @@ private func observeCredentialChanges() {
     /// ranked walk, the stale-candidate re-verify, the queued peek and the
     /// fleet tile's prediction) must ask the identical question; four separate
     /// conjunctions were four chances to drift.
+    ///
+    /// `loginCondemned` mirrors the trigger's server-rejected-login arm: a
+    /// login the server refuses has no headroom to switch into.
     nonisolated static func candidateHasHeadroom(
         _ profile: Profile,
         sessionThreshold: Double,
         weeklyThreshold: Double,
         ignoreFableWeekly: Bool,
+        loginCondemned: Bool = false,
         now: Date
     ) -> Bool {
-        hasSessionHeadroom(profile, threshold: sessionThreshold)
+        !loginCondemned
+            && hasSessionHeadroom(profile, threshold: sessionThreshold)
             && hasWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now)
             && hasFableWeeklyHeadroom(profile, threshold: weeklyThreshold,
                                       ignoreFableWeekly: ignoreFableWeekly, now: now)

@@ -499,6 +499,59 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that the SERVER is refusing a Claude login whose stored token may
+    /// look healthy (`ObservedDeadLogins`). Sent once per condemnation, and
+    /// the caller holds that guarantee: the registry hands out a verdict only
+    /// on the read that condemned. `isActive` picks the body: for the account
+    /// the CLI is signed into, the auto-switch now treats it as exhausted; any
+    /// other account has only left the rotation. Either way `/login` is the
+    /// repair, and it is the owner's to run. The app never re-authenticates.
+    func sendClaudeLoginRejectedNotification(profileName: String, isActive: Bool) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.claude_login_rejected.title".localized
+        content.body = (isActive
+            ? "notification.claude_login_rejected.active_message"
+            : "notification.claude_login_rejected.message").localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "claude_login_rejected_\(profileName)",
+            content: content,
+            trigger: nil
+        )
+
+        deliver(request, profile: profileName) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send Claude login-rejected notification: \(error)")
+            }
+        }
+    }
+
+    /// The fleet-verdict circuit breaker opened: CLI sessions keep failing
+    /// authentication even after several logins were condemned in a short
+    /// time, so the failures are not following one login and switching
+    /// further would only burn prompt caches. Sent once per trip.
+    func sendLoginRecoveryPausedNotification(profileName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.login_recovery_paused.title".localized
+        content.body = "notification.login_recovery_paused.message".localized(with: profileName)
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "login_recovery_paused",
+            content: content,
+            trigger: nil
+        )
+
+        deliver(request, profile: profileName) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send login-recovery-paused notification: \(error)")
+            }
+        }
+    }
+
     /// Alerts that a profile's saved Codex refresh token was revoked and the account
     /// needs `codex login` + a re-sync (the app cannot repair a revoked token itself).
     /// `cause` picks the instruction: a login revoked by a `codex login` in the

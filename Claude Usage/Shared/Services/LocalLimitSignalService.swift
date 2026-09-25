@@ -61,14 +61,40 @@ nonisolated enum LocalLimitSignalService {
         tailBytes: Int = 262_144,
         now: Date = Date()
     ) -> [RateLimitEvent] {
+        scanTranscriptSignals(since: since, root: root, tailBytes: tailBytes, now: now).rateLimits
+    }
+
+    /// Everything the tripwire reads out of one transcript walk.
+    struct TranscriptSignals: Sendable {
+        /// Rate-limit death events, newest last.
+        var rateLimits: [RateLimitEvent] = []
+        /// Turns that ended on `authentication_failed` ("Login expired ·
+        /// Please run /login"), one marker per line, oldest first. The CLI
+        /// records them the same way it records rate-limit deaths (checked
+        /// against the transcripts of the 2026-09-24 10:31Z incident), so
+        /// detector B has evidence even where the StopFailure hook is not
+        /// installed.
+        var authFailures: [FleetAuthFailureMarker] = []
+    }
+
+    /// The tripwire's one walk. Rate-limit deaths and authentication failures
+    /// share the mtime filter and the tail read, so the second signal costs
+    /// no extra file I/O.
+    static func scanTranscriptSignals(
+        since: Date,
+        root: String = projectsRoot,
+        tailBytes: Int = 262_144,
+        now: Date = Date()
+    ) -> TranscriptSignals {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: root),
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles]
-        ) else { return [] }
+        ) else { return TranscriptSignals() }
 
         var events: [RateLimitEvent] = []
+        var authFailures: [FleetAuthFailureMarker] = []
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
             if values?.isDirectory == true {
@@ -88,6 +114,12 @@ nonisolated enum LocalLimitSignalService {
             guard let data = try? handle.readToEnd(),
                   let tail = String(data: data, encoding: .utf8) else { continue }
             for line in tail.split(separator: "\n") {
+                if line.utf8.count <= authFailureLineLimit,
+                   line.contains("\"authentication_failed\""),
+                   let marker = authFailureMarker(fromLine: line, since: since) {
+                    authFailures.append(marker)
+                    continue
+                }
                 guard line.contains("\"rate_limit\"") else { continue }
                 guard let lineData = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -101,7 +133,33 @@ nonisolated enum LocalLimitSignalService {
                                              window: classifyWindow(text)))
             }
         }
-        return events.sorted { $0.at < $1.at }
+        return TranscriptSignals(
+            rateLimits: events.sorted { $0.at < $1.at },
+            authFailures: authFailures.sorted { $0.at < $1.at }
+        )
+    }
+
+    /// Longest transcript line the auth probe looks at. The CLI's
+    /// `authentication_failed` lines measured 1,150–1,592 bytes (254 of them,
+    /// 2026-09-24). The long lines are tool output and assistant text, and
+    /// they hold most of a tail's bytes, so skipping them keeps the second
+    /// probe from doubling the walk's CPU.
+    static let authFailureLineLimit = 8_192
+
+    /// One transcript line as a fleet auth-failure marker. It takes the CLI's
+    /// own top-level `"error": "authentication_failed"`, never the phrase
+    /// quoted inside some message's text.
+    static func authFailureMarker(fromLine line: Substring, since: Date) -> FleetAuthFailureMarker? {
+        guard let lineData = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              obj["error"] as? String == StopFailureJournal.authenticationFailed,
+              let sessionId = (obj["sessionId"] as? String) ?? (obj["session_id"] as? String),
+              !sessionId.isEmpty,
+              let timestamp = obj["timestamp"] as? String,
+              let at = ISO8601DateFormatter.withFractional.date(from: timestamp)
+                  ?? ISO8601DateFormatter.plain.date(from: timestamp),
+              at >= since else { return nil }
+        return FleetAuthFailureMarker(at: at, sessionId: sessionId)
     }
 
     private static func messageText(of obj: [String: Any]) -> String {

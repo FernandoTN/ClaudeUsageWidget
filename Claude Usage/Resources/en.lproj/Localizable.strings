@@ -295,6 +295,11 @@
 "notification.projected_exhaustion.message" = "'%@' is estimated at ~%d%% from its recent burn rate, but usage reads keep failing so this is unconfirmed. No automatic switch happens on an estimate — switch manually if your sessions report rate limits.";
 "notification.claude_relogin.title" = "Claude account needs re-login";
 "notification.claude_relogin.message" = "The saved Claude Code login for '%@' has expired and could not be refreshed. Run `claude` and `/login` with that account, then re-sync it in Settings → CLI Account.";
+"notification.claude_login_rejected.title" = "Claude login rejected by the server";
+"notification.claude_login_rejected.active_message" = "The server is refusing the login for '%@', the account the CLI is signed into. Auto-switch moves the CLI to another account with headroom. To bring this one back, run `claude` and `/login` with it.";
+"notification.claude_login_rejected.message" = "The server is refusing the saved login for '%@'. It is out of the switch rotation until you run `claude` and `/login` with that account.";
+"notification.login_recovery_paused.title" = "Automatic login recovery paused";
+"notification.login_recovery_paused.message" = "CLI sessions are still failing authentication on '%@' after several accounts were switched away from in the last 30 minutes. The failures do not follow one login, so no further switches will be made for now. Check the CLI.";
 "notification.codex_relogin.title" = "Codex account needs re-login";
 "notification.codex_relogin.message" = "The saved Codex token for '%@' was revoked. Run `codex login` for that account, then re-sync it in Settings → Codex Account.";
 "notification.codex_relogin.revoked_by_default_home" = "A `codex login` in ~/.codex revoked '%@'. Log that account in under its own home — CODEX_HOME=~/.codex-accounts/<name> codex login — then use Import in Settings → Codex Account.";

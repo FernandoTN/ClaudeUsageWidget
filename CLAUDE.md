@@ -462,6 +462,28 @@ per profile per hour naming which CLI stayed put and where to repair it, and the
 generic re-login alert is no longer force-redelivered on that click (the focus
 moving is itself the feedback the `force` flag existed to provide).
 
+**Server-rejected Claude logins (2026-09-24, 03:31 and 20:31)**: the gate
+above and `hasDeadLogin` judge a login by its STRUCTURE (expired? refresh
+token?), never by the server. A server-invalidated token is structurally
+perfect and generates no usage, so it was never dead, never exhausted and
+never switched away from. The fleet stalled for 3 hours (161 "Login expired"
+across 41 sessions) until a manual `/login`. `ObservedDeadLogins` now holds
+a per-profile, in-memory **verdict** fed by two detectors. (A) Two consecutive
+`.apiUnauthorized` usage reads of the same stored login
+(`credentialRevision`), with another account's `oauth/usage` read succeeding
+after the run began. A 429, URL, DNS or 5xx failure is neutral and never
+condemns. (B) `authentication_failed` markers from **3 distinct sessions in
+120 s** condemn the ACTIVE login, from the transcripts (the tripwire walk
+returns them) and from the StopFailure hook journal
+(`scripts/hooks/cuw-stop-failure.sh`). B skips the 120 s after the active
+login changes, never re-reads acted-on lines, and has a breaker at 3 fleet
+condemnations per 30 min. A verdict is OR-ed into `hasDeadLogin` live (never
+into the fingerprint memo, which recomputes it away). It makes the active
+account exhausted (`isQuotaExhausted(loginCondemned:)`) and keeps the login
+out of `candidateHasHeadroom(loginCondemned:)`. The owner is notified once,
+and the verdict lifts on the next successful read. It never re-authenticates.
+Spec and hook install: `docs/specs/server-rejected-logins.md`.
+
 **Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
 exhausted account 429s its OWN `oauth/usage` endpoint — the widget cannot read
 the account's state exactly when it matters, and the cached percentages
