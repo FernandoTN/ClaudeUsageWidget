@@ -9,10 +9,14 @@
 //
 //  Visual vocabulary (consult log, docs/specs/menubar-redesign.md §6):
 //    filled dot   green / orange / red / purple  measured capacity, suspected
+//                 (green and orange in three shades: brighter = more weekly
+//                 capacity left; red bright = reset within a day)
+//    ringed dot   full-strength fill, light rim  not re-measured for over an
+//                                                hour (never dimmed: brightness
+//                                                means capacity)
 //    hollow ring  grey                           never measured
 //    ×            orange                         dead login — needs /login
 //    dash         grey                           excluded from auto-switch
-//    50 % alpha                                  reading is stale
 //    "+N"                                        more accounts than dot slots
 //    row 3        91→Fjo✓ | Q→Fjo? | Q→Fjo× (red Q: queue head blocked) | →— | ⇄
 //    row 3, right 609·31h  Claude weekly pool · runway to zero (pool alone
@@ -63,6 +67,22 @@ extension MenuBarIconRenderer {
     private static var countsFont: NSFont { FleetBlockFonts.counts }
     private static let dimText = NSColor(calibratedWhite: 0.72, alpha: 1.0)
     private static let brightText = NSColor(calibratedWhite: 1.0, alpha: 0.9)
+    /// The stale ring's rim: near-white, so it contrasts with every fill hue
+    /// and with the dark bar, and reads unlike the grey hollow ring of a
+    /// never-measured account (whose centre is empty).
+    nonisolated static var staleRingColor: NSColor { NSColor(calibratedWhite: 0.96, alpha: 1.0) }
+
+    /// The stale cue on a FILLED dot (owner, 2026-10-06: "Outline after 1
+    /// hour"): a thin rim stroked just inside the dot's edge, over the
+    /// full-strength fill. It stays inside the dot's own rect, so no pitch,
+    /// diameter or reserved width moves.
+    nonisolated static func drawStaleRing(in rect: NSRect) {
+        let width = FleetBlockGeometry.staleRingWidth
+        staleRingColor.setStroke()
+        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: width / 2, dy: width / 2))
+        ring.lineWidth = width
+        ring.stroke()
+    }
 
     // MARK: - Fleet block
 
@@ -132,8 +152,9 @@ extension MenuBarIconRenderer {
             let y = top - d - CGFloat(row) * FleetBlockGeometry.rowPitch
             let rect = NSRect(x: x, y: y, width: d, height: d)
             leftmostX = min(leftmostX, x)
+            // Always full strength: staleness is the ring below, never alpha
+            // (a faded bright green read darker than a fresh medium one).
             let color = Self.readinessColor(member.readiness)
-                .withAlphaComponent(member.isStale ? 0.5 : 1.0)
             switch member.readiness {
             case .unknown:
                 color.setStroke()
@@ -152,9 +173,14 @@ extension MenuBarIconRenderer {
             case .excluded:
                 color.setFill()
                 NSRect(x: rect.minX, y: rect.midY - 0.5, width: d, height: 1).fill()
-            case .ready, .readyLight, .sessionHit, .sessionHitLight, .weeklyHitSoon, .weeklyHit, .suspected:
+            case .ready, .readyUnderHalf, .readyUnderQuarter, .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter,
+                 .weeklyHitSoon, .weeklyHit, .suspected:
                 color.setFill()
                 NSBezierPath(ovalIn: rect).fill()
+                // Only filled dots carry the ring (`drawsFilledDot`): a stale
+                // reading still states capacity. The × and the dash state no
+                // capacity, so the age of their reading is not drawn.
+                if member.isStale { Self.drawStaleRing(in: rect) }
             }
         }
         if overflow > 0 {
@@ -180,11 +206,11 @@ extension MenuBarIconRenderer {
     /// One row, not two: the candidate row owns the bottom of the block and
     /// a second counts row would collide with it in 22 pt.
     private func drawFleetCounts(_ counts: [AccountReadiness: Int], at origin: NSPoint) {
-        // The canonical glyph set (`DesignGlyph`): the two shades of a colour
+        // The canonical glyph set (`DesignGlyph`): the shades of a colour
         // share a cell (● greens, ◐ oranges, ▲ reds, × dead).
         let cells: [(glyph: String, states: [AccountReadiness], tint: AccountReadiness)] = [
-            (DesignGlyph.ready, [.ready, .readyLight], .ready),
-            (DesignGlyph.sessionHit, [.sessionHit, .sessionHitLight], .sessionHit),
+            (DesignGlyph.ready, [.ready, .readyUnderHalf, .readyUnderQuarter], .ready),
+            (DesignGlyph.sessionHit, [.sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter], .sessionHit),
             (DesignGlyph.weeklyHit, [.weeklyHit, .weeklyHitSoon], .weeklyHit),
             (DesignGlyph.dead, [.dead], .dead),
         ]
@@ -233,7 +259,7 @@ extension MenuBarIconRenderer {
             switch summary.activeReadiness {
             case .suspected?: color = DesignRole.suspected.nsColor
             case .weeklyHit?, .weeklyHitSoon?: color = StatusBarUIManager.weeklyMaxedLabelColor
-            case .sessionHit?, .sessionHitLight?: color = DesignRole.caution.nsColor
+            case .sessionHit?, .sessionHitUnderHalf?, .sessionHitUnderQuarter?: color = DesignRole.caution.nsColor
             default: color = Self.brightText
             }
             segments.append(RowSegment(text: "\(digits)", color: color, gapAfter: gap))
@@ -245,7 +271,8 @@ extension MenuBarIconRenderer {
             segments.append(RowSegment(text: DesignGlyph.next, color: arrowColor))
             let labelColor: NSColor
             switch next.readiness {
-            case .ready, .readyLight, .sessionHit, .sessionHitLight, .weeklyHit, .weeklyHitSoon:
+            case .ready, .readyUnderHalf, .readyUnderQuarter, .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter,
+                 .weeklyHit, .weeklyHitSoon:
                 labelColor = next.readiness.role.nsColor
             default: labelColor = Self.dimText
             }

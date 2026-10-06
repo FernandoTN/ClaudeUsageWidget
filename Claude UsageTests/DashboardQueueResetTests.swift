@@ -235,7 +235,9 @@ final class DashboardQueueResetTests: XCTestCase {
     func testRosterGroupFallsBackOnReadinessWithoutASelection() {
         XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .ready), .nextUp)
         XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .unknown), .nextUp)
-        XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .sessionHitLight), .capacityReturns)
+        XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .sessionHitUnderHalf), .capacityReturns)
+        XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .sessionHitUnderQuarter), .capacityReturns)
+        XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .readyUnderQuarter), .nextUp)
         XCTAssertEqual(DashboardSnapshot.rosterGroup(status: nil, readiness: .suspected), .notSwitchable)
         XCTAssertEqual(DashboardSnapshot.rosterGroup(status: .duplicateOfOwner(ownerName: "Atlas"), readiness: .ready), .notSwitchable)
         XCTAssertEqual(DashboardSnapshot.rosterGroup(status: .blocked(.dead), readiness: .dead), .notSwitchable)

@@ -109,7 +109,8 @@ enum DashboardFormatting {
     static func chip(_ chip: RowChip, now: Date = Date()) -> String {
         switch chip {
         case .ready: return "ready"
-        case .readyLight: return "ready · weekly under half"
+        case .readyUnderHalf: return "ready · weekly under half"
+        case .readyUnderQuarter: return "ready · weekly under a quarter"
         case .nearLimit: return "near limit"
         case .sessionExhausted(let resetAt): return "session exhausted · \(resetAt.timeRemainingString(from: now))"
         case .weeklyMaxed: return "weekly maxed"
@@ -146,10 +147,11 @@ enum DashboardFormatting {
     /// header (round 1, D3): "3 ready · 1 near limit · 4 exhausted · 1 dead · 2 duplicate".
     static func counts(_ counts: FleetCounts.Provider) -> String {
         // One entry per HUE for the header line (the dot carries the shade);
-        // the six-way split lives on hover (`DesignLegend.line`) and in the
+        // the eight-way split lives on hover (`DesignLegend.line`) and in the
         // tooltip sentence.
         let groups: [(String, [AccountReadiness])] = [
-            ("ready", [.ready, .readyLight]), ("session hit", [.sessionHit, .sessionHitLight]),
+            ("ready", [.ready, .readyUnderHalf, .readyUnderQuarter]),
+            ("session hit", [.sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter]),
             ("weekly hit", [.weeklyHitSoon, .weeklyHit]), ("suspected", [.suspected]),
             ("unmeasured", [.unknown]), ("excluded", [.excluded]), ("dead", [.dead]),
         ]

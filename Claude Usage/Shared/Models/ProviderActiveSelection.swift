@@ -94,11 +94,12 @@ enum ActiveVocabulary {
     /// in readiness order, zero counts omitted; the glyph legend moves to hover.
     static func countsWords(_ counts: FleetCounts.Provider) -> String {
         var parts: [String] = []
-        // One line at the sidebar's width: each light/bright pair merges by
-        // hue (the dot itself carries the nuance); `countsSentence` keeps all six.
+        // One line at the sidebar's width: the shades of a hue merge (the
+        // dot itself carries the nuance); `countsSentence` keeps all eight.
         let hues: [([AccountReadiness], String)] = [
-            ([.ready, .readyLight], "counts.ready"), ([.unknown], "counts.unknown"), ([.suspected], "counts.suspected"),
-            ([.sessionHit, .sessionHitLight], "counts.session_hit_short"), ([.weeklyHitSoon, .weeklyHit], "counts.weekly_hit_short"),
+            ([.ready, .readyUnderHalf, .readyUnderQuarter], "counts.ready"), ([.unknown], "counts.unknown"), ([.suspected], "counts.suspected"),
+            ([.sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter], "counts.session_hit_short"),
+            ([.weeklyHitSoon, .weeklyHit], "counts.weekly_hit_short"),
             ([.excluded], "counts.excluded"), ([.dead], "counts.dead"),
         ]
         for (states, key) in hues {
@@ -121,9 +122,11 @@ enum ActiveVocabulary {
     static func countsKey(_ readiness: AccountReadiness) -> String {
         switch readiness {
         case .ready: return "counts.ready"
-        case .readyLight: return "counts.ready_light"
+        case .readyUnderHalf: return "counts.ready_under_half"
+        case .readyUnderQuarter: return "counts.ready_under_quarter"
         case .sessionHit: return "counts.session_hit"
-        case .sessionHitLight: return "counts.session_hit_light"
+        case .sessionHitUnderHalf: return "counts.session_hit_under_half"
+        case .sessionHitUnderQuarter: return "counts.session_hit_under_quarter"
         case .weeklyHitSoon: return "counts.weekly_hit_soon"
         case .weeklyHit: return "counts.weekly_hit"
         case .unknown: return "counts.unknown"

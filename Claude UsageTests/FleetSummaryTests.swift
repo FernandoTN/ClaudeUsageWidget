@@ -64,17 +64,71 @@ final class FleetSummaryTests: XCTestCase {
         affirmed.rateLimitedUntil = now.addingTimeInterval(2000)
         XCTAssertEqual(classify(affirmed), .sessionHit, "a server-affirmed stamp is a session hit")
         XCTAssertEqual(classify(usage(session: 95)), .sessionHit)
-        XCTAssertEqual(classify(usage(session: 95, weekly: 60)), .sessionHitLight, "session hit with the weekly half gone: faded orange")
-        XCTAssertEqual(classify(usage(session: 94.9, weekly: 50)), .readyLight, "session available, weekly at half: light green")
+        XCTAssertEqual(classify(usage(session: 95, weekly: 60)), .sessionHitUnderHalf, "session hit with the weekly half gone: medium orange")
+        XCTAssertEqual(classify(usage(session: 94.9, weekly: 50)), .readyUnderHalf, "session available, weekly at half: medium green")
         XCTAssertEqual(classify(usage(session: 94.9, weekly: 49)), .ready)
         var rolled = usage(session: 100, weekly: 10)
         rolled.sessionResetTime = now.addingTimeInterval(-60)
         XCTAssertEqual(classify(rolled), .ready, "an expired session window counts as zero")
     }
 
+    /// Three shades for green AND orange (owner, 2026-10-06: "the brighter
+    /// the more capacity"), by capacity left = min(weekly left, Fable left):
+    /// more than 50 brightest, more than 25 medium, 25 or less dullest. Each
+    /// boundary is driven by the weekly window alone, by Fable alone, and by
+    /// the smaller of the two.
+    func testCapacityLeftPicksOneOfThreeShadesForGreenAndOrange() {
+        let bands: [(left: Double, green: AccountReadiness, orange: AccountReadiness)] = [
+            (51, .ready, .sessionHit), (50, .readyUnderHalf, .sessionHitUnderHalf),
+            (26, .readyUnderHalf, .sessionHitUnderHalf), (25, .readyUnderQuarter, .sessionHitUnderQuarter),
+            (24, .readyUnderQuarter, .sessionHitUnderQuarter),
+        ]
+        for band in bands {
+            let used = 100 - band.left
+            let drivers: [(String, Double, Double?)] = [
+                ("weekly alone", used, nil),
+                ("Fable alone", 10, used),
+                ("weekly, the smaller of both", used, used - 10),
+                ("Fable, the smaller of both", used - 10, used),
+            ]
+            for (driver, weekly, fable) in drivers {
+                XCTAssertEqual(classify(usage(session: 10, weekly: weekly, fable: fable)), band.green,
+                               "\(band.left) left, \(driver): session available")
+                XCTAssertEqual(classify(usage(session: 95, weekly: weekly, fable: fable)), band.orange,
+                               "\(band.left) left, \(driver): session hit")
+            }
+        }
+        // A passed weekly reset is a full window again: 100 left.
+        var rolledWeekly = usage(session: 10, weekly: 90)
+        rolledWeekly.weeklyResetTime = now.addingTimeInterval(-60)
+        XCTAssertEqual(classify(rolledWeekly), .ready, "the weekly window rolled over: 100 left")
+        rolledWeekly.sessionPercentage = 95
+        XCTAssertEqual(classify(rolledWeekly), .sessionHit)
+        var rolledFable = usage(session: 10, weekly: 10, fable: 90)
+        rolledFable.fableWeeklyResetTime = now.addingTimeInterval(-60)
+        XCTAssertEqual(classify(rolledFable), .ready, "the Fable window rolled over: 100 left")
+        // Red keeps its two shades by reset distance, untouched by the bands.
+        var soon = usage(weekly: 99)
+        soon.weeklyResetTime = now.addingTimeInterval(3600)
+        XCTAssertEqual(classify(soon), .weeklyHitSoon, "weekly hit, reset within a day: bright red")
+        XCTAssertEqual(classify(usage(weekly: 99)), .weeklyHit, "weekly hit, reset days away: light red")
+    }
+
+    /// The bar's ring and Settings' ring share one hour (owner: "Outline
+    /// after 1 hour"): 59 minutes old is fresh, 61 is stale, never measured
+    /// is neither — that is the hollow ring.
+    func testDisplayStalenessIsOneHour() {
+        XCTAssertEqual(ProviderSummary.displayStaleAfter, 3600)
+        XCTAssertFalse(ProviderSummary.isDisplayStale(measuredAt: now.addingTimeInterval(-59 * 60), now: now))
+        XCTAssertTrue(ProviderSummary.isDisplayStale(measuredAt: now.addingTimeInterval(-61 * 60), now: now))
+        XCTAssertFalse(ProviderSummary.isDisplayStale(measuredAt: nil, now: now))
+        XCTAssertEqual(ProviderSummary.activeStaleAfter, 600, "the active tile keeps its own ten-minute rule")
+    }
+
     func testWeeklyOnlyProviderIgnoresSessionAndUsesWeeklyRules() {
         XCTAssertEqual(classify(usage(session: 100, weekly: 20, sessionWindow: false)), .ready)
-        XCTAssertEqual(classify(usage(weekly: 90, sessionWindow: false)), .readyLight)
+        XCTAssertEqual(classify(usage(weekly: 60, sessionWindow: false)), .readyUnderHalf)
+        XCTAssertEqual(classify(usage(weekly: 90, sessionWindow: false)), .readyUnderQuarter)
         XCTAssertEqual(classify(usage(weekly: 99, sessionWindow: false)), .weeklyHit)
         var soon = usage(weekly: 99, sessionWindow: false)
         soon.weeklyResetTime = now.addingTimeInterval(3600)
@@ -127,11 +181,11 @@ final class FleetSummaryTests: XCTestCase {
 
     func testMembersExcludeTheActiveAccountAndKeepPaintOrder() {
         let a = UUID(), b = UUID(), c = UUID()
-        let s = build(members: [a, b, c], active: b, readiness: [a: .ready, b: .readyLight, c: .dead],
+        let s = build(members: [a, b, c], active: b, readiness: [a: .ready, b: .readyUnderHalf, c: .dead],
                       keyed: 10, next: candidate(a), activeMeasured: now)
         XCTAssertEqual(s.members.map(\.id), [a, c])
         XCTAssertEqual(s.members.map(\.readiness), [.ready, .dead])
-        XCTAssertEqual(s.activeReadiness, .readyLight)
+        XCTAssertEqual(s.activeReadiness, .readyUnderHalf)
         XCTAssertEqual(s.counts, [.ready: 1, .dead: 1])
         XCTAssertEqual(s.alert, .deadLogins)
     }
@@ -156,7 +210,7 @@ final class FleetSummaryTests: XCTestCase {
         let heldDead = claude("Held-Dead", hidden: true)
         let profiles = [owner, ready, quiet, heldReady, heldDead]
         let readiness: [UUID: AccountReadiness] = [
-            owner.id: .ready, ready.id: .ready, quiet.id: .readyLight, heldReady.id: .ready, heldDead.id: .dead,
+            owner.id: .ready, ready.id: .ready, quiet.id: .readyUnderHalf, heldReady.id: .ready, heldDead.id: .dead,
         ]
 
         let order = StatusBarUIManager.fleetPaintOrder(for: profiles, activeIds: [owner.id], now: now)
@@ -165,7 +219,7 @@ final class FleetSummaryTests: XCTestCase {
                       next: candidate(heldReady.id), activeMeasured: now)
         XCTAssertEqual(s.activeId, owner.id, "the hidden owner keeps its active block")
         XCTAssertEqual(Set(s.members.map(\.id)), [ready.id, quiet.id])
-        XCTAssertEqual(s.counts, [.ready: 1, .readyLight: 1])
+        XCTAssertEqual(s.counts, [.ready: 1, .readyUnderHalf: 1])
         XCTAssertEqual(s.dotMembers().overflow, 0)
         XCTAssertEqual(s.markCount, 3, "the mark counts what the bar shows: 5 accounts, 2 hidden")
         XCTAssertNil(s.alert, "a dead login on a hidden account raises no bar alert")

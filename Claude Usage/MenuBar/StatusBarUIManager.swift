@@ -2181,9 +2181,11 @@ final class StatusBarUIManager {
         let shade: String
         switch readiness {
         case .ready: shade = "bright green"
-        case .readyLight: shade = "light green"
+        case .readyUnderHalf: shade = "medium green"
+        case .readyUnderQuarter: shade = "dull green"
         case .sessionHit: shade = "bright orange"
-        case .sessionHitLight: shade = "faded orange"
+        case .sessionHitUnderHalf: shade = "medium orange"
+        case .sessionHitUnderQuarter: shade = "dull orange"
         case .weeklyHitSoon: shade = "bright red"
         case .weeklyHit: shade = "light red"
         case .suspected: shade = "purple"
@@ -2433,12 +2435,11 @@ final class StatusBarUIManager {
         // Readiness for every profile of every painted provider — through the
         // dot memory, so a dot changes colour only on server-affirmed
         // evidence (owner round 2026-09-04, B3), with one log line per change.
-        // Dimming waits ten minutes (the active tile's own threshold): at
-        // three, background accounts fetched every few minutes blinked.
+        // The stale ring waits an hour (`ProviderSummary.displayStaleAfter`):
+        // background accounts are re-measured only every 10–30 minutes, and
+        // the old ten-minute fade covered most of the fleet.
         var readiness: [UUID: AccountReadiness] = [:]
         var stale: Set<UUID> = []
-        var dotThresholds = thresholds
-        dotThresholds.staleAfter = ProviderSummary.activeStaleAfter
         var painted: Set<UUID> = []
         for profile in profiles where groupItems[profile.providerKind] != nil {
             painted.insert(profile.id)
@@ -2465,7 +2466,7 @@ final class StatusBarUIManager {
                     "Fleet dot \(profile.name): \(change.from.map { Self.dotWords($0) } ?? "—") → "
                         + "\(Self.dotWords(change.to, usage: profile.claudeUsage, now: now)) — \(change.reason)")
             }
-            if AccountReadiness.isStale(profile.claudeUsage, thresholds: dotThresholds, now: now) {
+            if ProviderSummary.isDisplayStale(measuredAt: profile.claudeUsage?.lastUpdated, now: now) {
                 stale.insert(profile.id)
             }
         }

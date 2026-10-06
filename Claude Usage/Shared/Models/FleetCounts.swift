@@ -55,7 +55,7 @@ struct FleetCounts: Hashable {
         func count(_ readiness: AccountReadiness) -> Int { byReadiness[readiness] ?? 0 }
 
         /// Measured and has headroom.
-        var measuredHeadroom: Int { count(.ready) + count(.readyLight) }
+        var measuredHeadroom: Int { count(.ready) + count(.readyUnderHalf) + count(.readyUnderQuarter) }
         /// Exactly what the auto-switch walk would accept as a target: a
         /// never-measured account is a legal target (`blocksSwitchTarget`).
         var autoSwitchEligible: Int { measuredHeadroom + count(.unknown) }

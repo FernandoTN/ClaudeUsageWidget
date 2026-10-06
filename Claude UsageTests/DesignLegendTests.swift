@@ -2,12 +2,14 @@
 //  DesignLegendTests.swift
 //  Claude UsageTests
 //
-//  The owner's colour scheme (2026-09-04) pairs a bright and a light shade
-//  per hue. He found the light red and the light green alike, so the light
-//  shades keep the hue saturated and drop the lightness, and this test
-//  measures the pairs in CIE Lab: light red vs light green well apart (also
-//  under protan / deutan simulation), and each light shade well apart from
-//  its bright one — in both appearances.
+//  The owner's colour scheme (2026-09-04) gives each hue a bright and a
+//  duller shade; since 2026-10-06 green and orange have three (brighter =
+//  more weekly capacity left). The owner found the light red and the light
+//  green alike, so the duller shades keep the hue saturated and drop the
+//  lightness, and this test measures them in CIE Lab: light red vs every
+//  green well apart (also under protan / deutan simulation), every shade
+//  well apart from the others of its hue, and lightness strictly falling
+//  bright → medium → dull — in both appearances.
 //
 
 import AppKit
@@ -55,39 +57,80 @@ final class DesignLegendTests: XCTestCase {
         NSAppearance(named: name)!.performAsCurrentDrawingAppearance(body)
     }
 
-    func testLightRedAndLightGreenStayApartInBothAppearancesAndForDichromats() {
+    /// Bright → medium → dull, per hue. Red keeps its two shades.
+    private let greens: [DesignRole] = [.ready, .readyMedium, .readyDull]
+    private let oranges: [DesignRole] = [.caution, .cautionMedium, .cautionDull]
+
+    func testLightRedAndEveryGreenStayApartInBothAppearancesAndForDichromats() {
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
             inAppearance(appearance) {
-                let red = DesignRole.blockingLight.nsColor, green = DesignRole.readyLight.nsColor
-                for sim in [nil, "protan", "deutan"] {
-                    XCTAssertGreaterThanOrEqual(deltaE(red, green, simulate: sim), 20,
-                                                "light red vs light green (\(appearance.rawValue), \(sim ?? "normal"))")
+                let red = DesignRole.blockingLight.nsColor
+                for green in greens {
+                    for sim in [nil, "protan", "deutan"] {
+                        XCTAssertGreaterThanOrEqual(deltaE(red, green.nsColor, simulate: sim), 20,
+                                                    "light red vs \(green) (\(appearance.rawValue), \(sim ?? "normal"))")
+                    }
                 }
-                XCTAssertGreaterThanOrEqual(deltaE(DesignRole.cautionLight.nsColor, green), 20, "faded orange vs light green")
+                for (orange, green) in zip(oranges, greens) {
+                    XCTAssertGreaterThanOrEqual(deltaE(orange.nsColor, green.nsColor), 20, "\(orange) vs \(green) (\(appearance.rawValue))")
+                }
             }
         }
     }
 
-    func testEachLightShadeIsWellApartFromItsBrightOne() {
+    /// Every shade of a hue is well apart from every other shade of it —
+    /// for dichromats too, since the shades differ mostly in lightness.
+    func testEveryShadeIsWellApartFromTheOthersOfItsHue() {
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
             inAppearance(appearance) {
-                let pairs: [(DesignRole, DesignRole)] = [(.ready, .readyLight), (.caution, .cautionLight), (.blocking, .blockingLight)]
-                for (bright, light) in pairs {
-                    XCTAssertGreaterThanOrEqual(deltaE(bright.nsColor, light.nsColor), 10,
-                                                "\(bright) vs \(light) (\(appearance.rawValue))")
+                for ramp in [greens, oranges] {
+                    for (i, a) in ramp.enumerated() {
+                        for b in ramp.dropFirst(i + 1) {
+                            for sim in [nil, "protan", "deutan"] {
+                                XCTAssertGreaterThanOrEqual(deltaE(a.nsColor, b.nsColor, simulate: sim), 10,
+                                                            "\(a) vs \(b) (\(appearance.rawValue), \(sim ?? "normal"))")
+                            }
+                        }
+                    }
+                }
+                XCTAssertGreaterThanOrEqual(deltaE(DesignRole.blocking.nsColor, DesignRole.blockingLight.nsColor), 10,
+                                            "bright red vs light red (\(appearance.rawValue))")
+            }
+        }
+    }
+
+    /// Brightness means capacity (owner, 2026-10-06): within green and within
+    /// orange, CIE L* steps DOWN bright → medium → dull in BOTH appearances.
+    /// The regression guard for the Light-mode swap: the old palette's
+    /// `adaptiveGreen` turned forest green (L* 40) in Light mode, darker than
+    /// the old light shade (L* 62), so Settings and the popover painted the
+    /// two greens inverted. This test failed on that palette.
+    func testShadesStepDownInLightnessInBothAppearances() {
+        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+            inAppearance(appearance) {
+                for ramp in [greens, oranges] {
+                    let lightness = ramp.map { lab($0.nsColor).l }
+                    for (brighter, duller) in zip(lightness, lightness.dropFirst()) {
+                        XCTAssertGreaterThan(brighter, duller, "\(ramp) L* \(lightness) (\(appearance.rawValue))")
+                    }
                 }
             }
+        }
+        // The top green on the dark bar is the one the owner already reads as
+        // bright green, or brighter — never duller.
+        inAppearance(.darkAqua) {
+            XCTAssertGreaterThanOrEqual(lab(DesignRole.ready.nsColor).l, lab(NSColor.adaptiveGreen).l - 0.01)
         }
     }
 
     func testRolesAndGlyphsFollowTheOwnersScheme() {
         XCTAssertEqual(AccountReadiness.weeklyHitSoon.role, .blocking, "bright red = weekly hit with the reset within a day")
         XCTAssertEqual(AccountReadiness.weeklyHit.role, .blockingLight)
-        XCTAssertEqual(AccountReadiness.sessionHit.role, .caution)
-        XCTAssertEqual(AccountReadiness.sessionHitLight.role, .cautionLight)
-        XCTAssertEqual(AccountReadiness.ready.role, .ready)
-        XCTAssertEqual(AccountReadiness.readyLight.role, .readyLight)
+        XCTAssertEqual([AccountReadiness.sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter].map(\.role), oranges)
+        XCTAssertEqual([AccountReadiness.ready, .readyUnderHalf, .readyUnderQuarter].map(\.role), greens)
         XCTAssertEqual(AccountReadiness.legendOrder.count, AccountReadiness.allCases.count)
         XCTAssertEqual(Set(AccountReadiness.legendOrder), Set(AccountReadiness.allCases))
+        XCTAssertTrue(DesignLegend.line.contains("ready, weekly under a quarter"), "the legend names every shade")
+        XCTAssertTrue(DesignLegend.line.contains(DesignLegend.staleRing), "the legend explains the stale ring")
     }
 }

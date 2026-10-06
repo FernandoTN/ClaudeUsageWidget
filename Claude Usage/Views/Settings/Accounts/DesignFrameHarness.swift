@@ -90,7 +90,7 @@ enum DesignFrameHarness {
             ], totalEarnedCount: 3, immediateResetPurchaseEligible: nil, fetchedAt: now.addingTimeInterval(-120))
             emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .weeklyHit, preloaded: credits).padding(16),
                  width: 560, name: "codex-resets-at-limit", to: dir, index: &index)
-            emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .readyLight).padding(16),
+            emit(CodexResetsCard(profile: codex, measurement: UsageMeasurement(provenance: .ownEndpoint, measuredAt: now.addingTimeInterval(-30)), readiness: .readyUnderHalf).padding(16),
                  width: 560, name: "codex-resets-headroom", to: dir, index: &index)
         }
         emit(ClaudeLimitResetsCard(usage: Fixture.withLimitResets(Fixture.usage(session: 100, weekly: 60)), now: now).padding(16), width: 560, name: "claude-limit-resets-known", to: dir, index: &index)
@@ -189,8 +189,9 @@ enum DesignFrameHarness {
                     claudeUsage: usage(weekly: 95, sessionWindow: false, resets: 2, usableNow: 2)),
             Profile(name: "Juniper (dev)", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex-b@example.com", codexAccountId: "c-2",
                     claudeUsage: usage(weekly: 10, sessionWindow: false)),
+            // Two hours since its last reading: the stale ring.
             Profile(name: "Petrel", codexCredentialsJSON: "{\"tokens\":{\"access_token\":\"x\"}}", codexEmail: "codex@example.com", codexAccountId: "c-3",
-                    claudeUsage: usage(weekly: 10, sessionWindow: false)),
+                    claudeUsage: usage(weekly: 10, sessionWindow: false, age: 2 * 3600)),
             Profile(name: "Grok", grokCredentialsJSON: "{\"k\":{\"key\":\"x\"}}", grokEmail: "grok@x.ai",
                     claudeUsage: usage(weekly: 12, sessionWindow: false)),
         ]
