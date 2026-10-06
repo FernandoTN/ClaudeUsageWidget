@@ -47,7 +47,16 @@ final class ImportGateTests: XCTestCase {
         XCTAssertEqual(FleetCounts.stripGlyphs.first { $0.0 == .dead }?.1, DesignGlyph.dead)
         XCTAssertEqual(FleetCounts.stripGlyphs.first { $0.0 == .suspected }?.1, DesignGlyph.suspected)
         XCTAssertEqual(ActiveSelectorMenuModel.tint(for: AccountReadiness.dead), .red, "dead is blocking red, not orange (G1)")
-        XCTAssertEqual(ActiveSelectorMenuModel.tint(for: AccountReadiness.readyLight), .green, "light green is still green")
-        XCTAssertEqual(ActiveSelectorMenuModel.tint(for: AccountReadiness.sessionHit), .orange, "a session hit is orange")
+        for shade in [AccountReadiness.ready, .readyUnderHalf, .readyUnderQuarter] {
+            XCTAssertEqual(ActiveSelectorMenuModel.tint(for: shade), .green, "every green shade is still green: \(shade)")
+            XCTAssertEqual(ActiveSelectorMenuModel.glyph(for: shade), DesignGlyph.ready)
+            XCTAssertFalse(shade.blocksSwitchTarget)
+        }
+        for shade in [AccountReadiness.sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter] {
+            XCTAssertEqual(ActiveSelectorMenuModel.tint(for: shade), .orange, "a session hit is orange in every shade: \(shade)")
+            XCTAssertEqual(ActiveSelectorMenuModel.glyph(for: shade), DesignGlyph.sessionHit)
+            XCTAssertTrue(shade.blocksSwitchTarget)
+            XCTAssertTrue(shade.isSessionHit)
+        }
     }
 }

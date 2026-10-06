@@ -203,10 +203,19 @@ struct AccountsRosterRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            // Full strength always — brightness means capacity; a reading over
+            // an hour old gets the bar's stale ring, hugging the glyph inside
+            // its 10 pt slot (a text glyph has no fixed ink edge to inset into).
             Text(ActiveSelectorMenuModel.glyph(for: row.readiness))
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(row.readiness.role.color.opacity(row.isStale ? 0.5 : 1))
+                .foregroundColor(row.readiness.role.color)
                 .frame(width: 10)
+                .overlay {
+                    if row.showsStaleRing {
+                        Circle().strokeBorder(Color.primary.opacity(0.7), lineWidth: 1).frame(width: 10, height: 10)
+                    }
+                }
+                .help(row.showsStaleRing ? DesignLegend.staleRing : "")
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
                 Text(row.name)
@@ -521,10 +530,11 @@ struct AccountOverviewTab: View {
     private func chip(for readiness: AccountReadiness) -> RowChip {
         switch readiness {
         case .ready: return .ready
-        case .readyLight: return .readyLight
+        case .readyUnderHalf: return .readyUnderHalf
+        case .readyUnderQuarter: return .readyUnderQuarter
         case .unknown: return .unmeasured
         case .suspected: return .suspected(lastMeasured: profile.claudeUsage?.sessionPercentage ?? 0, at: profile.claudeUsage?.lastUpdated ?? Date())
-        case .sessionHit, .sessionHitLight: return .sessionExhausted(resetAt: profile.claudeUsage?.sessionResetTime ?? Date())
+        case .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter: return .sessionExhausted(resetAt: profile.claudeUsage?.sessionResetTime ?? Date())
         case .weeklyHit, .weeklyHitSoon: return .weeklyMaxed
         case .excluded: return profile.isAutoSwitchEnabled ? .freePlan : .autoSwitchOff
         case .dead: return .deadLogin

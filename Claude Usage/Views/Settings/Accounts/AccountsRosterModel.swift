@@ -37,6 +37,8 @@ enum AccountsRosterModel {
         var name: String
         var email: String?
         var readiness: AccountReadiness
+        /// Reading older than `ProviderSummary.displayStaleAfter` (the bar's
+        /// rule): the glyph gets the stale ring, never a fade.
         var isStale: Bool
         /// Keyed percentage as text: session for Claude, weekly for Codex/Grok;
         /// "W!" / "S!" when maxed; "—" when never measured.
@@ -49,6 +51,9 @@ enum AccountsRosterModel {
         /// because a held account usually carries "excluded" as well.
         var hiddenFromBar: Bool = false
         var isDead: Bool { readiness == .dead }
+        /// The glyph gets the stale ring: a stale reading of a state that
+        /// states capacity (the bar rings the same dots).
+        var showsStaleRing: Bool { isStale && readiness.drawsFilledDot }
         /// Words the filter matches besides name/email.
         var stateWords: [String]
     }
@@ -79,11 +84,13 @@ enum AccountsRosterModel {
     ///   - selections: the per-provider selection snapshot.
     ///   - profiles: for emails and the alphabetical sort.
     ///   - filter: matched case-insensitively against name, email and state words.
+    ///   - now: the stale ring's clock.
     static func sections(
         selections: [ProviderActiveSelection],
         profiles: [Profile],
         sort: Sort,
-        filter: String
+        filter: String,
+        now: Date = Date()
     ) -> [Section] {
         let byId = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
@@ -101,9 +108,12 @@ enum AccountsRosterModel {
             for candidate in selection.candidates {
                 let badge = self.badge(for: candidate)
                 let hidden = byId[candidate.id].map { !$0.isShownOnMenuBar } ?? false
+                // The bar's one-hour rule, not the selection's own three-minute
+                // `isStale`: the ring has to mean the same thing on both.
                 rows.append(Row(
                     id: candidate.id, name: candidate.name, email: byId[candidate.id].flatMap(email(of:)),
-                    readiness: candidate.readiness, isStale: candidate.isStale,
+                    readiness: candidate.readiness,
+                    isStale: ProviderSummary.isDisplayStale(measuredAt: candidate.measurement?.measuredAt, now: now),
                     percentageText: percentageText(candidate.gauges, readiness: candidate.readiness),
                     badge: badge, needsRelogin: candidate.needsRelogin,
                     hiddenFromBar: hidden,
@@ -185,10 +195,10 @@ enum AccountsRosterModel {
         var words: [String] = []
         switch readiness {
         case .ready: words.append("ready")
-        case .readyLight: words += ["ready", "low"]
+        case .readyUnderHalf, .readyUnderQuarter: words += ["ready", "low"]
         case .unknown: words += ["unknown", "unmeasured"]
         case .suspected: words += ["suspected", "blind"]
-        case .sessionHit, .sessionHitLight: words += ["exhausted", "session"]
+        case .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter: words += ["exhausted", "session"]
         case .weeklyHit, .weeklyHitSoon: words += ["exhausted", "maxed", "weekly"]
         case .excluded: words.append("excluded")
         case .dead: words.append("dead")

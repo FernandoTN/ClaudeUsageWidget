@@ -51,7 +51,8 @@ struct SuspectedCaveat: Hashable {
 /// the view formats dates and numbers for the locale.
 enum RowChip: Hashable {
     case ready
-    case readyLight
+    case readyUnderHalf
+    case readyUnderQuarter
     case nearLimit
     case sessionExhausted(resetAt: Date)
     case weeklyMaxed
@@ -687,8 +688,9 @@ struct DashboardSnapshot: Hashable {
         case .unknown: chip = .unmeasured
         case .suspected: chip = .suspected(lastMeasured: usage?.sessionPercentage ?? 0, at: usage?.lastUpdated ?? now)
         case .ready: chip = .ready
-        case .readyLight: chip = .readyLight
-        case .sessionHit, .sessionHitLight:
+        case .readyUnderHalf: chip = .readyUnderHalf
+        case .readyUnderQuarter: chip = .readyUnderQuarter
+        case .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter:
             if let usage, let until = usage.rateLimitedUntil, until > now, usage.rateLimitedInferred != true {
                 chip = .rateLimited(until: until)
             } else {

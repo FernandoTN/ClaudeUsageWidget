@@ -198,12 +198,40 @@ final class AccountsRosterModelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Constants.WindowSizes.settingsMinimum.width, 720, "every legacy page's 520 pt content still fits")
     }
 
-    func testCensusWordsMergeEachLightAndBrightPairByHue() {
-        let counts = FleetCounts.Provider(provider: .claude, profiles: 9, distinctAccounts: 9, identifiedAccounts: 9,
-                                          byReadiness: [.ready: 2, .readyLight: 3, .sessionHit: 1, .sessionHitLight: 1, .weeklyHitSoon: 1, .weeklyHit: 1],
+    func testCensusWordsMergeEveryShadeOfAHue() {
+        let counts = FleetCounts.Provider(provider: .claude, profiles: 11, distinctAccounts: 11, identifiedAccounts: 11,
+                                          byReadiness: [.ready: 2, .readyUnderHalf: 3, .readyUnderQuarter: 1, .sessionHit: 1,
+                                                        .sessionHitUnderHalf: 1, .sessionHitUnderQuarter: 1, .weeklyHitSoon: 1, .weeklyHit: 1],
                                           excludedByToggle: 0, freePlan: 0, stale: 0, duplicateProfiles: 0, duplicateGroups: [], needsRelogin: 0,
-                                          queued: 0, onBar: 0, pinned: 0, loginLive: 9, capacityRemaining: 0)
-        XCTAssertEqual(ActiveVocabulary.countsWords(counts).replacingOccurrences(of: "\u{00A0}", with: " "), "5 ready · 2 session hit · 2 weekly hit",
-                       "the dot carries light vs bright; the one-line census merges by hue")
+                                          queued: 0, onBar: 0, pinned: 0, loginLive: 11, capacityRemaining: 0)
+        XCTAssertEqual(ActiveVocabulary.countsWords(counts).replacingOccurrences(of: "\u{00A0}", with: " "), "6 ready · 3 session hit · 2 weekly hit",
+                       "the dot carries the shade; the one-line census merges by hue")
+        XCTAssertEqual(counts.measuredHeadroom, 6, "every green shade has headroom")
+        XCTAssertTrue(ActiveVocabulary.countsSentence(counts).contains("1 ready, weekly under a quarter"),
+                      "the sentence keeps every shade: \(ActiveVocabulary.countsSentence(counts))")
+    }
+
+    /// Settings → Accounts rings a glyph exactly when the bar rings its dot:
+    /// a reading over an hour old (59 minutes is fresh, 61 stale), on a state
+    /// that states capacity. The colour is never faded for it.
+    func testStaleRingFollowsTheBarsOneHourRule() {
+        let owner = claude("Atlas", usage(session: 10, age: 2 * 3600))
+        let fresh = claude("Cedar", usage(session: 10, age: 59 * 60))
+        let stale = claude("Delta", usage(session: 10, age: 61 * 60))
+        let staleMaxed = claude("Ember", usage(weekly: 99.5, age: 61 * 60))
+        let staleDead = claude("Grove", usage(session: 10, age: 61 * 60))
+        let unmeasured = claude("Lumen", nil)
+        let profiles = [owner, fresh, stale, staleMaxed, staleDead, unmeasured]
+        let sel = selections(profiles, active: [owner.id], dead: [staleDead.id])
+        let byName = Dictionary(uniqueKeysWithValues: rows(Model.sections(selections: sel, profiles: profiles, sort: .bar, filter: "", now: now), .claude)
+            .map { ($0.name, $0) })
+        XCTAssertEqual(byName["Cedar"]?.isStale, false, "59 minutes old is fresh")
+        XCTAssertEqual(byName["Cedar"]?.showsStaleRing, false)
+        XCTAssertEqual(byName["Delta"]?.isStale, true, "61 minutes old is stale")
+        XCTAssertEqual(byName["Delta"]?.showsStaleRing, true)
+        XCTAssertEqual(byName["Ember"]?.showsStaleRing, true, "a stale limit hit is still a filled glyph")
+        XCTAssertEqual(byName["Grove"]?.showsStaleRing, false, "the × states no capacity")
+        XCTAssertEqual(byName["Lumen"]?.isStale, false, "never measured is the hollow ring, not stale")
+        XCTAssertEqual(byName["Atlas"]?.isStale, false, "the active account keeps its own tile rule")
     }
 }

@@ -302,7 +302,8 @@ final class FrameRenderTests: XCTestCase {
             ("dots-22-hidden-7", heldHidden, .fleetDots, "the same 22 accounts with 7 weekly-maxed ones hidden from the menu bar: 14 dots in 7 × 2, mark 15 (compare dots-21)"),
             ("counts-22-hidden-7", heldHidden, .fleetCounts, "counts row for the same roster: the hidden 7 are not counted"),
             ("dots-overflow", fleet(members: 30, ready: 9, dead: 3, next: verified, keyed: 40), .fleetDots, "30 accounts: two dot rows + overflow +N"),
-            ("dots-stale", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78, stale: true), .fleetDots, "every reading stale (dimmed)"),
+            ("dots-stale", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78, stale: true), .fleetDots,
+             "every reading over an hour old: filled dots ringed at full strength, the × unringed"),
             ("counts-armed", fleet(members: 12, ready: 4, dead: 1, next: verified, keyed: 78), .fleetCounts, "counts row, armed"),
             ("counts-nobody", fleet(members: 6, ready: 0, dead: 2, next: nil, keyed: 91), .fleetCounts, "counts row, nobody with headroom"),
         ]
@@ -322,7 +323,7 @@ final class FrameRenderTests: XCTestCase {
         }
         if let paletteBlock {
             write(paletteBlock, surface: "fleet", state: "dots-palette",
-                  note: "every dot state left→right: dead, excluded, unmeasured, suspected, weekly hit (light red), weekly hit resets within a day (bright red), session hit weekly under half (faded orange), session hit (bright orange), ready weekly under half (light green), ready (bright green)")
+                  note: "every dot state left→right: dead, excluded, unmeasured, suspected, weekly hit (light red), weekly hit resets within a day (bright red), session hit weekly under a quarter (dull orange), session hit weekly under half (medium orange), session hit (bright orange), ready weekly under a quarter (dull green), ready weekly under half (medium green), ready (bright green)")
         }
 
         for (state, summary, layout, note) in blocks {
@@ -474,5 +475,106 @@ final class FrameRenderTests: XCTestCase {
         guard let dir = outputDir else { return }
         let text = (["# Frames — capacity text — \(now)", ""] + index).joined(separator: "\n")
         try text.write(to: dir.appendingPathComponent("index-capacity.md"), atomically: true, encoding: .utf8)
+    }
+
+    // MARK: Stale ring (owner, 2026-10-06: "Outline after 1 hour")
+
+    /// A fleet block of `others` accounts beside an active one, every reading
+    /// stale or none.
+    private func staleBlock(others: Int, readiness: AccountReadiness = .ready, stale: Bool) -> NSImage? {
+        let ids = (0..<others).map { _ in UUID() }
+        let active = UUID()
+        var states = Dictionary(uniqueKeysWithValues: ids.map { ($0, readiness) })
+        states[active] = .ready
+        let summary = ProviderSummary.build(
+            provider: .claude, orderedMembers: ids + [active], activeId: active, readiness: states,
+            stale: stale ? Set(ids) : [], keyedPercentage: 10, next: nil,
+            preferencesDegraded: false, activeLastMeasured: now, now: now)
+        var image: NSImage?
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            image = MenuBarIconRenderer().createFleetBlock(
+                summary: summary, layout: .fleetDots,
+                height: FleetBlockGeometry.blockHeight(activeHeight: 22, memberCount: others, layout: .fleetDots))
+        }
+        return image
+    }
+
+    /// A dot whose reading is over an hour old keeps its FULL-strength fill
+    /// and gains a light rim inside its own 5 pt rect; a fresh dot has no rim
+    /// (61 minutes stale, 59 fresh, through the painter's own predicate); the
+    /// × is never ringed. Before 2026-10-06 the stale dot was drawn at 50 %
+    /// alpha, and a faded bright green read darker than a fresh medium one.
+    func testStaleDotIsRingedAtFullStrengthAndAFreshOneIsNot() throws {
+        let deadStale = UUID(), stale = UUID(), fresh = UUID(), active = UUID()
+        let measuredAt = [deadStale: now.addingTimeInterval(-61 * 60), stale: now.addingTimeInterval(-61 * 60),
+                          fresh: now.addingTimeInterval(-59 * 60)]
+        let staleIds = Set(measuredAt.filter { ProviderSummary.isDisplayStale(measuredAt: $0.value, now: now) }.keys)
+        XCTAssertEqual(staleIds, [deadStale, stale], "61 minutes old is stale, 59 is fresh")
+
+        let summary = ProviderSummary.build(
+            provider: .claude, orderedMembers: [deadStale, stale, fresh, active], activeId: active,
+            readiness: [deadStale: .dead, stale: .ready, fresh: .ready, active: .ready], stale: staleIds,
+            keyedPercentage: 10, next: nil, preferencesDegraded: false, activeLastMeasured: now, now: now)
+        var drawn: NSImage?
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            drawn = MenuBarIconRenderer().createFleetBlock(
+                summary: summary, layout: .fleetDots,
+                height: FleetBlockGeometry.blockHeight(activeHeight: 22, memberCount: 3, layout: .fleetDots))
+        }
+        let image = try XCTUnwrap(drawn)
+        let rep = try pixels(image)
+
+        // One row, painted from the right: fresh at the right edge, stale a
+        // pitch left of it, the dead × a pitch further. Rects measured from
+        // the TOP, as `pixels` lays rows out.
+        let d = FleetBlockGeometry.dotDiameter
+        let freshRect = NSRect(x: image.size.width - d, y: 0, width: d, height: d)
+        let staleRect = freshRect.offsetBy(dx: -FleetBlockGeometry.dotPitch, dy: 0)
+        let deadRect = staleRect.offsetBy(dx: -FleetBlockGeometry.dotPitch, dy: 0)
+        func color(px: Int, py: Int) throws -> NSColor {
+            try XCTUnwrap(rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB))
+        }
+        func centre(_ rect: NSRect) throws -> NSColor { try color(px: Int(rect.midX * 2), py: Int(rect.midY * 2)) }
+        func ringPixels(in rect: NSRect) throws -> Int {
+            var n = 0
+            for py in Int(rect.minY * 2)..<Int(rect.maxY * 2) {
+                for px in Int(rect.minX * 2)..<Int(rect.maxX * 2) {
+                    let c = try color(px: px, py: py)
+                    if min(c.redComponent, c.greenComponent, c.blueComponent) > 0.75 { n += 1 }
+                }
+            }
+            return n
+        }
+
+        let staleCentre = try centre(staleRect)
+        let freshCentre = try centre(freshRect)
+        XCTAssertGreaterThan(staleCentre.alphaComponent, 0.99, "a stale dot is drawn at full strength, never faded")
+        XCTAssertEqual(staleCentre.redComponent, freshCentre.redComponent, accuracy: 0.01, "same fill, stale or not")
+        XCTAssertEqual(staleCentre.greenComponent, freshCentre.greenComponent, accuracy: 0.01)
+        XCTAssertEqual(staleCentre.blueComponent, freshCentre.blueComponent, accuracy: 0.01)
+        XCTAssertGreaterThan(try ringPixels(in: staleRect), 3, "the stale dot carries the light rim")
+        XCTAssertEqual(try ringPixels(in: freshRect), 0, "a fresh dot has no rim")
+        XCTAssertEqual(try ringPixels(in: deadRect), 0, "the × states no capacity and is never ringed")
+    }
+
+    /// The ring lives inside the dot's own rect: no pitch, diameter, row pitch
+    /// or column cap moves, and a block draws exactly its measured width with
+    /// every reading stale or none.
+    func testStaleRingKeepsTheFleetBlockGeometry() throws {
+        XCTAssertEqual(FleetBlockGeometry.dotDiameter, 5)
+        XCTAssertEqual(FleetBlockGeometry.dotPitch, 7)
+        XCTAssertEqual(FleetBlockGeometry.rowPitch, 7)
+        XCTAssertEqual(FleetBlockGeometry.maxDotColumns, 12)
+        XCTAssertLessThan(FleetBlockGeometry.staleRingWidth, FleetBlockGeometry.dotDiameter / 2, "the rim leaves a filled centre")
+        // Others → block width, as measured before the ring existed.
+        let widths: [(others: Int, width: CGFloat)] = [(2, 22), (4, 22), (12, 50), (21, 85), (24, 92), (30, 101)]
+        for (others, width) in widths {
+            XCTAssertEqual(FleetBlockGeometry.fleetWidth(memberCount: others, layout: .fleetDots), width, "\(others) others")
+            let ringed = try XCTUnwrap(staleBlock(others: others, stale: true))
+            let plain = try XCTUnwrap(staleBlock(others: others, stale: false))
+            XCTAssertEqual(ringed.size, plain.size, "\(others) others: the ring never changes the block's size")
+            XCTAssertEqual(ringed.size.width, width, "\(others) others")
+            XCTAssertEqual(ringed.size.height, 22)
+        }
     }
 }

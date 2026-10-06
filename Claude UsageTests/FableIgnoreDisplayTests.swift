@@ -74,16 +74,21 @@ final class FableIgnoreDisplayTests: XCTestCase {
 
     /// The spent window is dropped from the DECISION, not from the display:
     /// the remaining-Fable shade still reports it. An account with a roomy
-    /// overall week reads BRIGHT green on its own and LIGHT green once Fable
-    /// is spent — so the owner can still see which accounts have no Fable
-    /// left, while none of them is blocked.
-    func testIgnoringFableStillShowsTheSpentWindowAsTheLighterShade() {
+    /// overall week reads the brightest green on its own and a duller green
+    /// as its Fable window drains — so the owner can still see which accounts
+    /// have little or no Fable left, while none of them is blocked.
+    func testIgnoringFableStillShowsTheSpentWindowAsADullerShade() {
         XCTAssertEqual(classify(usage(weekly: 20), ignoreFable: true), .ready)
-        XCTAssertEqual(classify(usage(weekly: 20, fable: 100), ignoreFable: true), .readyLight)
+        XCTAssertEqual(classify(usage(weekly: 20, fable: 100), ignoreFable: true), .readyUnderQuarter)
         XCTAssertEqual(classify(usage(weekly: 20, fable: 10), ignoreFable: true), .ready)
+        // All three shades, by Fable alone, with the flag on.
+        XCTAssertEqual(classify(usage(weekly: 20, fable: 49), ignoreFable: true), .ready, "51 Fable left")
+        XCTAssertEqual(classify(usage(weekly: 20, fable: 60), ignoreFable: true), .readyUnderHalf, "40 Fable left")
+        XCTAssertEqual(classify(usage(weekly: 20, fable: 76), ignoreFable: true), .readyUnderQuarter, "24 Fable left")
         // Same shade rule on the session-hit side.
         XCTAssertEqual(classify(usage(session: 96, weekly: 20), ignoreFable: true), .sessionHit)
-        XCTAssertEqual(classify(usage(session: 96, weekly: 20, fable: 100), ignoreFable: true), .sessionHitLight)
+        XCTAssertEqual(classify(usage(session: 96, weekly: 20, fable: 60), ignoreFable: true), .sessionHitUnderHalf)
+        XCTAssertEqual(classify(usage(session: 96, weekly: 20, fable: 100), ignoreFable: true), .sessionHitUnderQuarter)
     }
 
     /// The discriminator. Overall weekly spent is real exhaustion and the flag
@@ -112,7 +117,7 @@ final class FableIgnoreDisplayTests: XCTestCase {
         // arm, so ignoring Fable moves the name from weekly to session. Both
         // readings are at a limit — that is the invariant that matters.
         XCTAssertEqual(classify(usage(session: 96, fable: 100), ignoreFable: false), .weeklyHit)
-        XCTAssertEqual(classify(usage(session: 96, fable: 100), ignoreFable: true), .sessionHitLight)
+        XCTAssertEqual(classify(usage(session: 96, fable: 100), ignoreFable: true), .sessionHitUnderQuarter)
         XCTAssertTrue(classify(usage(session: 96, fable: 100), ignoreFable: true).isAtLimit)
     }
 
@@ -122,8 +127,8 @@ final class FableIgnoreDisplayTests: XCTestCase {
     func testReadingsFableCannotDecideAreUntouched() {
         for ignore in [false, true] {
             XCTAssertEqual(classify(usage(weekly: 20), ignoreFable: ignore), .ready)
-            XCTAssertEqual(classify(usage(), ignoreFable: ignore), .readyLight,
-                           "62 % of the week spent leaves 38 %: light green, as it always was")
+            XCTAssertEqual(classify(usage(), ignoreFable: ignore), .readyUnderHalf,
+                           "62 % of the week spent leaves 38 %: medium green, under half but over a quarter")
             XCTAssertEqual(classify(nil, ignoreFable: ignore), .unknown)
             // Fable 100 % on a window that reset an hour ago: full quota again.
             XCTAssertEqual(classify(usage(weekly: 20, fable: 100, fableReset: at(-1)), ignoreFable: ignore), .ready)
@@ -185,7 +190,7 @@ final class FableIgnoreDisplayTests: XCTestCase {
         XCTAssertNil(stanford.capacityReturnsAt, "nothing is being waited for")
         XCTAssertEqual(stanford.weeklyReset?.window, .weekly,
                        "the countdown names the window the switch still respects")
-        XCTAssertEqual(stanford.chip, .readyLight)
+        XCTAssertEqual(stanford.chip, .readyUnderQuarter, "no Fable left: the dullest green, still ready")
 
         // The genuinely exhausted account is still filed as returning, under
         // the same flag — the band split is not a blanket "everyone is ready".

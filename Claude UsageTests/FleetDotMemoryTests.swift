@@ -34,14 +34,37 @@ final class FleetDotMemoryTests: XCTestCase {
         XCTAssertEqual(first.readiness, .ready)
         XCTAssertEqual(first.change?.reason, "first paint")
         // Same measurement, different classification (nothing new arrived): held.
-        let held = memory.adopt(id: id, candidate: .readyLight, usage: usage(session: 10), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(30))
+        let held = memory.adopt(id: id, candidate: .readyUnderHalf, usage: usage(session: 10), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(30))
         XCTAssertEqual(held.readiness, .ready)
         XCTAssertNil(held.change)
         // A new measurement: adopted, with its provenance in the reason.
-        let measured = memory.adopt(id: id, candidate: .readyLight, usage: usage(session: 85, measuredAgo: 0), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(60))
-        XCTAssertEqual(measured.readiness, .readyLight)
+        let measured = memory.adopt(id: id, candidate: .readyUnderHalf, usage: usage(session: 85, measuredAgo: 0), isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(60))
+        XCTAssertEqual(measured.readiness, .readyUnderHalf)
         XCTAssertEqual(measured.change?.from, .ready)
         XCTAssertEqual(measured.change?.reason, "new measurement (own endpoint)")
+    }
+
+    /// The third shade moves exactly like the other two: a shade-only change
+    /// between greens waits for a new measurement, and an orange of any
+    /// shade clears on its session window's reset.
+    func testEveryShadeMoveWaitsForEvidence() {
+        var memory = FleetDotMemory()
+        let first = usage(session: 10, measuredAgo: 60)
+        _ = memory.adopt(id: id, candidate: .readyUnderHalf, usage: first, isLoginDead: false, isExcluded: false, now: now)
+        let held = memory.adopt(id: id, candidate: .readyUnderQuarter, usage: first, isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(30))
+        XCTAssertEqual(held.readiness, .readyUnderHalf, "no new reading: the shade holds")
+        XCTAssertNil(held.change)
+        let measured = memory.adopt(id: id, candidate: .readyUnderQuarter, usage: usage(session: 10, measuredAgo: 0),
+                                    isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(60))
+        XCTAssertEqual(measured.readiness, .readyUnderQuarter)
+        XCTAssertEqual(measured.change?.from, .readyUnderHalf)
+
+        var orange = FleetDotMemory()
+        let hit = usage(session: 96, measuredAgo: 60, sessionResetIn: 30)
+        _ = orange.adopt(id: id, candidate: .sessionHitUnderQuarter, usage: hit, isLoginDead: false, isExcluded: false, now: now)
+        let reset = orange.adopt(id: id, candidate: .readyUnderQuarter, usage: hit, isLoginDead: false, isExcluded: false, now: now.addingTimeInterval(60))
+        XCTAssertEqual(reset.readiness, .readyUnderQuarter, "the dullest orange is a session hit like the others")
+        XCTAssertEqual(reset.change?.reason, "session window reset")
     }
 
     func testLoginDeathAndRevivalAreAffirmedImmediately() {

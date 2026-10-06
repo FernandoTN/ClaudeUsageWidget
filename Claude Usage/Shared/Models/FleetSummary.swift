@@ -19,22 +19,35 @@ import Foundation
 /// dashboard's state chips render it. One dot, one precedence:
 /// dead → excluded → exhausted → suspected → unknown → low → ready.
 /// Staleness is NOT a state (a stale "maxed" is still a fact until its
-/// window rolls over) — it is an orthogonal flag rendered as dimming.
+/// window rolls over) — it is an orthogonal flag, drawn as a ring around a
+/// full-strength dot and never as dimming: brightness means capacity
+/// (owner, 2026-10-06).
+///
+/// Green and orange come in three shades by the capacity left in the
+/// weekly windows, `min(weekly left, Fable left)`: more than half, more
+/// than a quarter, a quarter or less (`ReadinessThresholds`).
 enum AccountReadiness: Int, Hashable, CaseIterable, Comparable {
-    /// BRIGHT GREEN — session available; weekly AND Fable both have more
+    /// BRIGHTEST GREEN — session available; weekly AND Fable both have more
     /// than half left. The auto-switch would accept it.
     case ready
-    /// LIGHT GREEN — session available; weekly or Fable has half or less left.
-    case readyLight
+    /// MEDIUM GREEN — session available; weekly or Fable has half or less
+    /// left, but more than a quarter.
+    case readyUnderHalf
+    /// DULLEST GREEN — session available; weekly or Fable has a quarter or
+    /// less left.
+    case readyUnderQuarter
     /// Never fetched — no reading at all.
     case unknown
     /// Inferred (unverified) throttle stamp live — data quality, not a fact.
     case suspected
-    /// BRIGHT ORANGE — the 5-hour session limit is hit (server-affirmed);
+    /// BRIGHTEST ORANGE — the 5-hour session limit is hit (server-affirmed);
     /// weekly and Fable still have more than half left.
     case sessionHit
-    /// FADED ORANGE — session hit AND weekly or Fable has half or less left.
-    case sessionHitLight
+    /// MEDIUM ORANGE — session hit; weekly or Fable has half or less left,
+    /// but more than a quarter.
+    case sessionHitUnderHalf
+    /// DULLEST ORANGE — session hit; weekly or Fable has a quarter or less left.
+    case sessionHitUnderQuarter
     /// BRIGHT RED — weekly or Fable limit hit, and the reset is within a
     /// day (bright = relief is closer, the owner's rule for every hue).
     case weeklyHitSoon
@@ -55,16 +68,17 @@ enum AccountReadiness: Int, Hashable, CaseIterable, Comparable {
     /// True for the states the auto-switch would refuse as a target.
     var blocksSwitchTarget: Bool {
         switch self {
-        case .ready, .readyLight, .unknown: return false
-        case .suspected, .sessionHit, .sessionHitLight, .weeklyHitSoon, .weeklyHit, .excluded, .dead: return true
+        case .ready, .readyUnderHalf, .readyUnderQuarter, .unknown: return false
+        case .suspected, .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter, .weeklyHitSoon, .weeklyHit, .excluded, .dead:
+            return true
         }
     }
 
     /// A measured limit — session, weekly or Fable — is hit.
     var isAtLimit: Bool { isSessionHit || isWeeklyHit }
-    var isSessionHit: Bool { self == .sessionHit || self == .sessionHitLight }
+    var isSessionHit: Bool { self == .sessionHit || self == .sessionHitUnderHalf || self == .sessionHitUnderQuarter }
     var isWeeklyHit: Bool { self == .weeklyHit || self == .weeklyHitSoon }
-    var hasHeadroom: Bool { self == .ready || self == .readyLight }
+    var hasHeadroom: Bool { self == .ready || self == .readyUnderHalf || self == .readyUnderQuarter }
 }
 
 /// What each dot showed last time, so a dot changes colour only on
@@ -174,9 +188,13 @@ struct ReadinessThresholds: Hashable {
     /// Owner scheme 2026-09-04: a hit weekly / Fable window whose reset is
     /// within this reads BRIGHT red (relief is close); further away, light.
     var weeklyResetSoon: TimeInterval = 24 * 3600
-    /// "More than half left": the cut-off between the bright and light
-    /// shades of green (session available) and orange (session hit).
+    /// "More than half left": the cut-off between the brightest and the
+    /// medium shade of green (session available) and orange (session hit).
     var comfortableRemaining: Double = 50
+    /// "More than a quarter left": the cut-off between the medium and the
+    /// dullest shade (owner, 2026-10-06: three shades, brighter = more
+    /// capacity). At or below it the account is in the dullest shade.
+    var lowRemaining: Double = 25
     var staleAfter: TimeInterval = 180
     /// The owner took the Fable weekly window out of the auto-switch decision
     /// (`SharedDataStore.loadAutoSwitchIgnoreFableWeekly`). Readiness travels
@@ -185,8 +203,8 @@ struct ReadinessThresholds: Hashable {
     /// longer reads as a limit hit — the dot stays green, the row stays in
     /// `next up`, and the ⇄ submenu row is clickable. What it does NOT do is
     /// hide the spent window: the remaining-Fable shade below still turns the
-    /// dot LIGHT green, and the Fable gauge is drawn as measured. Session and
-    /// all-models weekly are judged exactly as before.
+    /// dot a duller green, and the Fable gauge is drawn as measured. Session
+    /// and all-models weekly are judged exactly as before.
     var ignoreFableWeekly: Bool = false
 
     nonisolated init(
@@ -194,6 +212,7 @@ struct ReadinessThresholds: Hashable {
         weekly: Double,
         weeklyResetSoon: TimeInterval = 24 * 3600,
         comfortableRemaining: Double = 50,
+        lowRemaining: Double = 25,
         staleAfter: TimeInterval = 180,
         ignoreFableWeekly: Bool = false
     ) {
@@ -201,6 +220,7 @@ struct ReadinessThresholds: Hashable {
         self.weekly = weekly
         self.weeklyResetSoon = weeklyResetSoon
         self.comfortableRemaining = comfortableRemaining
+        self.lowRemaining = lowRemaining
         self.staleAfter = staleAfter
         self.ignoreFableWeekly = ignoreFableWeekly
     }
@@ -260,19 +280,21 @@ extension AccountReadiness {
 
         // How much of the weekly windows is left decides the shade. Fable is
         // read here even while it is ignored above, deliberately: a spent
-        // Fable window is true and worth showing, and the LIGHT shade of
-        // green/orange reports it without blocking the account.
+        // Fable window is true and worth showing, and the duller shades of
+        // green/orange report it without blocking the account.
         let weeklyLeft = usage.weeklyResetTime >= now ? 100 - usage.weeklyPercentage : 100
         let fableLeft = usage.fableWeeklyPercentage.map {
             (usage.fableWeeklyResetTime.map { $0 >= now } ?? true) ? 100 - $0 : 100
         } ?? 100
-        let comfortable = min(weeklyLeft, fableLeft) > thresholds.comfortableRemaining
+        let left = min(weeklyLeft, fableLeft)
+        let underHalf = left <= thresholds.comfortableRemaining
+        let underQuarter = left <= thresholds.lowRemaining
 
         let sessionNow = usage.sessionResetTime > now ? usage.sessionPercentage : 0
         let sessionHit = affirmedStamp || (usage.providesSessionWindow && sessionNow >= thresholds.session)
-        if sessionHit { return comfortable ? .sessionHit : .sessionHitLight }
+        if sessionHit { return underQuarter ? .sessionHitUnderQuarter : (underHalf ? .sessionHitUnderHalf : .sessionHit) }
         if stampLive, usage.rateLimitedInferred == true { return .suspected }
-        return comfortable ? .ready : .readyLight
+        return underQuarter ? .readyUnderQuarter : (underHalf ? .readyUnderHalf : .ready)
     }
 
     /// True when the last MEASURED reading is older than `thresholds.staleAfter`.
@@ -401,7 +423,8 @@ enum FleetAlert: Hashable, Comparable {
 struct FleetMember: Hashable {
     var id: UUID
     var readiness: AccountReadiness
-    /// Reading older than the staleness threshold → drawn dimmed.
+    /// Reading older than `ProviderSummary.displayStaleAfter` → its dot gets
+    /// a ring; the fill stays at full strength.
     var isStale: Bool = false
 }
 
@@ -420,6 +443,20 @@ struct ProviderSummary: Hashable {
     nonisolated static let maxDotMembers = 2 * FleetBlockGeometry.maxDotColumns
     /// The active account's reading counts as stale after this long.
     nonisolated static let activeStaleAfter: TimeInterval = 600
+    /// Every OTHER account's dot — on the bar and in Settings → Accounts —
+    /// gets the stale ring once its reading is older than this (owner,
+    /// 2026-10-06: "Outline after 1 hour"). It is not `activeStaleAfter`:
+    /// the usage endpoint sustains about two reads per sweep, so a fleet of
+    /// ~22 idle accounts re-measures each one only every 10–30 minutes, and
+    /// a 10-minute rule marked most of the fleet stale all the time.
+    nonisolated static let displayStaleAfter: TimeInterval = 3600
+
+    /// True when a reading measured at `measuredAt` gets the stale ring. No
+    /// reading at all is "never measured" — the hollow ring — not stale.
+    nonisolated static func isDisplayStale(measuredAt: Date?, now: Date) -> Bool {
+        guard let measuredAt else { return false }
+        return now.timeIntervalSince(measuredAt) > displayStaleAfter
+    }
 
     var provider: Profile.ProviderKind
     /// The provider-active account (owner of the shared CLI login), or nil
@@ -581,6 +618,11 @@ enum FleetBlockGeometry {
     /// 22 pt bar with the candidate row underneath (2 × 7 + 7 = 21).
     nonisolated static let dotDiameter: CGFloat = 5
     nonisolated static let dotPitch: CGFloat = 7
+    /// The stale ring's stroke, drawn INSIDE the dot's 5 pt rect (owner,
+    /// 2026-10-06): 0.5 pt of rim — one crisp pixel at 2× — leaves a 4 pt
+    /// full-strength centre (64 % of the dot), and nothing outside the rect
+    /// is touched. 0.8 pt was tried and the white rim outweighed the fill.
+    nonisolated static let staleRingWidth: CGFloat = 0.5
     /// Widest dot matrix: `ProviderSummary.maxDotMembers` is two rows of this
     /// (12 × 2 = 24; 10 × 2 until 2026-09-15, when the owner's Claude fleet
     /// reached 22 accounts and folded into `+3`). `dotGrid` never caps by

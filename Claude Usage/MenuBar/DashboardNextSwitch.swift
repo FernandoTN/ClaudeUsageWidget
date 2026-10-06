@@ -83,11 +83,11 @@ struct NextSwitchAction: Hashable {
     private static func blockedReason(_ readiness: AccountReadiness) -> String {
         switch readiness {
         case .suspected: return "it may be throttled (suspected)"
-        case .sessionHit, .sessionHitLight: return "its session limit is hit"
+        case .sessionHit, .sessionHitUnderHalf, .sessionHitUnderQuarter: return "its session limit is hit"
         case .weeklyHit, .weeklyHitSoon: return "its weekly or Fable limit is hit"
         case .excluded: return "it is excluded from switching"
         case .dead: return "its login is dead"
-        case .ready, .readyLight, .unknown: return "it cannot take the switch right now"
+        case .ready, .readyUnderHalf, .readyUnderQuarter, .unknown: return "it cannot take the switch right now"
         }
     }
 }
