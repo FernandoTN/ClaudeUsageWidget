@@ -185,9 +185,11 @@ final class ProfileStoreUsagePatchTests: XCTestCase {
         store.saveProfiles([p])
         XCTAssertEqual(store.credentialRevision(for: id), r1, "no-change save must not bump")
 
-        // Same-length, same-suffix rotation: MUST bump.
+        // Same-length, same-suffix rotation: MUST bump. Saved the way a
+        // redemption saves it — an explicit replacement; an ordinary save only
+        // moves a Claude login forward and these fixtures carry no expiry.
         p.cliCredentialsJSON = #"{"claudeAiOauth":{"accessToken":"BBBB2222","refreshToken":"RRRR1111"}}"#
-        store.saveProfiles([p])
+        store.saveProfiles([p], explicitCLILoginWrite: id)
         XCTAssertGreaterThan(store.credentialRevision(for: id), r1,
                              "same-length rotation must bump the revision")
     }
@@ -251,10 +253,12 @@ final class ProfileStoreUsagePatchTests: XCTestCase {
         XCTAssertEqual(staleCopy.first?.cliCredentialsJSON, originalCLI)
 
         // Rotate credentials through the store's normal credential-preserving path
-        // (cache + Keychain enqueue) — not by editing private cache fields.
+        // (cache + Keychain enqueue) — not by editing private cache fields. A
+        // rotation is an explicit replacement (a redemption saves it that way;
+        // an ordinary save only moves a Claude login forward).
         var rotated = staleCopy
         rotated[0].cliCredentialsJSON = rotatedCLI
-        store.saveProfiles(rotated)
+        store.saveProfiles(rotated, explicitCLILoginWrite: id)
         XCTAssertEqual(store.loadProfiles().first?.cliCredentialsJSON, rotatedCLI)
 
         // Usage patch built from the stale snapshot's identity/usage intent.

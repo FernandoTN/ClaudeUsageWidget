@@ -421,7 +421,7 @@ final class ActiveSelectorItem: NSObject, NSMenuDelegate {
         switch outcome {
         case .activated, .alreadyActive:
             return  // the tile label moves; the next menu open shows the new owner
-        case .switchInFlight, .profileNotFound, .credentialWriteFailed:
+        case .switchInFlight, .profileNotFound, .credentialWriteFailed, .handoffDeferred:
             Self.activateApp()
             let alert = NSAlert()
             alert.messageText = "selector.not_switched".localized

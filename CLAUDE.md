@@ -484,6 +484,93 @@ out of `candidateHasHeadroom(loginCondemned:)`. The owner is notified once,
 and the verdict lifts on the next successful read. It never re-authenticates.
 Spec and hook install: `docs/specs/server-rejected-logins.md`.
 
+**Claude login hand-off (2026-10-08/09)**: redeeming a Claude refresh token
+revokes the access token issued with it AT ONCE. Two healthy accounts died
+within seconds of becoming active, because the 90 % preflight redeemed the pair
+the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
+`ClaudeCodeSyncService.ensureFreshCredentials`):
+- **The widget never redeems a login the CLI holds.** `ClaudeRefreshPolicy.decide`
+  runs at every redemption. It refuses in three cases:
+  - either half of the CLI's store holds this refresh token, compared by
+    fingerprint in memory. A half that cannot be conclusively read (unreadable,
+    or a payload with no complete token) counts as held;
+  - the pointer names the profile (`isExplicitClaudeOwner`);
+  - an activation is handing this login over, or any profile sharing its token
+    (`beginHandoff` until the claim).
+
+  The mutex and its waiters are keyed by profile AND by refresh-token
+  fingerprint. The CLI's own process may be redeeming the same token, and no lock
+  of ours sees it. So the CLI renews its own login and the widget adopts the
+  rotated pair. The activation renews BEFORE applying (`handoffFreshness`, 1 h),
+  WAITS for a redemption in flight, and always re-reads the store afterwards.
+- **After a redemption:**
+  - The rotated pair is stored by compare-and-swap over the pair that was
+    redeemed. A login synced in meanwhile wins, and the pair is discarded.
+  - Profiles still holding the consumed token get it too, each by its own CAS.
+  - The CLI's store is NEVER written by a redemption. The send-time check
+    guarantees the CLI did not hold the token, so there is nothing to repair.
+    The CLI's store has exactly two writers, both under `cliStoreWriteLock`:
+    an activation's apply (both halves) and the sweep's Keychain-to-file heal
+    (`healCredentialsFileFromKeychain`, file only, the Keychain's own payload).
+- **A refused redemption of a spent login** (`cliRenewalState`) is in one of three
+  states:
+  - `.renewable`: the CLI's store holds it (an idle owner every quiet night).
+    The fetch throws `.cliRenewalPending`, usage stays stale, and there is no
+    banner, backoff, dead flag, `/login` notice or switch-away.
+  - `.unverified`: the store could not be inspected, or does not hold the
+    login though the pointer names it. It is pending, but after 30 min
+    (`unverifiedRenewalBound`) the fetch throws `.cliRenewalUnverified`, an
+    ordinary visible failure.
+  - Terminal: the deadline has passed, or the store holds the CLI's dead marker
+    for the owner. It leaves the pending set and takes the dead path with its
+    notice.
+
+  The activation applies nothing only for the VERIFIED owner (pointer names
+  it AND the store holds it). Any other pending login returns
+  `.handoffDeferred`: nothing claimed, the walk retries, and the queue is not
+  consumed.
+- **Newest login wins** (`ClaudeLoginLifetime.isNewer`):
+  - The dead-marker is never newer than anything.
+  - Two logins whose deadlines are more than 60 s apart: the later deadline
+    wins, because each `/login` gets a fixed deadline that refreshes never move.
+  - Within one login (or with a deadline missing), a lapsed deadline loses,
+    then the later `expiresAt` wins. A tie is not newer.
+
+  Where it applies:
+  - `readSystemCredentials` returns nil for the dead-marker and never falls
+    back to the file. Otherwise the file wins only as a later login by
+    deadline, and the Keychain wins whenever the deadlines cannot decide.
+  - The re-sync and both adoptions replace only with a newer login, by CAS.
+- **An ordinary `ProfileStore.saveProfiles` never changes a stored Claude login.**
+  Logins change only through explicit paths:
+  - `replaceCLILogin(_:expected:with:)`, the CAS used by the redemption, the
+    re-sync and the adoptions;
+  - `explicitCLILoginWrite`, for a manual sync or an import
+    (`saveProfileCredentials(replacingCLILogin:)`);
+  - `clearProfileCredential`, for removal.
+
+  A profile the cache has never seen takes the login it is created with. Every
+  credential write enqueues its Keychain persistence UNDER the cache lock, so
+  the Keychain ends on the value memory holds and a relaunch restores it.
+- **Deadline.** A login at or within 1 h of `refreshTokenExpiresAt` (ms or s) is
+  not a switch target (`candidateHasHeadroom`), is not live to the preflight, and
+  is refused by the activation gate as dead. Refreshes store
+  `refresh_token_expires_in`.
+
+**Tests never reach a real credential store** (`RealCredentialStoreGuard`,
+Debug builds only; Release compiles the stand-in mode out).
+- **What is stood in.** Under XCTest the Claude Code CLI's store (the Keychain
+  item, `.credentials.json` and the `~/.claude.json` account metadata) defaults
+  to an in-memory stand-in, and so do `KeychainService`'s per-profile and legacy
+  items. The token and identity endpoints refuse, and so does
+  `readCLICachedUsage` for the real `~/.claude.json` by any spelling.
+- **How a touch fails the test.** Every real primitive refuses and is recorded.
+  `RealStoreTouchObserver` is armed at bundle load by the test bundle's
+  NSPrincipalClass, and it fails any test during which a refusal happens.
+- **No opt-in.** A test supplies its own stand-ins through
+  `ClaudeCodeSyncService.set…ForTesting`. The guard was added after a 2026-10-09
+  suite run rewrote the live CLI login.
+
 **Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
 exhausted account 429s its OWN `oauth/usage` endpoint — the widget cannot read
 the account's state exactly when it matters, and the cached percentages

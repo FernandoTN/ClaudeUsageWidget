@@ -153,6 +153,14 @@ enum ErrorCode: String, CaseIterable {
     case sessionKeyMalicious = "E1008"
     case sessionKeyWhitespace = "E1009"
     case sessionKeyStorageFailed = "E1010"
+    /// A Claude login the CLI holds, whose access token expired while no CLI
+    /// process ran to renew it. Not a credential error: usage is shown stale
+    /// until the CLI renews it (`ClaudeCodeSyncService.isAwaitingCLIRenewal`).
+    case cliRenewalPending = "E1011"
+    /// The same, but the CLI's store has not confirmed it holds the login for
+    /// longer than `ClaudeCodeSyncService.unverifiedRenewalBound`: surfaced as
+    /// an ordinary (non-credential) refresh failure.
+    case cliRenewalUnverified = "E1012"
 
     // MARK: - Network Errors (2000-2099)
 

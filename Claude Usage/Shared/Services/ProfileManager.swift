@@ -352,6 +352,12 @@ class ProfileManager: ObservableObject {
         /// moved it back. Not the candidate's fault, so the auto-switch walk
         /// retries next sweep instead of excluding it.
         case credentialWriteFailed
+        /// The target's login is pending a renewal the app cannot confirm (its
+        /// access token is spent, the CLI's store could not be inspected or
+        /// holds it under another pointer). Not dead and not handed over:
+        /// nothing was claimed, the focus did not move, and the walk retries
+        /// next sweep — the queue entry is NOT consumed.
+        case handoffDeferred
 
         /// Back-compat with the `Bool`-returning API: true only when the
         /// profile is active as a result of the call.
@@ -626,6 +632,16 @@ class ProfileManager: ObservableObject {
         applyPendingOverlay(to: &profiles)
         let target = profiles.first(where: { $0.id == id })
 
+        // HAND-OFF MARKER. From here until the Claude pointer is claimed (or the
+        // apply is refused), this profile's login is on its way to the CLI, and
+        // no other path may redeem its refresh token: a redemption revokes the
+        // access token the CLI is about to be handed. The apply below runs off
+        // the main actor, so a preflight could otherwise land between it and
+        // the claim — the 2026-10-08 21:50 and 10-09 05:22 deaths.
+        let handsOffClaudeLogin = target?.cliCredentialsJSON != nil && applyScope.contains(.claude)
+        if handsOffClaudeLogin { cliSyncService.beginHandoff(id) }
+        defer { if handsOffClaudeLogin { cliSyncService.endHandoff(id) } }
+
         // 1. Claude side: the CLI Keychain login is about to be replaced — re-adopt
         //    it (incl. any silent token refresh) into the profile that owns it.
         //    The `security` subprocess runs off the main actor so the UI never freezes.
@@ -700,27 +716,59 @@ class ProfileManager: ObservableObject {
         /// the profile's problem and moves the focus for repair; a failed write
         /// is the machine's, and moves nothing.
         var writeFailedProviders: [RefusedProvider] = []
+        /// Providers whose login is pending a renewal that cannot be confirmed:
+        /// not dead, not handed over — the switch is deferred.
+        var deferredProviders: [RefusedProvider] = []
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
 
         if updatedProfile.cliCredentialsJSON != nil, applyScope.contains(.claude) {
-            // If the target's OAuth token went stale while it was inactive, refresh it
-            // FIRST so the CLI is handed a usable login instead of an expired token.
-            // Never adopt from the system Keychain here — at this point it still holds
-            // the PREVIOUS profile's account. syncToSystem is false because
-            // applyProfileCredentials writes the credentials to the system right after.
-            if await cliSyncService.ensureFreshCredentials(for: id, adoptSystemKeychain: false, syncToSystem: false) {
-                profiles = profileStore.loadProfiles()
-                applyPendingOverlay(to: &profiles)
-                if let refreshed = profiles.first(where: { $0.id == id }) {
-                    updatedProfile = refreshed
-                }
-                LoggingService.shared.log("✓ Refreshed stale CLI token for '\(updatedProfile.name)' before applying")
+            // RENEW BEFORE THE HAND-OFF, NEVER AFTER. A login with under an hour
+            // left is renewed HERE, so the pair the CLI receives is the newest
+            // one and has an hour to run: nothing (the CLI's own refresh, the
+            // sweep's heal, a late preflight) has reason to rotate it right
+            // after the switch. With the old 2-minute window a login with 30–60
+            // minutes left was applied as stored and then rotated by the
+            // preflight, which revoked the access token every session had just
+            // been handed. `.handoff` WAITS for a redemption already in flight
+            // and applies its result instead of the pair it consumed.
+            //
+            // A target the POINTER names as the CLI's login (re-applying it) is
+            // the CLI's live login: the system Keychain holds its latest pair,
+            // so adopt that; it is never redeemed here. `isExplicitClaudeOwner`
+            // is the same predicate the redemption point uses, so the two agree
+            // on who the owner is. The sole-credentialed-profile inference is not
+            // evidence enough to pull the CLI's login into the target; the
+            // redemption point protects that case by fingerprint instead (it
+            // refuses to redeem a refresh token the CLI's store holds), so a
+            // login the CLI does not hold still gets its hour.
+            let ownsCLILoginAlready = isExplicitClaudeOwner(id)
+            let renewed = await cliSyncService.ensureFreshCredentials(
+                for: id,
+                adoptSystemKeychain: ownsCLILoginAlready,
+                freshFor: ClaudeRefreshPolicy.handoffFreshness,
+                role: .handoff
+            )
+            // Re-read unconditionally: after waiting on another caller's
+            // redemption, `renewed` is false while the store holds the rotated
+            // pair, and the copy loaded before the wait is the consumed one.
+            profiles = profileStore.loadProfiles()
+            applyPendingOverlay(to: &profiles)
+            if let refreshed = profiles.first(where: { $0.id == id }) {
+                updatedProfile = refreshed
+            }
+            if renewed {
+                LoggingService.shared.log("✓ Renewed the CLI login for '\(updatedProfile.name)' before handing it over (\(ClaudeLoginLifetime.summary(updatedProfile.cliCredentialsJSON)))")
             }
         }
 
         if applyScope.contains(.claude), let cliJSON = updatedProfile.cliCredentialsJSON {
+            // A login whose server deadline has passed, or falls within the
+            // margin, renews nowhere but in `/login`: the CLI's first refresh
+            // after the deadline is refused and stalls every session. Same
+            // handling as an expired login.
+            let pastDeadline = ClaudeLoginLifetime.deadlineBlocksSwitch(cliJSON, now: Date())
             // GATE: never hand the CLI a dead login. If the token is still expired
             // after the refresh attempt above, its refresh token is revoked or
             // consumed — writing it would replace the WORKING outgoing login with
@@ -732,7 +780,29 @@ class ProfileManager: ObservableObject {
             // to the CLI is the failure this gate exists to prevent. The flag
             // clears on any successful refresh, adoption or re-sync, so a
             // revived account is not held out.
-            if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) {
+            // AWAITING CLI RENEWAL is not dead. The renewal step just refused to
+            // redeem this login because the CLI holds it (or might), and its
+            // access token has expired because no CLI process has run to renew
+            // it — every quiet night for an idle owner.
+            //   - The VERIFIED existing owner (the pointer names it AND the CLI's
+            //     store holds its token) already IS the CLI's login: nothing to
+            //     apply, nothing to refuse, no `/login` to ask for.
+            //   - Anyone else still pending (the store could not be inspected,
+            //     or the CLI holds it under someone else's pointer) cannot be
+            //     handed over right now and is not dead either: the switch is
+            //     DEFERRED — nothing applied, nothing claimed, the walk retries.
+            let renewal = cliSyncService.cliRenewalState(id)
+            let pendingRenewal = renewal != nil && cliSyncService.isTokenExpired(cliJSON)
+                && !cliSyncService.isLoginMarkedDead(id) && !pastDeadline
+            if pendingRenewal, renewal == .renewable, isExplicitClaudeOwner(id) {
+                LoggingService.shared.log("'\(updatedProfile.name)' is the CLI's own login, awaiting the CLI's renewal — nothing to apply")
+            } else if pendingRenewal {
+                deferredProviders.append(.claude)
+                LoggingService.shared.log("⏸ '\(updatedProfile.name)' CLI login awaits a renewal that cannot be confirmed — NOT applied, switch deferred")
+            } else if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) || pastDeadline {
+                if pastDeadline {
+                    LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is at its server deadline (\(ClaudeLoginLifetime.summary(cliJSON))) — only /login renews it")
+                }
                 refusedProviders.append(.claude)
                 // `force` is only needed when the click would otherwise be a
                 // silent no-op. A user-initiated switch now MOVES THE FOCUS and
@@ -910,6 +980,17 @@ class ProfileManager: ObservableObject {
         // told, and the walk retries next sweep rather than excluding a healthy
         // candidate. Checked before the dead-login exit — on a mixed profile a
         // write failure is the more surprising of the two.
+        // DEFERRED: a login pending a renewal that cannot be confirmed is
+        // neither dead (no `/login` notice, no dead flag) nor handed over.
+        // Nothing was claimed and the focus does not move; the walk retries
+        // next sweep without consuming the queue or excluding the candidate.
+        if !deferredProviders.isEmpty {
+            switchingSemaphore = false
+            isSwitchingProfile = false
+            LoggingService.shared.log("⏸ Activation of '\(updatedProfile.name)' deferred — its \(RefusedProvider.summary(deferredProviders)) login awaits a renewal; the pointer stays with '\(currentOwnerName(of: .claude) ?? "none")'")
+            return .handoffDeferred
+        }
+
         if !writeFailedProviders.isEmpty {
             switchingSemaphore = false
             isSwitchingProfile = false
@@ -1428,6 +1509,15 @@ class ProfileManager: ObservableObject {
         if let pointer = providerPointer(for: provider) { return pointer }
         let candidates = (pool ?? profiles).filter { Self.carriesLogin($0, for: provider) }
         return candidates.count == 1 ? candidates[0].id : nil
+    }
+
+    /// True when the Claude pointer itself names `id` — positive evidence that
+    /// this app handed the CLI that login (or verified it by identity). The
+    /// Claude refresh-token rules use this, not `isProviderOwner`, whose
+    /// sole-credentialed inference is a display answer, not evidence: the
+    /// redemption point covers the inferred case by checking the CLI's store.
+    func isExplicitClaudeOwner(_ id: UUID) -> Bool {
+        activeClaudeProfileId == id
     }
 
     /// True when `id` owns `provider`'s shared CLI login (see `providerOwnerId`).
@@ -2243,11 +2333,15 @@ class ProfileManager: ObservableObject {
 
             // Adopt the shared login into its owner when the stored copy is a
             // DIFFERENT, older token (typical after a manual /login that revived
-            // a dead account). Expiry decides — never overwrite a fresher copy.
-            let ownerToken = reloaded[index].cliCredentialsJSON.flatMap(sync.extractAccessToken(from:))
-            let systemExpiry = sync.extractTokenExpiry(from: systemJSON) ?? .distantPast
-            let ownerExpiry = reloaded[index].cliCredentialsJSON.flatMap(sync.extractTokenExpiry(from:)) ?? .distantPast
-            if ownerToken != systemToken, systemExpiry > ownerExpiry {
+            // a dead account). `ClaudeLoginLifetime.isNewer` decides — never
+            // overwrite a newer copy.
+            let ownerJSON = reloaded[index].cliCredentialsJSON
+            let ownerToken = ownerJSON.flatMap(sync.extractAccessToken(from:))
+            let systemIsNewer = ownerJSON.map { ClaudeLoginLifetime.isNewer(systemJSON, than: $0, now: Date()) } ?? true
+            // Through the compare-and-swap path: an ordinary save never changes
+            // a stored Claude login.
+            if ownerToken != systemToken, systemIsNewer,
+               profileStore.replaceCLILogin(owner.id, expected: ownerJSON, with: systemJSON) {
                 reloaded[index].cliCredentialsJSON = systemJSON
                 reloaded[index].hasCliAccount = true
                 reloaded[index].cliAccountSyncedAt = Date()

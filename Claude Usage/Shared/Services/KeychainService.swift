@@ -14,6 +14,13 @@ class KeychainService {
 
     private init() {}
 
+    /// Under XCTest every item — the per-profile credentials and the legacy
+    /// session keys — lives here and the login Keychain is never read or
+    /// written: test profiles used to leave real `com.claudewidget.*` items
+    /// behind, and a test could read a live one (`RealCredentialStoreGuard`).
+    nonisolated private static let testItems = InMemoryCredentialStore()
+    private var usesTestStore: Bool { RealCredentialStoreGuard.isTestRun }
+
     /// Keychain item identifiers
     enum KeychainKey: String {
         case apiSessionKey = "com.claudeusagetracker.api-session-key"
@@ -38,6 +45,10 @@ class KeychainService {
     func save(_ value: String, for key: KeychainKey) throws {
         guard let data = value.data(using: .utf8) else {
             throw KeychainError.invalidData
+        }
+        if usesTestStore {
+            Self.testItems[key.service] = value
+            return
         }
 
         // First, try to update existing item
@@ -101,6 +112,7 @@ class KeychainService {
     /// - Returns: The stored string value, or nil if not found
     /// - Throws: KeychainError if load fails (other than item not found)
     func load(for key: KeychainKey) throws -> String? {
+        if usesTestStore { return Self.testItems[key.service] }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: key.service,
@@ -131,6 +143,10 @@ class KeychainService {
     /// - Parameter key: The keychain key identifier
     /// - Throws: KeychainError if delete fails (ignores item not found)
     func delete(for key: KeychainKey) throws {
+        if usesTestStore {
+            Self.testItems[key.service] = nil
+            return
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: key.service,
@@ -205,6 +221,11 @@ class KeychainService {
 
     @discardableResult
     private func runSecurityTool(_ arguments: [String]) -> (status: Int32, stdout: String, stderr: String) {
+        // Unreachable under XCTest (every caller takes the in-memory path
+        // first); the backstop for a future caller that does not.
+        if RealCredentialStoreGuard.refuse("KeychainService security \(arguments.first ?? "")") {
+            return (-1, "", "refused under XCTest")
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = arguments
@@ -257,6 +278,11 @@ class KeychainService {
     ///   - key: A short key name (e.g. "claude-key", "api-key", "cli-creds")
     func saveProfileCredential(_ value: String, profileId: UUID, key: String) {
         let service = profileCredentialService(profileId: profileId, key: key)
+        if usesTestStore {
+            Self.testItems[service] = value
+            LoggingService.shared.log("Keychain: Saved profile credential \(key) for \(profileId.uuidString.prefix(8)) (XCTest in-memory store)")
+            return
+        }
         var result = runSecurityTool([
             "add-generic-password", "-U",
             "-s", service,
@@ -289,6 +315,7 @@ class KeychainService {
     /// - Returns: The stored credential string, or nil if not found
     func loadProfileCredential(profileId: UUID, key: String) -> String? {
         let service = profileCredentialService(profileId: profileId, key: key)
+        if usesTestStore { return Self.testItems[service] }
         let result = runSecurityTool([
             "find-generic-password",
             "-s", service,
@@ -310,6 +337,13 @@ class KeychainService {
     /// as fallback for items created by older builds with signature-bound ACLs).
     func deleteProfileCredential(profileId: UUID, key: String) {
         let service = profileCredentialService(profileId: profileId, key: key)
+        if usesTestStore {
+            if Self.testItems[service] != nil {
+                Self.testItems[service] = nil
+                LoggingService.shared.log("Keychain: Deleted profile credential \(key) for \(profileId.uuidString.prefix(8)) (XCTest in-memory store)")
+            }
+            return
+        }
         let result = runSecurityTool([
             "delete-generic-password",
             "-s", service,
@@ -346,6 +380,7 @@ class KeychainService {
     /// - Parameter key: The keychain key identifier
     /// - Returns: true if the item exists, false otherwise
     func exists(for key: KeychainKey) -> Bool {
+        if usesTestStore { return Self.testItems[key.service] != nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: key.service,
