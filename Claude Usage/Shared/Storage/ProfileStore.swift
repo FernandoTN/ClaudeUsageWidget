@@ -139,6 +139,16 @@ class ProfileStore {
         var codexCredentialsJSON: String?
         var grokCredentialsJSON: String?
 
+        /// True when this merge supplied a value for a field `incoming` left nil
+        /// (the stale pre-hydration copy the merge protects against).
+        func filledNilFields(of incoming: CachedCredentials) -> Bool {
+            (incoming.claudeSessionKey == nil && claudeSessionKey != nil)
+                || (incoming.apiSessionKey == nil && apiSessionKey != nil)
+                || (incoming.cliCredentialsJSON == nil && cliCredentialsJSON != nil)
+                || (incoming.codexCredentialsJSON == nil && codexCredentialsJSON != nil)
+                || (incoming.grokCredentialsJSON == nil && grokCredentialsJSON != nil)
+        }
+
         subscript(key: CredentialKey) -> String? {
             get {
                 switch key {
@@ -986,8 +996,11 @@ class ProfileStore {
     }
 
     /// Persists the roster. `allowEmpty` must be `true` for a deliberate delete-all —
-    /// see the empty-overwrite guard below.
-    func saveProfiles(_ profiles: [Profile], allowEmpty: Bool = false) {
+    /// see the empty-overwrite guard below. `explicitCLILoginWrite` names the one
+    /// profile whose Claude login the caller is deliberately REPLACING (a manual
+    /// sync, which may bring a different account's login with an earlier
+    /// expiry); every other profile's stored login only ever moves forward.
+    func saveProfiles(_ profiles: [Profile], allowEmpty: Bool = false, explicitCLILoginWrite: UUID? = nil) {
         // 0. EMPTY-OVERWRITE GUARD. An empty array reaching here is nearly always a
         //    read that failed (a wedged cfprefsd hands every caller nil), not a user
         //    who deleted everything — `ProfileManager.deleteProfile` refuses to delete
@@ -1013,6 +1026,14 @@ class ProfileStore {
         //    used to diff nil-vs-cached and enqueue Keychain deletions, silently
         //    destroying every credential on a slow Keychain. Intentional removal
         //    goes through clearProfileCredential(_:key:) instead.
+        //
+        //    NEWEST CLAUDE LOGIN WINS. A non-nil Claude login OLDER than the
+        //    cached one (`ClaudeLoginLifetime.isNewer`) is a stale copy — a roster
+        //    array loaded before a refresh saved the rotated pair — and writing
+        //    it back would store a refresh token that has already been redeemed:
+        //    the profile then dies at its next refresh. The cached login is
+        //    kept. Only `explicitCLILoginWrite` may move a login backwards.
+        let now = Date()
         for profile in profiles {
             let incoming = CachedCredentials(
                 claudeSessionKey: profile.claudeSessionKey,
@@ -1024,10 +1045,20 @@ class ProfileStore {
 
             cacheLock.lock()
             let old = credentialCache[profile.id]
+            var cliLogin = incoming.cliCredentialsJSON ?? old?.cliCredentialsJSON
+            var keptNewerCLILogin = false
+            if let incomingCLI = incoming.cliCredentialsJSON,
+               let cachedCLI = old?.cliCredentialsJSON,
+               incomingCLI != cachedCLI,
+               profile.id != explicitCLILoginWrite,
+               ClaudeLoginLifetime.isNewer(cachedCLI, than: incomingCLI, now: now) {
+                cliLogin = cachedCLI
+                keptNewerCLILogin = true
+            }
             let merged = CachedCredentials(
                 claudeSessionKey: incoming.claudeSessionKey ?? old?.claudeSessionKey,
                 apiSessionKey: incoming.apiSessionKey ?? old?.apiSessionKey,
-                cliCredentialsJSON: incoming.cliCredentialsJSON ?? old?.cliCredentialsJSON,
+                cliCredentialsJSON: cliLogin,
                 codexCredentialsJSON: incoming.codexCredentialsJSON ?? old?.codexCredentialsJSON,
                 grokCredentialsJSON: incoming.grokCredentialsJSON ?? old?.grokCredentialsJSON
             )
@@ -1037,7 +1068,10 @@ class ProfileStore {
             }
             cacheLock.unlock()
 
-            if merged != incoming {
+            if keptNewerCLILogin {
+                LoggingService.shared.log("ProfileStore: kept the newer stored Claude login for \(profile.id) (\(ClaudeLoginLifetime.summary(old?.cliCredentialsJSON))) over an older copy being saved (\(ClaudeLoginLifetime.summary(incoming.cliCredentialsJSON)))")
+            }
+            if merged.filledNilFields(of: incoming) {
                 LoggingService.shared.log("ProfileStore: preserved cached credential(s) for \(profile.id) that the saved profile was missing (stale pre-hydration copy?)")
             }
 

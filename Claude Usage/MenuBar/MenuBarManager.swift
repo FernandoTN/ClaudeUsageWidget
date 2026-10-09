@@ -4070,6 +4070,14 @@ private func observeCredentialChanges() {
         }
     }
 
+    /// The preflight's verdict on a Claude candidate's stored login: live when
+    /// its access token has not expired (no expiry is "assume valid", as
+    /// `isTokenExpired` reads it) and it is not at its server deadline.
+    nonisolated static func claudePreflightLoginIsLive(_ json: String, now: Date) -> Bool {
+        let expired = ClaudeLoginLifetime.accessExpiry(json).map { now > $0 } ?? false
+        return !expired && !ClaudeLoginLifetime.deadlineBlocksSwitch(json, now: now)
+    }
+
     /// Walks the ranked same-provider candidates until one holds a LIVE login,
     /// notifying (via the services) about every dead one found on the way.
     private func preflightCandidates(after currentProfile: Profile, milestone: Double) async {
@@ -4086,6 +4094,16 @@ private func observeCredentialChanges() {
             if profileManager.isProviderOwner(candidate.id) {
                 LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: next candidate '\(candidate.name)' already owns its provider login — OK")
                 preflightVerdicts[candidate.id] = PreflightVerdict(isLive: true, at: Date(), kind: .ownsLogin)
+                return
+            }
+
+            // An activation is handing this candidate's Claude login to the
+            // CLI right now and renews it itself before the apply. A refresh
+            // from here would rotate the pair the CLI is being handed — the
+            // 90 % preflight and the 90 % switch fire from the same reading.
+            if candidate.cliCredentialsJSON != nil,
+               ClaudeCodeSyncService.shared.isHandoffInFlight(candidate.id) {
+                LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: '\(candidate.name)' is being handed to the CLI right now — the switch renews it, not the preflight")
                 return
             }
 
@@ -4141,15 +4159,32 @@ private func observeCredentialChanges() {
                     alive = !GrokUsageService.shared.isTokenExpired(json)
                 }
             } else if candidate.cliCredentialsJSON != nil {
+                // The service refuses to redeem a login the CLI holds or is
+                // being handed, whatever this caller asks for — the ownership
+                // checks above can go stale across this await.
                 let refreshed = await ClaudeCodeSyncService.shared.ensureFreshCredentials(
                     for: candidate.id,
                     adoptSystemKeychain: false,
                     syncToSystem: false,
-                    freshFor: 3600
+                    freshFor: ClaudeRefreshPolicy.handoffFreshness
                 )
+                // Re-checked AFTER the await: a switch can have made this
+                // candidate the CLI's login in the meantime. Its verdict is
+                // then the owner's, and its login is the CLI's to keep fresh.
+                if profileManager.isProviderOwner(candidate.id) {
+                    LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: '\(candidate.name)' became the CLI's login while being validated — OK")
+                    preflightVerdicts[candidate.id] = PreflightVerdict(isLive: true, at: Date(), kind: .ownsLogin)
+                    return
+                }
                 if refreshed { verdictKind = .refreshed }
                 if let json = ProfileStore.shared.loadProfiles().first(where: { $0.id == candidate.id })?.cliCredentialsJSON {
-                    alive = !ClaudeCodeSyncService.shared.isTokenExpired(json)
+                    alive = Self.claudePreflightLoginIsLive(json, now: Date())
+                    if ClaudeLoginLifetime.deadlineBlocksSwitch(json, now: Date()) {
+                        // Renewable only by `/login`. Say so now, while the
+                        // current account still has headroom.
+                        LoggingService.shared.log("Preflight[\(Int(milestone))% \(candidate.providerKind)]: '\(candidate.name)' login is at its server deadline (\(ClaudeLoginLifetime.summary(json)))")
+                        ClaudeCodeSyncService.shared.notifyReloginNeeded(for: candidate.id)
+                    }
                 }
             }
             // claude.ai-session-only candidates carry no OAuth tokens to validate.
@@ -4325,6 +4360,11 @@ private func observeCredentialChanges() {
             if !quiet {
                 if condemned {
                     LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but its login was rejected by the server, trying next")
+                } else if ClaudeLoginLifetime.deadlineBlocksSwitch(candidate.cliCredentialsJSON, now: now) {
+                    LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but its login is at its server deadline (/login renews it), trying next")
+                    // The same "needs /login" handling as an expired login
+                    // (once per dead login — the service dedupes).
+                    ClaudeCodeSyncService.shared.notifyReloginNeeded(for: candidate.id)
                 } else {
                     let windows = ignoreFableWeekly ? "session or weekly" : "session, weekly or Fable"
                     LoggingService.shared.log("AutoSwitch: '\(candidate.name)' resets soonest but has no \(windows) headroom, trying next")
@@ -4829,7 +4869,11 @@ private func observeCredentialChanges() {
     /// conjunctions were four chances to drift.
     ///
     /// `loginCondemned` mirrors the trigger's server-rejected-login arm: a
-    /// login the server refuses has no headroom to switch into.
+    /// login the server refuses has no headroom to switch into. A Claude login
+    /// at (or within an hour of) its server deadline has none either: the
+    /// CLI's first refresh after the deadline is refused and stalls every
+    /// session (`ClaudeLoginLifetime.deadlineBlocksSwitch`; no field, no
+    /// change).
     nonisolated static func candidateHasHeadroom(
         _ profile: Profile,
         sessionThreshold: Double,
@@ -4839,6 +4883,7 @@ private func observeCredentialChanges() {
         now: Date
     ) -> Bool {
         !loginCondemned
+            && !ClaudeLoginLifetime.deadlineBlocksSwitch(profile.cliCredentialsJSON, now: now)
             && hasSessionHeadroom(profile, threshold: sessionThreshold)
             && hasWeeklyHeadroom(profile, threshold: weeklyThreshold, now: now)
             && hasFableWeeklyHeadroom(profile, threshold: weeklyThreshold,
