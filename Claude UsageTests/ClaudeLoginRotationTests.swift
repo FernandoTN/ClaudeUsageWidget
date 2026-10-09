@@ -354,8 +354,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
     /// A redemption never writes the CLI's store: one that finishes after the
     /// CLI moved to another login leaves that login alone, and the rotated pair
-    /// goes to the profile store only. The only CLI-store writer is an
-    /// activation's apply.
+    /// goes to the profile store only. (The CLI's store is written only by an
+    /// activation's apply and the sweep's file heal.)
     func testARefreshNeverWritesOverAnotherLoginInTheCLI() async {
         let target = profile("target", login: login("target", expiresIn: 30 * 60, deadlineIn: 20 * 86_400))
         let next = profile("next", login: login("next", expiresIn: 6 * 3600))
@@ -668,8 +668,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
         let outcome = await manager.activateProfileDetailed(candidate.id, userInitiated: false)
 
         XCTAssertEqual(outcome, .handoffDeferred)
-        XCTAssertEqual(MenuBarManager.walkReaction(to: outcome), .deferToNextSweep,
-                       "the walk neither consumes the queue entry nor excludes the candidate")
+        XCTAssertEqual(MenuBarManager.walkReaction(to: outcome), .skipForThisWalk,
+                       "the walk skips it for this walk only: queue entry kept, not dead")
         XCTAssertFalse(outcome.didActivate, "no switch is reported")
         XCTAssertEqual(manager.activeClaudeProfileId, owner.id, "nothing was claimed")
         XCTAssertTrue(cliStore.writes.isEmpty && cliStore.fileWrites.isEmpty, "nothing was applied")
@@ -787,6 +787,138 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
         XCTAssertEqual(ownerResult, true, "the owner adopted the CLI's newer login …")
         XCTAssertEqual(endpoint.redeemed, ["owner-refresh-2"], "… and never redeemed the token reserved elsewhere")
+    }
+
+    // MARK: - Final round
+
+    /// Runs the auto-switch walk's own control flow (`runCandidateWalk`, the
+    /// function the live walk calls) with the live walk's candidate order —
+    /// the queue first, then the ranking — and REAL activations.
+    private func walk(queue: [UUID], ranking: [Profile]) async -> MenuBarManager.CandidateWalkResult {
+        let manager = manager
+        return await MenuBarManager.runCandidateWalk(
+            nextCandidate: { excluded in
+                let queued = MenuBarManager.selectQueuedSwitchTarget(
+                    queue: queue, profiles: manager.profiles, provider: .claude,
+                    excluding: excluded, isEligible: { _ in true }
+                ).target
+                return queued ?? ranking.first { !excluded.contains($0.id) }
+            },
+            attempt: { candidate in
+                .activated(await manager.activateProfileDetailed(candidate.id, userInitiated: false))
+            }
+        )
+    }
+
+    /// One deferring candidate must not end the walk. A (the owner) is the one
+    /// being left, B is first in the queue and defers (its renewal cannot be
+    /// confirmed), C is usable: the walk lands on C, and B keeps its queue
+    /// entry and is not recorded dead.
+    func testADeferringCandidateIsSkippedAndTheWalkLandsOnTheNextOne() async {
+        let ownerA = profile("owner", login: login("owner", expiresIn: 6 * 3600))
+        let deferringB = profile("deferring", login: login("deferring", expiresIn: -10 * 60, deadlineIn: 20 * 86_400))
+        let usableC = profile("usable", login: login("usable", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400))
+        seed([ownerA, deferringB, usableC], focused: ownerA.id)
+        manager.claimActiveClaudeOwnership(ownerA.id)
+        cliStore.keychainUnreadable = true
+        let savedQueue = SharedDataStore.shared.loadAutoSwitchQueue()
+        defer { SharedDataStore.shared.saveAutoSwitchQueue(savedQueue) }
+        SharedDataStore.shared.saveAutoSwitchQueue([deferringB.id])
+
+        let result = await walk(queue: SharedDataStore.shared.loadAutoSwitchQueue(), ranking: [usableC])
+
+        XCTAssertEqual(result, .switched(to: usableC.id))
+        XCTAssertEqual(manager.activeClaudeProfileId, usableC.id)
+        XCTAssertEqual(SharedDataStore.shared.loadAutoSwitchQueue(), [deferringB.id], "B's queue entry is intact")
+        XCTAssertFalse(sync.isLoginMarkedDead(deferringB.id), "B is not dead")
+        XCTAssertEqual(refreshToken(cliStore.keychain), "usable-refresh-1", "C's login was applied")
+    }
+
+    /// When every remaining candidate defers, nothing switches and the walk
+    /// defers to the next sweep.
+    func testAWalkWhereEveryCandidateDefersSwitchesNothing() async {
+        let ownerA = profile("owner", login: login("owner", expiresIn: 6 * 3600))
+        let deferringB = profile("deferringB", login: login("deferringB", expiresIn: -10 * 60, deadlineIn: 20 * 86_400))
+        let deferringC = profile("deferringC", login: login("deferringC", expiresIn: -10 * 60, deadlineIn: 20 * 86_400))
+        seed([ownerA, deferringB, deferringC], focused: ownerA.id)
+        manager.claimActiveClaudeOwnership(ownerA.id)
+        cliStore.keychainUnreadable = true
+
+        let result = await walk(queue: [deferringB.id], ranking: [deferringC])
+
+        XCTAssertEqual(result, .deferredToNextSweep)
+        XCTAssertEqual(manager.activeClaudeProfileId, ownerA.id, "no switch")
+        XCTAssertTrue(cliStore.writes.isEmpty && cliStore.fileWrites.isEmpty)
+        XCTAssertFalse(sync.isLoginMarkedDead(deferringB.id))
+        XCTAssertFalse(sync.isLoginMarkedDead(deferringC.id))
+    }
+
+    /// The walk's stop rules, in isolation: a deferring candidate is skipped,
+    /// a dead one excluded, and only a machine-side failure (a write that
+    /// failed, a switch in flight) stops the whole walk.
+    func testTheWalkStopsEarlyOnlyForAMachineSideFailure() async {
+        let b = Profile(id: UUID(), name: "B")
+        let c = Profile(id: UUID(), name: "C")
+        let d = Profile(id: UUID(), name: "D")
+        func run(_ outcomes: [UUID: MenuBarManager.CandidateAttempt]) async -> (MenuBarManager.CandidateWalkResult, [UUID]) {
+            var tried: [UUID] = []
+            let result = await MenuBarManager.runCandidateWalk(
+                nextCandidate: { excluded in [b, c, d].first { !excluded.contains($0.id) } },
+                attempt: { candidate in
+                    tried.append(candidate.id)
+                    return outcomes[candidate.id] ?? .activated(.activated)
+                }
+            )
+            return (result, tried)
+        }
+        var (result, tried) = await run([b.id: .activated(.handoffDeferred), c.id: .activated(.credentialsRefused)])
+        XCTAssertEqual(result, .switched(to: d.id))
+        XCTAssertEqual(tried, [b.id, c.id, d.id])
+
+        (result, tried) = await run([b.id: .activated(.handoffDeferred), c.id: .activated(.credentialWriteFailed)])
+        XCTAssertEqual(result, .deferredToNextSweep, "a failed write is the machine's: stop the walk")
+        XCTAssertEqual(tried, [b.id, c.id], "D is not tried")
+
+        (result, tried) = await run([b.id: .stopWalk])
+        XCTAssertEqual(result, .deferredToNextSweep)
+        XCTAssertEqual(tried, [b.id])
+
+        (result, _) = await run([b.id: .activated(.handoffDeferred), c.id: .skipped, d.id: .activated(.credentialsRefused)])
+        XCTAssertEqual(result, .deferredToNextSweep, "a deferral happened and nothing landed: retry next sweep")
+
+        (result, _) = await run([b.id: .skipped, c.id: .activated(.credentialsRefused), d.id: .skipped])
+        XCTAssertEqual(result, .noSwitch)
+    }
+
+    /// Containment and renewal are different questions. A token found only in
+    /// the fallback file while the authoritative Keychain item could not be
+    /// read PROHIBITS the redemption, but its renewal is unverified — with the
+    /// timer and the bound — never renewable.
+    func testAFileOnlyMatchBehindAnUnreadableKeychainIsHeldButUnverified() async {
+        let owner = profile("owner", login: login("owner", expiresIn: -10 * 60, deadlineIn: 20 * 86_400))
+        seed([owner], focused: owner.id)
+        manager.claimActiveClaudeOwnership(owner.id)
+        cliStore.set(keychain: nil, file: owner.cliCredentialsJSON)
+        cliStore.keychainUnreadable = true
+
+        let changed = await sync.ensureFreshCredentials(
+            for: owner.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+
+        XCTAssertFalse(changed)
+        XCTAssertTrue(endpoint.redeemed.isEmpty, "the file holds the token: no redemption")
+        guard case .unverified = sync.cliRenewalState(owner.id) else {
+            return XCTFail("an unreadable Keychain item cannot confirm the CLI will renew it")
+        }
+        sync.backdateUnverifiedRenewalForTesting(owner.id, by: ClaudeCodeSyncService.unverifiedRenewalBound + 1)
+        XCTAssertTrue(sync.isRenewalOverdue(owner.id))
+
+        // With NO Keychain item at all, the file is what the CLI reads: renewable.
+        cliStore.keychainUnreadable = false
+        _ = await sync.ensureFreshCredentials(
+            for: owner.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        XCTAssertEqual(sync.cliRenewalState(owner.id), .renewable)
     }
 
     /// Only a CONFIRMED not-found is absent: a path whose traversal is denied
