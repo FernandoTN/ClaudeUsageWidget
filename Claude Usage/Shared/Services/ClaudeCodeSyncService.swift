@@ -19,18 +19,41 @@ class ClaudeCodeSyncService {
 
     // MARK: - Test Seams
 
-    /// XCTest stand-in for the Claude Code CLI's credential store (the shared
-    /// Keychain item and `~/.claude/.credentials.json`). With it set, no test
-    /// reads or writes the real store: `readSystemCredentials` takes its two
-    /// halves from `readSources` and `writeSystemCredentials` hands the JSON to
-    /// `write`. Static and `nonisolated(unsafe)` because the store is read and
-    /// written off the main actor (`applyProfileCredentials` runs on a
-    /// background queue); tests set it once in setUp and clear it in tearDown.
+    /// XCTest stand-in for the Claude Code CLI's store: the shared Keychain
+    /// item, `~/.claude/.credentials.json` and the account metadata in
+    /// `~/.claude.json`. `readSystemCredentials` takes its two halves from
+    /// `readSources`, `writeSystemCredentials` hands the JSON to `write`, and
+    /// the metadata read and write go to the last two.
+    ///
+    /// FAIL CLOSED: under XCTest an empty in-memory stand-in is installed by
+    /// default, and `setCLIStoreForTesting(nil)` puts a fresh one back, so no
+    /// test reaches the real store — there is no opt-in. The real primitives
+    /// below refuse under XCTest as a backstop (`RealCredentialStoreGuard`).
+    /// Static and `nonisolated(unsafe)` because the store is read and written
+    /// off the main actor (`applyProfileCredentials` runs on a background queue).
     struct CLIStoreSeams {
         var readSources: () -> (keychain: String?, file: String?)
         var write: (String) -> Void
+        var cachedAccountUUID: () -> String? = { nil }
+        var writeAccountMetadata: (_ accountUUID: String, _ email: String, _ organizationUUID: String) -> Void = { _, _, _ in }
+
+        /// An empty in-memory CLI store: what every test gets unless it
+        /// installs its own.
+        nonisolated static func inMemory() -> CLIStoreSeams {
+            let store = InMemoryCredentialStore()
+            return CLIStoreSeams(
+                readSources: { (store["keychain"], store["file"]) },
+                write: { json in
+                    store["keychain"] = json
+                    store["file"] = json
+                },
+                cachedAccountUUID: { store["accountUUID"] },
+                writeAccountMetadata: { uuid, _, _ in store["accountUUID"] = uuid }
+            )
+        }
     }
-    nonisolated(unsafe) private static var cliStoreSeams: CLIStoreSeams?
+    nonisolated(unsafe) private static var cliStoreSeams: CLIStoreSeams? =
+        RealCredentialStoreGuard.isTestRun ? CLIStoreSeams.inMemory() : nil
 
     /// XCTest stand-in for the token endpoint: receives the refresh token being
     /// redeemed, returns the HTTP status and JSON payload. No test redeems a
@@ -40,8 +63,10 @@ class ClaudeCodeSyncService {
     /// XCTest stand-in for the account-identity endpoint.
     private var identityFetcherForTesting: ((String) async -> AccountIdentity?)?
 
+    /// Installs a test's own stand-in; nil restores a fresh empty one. Never
+    /// the real store.
     func setCLIStoreForTesting(_ seams: CLIStoreSeams?) {
-        Self.cliStoreSeams = seams
+        Self.cliStoreSeams = seams ?? CLIStoreSeams.inMemory()
     }
 
     func setTokenEndpointForTesting(_ endpoint: ((String) async -> (status: Int, payload: [String: Any]?))?) {
@@ -186,6 +211,8 @@ class ClaudeCodeSyncService {
     /// 2026-07-17: switch to one account left the file on the previous one).
     /// Shells out to `security` — never call on the main thread.
     private func healCredentialsFileFromKeychain(expectedKeychainJSON: String) {
+        // A stand-in store (XCTest) has no separate file to drift.
+        if Self.cliStoreSeams != nil { return }
         guard let raw = try? readKeychainCredentials(),
               raw == expectedKeychainJSON,
               let data = raw.data(using: .utf8),
@@ -220,6 +247,7 @@ class ClaudeCodeSyncService {
 
     /// Reads credentials from ~/.claude/.credentials.json or ~/.claude/credentials.json file
     private func readCredentialsFile() -> String? {
+        if RealCredentialStoreGuard.refuse("read ~/.claude/.credentials.json") { return nil }
         let paths = [
             Constants.ClaudePaths.claudeDirectory.appendingPathComponent(".credentials.json"),
             Constants.ClaudePaths.claudeDirectory.appendingPathComponent("credentials.json")
@@ -250,6 +278,7 @@ class ClaudeCodeSyncService {
 
     /// Reads Claude Code credentials from system Keychain using security command
     private func readKeychainCredentials() throws -> String? {
+        if RealCredentialStoreGuard.refuse("read the Claude Code-credentials Keychain item") { return nil }
         let serviceName = resolveServiceName()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
@@ -330,6 +359,7 @@ class ClaudeCodeSyncService {
 
     /// Checks if a keychain item exists with the given service name
     private func keychainItemExists(serviceName: String) -> Bool {
+        if RealCredentialStoreGuard.refuse("look up the Claude Code-credentials Keychain item") { return false }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", serviceName, "-a", NSUserName()]
@@ -348,6 +378,7 @@ class ClaudeCodeSyncService {
 
     /// Searches the keychain for a hashed service name matching "Claude Code-credentials-*"
     private func findHashedServiceName() -> String? {
+        if RealCredentialStoreGuard.refuse("dump the login Keychain") { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["dump-keychain"]
@@ -422,6 +453,7 @@ class ClaudeCodeSyncService {
     /// Updates the `Claude Code-credentials` Keychain item via the `security` CLI.
     /// Best-effort: a failure here is logged but does not fail the profile switch.
     private func updateSystemKeychainViaSecurityTool(_ jsonData: String) {
+        if RealCredentialStoreGuard.refuse("write the Claude Code-credentials Keychain item") { return }
         let serviceName = resolveServiceName()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
@@ -454,6 +486,7 @@ class ClaudeCodeSyncService {
     /// Keeps the file in sync with the system keychain so that readSystemCredentials()
     /// and Claude Code CLI both see the active profile's credentials.
     private func writeCredentialsFile(_ jsonData: String) {
+        if RealCredentialStoreGuard.refuse("write ~/.claude/.credentials.json") { return }
         let fileURL = Constants.ClaudePaths.credentialsFile
         let dirURL = Constants.ClaudePaths.claudeDirectory
 
@@ -679,6 +712,10 @@ class ClaudeCodeSyncService {
         if let endpoint = tokenEndpointForTesting {
             (statusCode, responsePayload) = await endpoint(refreshToken)
         } else {
+            // No test redeems a refresh token over the network.
+            if RealCredentialStoreGuard.refuse("token endpoint (refresh_token grant)") {
+                throw ClaudeCodeError.tokenRefreshFailed(status: -1)
+            }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -945,6 +982,8 @@ class ClaudeCodeSyncService {
     /// "no evidence", never as a mismatch.
     func fetchAccountIdentity(accessToken: String) async -> AccountIdentity? {
         if let fetch = identityFetcherForTesting { return await fetch(accessToken) }
+        // No test sends a token to the identity endpoint.
+        if RealCredentialStoreGuard.refuse("identity endpoint") { return nil }
         let cacheKey = String(accessToken.suffix(24))
         if let cached = identityCache[cacheKey] { return cached }
 
@@ -1095,6 +1134,11 @@ class ClaudeCodeSyncService {
     /// one — which is exactly the confusion that mislabeled a real incident.
     /// Best-effort and surgical: only the oauthAccount keys are touched.
     func updateCLIAccountMetadata(accountUUID: String, email: String, organizationUUID: String) {
+        if let seams = Self.cliStoreSeams {
+            seams.writeAccountMetadata(accountUUID, email, organizationUUID)
+            return
+        }
+        if RealCredentialStoreGuard.refuse("write ~/.claude.json") { return }
         let fileURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
         guard let data = try? Data(contentsOf: fileURL),
               var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -1189,6 +1233,8 @@ class ClaudeCodeSyncService {
     /// every apply (`updateCLIAccountMetadata`) from the APPLIED profile's own
     /// stamp, so it tracks the login rather than the pointer.
     func cliCachedAccountUUID() -> String? {
+        if let seams = Self.cliStoreSeams { return seams.cachedAccountUUID() }
+        if RealCredentialStoreGuard.refuse("read ~/.claude.json") { return nil }
         let fileURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
         guard let data = try? Data(contentsOf: fileURL),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],

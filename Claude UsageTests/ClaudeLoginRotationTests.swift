@@ -118,9 +118,13 @@ final class ClaudeLoginRotationTests: XCTestCase {
             manager.activeProfile = savedActiveProfile
         }
         testProfileIDs = []
+        // A fresh empty CLI stand-in, and endpoints that answer "unavailable"
+        // rather than nil: an identity stamp still in flight from this test
+        // must not land on the default refusal and fail whichever test runs
+        // next (RealStoreTouchObserver).
         sync.setCLIStoreForTesting(nil)
-        sync.setTokenEndpointForTesting(nil)
-        sync.setIdentityFetcherForTesting(nil)
+        sync.setTokenEndpointForTesting { _ in (503, nil) }
+        sync.setIdentityFetcherForTesting { _ in nil }
         try await super.tearDown()
     }
 

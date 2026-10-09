@@ -508,9 +508,15 @@ the switch had just applied. Three rules now hold
   not a switch target (`candidateHasHeadroom`), is not live to the preflight, and
   is refused by the activation gate as dead. Refreshes store
   `refresh_token_expires_in`.
-Tests swap the CLI store, the token endpoint and the identity endpoint through
-`ClaudeCodeSyncService.set…ForTesting`. Never apply a live login in a test
-without them: the apply writes the real Keychain item and credentials file.
+**Tests never reach a real credential store** (`RealCredentialStoreGuard`).
+Under XCTest the Claude Code CLI's store (the Keychain item,
+`.credentials.json` and the `~/.claude.json` account metadata) defaults to an
+in-memory stand-in, and so do `KeychainService`'s per-profile and legacy items.
+The token and identity endpoints refuse. Every real primitive refuses and is
+recorded, and `RealStoreTouchObserver` fails any test during which a refusal
+happens. There is no opt-in. A test supplies its own stand-ins through
+`ClaudeCodeSyncService.set…ForTesting`. The guard was added after a 2026-10-09
+suite run rewrote the live CLI login.
 
 **Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
 exhausted account 429s its OWN `oauth/usage` endpoint — the widget cannot read

@@ -1435,6 +1435,11 @@ class ProfileStore {
 
     /// Deletes a single Keychain credential entry for a profile.
     private func deleteKeychainCredential(profileId: UUID, key: String) {
+        // Under XCTest the items live in KeychainService's in-memory store.
+        if RealCredentialStoreGuard.isTestRun {
+            keychainService.deleteProfileCredential(profileId: profileId, key: key)
+            return
+        }
         let service = "com.claudewidget.\(key)-\(profileId.uuidString)"
         let account = "profile-credential"
 
