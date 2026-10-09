@@ -484,6 +484,34 @@ out of `candidateHasHeadroom(loginCondemned:)`. The owner is notified once,
 and the verdict lifts on the next successful read. It never re-authenticates.
 Spec and hook install: `docs/specs/server-rejected-logins.md`.
 
+**Claude login hand-off (2026-10-08/09)**: redeeming a Claude refresh token
+revokes the access token issued with it AT ONCE. Two healthy accounts died
+within seconds of becoming active, because the 90 % preflight redeemed the pair
+the switch had just applied. Three rules now hold
+(`ClaudeLoginLifetime.swift`):
+- **No rotation after hand-off.** `ClaudeRefreshPolicy.decide` runs at every
+  redemption. The CLI's own login (the pointer, or the sole credentialed
+  profile) is redeemed only in its last 2 minutes, by a caller that writes the
+  result to the CLI. A login an activation is handing over (`beginHandoff`
+  until the claim) is redeemed only by that activation. The activation renews
+  BEFORE applying (`handoffFreshness`, 1 h). It WAITS for a redemption in
+  flight and always re-reads the store afterwards. Whether the rotated pair
+  goes to the CLI is re-decided when the redemption completes.
+- **Newest login wins** (`ClaudeLoginLifetime.isNewer`). The dead-marker is
+  never newer than anything. A lapsed deadline loses to a live one. Otherwise
+  the later `expiresAt` wins, and a tie is not newer. `readSystemCredentials`
+  returns nil when the Keychain holds the CLI's dead-marker and never falls back
+  to the file. The re-sync and both adoptions replace only with a newer login.
+  `ProfileStore.saveProfiles` refuses an older Claude login over a newer one
+  unless the write is `explicitCLILoginWrite` (manual sync).
+- **Deadline.** A login at or within 1 h of `refreshTokenExpiresAt` (ms or s) is
+  not a switch target (`candidateHasHeadroom`), is not live to the preflight, and
+  is refused by the activation gate as dead. Refreshes store
+  `refresh_token_expires_in`.
+Tests swap the CLI store, the token endpoint and the identity endpoint through
+`ClaudeCodeSyncService.set…ForTesting`. Never apply a live login in a test
+without them: the apply writes the real Keychain item and credentials file.
+
 **Account-level usage throttling (2026-07-16 incident)**: a heavily-used or
 exhausted account 429s its OWN `oauth/usage` endpoint — the widget cannot read
 the account's state exactly when it matters, and the cached percentages

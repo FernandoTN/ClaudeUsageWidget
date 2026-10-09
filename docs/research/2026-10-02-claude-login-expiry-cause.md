@@ -3,6 +3,7 @@
 **Date:** 2026-10-02 · **Status:** read-only investigation. No app code was changed. No
 token was refreshed, redeemed, revoked or applied, no account was switched, and nothing was
 written to the Keychain, the preferences, `~/.claude.json` or `~/.claude/.credentials.json`.
+**Resolved** on 2026-10-09: see section 8.
 **Base:** `origin/main` `2a3db9b`
 **Claude Code under test:** `2.1.287` (native binary `~/.local/share/claude/versions/2.1.287`).
 Every live session and the background daemon ran this version. `2.1.285` and `2.1.286` are
@@ -466,6 +467,50 @@ active account's refreshes to the CLI and only adopt.
   token evidence from that day survives.
 - **The in-flight refresh at the instant of a switch** (section 1). Possible by the code,
   not observed.
+
+---
+
+## 8. Resolved by (2026-10-09)
+
+Cause B struck twice more on 10-08/09, eight hours apart, each time on a healthy account
+whose deadline was weeks away. The widget's log showed the exact order: the switch applied
+the target's stored pair, and the 90 % preflight redeemed that pair's refresh token in the
+same second. Session transcripts showed nine sessions failing within three seconds of each
+redemption (07:50:25Z and 15:22:4xZ). So redeeming a Claude refresh token revokes the access
+token issued with it at once, not only the old refresh token. Writing the rotated pair to
+the CLI afterwards is therefore not enough: any redemption of a login the CLI is using kills
+its in-flight requests.
+
+The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
+
+1. **No rotation after hand-off.** `ClaudeRefreshPolicy.decide` runs at the moment of every
+   Claude redemption. The login the CLI holds is redeemed only in its last two minutes, by
+   a caller that writes the result to the CLI in the same step. The same applies to a login
+   an activation is handing over (`beginHandoff` through the claim). The activation renews
+   before it applies, with the preflight's one-hour window. It waits for a redemption
+   already in flight instead of skipping it, and always re-reads the store afterwards.
+   Whether a rotated pair goes to the CLI is decided again when the redemption completes.
+   The preflight skips a login being handed over and re-checks ownership after its await.
+   Fixes 1 to 3 of section 6, B.
+2. **Newest login wins.** `ClaudeLoginLifetime.isNewer` compares two logins. The dead-marker
+   is never newer than anything. A login past its deadline loses to one that is not. After
+   that, the later access-token expiry wins, and a tie is not newer. The store read returns
+   nothing when the Keychain holds the dead-marker, and never falls back to the file. The
+   switch-away re-sync, the Keychain adoption and identity adoption replace a stored login
+   only with a newer one. The profile store refuses to save an older login over a newer one
+   unless the write is an explicit sync. Fixes 4 and 5 of section 6, B.
+3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at
+   or within one hour of its deadline is not a switch target (`candidateHasHeadroom`, so
+   the walk, the queue peek, the stale re-verify and the fleet tile). The preflight verdict
+   is not live for it, and the activation gate refuses it with the expired-login handling.
+   A refresh the widget performs now stores the server's `refresh_token_expires_in` the way
+   the CLI does. Fix 2 of section 6, A, and part of fix 3.
+
+Not done here: fix 6 of B (re-applying a newer stored login over the dead-marker before
+condemning), the days-ahead deadline notice (fix 1 of A), and the CLI refresh lock. The
+fleet detector's 120-second post-switch grace explains why both accounts were condemned
+only about 30 minutes after they died. With the rotation gone it no longer delays
+anything, and it is unchanged.
 
 ---
 
