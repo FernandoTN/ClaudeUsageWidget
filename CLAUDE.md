@@ -509,8 +509,9 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
   - Profiles still holding the consumed token get it too, each by its own CAS.
   - The CLI's store is NEVER written by a redemption. The send-time check
     guarantees the CLI did not hold the token, so there is nothing to repair.
-    The only CLI-store writer is an activation's apply, under
-    `cliStoreWriteLock`.
+    The CLI's store has exactly two writers, both under `cliStoreWriteLock`:
+    an activation's apply (both halves) and the sweep's Keychain-to-file heal
+    (`healCredentialsFileFromKeychain`, file only, the Keychain's own payload).
 - **A refused redemption of a spent login** (`cliRenewalState`) is in one of three
   states:
   - `.renewable`: the CLI's store holds it (an idle owner every quiet night).

@@ -84,9 +84,10 @@ class ClaudeCodeSyncService {
 
     // MARK: - The CLI Store, Half by Half
 
-    /// Serializes every write this app makes to the CLI's store — the
-    /// activation's apply, the post-redemption repair, the file heal — so a
-    /// repair's read-compare-write can never interleave with an apply.
+    /// Serializes every write this app makes to the CLI's store. There are
+    /// exactly two writers: an activation's apply (both halves) and the sweep's
+    /// Keychain-to-file heal (the file only, and only with the Keychain's own
+    /// payload). A redemption never writes the CLI's store.
     nonisolated private static let cliStoreWriteLock = NSLock()
 
     /// Both halves of the CLI's store as found. Shells out to `security`: off
@@ -899,8 +900,9 @@ class ClaudeCodeSyncService {
     /// and while an activation is handing this login — or any profile sharing
     /// its refresh token — over. That check, made fail-closed at send time, is
     /// why a redemption can never leave the CLI holding a consumed token, and
-    /// why the widget never writes the CLI's store outside an activation's
-    /// apply. The CLI renews its own login; step 1 adopts the result.
+    /// why a redemption never writes the CLI's store (its writers are an
+    /// activation's apply and the file heal, under `cliStoreWriteLock`). The
+    /// CLI renews its own login; step 1 adopts the result.
     ///
     /// A login refused that way whose access token has expired is in one of
     /// three states (`cliRenewalState`):
@@ -1112,14 +1114,25 @@ class ClaudeCodeSyncService {
         var holds: Bool?
         /// The Keychain item holds the CLI's login-expired marker.
         var holdsDeadMarker: Bool
+        /// The CLI will renew THIS token when it next runs: the authoritative
+        /// Keychain item holds it, or the Keychain conclusively has no item and
+        /// the file it falls back to does. Containment (`holds`) prohibits a
+        /// redemption; only this makes a spent login `.renewable`. A token
+        /// found only in the file while the Keychain item could not be read is
+        /// held, but its renewal is unverified.
+        var cliRenewsIt: Bool = false
     }
 
     /// Off the main actor only.
     private func inspectCLIStore(for fingerprint: String) -> CLIStoreInspection {
         let halves = readCLIStoreHalves()
-        let tokens = [Self.refreshTokenFingerprint(in: halves.keychain), Self.refreshTokenFingerprint(in: halves.file)]
+        let keychainToken = Self.refreshTokenFingerprint(in: halves.keychain)
+        let fileToken = Self.refreshTokenFingerprint(in: halves.file)
+        let tokens = [keychainToken, fileToken]
         var deadMarker = false
         if case .contents(let raw) = halves.keychain { deadMarker = ClaudeLoginLifetime.isDeadMarker(raw) }
+        let cliRenewsIt = keychainToken == .token(fingerprint)
+            || (halves.keychain == .absent && fileToken == .token(fingerprint))
         let holds: Bool?
         if tokens.contains(.token(fingerprint)) {
             holds = true
@@ -1128,7 +1141,7 @@ class ClaudeCodeSyncService {
         } else {
             holds = false
         }
-        return CLIStoreInspection(holds: holds, holdsDeadMarker: deadMarker)
+        return CLIStoreInspection(holds: holds, holdsDeadMarker: deadMarker, cliRenewsIt: cliRenewsIt)
     }
 
     private func inspectCLIStoreOffMain(for fingerprint: String) async -> CLIStoreInspection {
@@ -1147,8 +1160,9 @@ class ClaudeCodeSyncService {
         /// The CLI's store holds this login: the CLI renews it the next time it
         /// runs, and the adoption picks the result up. Quiet.
         case renewable
-        /// The renewal cannot be confirmed — the store could not be inspected,
-        /// or does not hold the login although the pointer names the profile.
+        /// The renewal cannot be confirmed — the store could not be inspected
+        /// (an unreadable Keychain item, even with the token in the file), or
+        /// does not hold the login although the pointer names the profile.
         /// Pending, surfaced once it has lasted `unverifiedRenewalBound`.
         case unverified(since: Date)
     }
@@ -1191,7 +1205,7 @@ class ClaudeCodeSyncService {
             notifyReloginNeeded(for: profile.id)
             return
         }
-        if inspection.holds == true {
+        if inspection.cliRenewsIt {
             if renewalStates[profile.id] != .renewable {
                 renewalStates[profile.id] = .renewable
                 surfacedUnverified.remove(profile.id)
