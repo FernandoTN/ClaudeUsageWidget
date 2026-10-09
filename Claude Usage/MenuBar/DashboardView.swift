@@ -221,6 +221,7 @@ enum DashboardFormatting {
         case .credentialsRefused: return "\(name)'s login is dead — the CLI login was not changed. Log in again, then Sync."
         case .focusedWithoutApplying: return "\(name) is focused, but its login is dead so the CLI login was not changed. Log in again, then Sync."
         case .credentialWriteFailed: return "\(name)'s login could not be written to the CLI — the CLI login was not changed. Check the log, then try again."
+        case .handoffDeferred: return "\(name)'s login is waiting on a renewal that could not be confirmed — the CLI login was not changed. Try again shortly."
         }
     }
 

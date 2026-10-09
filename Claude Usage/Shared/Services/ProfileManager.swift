@@ -352,6 +352,12 @@ class ProfileManager: ObservableObject {
         /// moved it back. Not the candidate's fault, so the auto-switch walk
         /// retries next sweep instead of excluding it.
         case credentialWriteFailed
+        /// The target's login is pending a renewal the app cannot confirm (its
+        /// access token is spent, the CLI's store could not be inspected or
+        /// holds it under another pointer). Not dead and not handed over:
+        /// nothing was claimed, the focus did not move, and the walk retries
+        /// next sweep — the queue entry is NOT consumed.
+        case handoffDeferred
 
         /// Back-compat with the `Bool`-returning API: true only when the
         /// profile is active as a result of the call.
@@ -710,6 +716,9 @@ class ProfileManager: ObservableObject {
         /// the profile's problem and moves the focus for repair; a failed write
         /// is the machine's, and moves nothing.
         var writeFailedProviders: [RefusedProvider] = []
+        /// Providers whose login is pending a renewal that cannot be confirmed:
+        /// not dead, not handed over — the switch is deferred.
+        var deferredProviders: [RefusedProvider] = []
 
         // Apply new profile's CLI credentials (if available)
         LoggingService.shared.log("Checking CLI credentials for profile '\(updatedProfile.name)': hasJSON=\(updatedProfile.cliCredentialsJSON != nil)")
@@ -772,15 +781,24 @@ class ProfileManager: ObservableObject {
             // clears on any successful refresh, adoption or re-sync, so a
             // revived account is not held out.
             // AWAITING CLI RENEWAL is not dead. The renewal step just refused to
-            // redeem this login because the CLI holds (or owns) it, and its
+            // redeem this login because the CLI holds it (or might), and its
             // access token has expired because no CLI process has run to renew
-            // it — every quiet night for an idle owner. The CLI has this login
-            // already: there is nothing to apply, nothing to refuse, and no
-            // `/login` to ask for.
-            let awaitingCLIRenewal = cliSyncService.isAwaitingCLIRenewal(id)
+            // it — every quiet night for an idle owner.
+            //   - The VERIFIED existing owner (the pointer names it AND the CLI's
+            //     store holds its token) already IS the CLI's login: nothing to
+            //     apply, nothing to refuse, no `/login` to ask for.
+            //   - Anyone else still pending (the store could not be inspected,
+            //     or the CLI holds it under someone else's pointer) cannot be
+            //     handed over right now and is not dead either: the switch is
+            //     DEFERRED — nothing applied, nothing claimed, the walk retries.
+            let renewal = cliSyncService.cliRenewalState(id)
+            let pendingRenewal = renewal != nil && cliSyncService.isTokenExpired(cliJSON)
                 && !cliSyncService.isLoginMarkedDead(id) && !pastDeadline
-            if awaitingCLIRenewal {
+            if pendingRenewal, renewal == .renewable, isExplicitClaudeOwner(id) {
                 LoggingService.shared.log("'\(updatedProfile.name)' is the CLI's own login, awaiting the CLI's renewal — nothing to apply")
+            } else if pendingRenewal {
+                deferredProviders.append(.claude)
+                LoggingService.shared.log("⏸ '\(updatedProfile.name)' CLI login awaits a renewal that cannot be confirmed — NOT applied, switch deferred")
             } else if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) || pastDeadline {
                 if pastDeadline {
                     LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is at its server deadline (\(ClaudeLoginLifetime.summary(cliJSON))) — only /login renews it")
@@ -962,6 +980,17 @@ class ProfileManager: ObservableObject {
         // told, and the walk retries next sweep rather than excluding a healthy
         // candidate. Checked before the dead-login exit — on a mixed profile a
         // write failure is the more surprising of the two.
+        // DEFERRED: a login pending a renewal that cannot be confirmed is
+        // neither dead (no `/login` notice, no dead flag) nor handed over.
+        // Nothing was claimed and the focus does not move; the walk retries
+        // next sweep without consuming the queue or excluding the candidate.
+        if !deferredProviders.isEmpty {
+            switchingSemaphore = false
+            isSwitchingProfile = false
+            LoggingService.shared.log("⏸ Activation of '\(updatedProfile.name)' deferred — its \(RefusedProvider.summary(deferredProviders)) login awaits a renewal; the pointer stays with '\(currentOwnerName(of: .claude) ?? "none")'")
+            return .handoffDeferred
+        }
+
         if !writeFailedProviders.isEmpty {
             switchingSemaphore = false
             isSwitchingProfile = false

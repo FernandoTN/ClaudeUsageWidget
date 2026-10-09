@@ -1069,6 +1069,13 @@ class ProfileStore {
             credentialCache[profile.id] = merged
             if merged != old {
                 bumpCredentialRevision(profile.id)
+                // Enqueued under the cache lock: the serial keychainQueue then
+                // persists writes in exactly the order the cache took them, so
+                // a relaunch restores the login memory holds.
+                let profileId = profile.id
+                keychainQueue.async { [weak self] in
+                    self?.writeCredentialItems(profileId: profileId, credentials: merged)
+                }
             }
             cacheLock.unlock()
 
@@ -1077,13 +1084,6 @@ class ProfileStore {
             }
             if merged.filledNilFields(of: incoming) {
                 LoggingService.shared.log("ProfileStore: preserved cached credential(s) for \(profile.id) that the saved profile was missing (stale pre-hydration copy?)")
-            }
-
-            if merged != old {
-                let profileId = profile.id
-                keychainQueue.async { [weak self] in
-                    self?.writeCredentialItems(profileId: profileId, credentials: merged)
-                }
             }
         }
 
@@ -1387,11 +1387,11 @@ class ProfileStore {
     func deleteProfileCredentials(profileId: UUID) {
         cacheLock.lock()
         credentialCache.removeValue(forKey: profileId)
-        cacheLock.unlock()
-
+        // Enqueued under the lock, in order with every other credential write.
         keychainQueue.async { [weak self] in
             self?.keychainService.deleteProfileCredentials(profileId: profileId)
         }
+        cacheLock.unlock()
     }
 
     /// Writes a profile's non-nil credentials to the Keychain. Nil fields are left
@@ -1431,11 +1431,14 @@ class ProfileStore {
         if cached.cliCredentialsJSON != expected {
             bumpCredentialRevision(profileId)
         }
-        cacheLock.unlock()
-
+        // The mutation and the persistence enqueue are one step under the
+        // lock: a racing writer cannot slip its write between them, so the
+        // Keychain ends on the value the cache ends on.
+        let snapshot = cached
         keychainQueue.async { [weak self] in
-            self?.writeCredentialItems(profileId: profileId, credentials: cached)
+            self?.writeCredentialItems(profileId: profileId, credentials: snapshot)
         }
+        cacheLock.unlock()
         return true
     }
 
@@ -1460,11 +1463,11 @@ class ProfileStore {
             clearedWhilePending.insert(.init(profileId: profileId, key: key))
         }
         bumpCredentialRevision(profileId)
-        cacheLock.unlock()
-
+        // Enqueued under the lock, in order with every other credential write.
         keychainQueue.async { [weak self] in
             self?.deleteKeychainCredential(profileId: profileId, key: key.rawValue)
         }
+        cacheLock.unlock()
         LoggingService.shared.log("ProfileStore: cleared credential '\(key.rawValue)' for profile \(profileId)")
     }
 

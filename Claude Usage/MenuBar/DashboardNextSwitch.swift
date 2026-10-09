@@ -112,7 +112,7 @@ struct HeaderSwitchNote: Hashable {
             role = .ready; icon = "checkmark.circle"; lifetime = 6
         case .alreadyActive, .switchInFlight:
             role = .informational; icon = "info.circle"; lifetime = 6
-        case .profileNotFound:
+        case .profileNotFound, .handoffDeferred:
             role = .caution; icon = "exclamationmark.triangle"; lifetime = 12
         case .credentialsRefused, .focusedWithoutApplying, .credentialWriteFailed:
             role = .blocking; icon = "exclamationmark.triangle"; lifetime = 12

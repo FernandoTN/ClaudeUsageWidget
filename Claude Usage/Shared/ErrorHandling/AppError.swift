@@ -157,6 +157,10 @@ enum ErrorCode: String, CaseIterable {
     /// process ran to renew it. Not a credential error: usage is shown stale
     /// until the CLI renews it (`ClaudeCodeSyncService.isAwaitingCLIRenewal`).
     case cliRenewalPending = "E1011"
+    /// The same, but the CLI's store has not confirmed it holds the login for
+    /// longer than `ClaudeCodeSyncService.unverifiedRenewalBound`: surfaced as
+    /// an ordinary (non-credential) refresh failure.
+    case cliRenewalUnverified = "E1012"
 
     // MARK: - Network Errors (2000-2099)
 

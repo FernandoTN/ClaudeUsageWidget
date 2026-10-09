@@ -107,18 +107,43 @@ class ClaudeCodeSyncService {
     }
 
     /// The CLI's file (and the legacy `credentials.json`): absent only when
-    /// neither exists; a file that exists but cannot be read is unreadable.
+    /// both are CONFIRMED not found (ENOENT). Anything else — a path whose
+    /// traversal is denied, a file that cannot be read or is not UTF-8 — is
+    /// unreadable: it may hold a token, and that cannot be ruled out.
     private func readFileHalf() -> StoreHalf {
         if let seams = Self.cliStoreSeams { return seams.readHalves().file }
         if RealCredentialStoreGuard.refuse("read ~/.claude/.credentials.json") { return .unreadable }
-        for fileURL in Self.credentialFileURLs where FileManager.default.fileExists(atPath: fileURL.path) {
+        for fileURL in Self.credentialFileURLs {
+            // `fileExists` answers false for a path it is not allowed to
+            // traverse; the attributes call tells "not there" from "not
+            // allowed" by its error.
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+            } catch {
+                if Self.isNotFound(error) { continue }
+                return .unreadable
+            }
             guard let data = try? Data(contentsOf: fileURL),
-                  let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty else { return .unreadable }
+                  let text = String(data: data, encoding: .utf8) else { return .unreadable }
             LoggingService.shared.log("Read credentials from \(fileURL.lastPathComponent)")
-            return .contents(text)
+            return .contents(text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return .absent
+    }
+
+    /// True only for a confirmed "no such file" (ENOENT), never for a denied
+    /// or failed lookup.
+    nonisolated static func isNotFound(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileReadNoSuchFileError || nsError.code == NSFileNoSuchFileError {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) { return true }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == NSPOSIXErrorDomain, underlying.code == Int(ENOENT) {
+            return true
+        }
+        return false
     }
 
     private func writeKeychainHalf(_ json: String) -> Bool {
@@ -147,6 +172,8 @@ class ClaudeCodeSyncService {
         case .unreadable:
             return .unknown
         case .contents(let raw):
+            // An empty payload conclusively holds no token.
+            if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .none }
             if let data = raw.data(using: .utf8),
                let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 let token = (root["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String ?? ""
@@ -376,8 +403,10 @@ class ClaudeCodeSyncService {
 
         if exitCode == 0 {
             let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            // Output that is not UTF-8 is unreadable, never "no item": an
+            // item exists (exit 0) and what it holds is unknown.
             guard let value = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
-                return nil
+                throw ClaudeCodeError.keychainReadFailed(status: -1)
             }
             return value
         } else if exitCode == 44 {
@@ -868,30 +897,41 @@ class ClaudeCodeSyncService {
     /// when either half of the CLI's store holds this refresh token right now
     /// (or cannot be conclusively read), when the pointer names this profile,
     /// and while an activation is handing this login — or any profile sharing
-    /// its refresh token — over. The CLI renews its own login; step 1 adopts
-    /// the result. A login refused that way whose access token has expired is
-    /// AWAITING CLI RENEWAL (`isAwaitingCLIRenewal`): its usage is shown stale,
-    /// it is never flagged dead and never switched away from for that reason.
+    /// its refresh token — over. That check, made fail-closed at send time, is
+    /// why a redemption can never leave the CLI holding a consumed token, and
+    /// why the widget never writes the CLI's store outside an activation's
+    /// apply. The CLI renews its own login; step 1 adopts the result.
+    ///
+    /// A login refused that way whose access token has expired is in one of
+    /// three states (`cliRenewalState`):
+    /// - `.renewable` — the CLI's store holds it, so the CLI renews it the next
+    ///   time it runs. Quiet: usage shows stale, never dead, never switched away
+    ///   from for that.
+    /// - `.unverified` — the store could not be inspected (or does not hold the
+    ///   login although the pointer names the profile). Pending, but surfaced
+    ///   once it has lasted `unverifiedRenewalBound`.
+    /// - terminal — its server deadline has passed, or the CLI's store holds the
+    ///   CLI's login-expired marker for the owner. Not pending: the normal dead
+    ///   path, with its `/login` notice.
     ///
     /// Every store write is a compare-and-swap (`ProfileStore.replaceCLILogin`):
     /// a rotated pair is stored only if the profile still holds the pair that
     /// was redeemed, so a `/login` synced in while the request was in flight is
     /// never overwritten. Profiles that share the consumed refresh token get
     /// the rotated pair too (each by its own CAS) — the token they hold is dead.
-    /// The CLI's store gets it only as a guarded repair (`repairCLIStore`).
     ///
     /// The mutex is keyed by profile AND by refresh-token fingerprint, so two
-    /// profiles holding one login can never redeem it twice.
+    /// profiles holding one login can never redeem it twice; an adopted login
+    /// is reserved under its own fingerprint before any decision about it.
     ///
     /// `freshFor` is how long the access token must remain valid before a refresh is
     /// attempted (default 2 minutes; the candidate preflight and the activation pass
     /// `ClaudeRefreshPolicy.handoffFreshness`). `role: .handoff` is the activation
     /// renewing the login it is about to apply: it WAITS for a redemption already
     /// in flight for the same profile or token instead of skipping it.
-    /// Returns true if THIS call changed the stored credentials and every repair
-    /// it needed landed. A hand-off that waited on another caller's redemption can
-    /// get false back while the store now holds a rotated pair, so it must re-read
-    /// the store either way.
+    /// Returns true if THIS call changed the stored credentials. A hand-off that
+    /// waited on another caller's redemption can get false back while the store
+    /// now holds a rotated pair, so it must re-read the store either way.
     func ensureFreshCredentials(
         for profileId: UUID,
         adoptSystemKeychain: Bool,
@@ -906,7 +946,6 @@ class ClaudeCodeSyncService {
         // flight. A hand-off waits for it: skipping is how a switch applied the
         // very pair a preflight was redeeming at that moment (2026-10-02).
         var profile: Profile
-        var claimedToken: String?
         while true {
             guard let loaded = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
                   let json = loaded.cliCredentialsJSON else {
@@ -921,12 +960,13 @@ class ClaudeCodeSyncService {
                 continue  // re-read: the redemption we waited on may have rotated it
             }
             profile = loaded
-            claimedToken = token
             refreshInFlight.insert(profileId)
             if let token { refreshInFlightTokens.insert(token) }
             break
         }
-        defer { finishRefresh(profileId, token: claimedToken) }
+        // Every token reserved by this call, released together.
+        var reservedTokens = Set([Self.refreshTokenFingerprint(of: profile.cliCredentialsJSON ?? "")].compactMap { $0 })
+        defer { finishRefresh(profileId, tokens: reservedTokens) }
 
         guard var storedJSON = profile.cliCredentialsJSON else { return false }
         var changed = false
@@ -939,8 +979,19 @@ class ClaudeCodeSyncService {
                 storedJSON = systemJSON
                 changed = true
                 reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
-                awaitingCLIRenewal.remove(profileId)
+                renewalStates.removeValue(forKey: profileId)
                 LoggingService.shared.log("ensureFreshCredentials: adopted newer login from system Keychain (\(ClaudeLoginLifetime.summary(systemJSON)))")
+                // The adopted login is a different token: reserve it before any
+                // decision about it, so the token a redemption sends is always
+                // one this call holds the slot for.
+                if let adopted = Self.refreshTokenFingerprint(of: systemJSON), !reservedTokens.contains(adopted) {
+                    guard !refreshInFlightTokens.contains(adopted) else {
+                        LoggingService.shared.log("ensureFreshCredentials: the adopted login for '\(profile.name)' is being redeemed elsewhere — leaving it to that caller")
+                        return changed
+                    }
+                    refreshInFlightTokens.insert(adopted)
+                    reservedTokens.insert(adopted)
+                }
             } else {
                 LoggingService.shared.log("ensureFreshCredentials: did not adopt the CLI's login into '\(profile.name)' — its stored login changed meanwhile")
             }
@@ -954,40 +1005,35 @@ class ClaudeCodeSyncService {
         let canRedeem = !refreshToken.isEmpty && !reloginNotifiedProfiles.contains(profileId)
         let consumed = refreshToken.isEmpty ? nil : ClaudeLoginLifetime.fingerprint(refreshToken)
         var decision = ClaudeRefreshPolicy.Decision.notNeeded
+        var inspection = CLIStoreInspection(holds: nil, holdsDeadMarker: false)
         if canRedeem, let consumed, expiry.timeIntervalSinceNow < freshFor {
             // Read the CLI's store only when a redemption is otherwise due. The
             // decision follows with no await in between, so the ownership and
             // hand-off state it reads is the state the request is sent under.
-            let held = await cliStoreHoldsOffMain(consumed)
+            inspection = await inspectCLIStoreOffMain(for: consumed)
             decision = ClaudeRefreshPolicy.decide(
                 timeLeft: expiry.timeIntervalSinceNow,
                 freshFor: freshFor,
                 canRedeem: canRedeem,
-                cliHoldsThisLogin: held,
+                cliHoldsThisLogin: inspection.holds,
                 ownsCLILogin: ProfileManager.shared.isExplicitClaudeOwner(profileId),
                 handoffInFlight: handoffsInFlight.contains(profileId) || handoffHolds(consumed, other: profileId),
                 role: role
             )
             if decision == .refuseHandedOff {
-                let reason = held == nil
+                let reason = inspection.holds == nil
                     ? "the CLI's store could not be conclusively read"
                     : "the CLI holds, owns or is being handed this login"
                 LoggingService.shared.log("ensureFreshCredentials: NOT redeeming '\(profile.name)' — \(reason); a redemption would revoke the access token its sessions use (\(ClaudeLoginLifetime.summary(storedJSON)))")
             }
         }
 
-        // Awaiting CLI renewal: refused because the CLI holds (or may hold) the
-        // login, with the access token already spent. Not dead — the CLI renews
-        // it the next time it runs, and the adoption above picks that up.
         if decision == .refuseHandedOff, expiry <= Date() {
-            if awaitingCLIRenewal.insert(profileId).inserted {
-                LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' is awaiting the CLI's own renewal — usage stays stale until then; not a dead login")
-            }
+            noteRenewalRefused(profile, storedJSON: storedJSON, inspection: inspection)
         } else if expiry > Date() || decision == .redeem || changed {
-            awaitingCLIRenewal.remove(profileId)
+            renewalStates.removeValue(forKey: profileId)
         }
 
-        var repairFailed = false
         if decision == .redeem, let consumed {
             var successor: String?
             do {
@@ -1008,23 +1054,19 @@ class ClaudeCodeSyncService {
                     storedJSON = successor
                     changed = true
                     reloginNotifiedProfiles.remove(profileId)
-                    awaitingCLIRenewal.remove(profileId)
+                    renewalStates.removeValue(forKey: profileId)
                 } else {
                     LoggingService.shared.log("ensureFreshCredentials: discarded '\(profile.name)''s rotated pair — its stored login changed while the refresh was in flight (\(ClaudeLoginLifetime.summary(successor)))")
                 }
-                // Every other profile still holding the consumed token now holds
-                // a dead one; the successor is its only continuation.
+                // Every other PROFILE still holding the consumed token now holds a
+                // dead one; the successor is its only continuation. The CLI's
+                // store is never written here: it did not hold this token when
+                // the request was sent, and nothing hands a login over without
+                // waiting for this redemption to finish.
                 shareRotation(of: consumed, successor: successor, except: profileId)
                 // The redemption CONSUMED the old refresh token — make sure the
                 // rotated one is on disk before anything else can kill the process.
                 await ProfileStore.shared.flushKeychainWrites()
-                // Repair only: the CLI gets the successor if, and only where, it
-                // holds the consumed token.
-                if await repairCLIStoreOffMain(consumed: consumed, successor: successor) == .failed {
-                    pendingCLIRepairs[consumed] = successor
-                    repairFailed = true
-                    LoggingService.shared.log("ensureFreshCredentials: the CLI's store may hold '\(profile.name)''s consumed token and could not be repaired — retrying at the next sweep")
-                }
             }
         }
 
@@ -1034,11 +1076,12 @@ class ClaudeCodeSyncService {
             profiles[index].cliAccountSyncedAt = Date()
             ProfileStore.shared.saveProfiles(profiles)
         }
-        return !repairFailed
+        return true
     }
 
     /// Gives every OTHER profile that still holds the consumed refresh token
-    /// the successor, each by its own compare-and-swap.
+    /// the successor, each by its own compare-and-swap. Profiles only — never
+    /// the CLI's store.
     private func shareRotation(of consumed: String, successor: String, except redeemer: UUID) {
         var shared: [String] = []
         for alias in ProfileStore.shared.loadProfiles() where alias.id != redeemer {
@@ -1046,7 +1089,7 @@ class ClaudeCodeSyncService {
                   Self.refreshTokenFingerprint(of: json) == consumed,
                   ProfileStore.shared.replaceCLILogin(alias.id, expected: json, with: successor) else { continue }
             reloginNotifiedProfiles.remove(alias.id)
-            awaitingCLIRenewal.remove(alias.id)
+            renewalStates.removeValue(forKey: alias.id)
             shared.append(alias.name)
         }
         if !shared.isEmpty {
@@ -1061,108 +1104,108 @@ class ClaudeCodeSyncService {
 
     // MARK: - The CLI Holds This Token
 
-    /// Whether either half of the CLI's store holds the refresh token with this
-    /// fingerprint: true, false, or nil when a half could not be conclusively
-    /// inspected (unreadable, or a payload with no complete token) — which the
-    /// redemption point treats as held. Off the main actor only.
-    private func cliStoreHolds(_ fingerprint: String) -> Bool? {
+    /// What the CLI's store says about one refresh token.
+    struct CLIStoreInspection: Equatable {
+        /// Either half holds it: true, false, or nil when a half could not be
+        /// conclusively inspected (unreadable, or a payload with no complete
+        /// token) — which the redemption point treats as held.
+        var holds: Bool?
+        /// The Keychain item holds the CLI's login-expired marker.
+        var holdsDeadMarker: Bool
+    }
+
+    /// Off the main actor only.
+    private func inspectCLIStore(for fingerprint: String) -> CLIStoreInspection {
         let halves = readCLIStoreHalves()
         let tokens = [Self.refreshTokenFingerprint(in: halves.keychain), Self.refreshTokenFingerprint(in: halves.file)]
-        if tokens.contains(.token(fingerprint)) { return true }
-        if tokens.contains(.unknown) { return nil }
-        return false
+        var deadMarker = false
+        if case .contents(let raw) = halves.keychain { deadMarker = ClaudeLoginLifetime.isDeadMarker(raw) }
+        let holds: Bool?
+        if tokens.contains(.token(fingerprint)) {
+            holds = true
+        } else if tokens.contains(.unknown) {
+            holds = nil
+        } else {
+            holds = false
+        }
+        return CLIStoreInspection(holds: holds, holdsDeadMarker: deadMarker)
     }
 
-    private func cliStoreHoldsOffMain(_ fingerprint: String) async -> Bool? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool?, Never>) in
+    private func inspectCLIStoreOffMain(for fingerprint: String) async -> CLIStoreInspection {
+        await withCheckedContinuation { (continuation: CheckedContinuation<CLIStoreInspection, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: self.cliStoreHolds(fingerprint))
-            }
-        }
-    }
-
-    // MARK: - CLI Store Repair
-
-    enum RepairOutcome: Equatable {
-        /// Neither half held the consumed token: nothing to do.
-        case notNeeded
-        /// Every half that held it now holds the successor (read back).
-        case repaired
-        /// A half that held it — or might, being unreadable — was not
-        /// repaired and verified.
-        case failed
-    }
-
-    /// Writes `successor` into each half of the CLI's store that holds the
-    /// CONSUMED token, half by half: re-read that half, compare, write it,
-    /// read it back. A file-only match never authorizes a Keychain write, and
-    /// the reverse. Runs under the store write lock, so it cannot interleave
-    /// with an activation's apply. Off the main actor only.
-    private func repairCLIStore(consumed: String, successor: String) -> RepairOutcome {
-        guard let successorToken = Self.refreshTokenFingerprint(of: successor) else { return .failed }
-        Self.cliStoreWriteLock.lock()
-        defer { Self.cliStoreWriteLock.unlock() }
-
-        var outcome = RepairOutcome.notNeeded
-        let halves: [(name: String, read: () -> StoreHalf, write: (String) -> Bool)] = [
-            ("Keychain item", { self.readKeychainHalf() }, { self.writeKeychainHalf($0) }),
-            ("credentials file", { self.readFileHalf() }, { self.writeFileHalf($0) })
-        ]
-        for half in halves {
-            switch Self.refreshTokenFingerprint(in: half.read()) {
-            case .token(consumed):
-                guard half.write(successor),
-                      Self.refreshTokenFingerprint(in: half.read()) == .token(successorToken) else {
-                    LoggingService.shared.log("ClaudeCodeSyncService: repair of the CLI's \(half.name) did not land")
-                    return .failed
-                }
-                LoggingService.shared.log("ClaudeCodeSyncService: the CLI's \(half.name) held a consumed token — wrote its rotated successor")
-                outcome = .repaired
-            case .unknown:
-                return .failed
-            case .token, .none:
-                break
-            }
-        }
-        return outcome
-    }
-
-    private func repairCLIStoreOffMain(consumed: String, successor: String) async -> RepairOutcome {
-        await withCheckedContinuation { (continuation: CheckedContinuation<RepairOutcome, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: self.repairCLIStore(consumed: consumed, successor: successor))
-            }
-        }
-    }
-
-    /// Repairs that did not land, by consumed-token fingerprint → successor.
-    /// Retried under the same per-half compare-and-swap; an entry goes once its
-    /// repair lands or no half holds the consumed token any more.
-    private var pendingCLIRepairs: [String: String] = [:]
-
-    /// Retries every pending repair (sweep end).
-    func retryPendingCLIRepairs() async {
-        for (consumed, successor) in pendingCLIRepairs {
-            switch await repairCLIStoreOffMain(consumed: consumed, successor: successor) {
-            case .repaired, .notNeeded:
-                pendingCLIRepairs.removeValue(forKey: consumed)
-                LoggingService.shared.log("ClaudeCodeSyncService: a pending CLI-store repair is resolved")
-            case .failed:
-                break
+                continuation.resume(returning: self.inspectCLIStore(for: fingerprint))
             }
         }
     }
 
     // MARK: - Awaiting CLI Renewal
 
-    /// Logins refused a redemption because the CLI holds (or may hold) them,
-    /// whose access token has expired. See `ensureFreshCredentials`.
-    private var awaitingCLIRenewal: Set<UUID> = []
+    /// Why a login refused a redemption, with its access token spent, is still
+    /// expected to come back. See `ensureFreshCredentials`.
+    enum CLIRenewalState: Equatable {
+        /// The CLI's store holds this login: the CLI renews it the next time it
+        /// runs, and the adoption picks the result up. Quiet.
+        case renewable
+        /// The renewal cannot be confirmed — the store could not be inspected,
+        /// or does not hold the login although the pointer names the profile.
+        /// Pending, surfaced once it has lasted `unverifiedRenewalBound`.
+        case unverified(since: Date)
+    }
 
-    /// True while this profile's login waits for the CLI to renew it: show its
+    /// How long an unconfirmed renewal stays quiet before it is surfaced.
+    nonisolated static let unverifiedRenewalBound: TimeInterval = 30 * 60
+
+    private var renewalStates: [UUID: CLIRenewalState] = [:]
+    private var surfacedUnverified: Set<UUID> = []
+
+    /// The profile's renewal state, nil when it is not waiting on the CLI.
+    func cliRenewalState(_ profileId: UUID) -> CLIRenewalState? {
+        renewalStates[profileId]
+    }
+
+    /// True while this profile's login waits on the CLI to renew it: show its
     /// usage stale, never flag it dead, never switch away from it for that.
     func isAwaitingCLIRenewal(_ profileId: UUID) -> Bool {
-        awaitingCLIRenewal.contains(profileId)
+        renewalStates[profileId] != nil
+    }
+
+    /// True once an unconfirmed renewal has lasted past the bound — the fetch
+    /// then reports it instead of staying quiet.
+    func isRenewalOverdue(_ profileId: UUID, now: Date = Date()) -> Bool {
+        guard case .unverified(let since) = renewalStates[profileId] else { return false }
+        return now.timeIntervalSince(since) >= Self.unverifiedRenewalBound
+    }
+
+    /// Classifies a refused redemption of a spent login. Terminal states leave
+    /// the pending set and take the dead path (`notifyReloginNeeded`).
+    private func noteRenewalRefused(_ profile: Profile, storedJSON: String, inspection: CLIStoreInspection) {
+        let now = Date()
+        let deadlinePassed = ClaudeLoginLifetime.deadline(storedJSON).map { $0 <= now } ?? false
+        let ownerMarkedDead = inspection.holdsDeadMarker && ProfileManager.shared.isExplicitClaudeOwner(profile.id)
+        if deadlinePassed || ownerMarkedDead {
+            renewalStates.removeValue(forKey: profile.id)
+            surfacedUnverified.remove(profile.id)
+            let reason = deadlinePassed ? "its server deadline has passed" : "the CLI marked its login expired"
+            LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' cannot be renewed — \(reason); only /login renews it")
+            notifyReloginNeeded(for: profile.id)
+            return
+        }
+        if inspection.holds == true {
+            if renewalStates[profile.id] != .renewable {
+                renewalStates[profile.id] = .renewable
+                surfacedUnverified.remove(profile.id)
+                LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' is awaiting the CLI's own renewal — usage stays stale until then; not a dead login")
+            }
+            return
+        }
+        if case .unverified = renewalStates[profile.id] {} else {
+            renewalStates[profile.id] = .unverified(since: now)
+            LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' awaits renewal, but the CLI's store cannot confirm it holds the login")
+        }
+        if isRenewalOverdue(profile.id, now: now), surfacedUnverified.insert(profile.id).inserted {
+            LoggingService.shared.logError("ensureFreshCredentials: '\(profile.name)' has waited \(Int(Self.unverifiedRenewalBound / 60)) min for a renewal the CLI's store cannot confirm")
+        }
     }
 
     // MARK: - Hand-off State
@@ -1217,9 +1260,9 @@ class ClaudeCodeSyncService {
         }
     }
 
-    private func finishRefresh(_ profileId: UUID, token: String?) {
+    private func finishRefresh(_ profileId: UUID, tokens: Set<String>) {
         refreshInFlight.remove(profileId)
-        if let token { refreshInFlightTokens.remove(token) }
+        refreshInFlightTokens.subtract(tokens)
         let waiters = refreshWaiters
         refreshWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
@@ -1231,7 +1274,14 @@ class ClaudeCodeSyncService {
     func isHandoffParkedForTesting(_ profileId: UUID) -> Bool {
         parkedHandoffs.contains(profileId)
     }
+
+    /// Backdates an unconfirmed renewal so a test can cross the bound.
+    func backdateUnverifiedRenewalForTesting(_ profileId: UUID, by interval: TimeInterval) {
+        guard case .unverified(let since) = renewalStates[profileId] else { return }
+        renewalStates[profileId] = .unverified(since: since.addingTimeInterval(-interval))
+    }
     #endif
+
     // MARK: - Account Identity
 
     struct AccountIdentity {
@@ -1755,7 +1805,7 @@ class ClaudeCodeSyncService {
         profiles[index].cliAccountSyncedAt = Date()  // Update sync timestamp
         ProfileStore.shared.saveProfiles(profiles)
         reloginNotifiedProfiles.remove(profileId)
-        awaitingCLIRenewal.remove(profileId)
+        renewalStates.removeValue(forKey: profileId)
 
         LoggingService.shared.log("✓ Re-synced CLI credentials from system and updated timestamp")
     }

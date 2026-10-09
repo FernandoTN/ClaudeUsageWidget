@@ -2099,10 +2099,6 @@ private func observeCredentialChanges() {
             // presenting the previous (possibly exhausted) account's token.
             await ClaudeCodeSyncService.shared.healCredentialsFileFromKeychainOffMain()
 
-            // A post-redemption repair of the CLI's store that did not land is
-            // retried here, under the same per-half compare-and-swap.
-            await ClaudeCodeSyncService.shared.retryPendingCLIRepairs()
-
             // Learn WHOSE account each stored Claude login belongs to, one
             // profile per sweep, oldest unstamped first. Until a profile is
             // stamped, every account-keyed check (adoption matching, the
@@ -2167,6 +2163,15 @@ private func observeCredentialChanges() {
         // the widget does not redeem it (the CLI renews its own login), so
         // there is nothing to read with yet. Stale, not dead — no `/login`.
         if profile.cliCredentialsJSON != nil, ClaudeCodeSyncService.shared.isAwaitingCLIRenewal(profile.id) {
+            // An unconfirmed renewal stays quiet only up to the bound; then the
+            // failure is shown (not as a credential error — it is not dead).
+            if ClaudeCodeSyncService.shared.isRenewalOverdue(profile.id) {
+                throw AppError(
+                    code: .cliRenewalUnverified,
+                    message: "'\(profile.name)' is waiting for Claude Code to renew its login, but Claude Code's credential store has not confirmed it for \(Int(ClaudeCodeSyncService.unverifiedRenewalBound / 60)) min — usage shown as last measured",
+                    isRecoverable: true
+                )
+            }
             throw AppError(
                 code: .cliRenewalPending,
                 message: "'\(profile.name)' is waiting for Claude Code to renew its login — usage shown as last measured",
@@ -3914,7 +3919,7 @@ private func observeCredentialChanges() {
                     // recorded as a dead login — un-mark and let the next sweep
                     // re-run the whole trigger.
                     self.autoSwitchedProfileIds.remove(profileId)
-                    LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' activation was refused by an in-flight switch (candidate NOT excluded) — deferring to next sweep")
+                    LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' activation did not land (\(outcome)) — candidate NOT excluded, queue NOT consumed, deferring to next sweep")
                     return
 
                 case .excludeCandidate:
@@ -3959,9 +3964,10 @@ private func observeCredentialChanges() {
         switch outcome {
         case .activated, .alreadyActive:
             return .switched
-        case .switchInFlight, .credentialWriteFailed:
-            // A failed write is the machine's, not the candidate's: nothing
-            // was claimed and the login is fine, so retry — never exclude.
+        case .switchInFlight, .credentialWriteFailed, .handoffDeferred:
+            // A failed write, or a login pending a renewal the app cannot
+            // confirm, is not the candidate's death: nothing was claimed, so
+            // retry next sweep — never exclude, never consume the queue entry.
             return .deferToNextSweep
         case .profileNotFound, .credentialsRefused, .focusedWithoutApplying:
             // `focusedWithoutApplying` is a USER-initiated outcome and the walk
