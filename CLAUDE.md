@@ -507,15 +507,27 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
   - The rotated pair is stored by compare-and-swap over the pair that was
     redeemed. A login synced in meanwhile wins, and the pair is discarded.
   - Profiles still holding the consumed token get it too, each by its own CAS.
-  - The CLI gets it only as a repair, half by half: re-read that half, compare,
-    write, read back, under the store write lock the apply also takes. A repair
-    that does not land makes the call report false and is retried at sweep end
-    (`retryPendingCLIRepairs`).
-- **Awaiting CLI renewal is not dead.** A login refused because the CLI holds it,
-  whose access token has expired (an idle owner every quiet night), is
-  `isAwaitingCLIRenewal`. Its fetch throws `.cliRenewalPending`: usage stays
-  stale, with no banner, backoff, dead flag, `/login` notice or switch-away. The
-  activation applies nothing and refuses nothing.
+  - The CLI's store is NEVER written by a redemption. The send-time check
+    guarantees the CLI did not hold the token, so there is nothing to repair.
+    The only CLI-store writer is an activation's apply, under
+    `cliStoreWriteLock`.
+- **A refused redemption of a spent login** (`cliRenewalState`) is in one of three
+  states:
+  - `.renewable`: the CLI's store holds it (an idle owner every quiet night).
+    The fetch throws `.cliRenewalPending`, usage stays stale, and there is no
+    banner, backoff, dead flag, `/login` notice or switch-away.
+  - `.unverified`: the store could not be inspected, or does not hold the
+    login though the pointer names it. It is pending, but after 30 min
+    (`unverifiedRenewalBound`) the fetch throws `.cliRenewalUnverified`, an
+    ordinary visible failure.
+  - Terminal: the deadline has passed, or the store holds the CLI's dead marker
+    for the owner. It leaves the pending set and takes the dead path with its
+    notice.
+
+  The activation applies nothing only for the VERIFIED owner (pointer names
+  it AND the store holds it). Any other pending login returns
+  `.handoffDeferred`: nothing claimed, the walk retries, and the queue is not
+  consumed.
 - **Newest login wins** (`ClaudeLoginLifetime.isNewer`):
   - The dead-marker is never newer than anything.
   - Two logins whose deadlines are more than 60 s apart: the later deadline
@@ -536,7 +548,9 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
     (`saveProfileCredentials(replacingCLILogin:)`);
   - `clearProfileCredential`, for removal.
 
-  A profile the cache has never seen takes the login it is created with.
+  A profile the cache has never seen takes the login it is created with. Every
+  credential write enqueues its Keychain persistence UNDER the cache lock, so
+  the Keychain ends on the value memory holds and a relaunch restores it.
 - **Deadline.** A login at or within 1 h of `refreshTokenExpiresAt` (ms or s) is
   not a switch target (`candidateHasHeadroom`), is not live to the preflight, and
   is refused by the activation gate as dead. Refreshes store

@@ -498,12 +498,19 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
 
    After a redemption, the rotated pair is stored by compare-and-swap over the pair that
    was redeemed, so a `/login` synced in meanwhile wins. Profiles still holding the
-   consumed token get the rotated pair. The CLI gets it only as a per-half repair,
-   where that half holds the consumed token. The preflight skips a login being handed
-   over and re-checks ownership after its await.
+   consumed token get the rotated pair. The CLI's store is never written by a
+   redemption: the send-time check guarantees the CLI did not hold the token. The
+   preflight skips a login being handed over and re-checks ownership after its await.
 
-   An idle owner whose access token expired while no CLI ran is "awaiting CLI renewal":
-   its usage shows stale, and it is never flagged dead or switched away from.
+   A refused login whose access token is spent has one of three states:
+   - Renewable: the CLI holds it, as with an idle owner every quiet night. It shows
+     stale usage and is never flagged dead or switched away from.
+   - Unverified: the store cannot be inspected. It is pending, and surfaced after 30
+     minutes.
+   - Terminal: the deadline has passed, or the CLI's dead marker is there. It takes
+     the dead path.
+
+   A switch to anything still pending other than the verified owner is deferred.
    Fixes 1 to 3 of section 6, B.
 2. **Newest login wins.** `ClaudeLoginLifetime.isNewer` compares two logins:
    - The dead-marker is never newer than anything.
