@@ -9,20 +9,27 @@
 //  The test host IS the app, so without this a test that applies a login writes
 //  the developer's live CLI login — every running Claude Code session reads it —
 //  and a test profile's credentials land in the real login Keychain. Both
-//  happened (2026-10-09). Under XCTest those stores are replaced by in-memory
-//  stand-ins, and every primitive that would reach a real one refuses and is
-//  counted here; the suite fails if the count moves (RealCredentialStoreGuardTests,
-//  plus the per-test observer in the test bundle). There is no opt-in.
+//  happened (2026-10-09). In a Debug build under XCTest those stores are
+//  replaced by in-memory stand-ins, and every primitive that would reach a real
+//  one refuses and is counted here; the test bundle fails any test during which
+//  the count moves (`RealStoreTouchObserver`). There is no opt-in.
+//
+//  Release builds compile the stand-in mode out: `isTestRun` is the constant
+//  false there, so the app uses the real stores whatever the environment says.
 //
 
 import Foundation
 import os.log
 
 enum RealCredentialStoreGuard {
+    #if DEBUG
     /// True inside the XCTest host. Same detection as ProfileStore/SharedDataStore.
     nonisolated static let isTestRun: Bool =
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || NSClassFromString("XCTestCase") != nil
+    #else
+    nonisolated static let isTestRun = false
+    #endif
 
     nonisolated(unsafe) private static var refused: [String] = []
     nonisolated private static let lock = NSLock()
@@ -50,7 +57,8 @@ enum RealCredentialStoreGuard {
     }
 }
 
-/// A lock-protected string map standing in for a Keychain or a file under XCTest.
+/// A lock-protected string map standing in for a Keychain or a file under
+/// XCTest. Only ever populated in Debug builds under XCTest.
 final class InMemoryCredentialStore: @unchecked Sendable {
     nonisolated private let lock = NSLock()
     nonisolated(unsafe) private var items: [String: String] = [:]  // guarded by `lock`
@@ -70,3 +78,22 @@ final class InMemoryCredentialStore: @unchecked Sendable {
         }
     }
 }
+
+#if DEBUG
+extension ClaudeCodeSyncService.CLIStoreSeams {
+    /// An empty in-memory CLI store: what every test gets unless it installs
+    /// its own.
+    nonisolated static func inMemory() -> ClaudeCodeSyncService.CLIStoreSeams {
+        let store = InMemoryCredentialStore()
+        return ClaudeCodeSyncService.CLIStoreSeams(
+            readSources: { (store["keychain"], store["file"]) },
+            write: { json in
+                store["keychain"] = json
+                store["file"] = json
+            },
+            cachedAccountUUID: { store["accountUUID"] },
+            writeAccountMetadata: { uuid, _, _ in store["accountUUID"] = uuid }
+        )
+    }
+}
+#endif

@@ -196,7 +196,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
         // The preflight's own call, exactly as `preflightCandidates` makes it.
         _ = await sync.ensureFreshCredentials(
-            for: target.id, adoptSystemKeychain: false, syncToSystem: false, freshFor: 3600
+            for: target.id, adoptSystemKeychain: false, freshFor: 3600
         )
 
         let cliRefresh = refreshToken(cliStore.keychain)
@@ -252,28 +252,32 @@ final class ClaudeLoginRotationTests: XCTestCase {
         manager.claimActiveClaudeOwnership(outgoing.id)
 
         var activation: Task<ProfileManager.ActivationOutcome, Never>?
-        var parkedWithNothingApplied = false
+        var parked = false
+        var appliedWhileParked = true
         let manager = manager
         let sync = sync
         let cliStore = cliStore
         endpoint.onRedeem = {
             guard activation == nil else { return }
             activation = Task { await manager.activateProfileDetailed(target.id, userInitiated: false) }
-            // Hand the main actor to the switch until it parks on this redemption.
-            for _ in 0..<20 { await Task.yield() }
-            parkedWithNothingApplied = sync.isHandoffInFlight(target.id) && cliStore.writes.isEmpty
+            // Hand the main actor to the switch until it is observably parked
+            // on this redemption (bounded, so a regression fails, not hangs).
+            for _ in 0..<1_000 where !sync.isHandoffParkedForTesting(target.id) { await Task.yield() }
+            parked = sync.isHandoffParkedForTesting(target.id)
+            appliedWhileParked = !cliStore.writes.isEmpty
         }
 
         // The preflight starts redeeming first …
         _ = await sync.ensureFreshCredentials(
-            for: target.id, adoptSystemKeychain: false, syncToSystem: false,
+            for: target.id, adoptSystemKeychain: false,
             freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
         // … and the switch lands only after it.
         let outcome = await activation?.value
 
         XCTAssertEqual(outcome, .activated)
-        XCTAssertTrue(parkedWithNothingApplied, "while the redemption is in flight the switch waits and applies nothing")
+        XCTAssertTrue(parked, "the switch parks on the redemption in flight instead of skipping it")
+        XCTAssertFalse(appliedWhileParked, "and applies nothing while it is parked")
         XCTAssertEqual(endpoint.redeemed, ["target-refresh-1"], "one redemption; the switch reused its result")
         XCTAssertFalse(cliStore.writes.isEmpty)
         XCTAssertTrue(cliStore.writes.allSatisfy { refreshToken($0) == "target-refresh-2" },
@@ -290,7 +294,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
         cliStore.set(keychain: owner.cliCredentialsJSON, file: owner.cliCredentialsJSON)
 
         let changed = await sync.ensureFreshCredentials(
-            for: owner.id, adoptSystemKeychain: false, syncToSystem: false,
+            for: owner.id, adoptSystemKeychain: false,
             freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
 
@@ -309,7 +313,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
         sync.beginHandoff(target.id)
         defer { sync.endHandoff(target.id) }
         let changed = await sync.ensureFreshCredentials(
-            for: target.id, adoptSystemKeychain: false, syncToSystem: false,
+            for: target.id, adoptSystemKeychain: false,
             freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
 
@@ -317,13 +321,45 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertTrue(endpoint.redeemed.isEmpty)
     }
 
-    /// If a redemption ever finishes after its profile became the owner (a
-    /// path that applied without waiting), the rotated pair reaches the CLI.
-    func testARefreshThatFinishesAfterItsProfileBecameTheOwnerHandsTheNewPairToTheCLI() async {
+    /// THE INVARIANT: never redeem a refresh token the CLI's store holds,
+    /// whoever the pointer names. It covers a profile that shares the owner's
+    /// login, a stale pointer, and ownership that moved after any other check,
+    /// and either half of the store counts (the CLI falls back to the file).
+    func testNoProfileRedeemsARefreshTokenTheCLIStoreHolds() async {
+        let shared = login("shared", expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        let pointerOwner = profile("pointer-owner", login: login("pointer", expiresIn: 6 * 3600))
+        let holder = profile("holder", login: shared)
+        seed([pointerOwner, holder], focused: pointerOwner.id)
+        manager.claimActiveClaudeOwnership(pointerOwner.id)
+
+        for (keychain, file) in [(shared, nil), (nil, shared), (pointerOwner.cliCredentialsJSON, shared)] as [(String?, String?)] {
+            cliStore.set(keychain: keychain, file: file)
+            let changed = await sync.ensureFreshCredentials(
+                for: holder.id, adoptSystemKeychain: false,
+                freshFor: ClaudeRefreshPolicy.handoffFreshness
+            )
+            XCTAssertFalse(changed)
+        }
+        XCTAssertTrue(endpoint.redeemed.isEmpty, "the pointer names someone else, but the CLI holds this token")
+
+        cliStore.set(keychain: pointerOwner.cliCredentialsJSON, file: pointerOwner.cliCredentialsJSON)
+        let changed = await sync.ensureFreshCredentials(
+            for: holder.id, adoptSystemKeychain: false,
+            freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        XCTAssertTrue(changed, "once the CLI no longer holds it, it is an ordinary background login")
+        XCTAssertEqual(endpoint.redeemed, ["shared-refresh-1"])
+    }
+
+    /// The repair: if the CLI's store ends up holding the very token a
+    /// redemption just consumed (a hand-over that did not wait), the CLI is
+    /// handed the rotated successor of its own login.
+    func testARefreshThatFinishesAfterTheCLIWasHandedItsLoginRepairsTheCLI() async {
         let target = profile("target", login: login("target", expiresIn: 30 * 60, deadlineIn: 20 * 86_400))
         let other = profile("other", login: login("other", expiresIn: 6 * 3600))
         seed([other, target], focused: other.id)
         manager.claimActiveClaudeOwnership(other.id)
+        cliStore.set(keychain: other.cliCredentialsJSON, file: other.cliCredentialsJSON)
         let manager = manager
         let cliStore = cliStore
         endpoint.onRedeem = {
@@ -333,22 +369,22 @@ final class ClaudeLoginRotationTests: XCTestCase {
         }
 
         let changed = await sync.ensureFreshCredentials(
-            for: target.id, adoptSystemKeychain: false, syncToSystem: false,
+            for: target.id, adoptSystemKeychain: false,
             freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
 
         XCTAssertTrue(changed)
         XCTAssertEqual(refreshToken(cliStore.keychain), "target-refresh-2",
-                       "decided at completion: the profile owns the CLI login now, so the CLI gets the rotated pair")
+                       "the CLI held the consumed token, so it gets that login's rotated pair")
     }
 
-    /// And the mirror: an owner refresh that finishes after the CLI moved to
-    /// another account must not write over that account's login.
-    func testARefreshThatFinishesAfterItsProfileLostTheLoginLeavesTheNewOwnerAlone() async {
-        let owner = profile("owner", login: login("owner", expiresIn: 60, deadlineIn: 20 * 86_400))
+    /// And never otherwise: a redemption that finishes after the CLI moved to
+    /// another login leaves that login alone.
+    func testARefreshNeverWritesOverAnotherLoginInTheCLI() async {
+        let target = profile("target", login: login("target", expiresIn: 30 * 60, deadlineIn: 20 * 86_400))
         let next = profile("next", login: login("next", expiresIn: 6 * 3600))
-        seed([owner, next], focused: owner.id)
-        manager.claimActiveClaudeOwnership(owner.id)
+        seed([next, target], focused: next.id)
+        cliStore.set(keychain: nil, file: nil)
         let manager = manager
         let cliStore = cliStore
         endpoint.onRedeem = {
@@ -357,53 +393,78 @@ final class ClaudeLoginRotationTests: XCTestCase {
         }
 
         let changed = await sync.ensureFreshCredentials(
-            for: owner.id, adoptSystemKeychain: false, syncToSystem: true
+            for: target.id, adoptSystemKeychain: false,
+            freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
 
         XCTAssertTrue(changed)
-        XCTAssertEqual(refreshToken(cliStore.keychain), "next-refresh-1", "the new owner's login stays in the CLI")
-        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-2", "the rotated pair is kept in its profile")
+        XCTAssertEqual(refreshToken(cliStore.keychain), "next-refresh-1", "the CLI's own login stays")
+        XCTAssertEqual(refreshToken(storedLogin(target.id)), "target-refresh-2", "the rotated pair is kept in its profile")
     }
 
-    /// The one window the owner IS redeemed in: its last two minutes, by the
-    /// sweep, with the result written to the CLI in the same step.
-    func testTheSweepRenewsTheOwnerInItsLastTwoMinutesAndWritesTheCLI() async {
+    /// The sweep never redeems the owner, not even in its last two minutes:
+    /// the CLI process may be redeeming the same token right then. It adopts
+    /// the CLI's own rotation instead; with none yet, usage goes stale.
+    func testTheSweepNeverRedeemsTheOwnerAndAdoptsTheCLIsRotation() async {
         let owner = profile("owner", login: login("owner", expiresIn: 60, deadlineIn: 20 * 86_400))
         seed([owner], focused: owner.id)
         manager.claimActiveClaudeOwnership(owner.id)
         cliStore.set(keychain: owner.cliCredentialsJSON, file: owner.cliCredentialsJSON)
 
+        let untouched = await sync.ensureFreshCredentials(for: owner.id, adoptSystemKeychain: true)
+        XCTAssertFalse(untouched)
+        XCTAssertTrue(endpoint.redeemed.isEmpty)
+        XCTAssertEqual(storedLogin(owner.id), owner.cliCredentialsJSON)
+
+        // The CLI refreshes its own login …
+        let rotated = login("owner", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        cliStore.set(keychain: rotated, file: owner.cliCredentialsJSON)
+        let adopted = await sync.ensureFreshCredentials(for: owner.id, adoptSystemKeychain: true)
+        XCTAssertTrue(adopted, "… and the profile adopts the newer pair")
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-2")
+        XCTAssertTrue(endpoint.redeemed.isEmpty)
+    }
+
+    /// The redemption's own save is an explicit replacement: it just consumed
+    /// the stored pair, so the rotated one is kept even when the server
+    /// returns a SHORTER lifetime than the pair it replaced.
+    func testARotationIsStoredEvenWhenTheServerShortensTheLifetime() async {
+        let account = profile("account", login: login("account", expiresIn: 40 * 60, deadlineIn: 20 * 86_400))
+        seed([account], focused: account.id)
+        endpoint.extraPayload = ["expires_in": 600.0]
+
         let changed = await sync.ensureFreshCredentials(
-            for: owner.id, adoptSystemKeychain: true, syncToSystem: true
+            for: account.id, adoptSystemKeychain: false,
+            freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
 
         XCTAssertTrue(changed)
-        XCTAssertEqual(endpoint.redeemed, ["owner-refresh-1"])
-        XCTAssertEqual(refreshToken(cliStore.keychain), "owner-refresh-2")
-        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-2")
+        XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-2",
+                       "keeping the cached pair would keep a consumed refresh token")
     }
 
     func testRedemptionPolicy() {
         typealias P = ClaudeRefreshPolicy
         func decide(_ timeLeft: TimeInterval, freshFor: TimeInterval = P.handoffFreshness, canRedeem: Bool = true,
-                    owns: Bool = false, handoff: Bool = false, role: P.Role = .maintenance,
-                    sync: Bool = false) -> P.Decision {
-            P.decide(timeLeft: timeLeft, freshFor: freshFor, canRedeem: canRedeem, ownsCLILogin: owns,
-                     handoffInFlight: handoff, role: role, syncToSystem: sync)
+                    held: Bool? = false, owns: Bool = false, handoff: Bool = false,
+                    role: P.Role = .maintenance) -> P.Decision {
+            P.decide(timeLeft: timeLeft, freshFor: freshFor, canRedeem: canRedeem, cliHoldsThisLogin: held,
+                     ownsCLILogin: owns, handoffInFlight: handoff, role: role)
         }
         XCTAssertEqual(decide(2 * 3600), .notNeeded)
         XCTAssertEqual(decide(30 * 60, canRedeem: false), .notNeeded, "no refresh token, or flagged dead")
-        XCTAssertEqual(decide(30 * 60), .redeem, "an idle candidate is renewed into the profile store")
-        XCTAssertEqual(decide(30 * 60, sync: true), .redeem, "a login the CLI does not hold is never written to it")
-        XCTAssertEqual(decide(30 * 60, owns: true), .refuseHandedOff, "the preflight on the owner")
-        XCTAssertEqual(decide(30 * 60, owns: true, sync: true), .refuseHandedOff,
-                       "even writing it back: outside the last two minutes the CLI's sessions are mid-use")
-        XCTAssertEqual(decide(60, freshFor: P.ownerRefreshHorizon, owns: true, sync: true), .redeemAndHandToCLI)
-        XCTAssertEqual(decide(60, freshFor: P.ownerRefreshHorizon, owns: true), .refuseHandedOff)
+        XCTAssertEqual(decide(30 * 60), .redeem, "an idle login the CLI does not hold")
+        XCTAssertEqual(decide(30 * 60, held: true), .refuseHandedOff, "the CLI's store holds this token")
+        XCTAssertEqual(decide(30 * 60, held: nil), .refuseHandedOff, "the store could not be read: fail closed")
+        XCTAssertEqual(decide(30 * 60, owns: true), .refuseHandedOff, "the pointer's owner")
+        XCTAssertEqual(decide(60, freshFor: P.healWindow, owns: true), .refuseHandedOff,
+                       "not even in the owner's last two minutes")
         XCTAssertEqual(decide(30 * 60, handoff: true), .refuseHandedOff, "a maintenance caller during a hand-off")
         XCTAssertEqual(decide(30 * 60, handoff: true, role: .handoff), .redeem, "the hand-off renewing its own login")
+        XCTAssertEqual(decide(30 * 60, held: true, handoff: true, role: .handoff), .refuseHandedOff,
+                       "a hand-off of a login the CLI already holds")
         XCTAssertEqual(decide(30 * 60, owns: true, handoff: true, role: .handoff), .refuseHandedOff,
-                       "re-applying the owner gets the owner's rule")
+                       "re-applying the owner")
     }
 
     // MARK: - Invariant 2: the newest login wins
@@ -427,6 +488,26 @@ final class ClaudeLoginRotationTests: XCTestCase {
         let freshLogin = login("acct", generation: 1, expiresIn: 7 * 3600, deadlineIn: 30 * 86_400)
         XCTAssertTrue(ClaudeLoginLifetime.isNewer(freshLogin, than: lapsed, now: now))
         XCTAssertFalse(ClaudeLoginLifetime.isNewer(lapsed, than: freshLogin, now: now))
+
+        // Two live logins: the deadline is fixed at /login and never extended,
+        // so the later deadline is the later /login — it wins even though the
+        // older login's pair was refreshed after it.
+        let earlierLoginRefreshedLater = login("acct", generation: 7, expiresIn: 8 * 3600, deadlineIn: 5 * 86_400)
+        let laterLogin = login("acct", generation: 1, expiresIn: 7 * 3600, deadlineIn: 28 * 86_400)
+        XCTAssertTrue(ClaudeLoginLifetime.isNewer(laterLogin, than: earlierLoginRefreshedLater, now: now))
+        XCTAssertFalse(ClaudeLoginLifetime.isNewer(earlierLoginRefreshedLater, than: laterLogin, now: now))
+
+        // One login (deadlines within the tolerance — recorded a few seconds
+        // apart): the access-token expiry decides.
+        let sameLoginLater = login("acct", generation: 2, expiresIn: 8 * 3600,
+                                   deadlineIn: 20 * 86_400 + ClaudeLoginLifetime.sameLoginDeadlineTolerance / 2)
+        XCTAssertTrue(ClaudeLoginLifetime.isNewer(sameLoginLater, than: older, now: now))
+        XCTAssertFalse(ClaudeLoginLifetime.isNewer(older, than: sameLoginLater, now: now))
+
+        // A deadline missing on either side: the access-token expiry, as before.
+        let noDeadline = login("acct", generation: 4, expiresIn: 9 * 3600)
+        XCTAssertTrue(ClaudeLoginLifetime.isNewer(noDeadline, than: laterLogin, now: now))
+        XCTAssertFalse(ClaudeLoginLifetime.isNewer(laterLogin, than: noDeadline, now: now))
     }
 
     func testTheStoreReadNeverServesTheFileOverTheCLIsDeadMarker() {
@@ -488,10 +569,15 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2")
     }
 
-    /// The store itself: a roster array loaded before a refresh and saved after
-    /// it must not put the consumed pair back. Only an explicit sync may move
-    /// a login backwards.
-    func testTheStoreKeepsTheNewerLoginWhenAStaleCopyIsSaved() {
+    /// The store itself: an ordinary save only moves a login FORWARD. A roster
+    /// array loaded before a refresh and saved after it must not put the
+    /// consumed pair back — and a copy it cannot prove newer (a tie, unknown
+    /// expiries) is no better. Only an explicit replacement moves it otherwise.
+    func testTheStoreOnlyMovesALoginForward() throws {
+        func fixed(_ generation: Int, expiresAt: Int?) -> String {
+            let expiry = expiresAt.map { #","expiresAt":\#($0)"# } ?? ""
+            return #"{"claudeAiOauth":{"accessToken":"account-access-\#(generation)","refreshToken":"account-refresh-\#(generation)"\#(expiry)}}"#
+        }
         var account = profile("account", login: login("account", generation: 2, expiresIn: 8 * 3600))
         seed([account], focused: account.id)
 
@@ -499,9 +585,26 @@ final class ClaudeLoginRotationTests: XCTestCase {
         store.saveProfiles([account])
         XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-2", "older over newer is refused")
 
-        account.cliCredentialsJSON = login("account", generation: 3, expiresIn: 9 * 3600)
+        account.cliCredentialsJSON = fixed(3, expiresAt: 4_102_444_800_000)
         store.saveProfiles([account])
         XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-3", "newer over older is written")
+
+        account.cliCredentialsJSON = fixed(4, expiresAt: 4_102_444_800_000)
+        store.saveProfiles([account])
+        XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-3", "a tie with a different pair is refused")
+
+        account.cliCredentialsJSON = fixed(5, expiresAt: nil)
+        store.saveProfiles([account])
+        XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-3", "an unknown expiry is refused")
+
+        // saveProfileCredentials round-trips are ordinary saves …
+        var credentials = try store.loadProfileCredentials(account.id)
+        credentials.cliCredentialsJSON = fixed(6, expiresAt: nil)
+        try store.saveProfileCredentials(account.id, credentials: credentials)
+        XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-3")
+        // … unless the caller says it is replacing the login.
+        try store.saveProfileCredentials(account.id, credentials: credentials, replacingCLILogin: true)
+        XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-6")
 
         account.cliCredentialsJSON = login("other", generation: 1, expiresIn: 7 * 3600)
         store.saveProfiles([account], explicitCLILoginWrite: account.id)
@@ -626,14 +729,14 @@ final class ClaudeLoginRotationTests: XCTestCase {
         seed([owner, account], focused: owner.id)
         manager.claimActiveClaudeOwnership(owner.id)
 
-        _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false, syncToSystem: false,
+        _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false,
                                               freshFor: ClaudeRefreshPolicy.handoffFreshness)
         XCTAssertEqual(storedLogin(account.id).flatMap(ClaudeLoginLifetime.deadline)?.timeIntervalSince1970 ?? 0,
                        ClaudeLoginLifetime.deadline(previous)?.timeIntervalSince1970 ?? -1, accuracy: 1,
                        "no field in the response: the previous deadline is kept")
 
         endpoint.extraPayload = ["refresh_token_expires_in": 30.0 * 86_400]
-        _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false, syncToSystem: false,
+        _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false,
                                               freshFor: 9 * 3600)
         let stored = storedLogin(account.id).flatMap(ClaudeLoginLifetime.deadline)
         XCTAssertEqual(stored?.timeIntervalSinceNow ?? 0, 30 * 86_400, accuracy: 5)

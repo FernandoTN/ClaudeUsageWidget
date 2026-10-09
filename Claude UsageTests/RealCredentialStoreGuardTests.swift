@@ -7,15 +7,17 @@
 //  The test host IS the app. On 2026-10-09 a suite run wrote the developer's
 //  live Claude Code login (the shared Keychain item and ~/.claude/.credentials.json)
 //  from five activation tests, and test profiles' credentials have always
-//  landed in the real login Keychain. Under XCTest those stores are now
-//  in-memory stand-ins (`RealCredentialStoreGuard`), and any code path that
+//  landed in the real login Keychain. In Debug builds under XCTest those stores
+//  are in-memory stand-ins (`RealCredentialStoreGuard`), and any code path that
 //  still reaches a real one is refused and recorded.
 //
-//  Two checks here:
-//  - the stand-ins are the default, observed through the public API with
-//    nothing refused;
-//  - EVERY test in the bundle fails if a refusal is recorded while it runs —
-//    `RealStoreTouchObserver`, registered while XCTest builds the suite.
+//  - `RealStoreGuardPrincipal` is the test bundle's NSPrincipalClass
+//    (INFOPLIST_KEY_NSPrincipalClass on the test target). XCTest creates it
+//    when the bundle loads, before any test and whatever `-only-testing`
+//    selects, and it arms `RealStoreTouchObserver`.
+//  - The observer fails EVERY test during which a refusal is recorded.
+//  - The tests below check the stand-ins are the default, through the public
+//    API, with nothing refused.
 //
 //  Deliberately absent: a test that drives the real write primitives to prove
 //  they refuse. If the guard ever broke, that test would itself overwrite the
@@ -25,45 +27,63 @@
 import XCTest
 @testable import Claude_Usage
 
+/// The test bundle's principal class: arms the observer at bundle load.
+@objc(RealStoreGuardPrincipal)
+final class RealStoreGuardPrincipal: NSObject {
+    override init() {
+        super.init()
+        RealStoreTouchObserver.register(via: .bundleLoad)
+    }
+}
+
 /// A test that provokes refusals on purpose; the observer leaves it alone.
 protocol ExpectsRealStoreRefusals {}
 
 /// Fails any test during which a real credential store was reached.
 final class RealStoreTouchObserver: NSObject, XCTestObservation {
-    static let shared = RealStoreTouchObserver()
-    private static var registered = false
+    enum Registration: Equatable { case bundleLoad }
 
-    static func registerOnce() {
-        guard !registered else { return }
-        registered = true
+    static let shared = RealStoreTouchObserver()
+    private(set) static var registeredVia: Registration?
+
+    static func register(via source: Registration) {
+        guard registeredVia == nil else { return }
+        registeredVia = source
         XCTestObservationCenter.shared.addTestObserver(shared)
-        print("RealStoreTouchObserver: registered — every test now fails if it reaches a real credential store")
     }
 
-    static var isRegistered: Bool { registered }
+    /// The observer's verdict for one test, pure: the refusals recorded while
+    /// it ran, or nil when there were none.
+    static func violation(before: Int, attempts: [String]) -> String? {
+        guard attempts.count > before else { return nil }
+        return "reached a real credential store under XCTest: " + attempts[before...].joined(separator: "; ")
+    }
 
     func testCaseWillStart(_ testCase: XCTestCase) {
         guard !(testCase is ExpectsRealStoreRefusals) else { return }
         let before = RealCredentialStoreGuard.refusedAttempts.count
         testCase.addTeardownBlock {
-            let attempts = RealCredentialStoreGuard.refusedAttempts
-            guard attempts.count > before else { return }
-            XCTFail("reached a real credential store under XCTest: \(attempts[before...].joined(separator: "; "))")
+            if let violation = Self.violation(before: before, attempts: RealCredentialStoreGuard.refusedAttempts) {
+                XCTFail(violation)
+            }
         }
     }
 }
 
-/// Registers the observer. `defaultTestSuite` is asked of every test class
-/// while XCTest assembles the run, before any test executes, so the observer
-/// covers every class whatever the order.
-final class RealStoreTouchObserverRegistration: XCTestCase {
-    override class var defaultTestSuite: XCTestSuite {
-        RealStoreTouchObserver.registerOnce()
-        return super.defaultTestSuite
+final class RealStoreTouchObserverTests: XCTestCase {
+
+    /// Armed by the principal class at bundle load — not by whichever test
+    /// class happened to run first. Fails if the Info.plist key is lost.
+    func testTheObserverIsArmedWhenTheBundleLoads() {
+        XCTAssertEqual(RealStoreTouchObserver.registeredVia, .bundleLoad)
     }
 
-    func testTheObserverIsRegistered() {
-        XCTAssertTrue(RealStoreTouchObserver.isRegistered)
+    func testTheVerdictNamesEveryRefusalRecordedDuringTheTest() {
+        XCTAssertNil(RealStoreTouchObserver.violation(before: 2, attempts: ["a", "b"]))
+        XCTAssertEqual(
+            RealStoreTouchObserver.violation(before: 1, attempts: ["a", "b", "c"]),
+            "reached a real credential store under XCTest: b; c"
+        )
     }
 }
 
@@ -75,10 +95,6 @@ final class RealCredentialStoreGuardTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         sync.setCLIStoreForTesting(nil)  // the default stand-in, fresh
-    }
-
-    func testTheGuardRefusesInsideXCTest() {
-        XCTAssertTrue(RealCredentialStoreGuard.isTestRun)
     }
 
     /// Applying a login with no stand-in installed by the test lands in the
@@ -131,13 +147,22 @@ final class RealCredentialStoreGuardTests: XCTestCase {
     }
 }
 
-/// The two network calls that carry a token refuse by default under XCTest.
-/// Probing them is safe: if the guard broke, a fixture token would reach the
-/// endpoint and be rejected, nothing more.
+/// Paths that refuse by default under XCTest, provoked on purpose. Probing them
+/// is safe: `refuse` records and returns before anything real is touched, and
+/// if the guard broke, a fixture token reaching an endpoint is rejected and
+/// a fixture path is read, nothing more.
 @MainActor
 final class RealCredentialEndpointRefusalTests: XCTestCase, ExpectsRealStoreRefusals {
 
     private let sync = ClaudeCodeSyncService.shared
+
+    func testRefuseRecordsTheAttemptInsideXCTest() {
+        let before = RealCredentialStoreGuard.refusedAttempts.count
+        XCTAssertTrue(RealCredentialStoreGuard.refuse("guard self-test"),
+                      "a Debug build under XCTest refuses every real-store primitive")
+        XCTAssertEqual(RealCredentialStoreGuard.refusedAttempts.last, "guard self-test")
+        XCTAssertEqual(RealCredentialStoreGuard.refusedAttempts.count, before + 1)
+    }
 
     func testTheTokenEndpointRefusesWithoutAStandIn() async {
         sync.setTokenEndpointForTesting(nil)
@@ -160,6 +185,14 @@ final class RealCredentialEndpointRefusalTests: XCTestCase, ExpectsRealStoreRefu
         let before = RealCredentialStoreGuard.refusedAttempts.count
         let identity = await sync.fetchAccountIdentity(accessToken: "fixture-access-guard")
         XCTAssertNil(identity)
+        XCTAssertEqual(RealCredentialStoreGuard.refusedAttempts.count, before + 1)
+    }
+
+    /// The CLI's cached usage is read from the real `~/.claude.json` only by
+    /// default — a test must pass its own fixture path.
+    func testTheCLICachedUsageDefaultPathRefuses() {
+        let before = RealCredentialStoreGuard.refusedAttempts.count
+        XCTAssertNil(LocalLimitSignalService.readCLICachedUsage())
         XCTAssertEqual(RealCredentialStoreGuard.refusedAttempts.count, before + 1)
     }
 }

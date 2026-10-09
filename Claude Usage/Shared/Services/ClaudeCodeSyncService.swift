@@ -17,7 +17,7 @@ class ClaudeCodeSyncService {
 
     private init() {}
 
-    // MARK: - Test Seams
+    // MARK: - Test Seams (Debug builds only)
 
     /// XCTest stand-in for the Claude Code CLI's store: the shared Keychain
     /// item, `~/.claude/.credentials.json` and the account metadata in
@@ -25,33 +25,23 @@ class ClaudeCodeSyncService {
     /// `readSources`, `writeSystemCredentials` hands the JSON to `write`, and
     /// the metadata read and write go to the last two.
     ///
-    /// FAIL CLOSED: under XCTest an empty in-memory stand-in is installed by
-    /// default, and `setCLIStoreForTesting(nil)` puts a fresh one back, so no
-    /// test reaches the real store — there is no opt-in. The real primitives
-    /// below refuse under XCTest as a backstop (`RealCredentialStoreGuard`).
-    /// Static and `nonisolated(unsafe)` because the store is read and written
-    /// off the main actor (`applyProfileCredentials` runs on a background queue).
+    /// FAIL CLOSED: in a Debug build under XCTest an empty in-memory stand-in
+    /// is installed by default, and `setCLIStoreForTesting(nil)` puts a fresh
+    /// one back, so no test reaches the real store — there is no opt-in. The
+    /// real primitives below refuse under XCTest as a backstop
+    /// (`RealCredentialStoreGuard`). A Release build has no stand-in storage
+    /// and no setters: `cliStoreSeams` is the constant nil there, so it uses the
+    /// real store whatever the environment says.
     struct CLIStoreSeams {
         var readSources: () -> (keychain: String?, file: String?)
         var write: (String) -> Void
         var cachedAccountUUID: () -> String? = { nil }
         var writeAccountMetadata: (_ accountUUID: String, _ email: String, _ organizationUUID: String) -> Void = { _, _, _ in }
-
-        /// An empty in-memory CLI store: what every test gets unless it
-        /// installs its own.
-        nonisolated static func inMemory() -> CLIStoreSeams {
-            let store = InMemoryCredentialStore()
-            return CLIStoreSeams(
-                readSources: { (store["keychain"], store["file"]) },
-                write: { json in
-                    store["keychain"] = json
-                    store["file"] = json
-                },
-                cachedAccountUUID: { store["accountUUID"] },
-                writeAccountMetadata: { uuid, _, _ in store["accountUUID"] = uuid }
-            )
-        }
     }
+
+    #if DEBUG
+    /// Static and `nonisolated(unsafe)` because the store is read and written
+    /// off the main actor (`applyProfileCredentials` runs on a background queue).
     nonisolated(unsafe) private static var cliStoreSeams: CLIStoreSeams? =
         RealCredentialStoreGuard.isTestRun ? CLIStoreSeams.inMemory() : nil
 
@@ -76,6 +66,11 @@ class ClaudeCodeSyncService {
     func setIdentityFetcherForTesting(_ fetcher: ((String) async -> AccountIdentity?)?) {
         identityFetcherForTesting = fetcher
     }
+    #else
+    private static let cliStoreSeams: CLIStoreSeams? = nil
+    private let tokenEndpointForTesting: ((String) async -> (status: Int, payload: [String: Any]?))? = nil
+    private let identityFetcherForTesting: ((String) async -> AccountIdentity?)? = nil
+    #endif
 
     // MARK: - System Credentials Access (Fallback Chain)
 
@@ -779,18 +774,22 @@ class ClaudeCodeSyncService {
     ///    item always belongs to the ACTIVE account — adopt it if it is NEWER
     ///    (`ClaudeLoginLifetime.isNewer`).
     /// 2. If the token is still expired (or about to), redeem the refresh token via
-    ///    the OAuth endpoint, exactly like the CLI would — when
-    ///    `ClaudeRefreshPolicy.decide` allows it.
+    ///    the OAuth endpoint — when `ClaudeRefreshPolicy.decide` allows it.
     ///
-    /// NO ROTATION AFTER HAND-OFF. Redeeming a Claude refresh token revokes the
-    /// access token issued with it at once, so the login the CLI holds — or is
-    /// being handed by an activation in flight — is never redeemed here except
-    /// in the last two minutes of its access token, and then only by a caller
-    /// that writes the result to the CLI (`syncToSystem`). Whether the rotated
-    /// pair reaches the CLI is decided again at COMPLETION, from who owns the
-    /// login then: a profile that became the owner while its refresh was in
-    /// flight gets the rotated pair written to the CLI too, and one that
-    /// stopped being the owner does not overwrite its successor's login.
+    /// NEVER REDEEM A LOGIN THE CLI HOLDS. Redeeming a Claude refresh token
+    /// revokes the access token issued with it at once, and the CLI process can
+    /// be redeeming the same token concurrently. So the redemption point refuses
+    /// when the CLI's store holds this refresh token right now (compared by
+    /// fingerprint, in memory), when the pointer names this profile, and while
+    /// an activation is handing the login over. The CLI renews its own login;
+    /// step 1 adopts the result. An owner whose CLI has not refreshed simply
+    /// shows stale usage until it does.
+    ///
+    /// The rotated pair is saved as an explicit replacement — the redemption
+    /// just consumed the stored pair, so it must not lose to it whatever the
+    /// server returned for `expires_in`. It reaches the CLI only as a repair:
+    /// when the CLI's store turns out to hold the very token this call
+    /// consumed (a login handed over while the request was in flight).
     ///
     /// `freshFor` is how long the access token must remain valid before a refresh is
     /// attempted (default 2 minutes; the candidate preflight and the activation pass
@@ -803,8 +802,7 @@ class ClaudeCodeSyncService {
     func ensureFreshCredentials(
         for profileId: UUID,
         adoptSystemKeychain: Bool,
-        syncToSystem: Bool,
-        freshFor: TimeInterval = ClaudeRefreshPolicy.ownerRefreshHorizon,
+        freshFor: TimeInterval = ClaudeRefreshPolicy.healWindow,
         role: ClaudeRefreshPolicy.Role = .maintenance
     ) async -> Bool {
         // Per-profile mutex: the sweep, the milestone preflight and a profile
@@ -838,31 +836,36 @@ class ClaudeCodeSyncService {
             LoggingService.shared.log("ensureFreshCredentials: adopted newer login from system Keychain (\(ClaudeLoginLifetime.summary(systemJSON)))")
         }
 
-        // Decided with no await between the decision and the redemption, so
-        // the ownership and hand-off state it reads is the state the request
-        // is sent under.
         let expiry = extractTokenExpiry(from: workingJSON) ?? .distantPast
-        let decision = ClaudeRefreshPolicy.decide(
-            timeLeft: expiry.timeIntervalSinceNow,
-            freshFor: freshFor,
-            // Back off dead logins: a revoked refresh token cannot heal itself, so
-            // don't redeem it again on every sweep (that was 120 failed calls/hour).
-            // The flag re-arms when fresh credentials arrive via re-sync/adoption.
-            canRedeem: !(extractRefreshToken(from: workingJSON) ?? "").isEmpty
-                && !reloginNotifiedProfiles.contains(profileId),
-            ownsCLILogin: ownsCLILogin(profileId),
-            handoffInFlight: handoffsInFlight.contains(profileId),
-            role: role,
-            syncToSystem: syncToSystem
-        )
+        let refreshToken = ClaudeLoginLifetime.refreshToken(workingJSON) ?? ""
+        // Back off dead logins: a revoked refresh token cannot heal itself, so
+        // don't redeem it again on every sweep (that was 120 failed calls/hour).
+        // The flag re-arms when fresh credentials arrive via re-sync/adoption.
+        let canRedeem = !refreshToken.isEmpty && !reloginNotifiedProfiles.contains(profileId)
+        var decision = ClaudeRefreshPolicy.Decision.notNeeded
+        if canRedeem, expiry.timeIntervalSinceNow < freshFor {
+            // Read the CLI's store only when a redemption is otherwise due. The
+            // decision follows with no await in between, so the ownership and
+            // hand-off state it reads is the state the request is sent under.
+            let consumed = ClaudeLoginLifetime.fingerprint(refreshToken)
+            let held = await cliStoreRefreshTokenFingerprintsOffMain()
+            decision = ClaudeRefreshPolicy.decide(
+                timeLeft: expiry.timeIntervalSinceNow,
+                freshFor: freshFor,
+                canRedeem: canRedeem,
+                cliHoldsThisLogin: held.map { $0.contains(consumed) },
+                ownsCLILogin: ProfileManager.shared.isExplicitClaudeOwner(profileId),
+                handoffInFlight: handoffsInFlight.contains(profileId),
+                role: role
+            )
+            if decision == .refuseHandedOff {
+                let reason = held == nil ? "the CLI's store could not be read" : "the CLI holds, owns or is being handed this login"
+                LoggingService.shared.log("ensureFreshCredentials: NOT redeeming '\(profile.name)' — \(reason); a redemption would revoke the access token its sessions use (\(ClaudeLoginLifetime.summary(workingJSON)))")
+            }
+        }
 
         var didOAuthRefresh = false
-        switch decision {
-        case .notNeeded:
-            break
-        case .refuseHandedOff:
-            LoggingService.shared.log("ensureFreshCredentials: NOT redeeming '\(profile.name)' — the CLI holds (or is being handed) this login, and a redemption would revoke the access token its sessions use (\(ClaudeLoginLifetime.summary(workingJSON)))")
-        case .redeem, .redeemAndHandToCLI:
+        if decision == .redeem {
             do {
                 workingJSON = try await refreshOAuthToken(credentialsJSON: workingJSON)
                 changed = true
@@ -884,7 +887,12 @@ class ClaudeCodeSyncService {
         if let index = profiles.firstIndex(where: { $0.id == profileId }) {
             profiles[index].cliCredentialsJSON = workingJSON
             profiles[index].cliAccountSyncedAt = Date()
-            ProfileStore.shared.saveProfiles(profiles)
+            // A redemption is an explicit replacement: it consumed the stored
+            // pair, so the rotated one must be stored even if the server
+            // returned a shorter lifetime than the pair it replaced.
+            ProfileStore.shared.saveProfiles(
+                profiles, explicitCLILoginWrite: didOAuthRefresh ? profileId : nil
+            )
             if didOAuthRefresh {
                 // The redemption CONSUMED the old refresh token — make sure the
                 // rotated one is on disk before anything else can kill the process.
@@ -892,12 +900,14 @@ class ClaudeCodeSyncService {
             }
         }
 
-        // Re-decided at completion: the redemption was an await, and ownership
-        // can have moved while it was in flight.
-        if didOAuthRefresh && ownsCLILogin(profileId) {
-            if decision != .redeemAndHandToCLI {
-                LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' became the CLI's login while its refresh was in flight — handing the rotated pair to the CLI as well")
-            }
+        // Repair only: if the CLI's store now holds the token this call just
+        // consumed (it was handed over while the request was in flight), the CLI
+        // is holding a dead login and the rotated pair is its successor — same
+        // login, same account. Any other CLI login is left alone.
+        if didOAuthRefresh,
+           let held = await cliStoreRefreshTokenFingerprintsOffMain(),
+           held.contains(ClaudeLoginLifetime.fingerprint(refreshToken)) {
+            LoggingService.shared.log("ensureFreshCredentials: the CLI was handed '\(profile.name)''s login while its refresh was in flight — writing the rotated pair to the CLI")
             let json = workingJSON
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -912,6 +922,37 @@ class ClaudeCodeSyncService {
         }
 
         return true
+    }
+
+    /// Fingerprints of the refresh tokens in BOTH halves of the CLI's store (the
+    /// CLI reads the Keychain item first and the file as its fallback, so a
+    /// token in either is one it may use). Nil when the Keychain item could not
+    /// be read — unknown, which the redemption point treats as "held". Shells
+    /// out to `security`: off the main actor only.
+    private func cliStoreRefreshTokenFingerprints() -> Set<String>? {
+        let keychainRaw: String?
+        let fileRaw: String?
+        if let seams = Self.cliStoreSeams {
+            (keychainRaw, fileRaw) = seams.readSources()
+        } else {
+            do { keychainRaw = try readKeychainCredentials() } catch { return nil }
+            fileRaw = readCredentialsFile()
+        }
+        var fingerprints = Set<String>()
+        for raw in [keychainRaw, fileRaw].compactMap({ $0 }) {
+            if let token = ClaudeLoginLifetime.refreshToken(raw), !token.isEmpty {
+                fingerprints.insert(ClaudeLoginLifetime.fingerprint(token))
+            }
+        }
+        return fingerprints
+    }
+
+    private func cliStoreRefreshTokenFingerprintsOffMain() async -> Set<String>? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Set<String>?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: self.cliStoreRefreshTokenFingerprints())
+            }
+        }
     }
 
     // MARK: - Hand-off State
@@ -936,13 +977,16 @@ class ClaudeCodeSyncService {
         handoffsInFlight.contains(profileId)
     }
 
-    /// Whether this profile owns the CLI's shared Claude login right now.
-    private func ownsCLILogin(_ profileId: UUID) -> Bool {
-        ProfileManager.shared.isProviderOwner(profileId, of: .claude)
-    }
-
     /// Callers parked behind a redemption in flight (hand-offs only).
     private var refreshWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+
+    #if DEBUG
+    /// True while a hand-off is parked behind this profile's redemption in
+    /// flight — lets a test wait for that state instead of guessing a delay.
+    func isHandoffParkedForTesting(_ profileId: UUID) -> Bool {
+        !(refreshWaiters[profileId] ?? []).isEmpty
+    }
+    #endif
 
     private func waitForRefreshToFinish(_ profileId: UUID) async {
         while refreshInFlight.contains(profileId) {
@@ -1268,10 +1312,9 @@ class ClaudeCodeSyncService {
     /// never write these into the user's real defaults domain — the running
     /// app reads them, and a leaked dead flag keeps a live account out of
     /// rotation.
+    /// Debug builds only (`RealCredentialStoreGuard.isTestRun` is false in Release).
     private static let flagDefaults: UserDefaults = {
-        let isTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
-        if isTestRun, let suite = UserDefaults(suiteName: "com.claudeusagewidget.tests") {
+        if RealCredentialStoreGuard.isTestRun, let suite = UserDefaults(suiteName: "com.claudeusagewidget.tests") {
             return suite
         }
         return UserDefaults.standard

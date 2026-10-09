@@ -8,6 +8,7 @@
 //  actor. Nothing here reads or logs a token value.
 //
 
+import CryptoKit
 import Foundation
 
 enum ClaudeLoginLifetime {
@@ -77,24 +78,40 @@ enum ClaudeLoginLifetime {
 
     // MARK: - Ordering (newest login wins)
 
+    /// Two deadlines this close belong to ONE login. The deadline is fixed at
+    /// `/login` and refreshes do not move it (2026-10-02 research, cause A), but
+    /// it is computed on the local clock from a relative `*_expires_in`, so two
+    /// copies of one login can disagree by the latency of the call that
+    /// recorded them. Two distinct `/login`s are never this close in practice.
+    nonisolated static let sameLoginDeadlineTolerance: TimeInterval = 60
+
     /// Whether `candidate` is a NEWER login than `current`, so replacing
     /// `current` with it loses nothing. In order:
     ///
     /// 1. The CLI's dead marker is never newer than anything, and anything
     ///    else is newer than it — it marks a pair as consumed, it is not one.
-    /// 2. A login past its server deadline loses to one that is not, whatever
-    ///    their access tokens say: a fresh `/login` can carry an earlier
-    ///    access-token expiry than an old pair refreshed minutes later, and
-    ///    only the fresh one can still be renewed.
-    /// 3. Otherwise the later access-token expiry wins, strictly; a tie is
-    ///    not newer. Every refresh issues a pair with a fixed lifetime, so
-    ///    within one account the expiry orders pairs by when they were issued,
-    ///    and an older pair of the same login is a consumed one.
+    /// 2. Two DIFFERENT logins (both carry a deadline, more than
+    ///    `sameLoginDeadlineTolerance` apart): the later deadline wins. Each
+    ///    `/login` gets a fresh deadline and refreshes never extend it, so the
+    ///    later deadline is the later `/login` — the one that renews longest,
+    ///    even when an older login's pair was refreshed after it and carries a
+    ///    later access-token expiry.
+    /// 3. One login, or a deadline missing on either side: a login past its
+    ///    deadline loses to one that is not; otherwise the later access-token
+    ///    expiry wins, strictly, and a tie is not newer. Every refresh issues a
+    ///    pair with a fixed lifetime, so within one login the expiry orders
+    ///    pairs by when they were issued, and the older pair is a consumed one.
     nonisolated static func isNewer(_ candidate: String, than current: String, now: Date) -> Bool {
         if isDeadMarker(candidate) { return false }
         if isDeadMarker(current) { return true }
-        let candidateLapsed = deadline(candidate).map { $0 <= now } ?? false
-        let currentLapsed = deadline(current).map { $0 <= now } ?? false
+        let candidateDeadline = deadline(candidate)
+        let currentDeadline = deadline(current)
+        if let candidateDeadline, let currentDeadline,
+           abs(candidateDeadline.timeIntervalSince(currentDeadline)) > sameLoginDeadlineTolerance {
+            return candidateDeadline > currentDeadline
+        }
+        let candidateLapsed = candidateDeadline.map { $0 <= now } ?? false
+        let currentLapsed = currentDeadline.map { $0 <= now } ?? false
         if candidateLapsed != currentLapsed { return !candidateLapsed }
         return (accessExpiry(candidate) ?? .distantPast) > (accessExpiry(current) ?? .distantPast)
     }
@@ -107,30 +124,45 @@ enum ClaudeLoginLifetime {
         let deadline = deadline(json).map { ", deadline \($0)" } ?? ""
         return "access token expires \(expiry)\(deadline)"
     }
+
+    /// The refresh token of a login, from valid JSON or — for a Keychain item
+    /// the `security` tool truncated — by pattern. Never logged.
+    nonisolated static func refreshToken(_ raw: String) -> String? {
+        if let token = oauth(raw)?["refreshToken"] as? String { return token }
+        let pattern = "\"refreshToken\"\\s*:\\s*\"([^\"]+)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+              let range = Range(match.range(at: 1), in: raw) else { return nil }
+        return String(raw[range])
+    }
+
+    /// A one-way fingerprint of a refresh token, for comparing two copies in
+    /// memory without holding or logging the token itself.
+    nonisolated static func fingerprint(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 /// When the widget may redeem a Claude refresh token.
 ///
 /// Redeeming a Claude refresh token revokes the access token issued with it at
 /// once (2026-10-08 21:50:22 and 10-09 05:22:40: nine sessions failed within
-/// three seconds of each redemption). So a login the CLI holds, or is about to
-/// be handed, must not be rotated by anyone but the step that writes the
-/// rotated pair to the CLI — and a hand-off renews BEFORE it applies.
+/// three seconds of each redemption). So the widget NEVER redeems a login the
+/// CLI holds or is being handed — not even in its last minutes and not even
+/// with the result written back: the CLI process can be redeeming the same
+/// token at that moment, and no lock the widget holds can see it. The CLI
+/// refreshes its own login and the widget adopts the rotated pair (newest login
+/// wins). A hand-off renews BEFORE it applies.
 enum ClaudeRefreshPolicy {
     /// A login is renewed before it is handed to the CLI unless its access
     /// token has at least this long left — the same window the candidate
     /// preflight validates with. A login handed over therefore has an hour
-    /// left, so nothing (the CLI's own 5-minute refresh lead, the sweep's
-    /// 2-minute heal, a late preflight) has any reason to redeem it right after
-    /// the switch.
+    /// left, and from then on only the CLI renews it.
     nonisolated static let handoffFreshness: TimeInterval = 3600
 
-    /// The only window in which the widget redeems a login the CLI holds: the
-    /// last two minutes, inside the CLI's own five-minute refresh lead. A
-    /// running CLI has always refreshed first by then (the sweep adopts its
-    /// result); the widget steps in only for an idle CLI whose access token is
-    /// lapsing anyway, and writes the rotated pair to the CLI in the same step.
-    nonisolated static let ownerRefreshHorizon: TimeInterval = 120
+    /// A background login (one the CLI does not hold) is healed when its access
+    /// token has less than this left — the sweep's default.
+    nonisolated static let healWindow: TimeInterval = 120
 
     enum Role {
         /// Sweeps and the preflight: skip a redemption already in flight.
@@ -145,30 +177,32 @@ enum ClaudeRefreshPolicy {
         case notNeeded
         /// Redeem; the result goes to the profile store only.
         case redeem
-        /// Redeem; the profile owns the CLI login, so the result is written to
-        /// the CLI in the same step.
-        case redeemAndHandToCLI
-        /// The CLI holds this login (or is being handed it): a redemption here
-        /// would revoke the access token its sessions are using.
+        /// The CLI holds this login, owns it, or is being handed it: a
+        /// redemption would revoke the access token its sessions use.
         case refuseHandedOff
     }
 
+    /// - Parameters:
+    ///   - cliHoldsThisLogin: whether the CLI's store holds THIS refresh token
+    ///     right now (`nil`: the store could not be read). The invariant itself
+    ///     — it covers a stale pointer, a profile that shares the owner's
+    ///     login, and ownership that moved after any other check.
+    ///   - ownsCLILogin: the provider pointer names this profile.
     nonisolated static func decide(
         timeLeft: TimeInterval,
         freshFor: TimeInterval,
         canRedeem: Bool,
+        cliHoldsThisLogin: Bool?,
         ownsCLILogin: Bool,
         handoffInFlight: Bool,
-        role: Role,
-        syncToSystem: Bool
+        role: Role
     ) -> Decision {
         guard canRedeem, timeLeft < freshFor else { return .notNeeded }
-        if ownsCLILogin {
-            return syncToSystem && timeLeft < ownerRefreshHorizon ? .redeemAndHandToCLI : .refuseHandedOff
-        }
+        // Unknown is refused: a store that cannot be read cannot prove the
+        // token is not the CLI's.
+        guard cliHoldsThisLogin == false else { return .refuseHandedOff }
+        if ownsCLILogin { return .refuseHandedOff }
         if handoffInFlight, case .maintenance = role { return .refuseHandedOff }
-        // A login the CLI does not hold is never written to it from here —
-        // that would be an account switch nobody asked for.
         return .redeem
     }
 }

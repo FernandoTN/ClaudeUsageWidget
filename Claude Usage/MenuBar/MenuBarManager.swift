@@ -2634,10 +2634,11 @@ private func observeCredentialChanges() {
 
     /// If the profile's stored CLI OAuth token is stale, repair it before the fetch:
     /// adopt the CLI's silently-refreshed token from the system Keychain (active
-    /// profile only — that item always holds the ACTIVE account's login) or redeem
-    /// the refresh token, then reload profiles so the fetch sees the new token.
-    /// Without this, an expired stored token froze the displayed usage until the
-    /// user manually resynced in Settings → CLI.
+    /// profile only — that item always holds the ACTIVE account's login) or, for a
+    /// login the CLI does NOT hold, redeem the refresh token; then reload profiles
+    /// so the fetch sees the new token. The CLI's own login is never redeemed here
+    /// (`ClaudeRefreshPolicy`): if the CLI has not refreshed it yet, the owner's
+    /// usage stays stale until it does.
     private func ensureFreshCLICredentialsIfNeeded(for profile: Profile) async {
         guard let cliJSON = profile.cliCredentialsJSON else { return }
 
@@ -2653,8 +2654,7 @@ private func observeCredentialChanges() {
         let isActiveClaude = profileManager.isProviderOwner(profile.id, of: .claude)
         let changed = await syncService.ensureFreshCredentials(
             for: profile.id,
-            adoptSystemKeychain: isActiveClaude,
-            syncToSystem: isActiveClaude
+            adoptSystemKeychain: isActiveClaude
         )
         if changed {
             profileManager.loadProfiles()
@@ -4165,7 +4165,6 @@ private func observeCredentialChanges() {
                 let refreshed = await ClaudeCodeSyncService.shared.ensureFreshCredentials(
                     for: candidate.id,
                     adoptSystemKeychain: false,
-                    syncToSystem: false,
                     freshFor: ClaudeRefreshPolicy.handoffFreshness
                 )
                 // Re-checked AFTER the await: a switch can have made this

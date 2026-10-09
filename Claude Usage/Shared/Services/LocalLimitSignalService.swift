@@ -262,9 +262,12 @@ nonisolated enum LocalLimitSignalService {
     private static let claudeConfigPath = NSString(string: "~/.claude.json").expandingTildeInPath
 
     /// Reads the CLI's own cached usage bars — a free, already-paid-for
-    /// measurement for whichever account the CLI is logged into.
-    static func readCLICachedUsage(path: String = claudeConfigPath) -> CLICachedUsage? {
-        guard let data = FileManager.default.contents(atPath: path),
+    /// measurement for whichever account the CLI is logged into. Tests pass a
+    /// fixture `path`; the default, the real `~/.claude.json`, is never read
+    /// under XCTest (`RealCredentialStoreGuard`).
+    static func readCLICachedUsage(path: String? = nil) -> CLICachedUsage? {
+        if path == nil, RealCredentialStoreGuard.refuse("read ~/.claude.json (cached usage)") { return nil }
+        guard let data = FileManager.default.contents(atPath: path ?? claudeConfigPath),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let cached = root["cachedUsageUtilization"] as? [String: Any],
               let accountUuid = cached["accountUuid"] as? String,

@@ -727,20 +727,18 @@ class ProfileManager: ObservableObject {
             //
             // A target the POINTER names as the CLI's login (re-applying it) is
             // the CLI's live login: the system Keychain holds its latest pair,
-            // so adopt that, and renew only inside the CLI's own refresh
-            // window, writing the result to the CLI in the same step. Only the
-            // pointer counts here — the sole-credentialed-profile inference
-            // ("the CLI is that account or nobody") is not evidence enough to
-            // pull the CLI's login into the target, and the redemption rule
-            // inside `ensureFreshCredentials` already treats it as the owner.
-            let ownsCLILoginAlready = activeClaudeProfileId == id
+            // so adopt that; it is never redeemed here. `isExplicitClaudeOwner`
+            // is the same predicate the redemption point uses, so the two agree
+            // on who the owner is. The sole-credentialed-profile inference is not
+            // evidence enough to pull the CLI's login into the target; the
+            // redemption point protects that case by fingerprint instead (it
+            // refuses to redeem a refresh token the CLI's store holds), so a
+            // login the CLI does not hold still gets its hour.
+            let ownsCLILoginAlready = isExplicitClaudeOwner(id)
             let renewed = await cliSyncService.ensureFreshCredentials(
                 for: id,
                 adoptSystemKeychain: ownsCLILoginAlready,
-                syncToSystem: ownsCLILoginAlready,
-                freshFor: ownsCLILoginAlready
-                    ? ClaudeRefreshPolicy.ownerRefreshHorizon
-                    : ClaudeRefreshPolicy.handoffFreshness,
+                freshFor: ClaudeRefreshPolicy.handoffFreshness,
                 role: .handoff
             )
             // Re-read unconditionally: after waiting on another caller's
@@ -1472,6 +1470,15 @@ class ProfileManager: ObservableObject {
         if let pointer = providerPointer(for: provider) { return pointer }
         let candidates = (pool ?? profiles).filter { Self.carriesLogin($0, for: provider) }
         return candidates.count == 1 ? candidates[0].id : nil
+    }
+
+    /// True when the Claude pointer itself names `id` — positive evidence that
+    /// this app handed the CLI that login (or verified it by identity). The
+    /// Claude refresh-token rules use this, not `isProviderOwner`, whose
+    /// sole-credentialed inference is a display answer, not evidence: the
+    /// redemption point covers the inferred case by checking the CLI's store.
+    func isExplicitClaudeOwner(_ id: UUID) -> Bool {
+        activeClaudeProfileId == id
     }
 
     /// True when `id` owns `provider`'s shared CLI login (see `providerOwnerId`).

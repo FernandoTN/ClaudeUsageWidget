@@ -1027,12 +1027,16 @@ class ProfileStore {
         //    destroying every credential on a slow Keychain. Intentional removal
         //    goes through clearProfileCredential(_:key:) instead.
         //
-        //    NEWEST CLAUDE LOGIN WINS. A non-nil Claude login OLDER than the
-        //    cached one (`ClaudeLoginLifetime.isNewer`) is a stale copy — a roster
-        //    array loaded before a refresh saved the rotated pair — and writing
-        //    it back would store a refresh token that has already been redeemed:
-        //    the profile then dies at its next refresh. The cached login is
-        //    kept. Only `explicitCLILoginWrite` may move a login backwards.
+        //    NEWEST CLAUDE LOGIN WINS. An ordinary save may only move a Claude
+        //    login FORWARD: a different login replaces the cached one only when
+        //    it is provably newer (`ClaudeLoginLifetime.isNewer`). Anything else
+        //    — older, a tie, or unknown expiries — is most likely a stale copy
+        //    (a roster array loaded before a refresh saved the rotated pair),
+        //    and writing it back would store a refresh token that has already
+        //    been redeemed: the profile then dies at its next refresh. The
+        //    cached login is kept. Deliberate replacements (a manual sync, a
+        //    redemption, `saveProfileCredentials(replacingCLILogin:)`) name
+        //    their profile in `explicitCLILoginWrite`.
         let now = Date()
         for profile in profiles {
             let incoming = CachedCredentials(
@@ -1046,14 +1050,14 @@ class ProfileStore {
             cacheLock.lock()
             let old = credentialCache[profile.id]
             var cliLogin = incoming.cliCredentialsJSON ?? old?.cliCredentialsJSON
-            var keptNewerCLILogin = false
+            var keptCachedCLILogin = false
             if let incomingCLI = incoming.cliCredentialsJSON,
                let cachedCLI = old?.cliCredentialsJSON,
                incomingCLI != cachedCLI,
                profile.id != explicitCLILoginWrite,
-               ClaudeLoginLifetime.isNewer(cachedCLI, than: incomingCLI, now: now) {
+               !ClaudeLoginLifetime.isNewer(incomingCLI, than: cachedCLI, now: now) {
                 cliLogin = cachedCLI
-                keptNewerCLILogin = true
+                keptCachedCLILogin = true
             }
             let merged = CachedCredentials(
                 claudeSessionKey: incoming.claudeSessionKey ?? old?.claudeSessionKey,
@@ -1068,8 +1072,8 @@ class ProfileStore {
             }
             cacheLock.unlock()
 
-            if keptNewerCLILogin {
-                LoggingService.shared.log("ProfileStore: kept the newer stored Claude login for \(profile.id) (\(ClaudeLoginLifetime.summary(old?.cliCredentialsJSON))) over an older copy being saved (\(ClaudeLoginLifetime.summary(incoming.cliCredentialsJSON)))")
+            if keptCachedCLILogin {
+                LoggingService.shared.log("ProfileStore: kept the stored Claude login for \(profile.id) (\(ClaudeLoginLifetime.summary(old?.cliCredentialsJSON))) — the copy being saved is not provably newer (\(ClaudeLoginLifetime.summary(incoming.cliCredentialsJSON)))")
             }
             if merged.filledNilFields(of: incoming) {
                 LoggingService.shared.log("ProfileStore: preserved cached credential(s) for \(profile.id) that the saved profile was missing (stale pre-hydration copy?)")
@@ -1334,7 +1338,10 @@ class ProfileStore {
 
     // MARK: - Credential Helpers
 
-    func saveProfileCredentials(_ profileId: UUID, credentials: ProfileCredentials) throws {
+    /// `replacingCLILogin` marks a deliberate replacement of the profile's
+    /// Claude login (an import); without it the login only moves forward (see
+    /// `saveProfiles`), so a round-tripped stale copy can never win.
+    func saveProfileCredentials(_ profileId: UUID, credentials: ProfileCredentials, replacingCLILogin: Bool = false) throws {
         var profiles = loadProfiles()
         guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
             throw NSError(domain: "ProfileStore", code: 404, userInfo: [NSLocalizedDescriptionKey: "Profile not found"])
@@ -1351,7 +1358,7 @@ class ProfileStore {
 
         // saveProfiles persists credentials to the Keychain (cache + background queue)
         // and non-credential data to UserDefaults.
-        saveProfiles(profiles)
+        saveProfiles(profiles, explicitCLILoginWrite: replacingCLILogin ? profileId : nil)
     }
 
     func loadProfileCredentials(_ profileId: UUID) throws -> ProfileCredentials {
