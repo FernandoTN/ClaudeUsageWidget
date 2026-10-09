@@ -17,6 +17,41 @@ class ClaudeCodeSyncService {
 
     private init() {}
 
+    // MARK: - Test Seams
+
+    /// XCTest stand-in for the Claude Code CLI's credential store (the shared
+    /// Keychain item and `~/.claude/.credentials.json`). With it set, no test
+    /// reads or writes the real store: `readSystemCredentials` takes its two
+    /// halves from `readSources` and `writeSystemCredentials` hands the JSON to
+    /// `write`. Static and `nonisolated(unsafe)` because the store is read and
+    /// written off the main actor (`applyProfileCredentials` runs on a
+    /// background queue); tests set it once in setUp and clear it in tearDown.
+    struct CLIStoreSeams {
+        var readSources: () -> (keychain: String?, file: String?)
+        var write: (String) -> Void
+    }
+    nonisolated(unsafe) private static var cliStoreSeams: CLIStoreSeams?
+
+    /// XCTest stand-in for the token endpoint: receives the refresh token being
+    /// redeemed, returns the HTTP status and JSON payload. No test redeems a
+    /// real refresh token.
+    private var tokenEndpointForTesting: ((String) async -> (status: Int, payload: [String: Any]?))?
+
+    /// XCTest stand-in for the account-identity endpoint.
+    private var identityFetcherForTesting: ((String) async -> AccountIdentity?)?
+
+    func setCLIStoreForTesting(_ seams: CLIStoreSeams?) {
+        Self.cliStoreSeams = seams
+    }
+
+    func setTokenEndpointForTesting(_ endpoint: ((String) async -> (status: Int, payload: [String: Any]?))?) {
+        tokenEndpointForTesting = endpoint
+    }
+
+    func setIdentityFetcherForTesting(_ fetcher: ((String) async -> AccountIdentity?)?) {
+        identityFetcherForTesting = fetcher
+    }
+
     // MARK: - System Credentials Access (Fallback Chain)
 
     /// Reads Claude Code credentials, preferring the source the CLI itself trusts:
@@ -34,8 +69,9 @@ class ClaudeCodeSyncService {
     func readSystemCredentials() throws -> String? {
         var keychainRaw: String?
         var keychainError: Error?
+        let seams = Self.cliStoreSeams
         do {
-            keychainRaw = try readKeychainCredentials()
+            keychainRaw = try seams.map { $0.readSources().keychain } ?? readKeychainCredentials()
         } catch {
             keychainError = error
         }
@@ -48,7 +84,7 @@ class ClaudeCodeSyncService {
             keychainJSON = raw
         }
 
-        let fileJSON = readCredentialsFile()
+        let fileJSON = seams.map { $0.readSources().file } ?? readCredentialsFile()
 
         switch (keychainJSON, fileJSON) {
         case let (keychain?, file?):
@@ -343,6 +379,10 @@ class ClaudeCodeSyncService {
         guard jsonData.data(using: .utf8) != nil else {
             throw ClaudeCodeError.invalidJSON
         }
+        if let seams = Self.cliStoreSeams {
+            seams.write(jsonData)
+            return
+        }
         writeCredentialsFile(jsonData)
         updateSystemKeychainViaSecurityTool(jsonData)
     }
@@ -600,25 +640,33 @@ class ClaudeCodeSyncService {
             throw ClaudeCodeError.invalidJSON
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken,
-            "client_id": Self.oauthClientId
-        ])
+        let statusCode: Int
+        let responsePayload: [String: Any]?
+        if let endpoint = tokenEndpointForTesting {
+            (statusCode, responsePayload) = await endpoint(refreshToken)
+        } else {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 30
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "grant_type": "refresh_token",
+                "refresh_token": refreshToken,
+                "client_id": Self.oauthClientId
+            ])
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ClaudeCodeError.tokenRefreshFailed(status: -1)
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw ClaudeCodeError.tokenRefreshFailed(status: -1)
+            }
+            statusCode = httpResponse.statusCode
+            responsePayload = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
         }
-        guard httpResponse.statusCode == 200,
-              let payload = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+        guard statusCode == 200,
+              let payload = responsePayload,
               let accessToken = payload["access_token"] as? String else {
-            LoggingService.shared.log("OAuth token refresh failed (HTTP \(httpResponse.statusCode))")
-            throw ClaudeCodeError.tokenRefreshFailed(status: httpResponse.statusCode)
+            LoggingService.shared.log("OAuth token refresh failed (HTTP \(statusCode))")
+            throw ClaudeCodeError.tokenRefreshFailed(status: statusCode)
         }
 
         oauth["accessToken"] = accessToken
@@ -763,6 +811,7 @@ class ClaudeCodeSyncService {
     /// is. Returns nil on any failure — callers must treat unknown identity as
     /// "no evidence", never as a mismatch.
     func fetchAccountIdentity(accessToken: String) async -> AccountIdentity? {
+        if let fetch = identityFetcherForTesting { return await fetch(accessToken) }
         let cacheKey = String(accessToken.suffix(24))
         if let cached = identityCache[cacheKey] { return cached }
 
