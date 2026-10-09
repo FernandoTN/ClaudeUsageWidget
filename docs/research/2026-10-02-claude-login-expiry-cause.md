@@ -490,11 +490,20 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
    - an activation is handing the login over.
 
    The CLI can be redeeming the same token in its own process, so the widget leaves the
-   CLI's login to the CLI and adopts its rotation. The activation renews before it
-   applies, with the preflight's one-hour window. It waits for a redemption already in
-   flight instead of skipping it, and always re-reads the store afterwards. A rotated pair
-   reaches the CLI only as a repair, when the CLI holds the very token just consumed. The
-   preflight skips a login being handed over and re-checks ownership after its await.
+   CLI's login to the CLI and adopts its rotation. A store half that cannot be read
+   counts as holding the token. The activation renews before it applies, with the
+   preflight's one-hour window. It waits for a redemption already in flight instead of
+   skipping it, and always re-reads the store afterwards. Profiles that share one login
+   share one redemption slot and one hand-off.
+
+   After a redemption, the rotated pair is stored by compare-and-swap over the pair that
+   was redeemed, so a `/login` synced in meanwhile wins. Profiles still holding the
+   consumed token get the rotated pair. The CLI gets it only as a per-half repair,
+   where that half holds the consumed token. The preflight skips a login being handed
+   over and re-checks ownership after its await.
+
+   An idle owner whose access token expired while no CLI ran is "awaiting CLI renewal":
+   its usage shows stale, and it is never flagged dead or switched away from.
    Fixes 1 to 3 of section 6, B.
 2. **Newest login wins.** `ClaudeLoginLifetime.isNewer` compares two logins:
    - The dead-marker is never newer than anything.
@@ -505,9 +514,9 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
 
    The store read returns nothing when the Keychain holds the dead-marker, and never
    falls back to the file. The switch-away re-sync, the Keychain adoption and identity
-   adoption replace a stored login only with a newer one. An ordinary save to the
-   profile store only moves a login forward. Explicit replacements (a sync, a
-   redemption's own save) are the exception. Fixes 4 and 5 of section 6, B.
+   adoption replace a stored login only with a newer one, by compare-and-swap. An
+   ordinary save to the profile store never changes a stored login; only explicit
+   paths do (compare-and-swap, a sync or import, removal). Fixes 4 and 5 of section 6, B.
 3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at
    or within one hour of its deadline is not a switch target (`candidateHasHeadroom`, so
    the walk, the queue peek, the stale re-verify and the fleet tile). The preflight verdict
