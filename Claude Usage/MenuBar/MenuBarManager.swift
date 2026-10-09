@@ -1908,6 +1908,16 @@ private func observeCredentialChanges() {
                     } catch {
                         let appError = AppError.wrap(error)
 
+                        // Awaiting the CLI's own renewal: nothing to read with
+                        // yet, and nothing wrong — no failure, no banner, no
+                        // backoff, no evidence against the login. The tile keeps
+                        // its last measurement until the CLI renews and the
+                        // adoption picks the new pair up.
+                        if appError.code == .cliRenewalPending {
+                            LoggingService.shared.log("MenuBarManager: \(appError.message)", type: .info)
+                            continue
+                        }
+
                         // The usage endpoint refused, but the account is the
                         // one being burned right now — read its live counters
                         // off the Messages API headers (different rate-limit
@@ -2089,6 +2099,10 @@ private func observeCredentialChanges() {
             // presenting the previous (possibly exhausted) account's token.
             await ClaudeCodeSyncService.shared.healCredentialsFileFromKeychainOffMain()
 
+            // A post-redemption repair of the CLI's store that did not land is
+            // retried here, under the same per-half compare-and-swap.
+            await ClaudeCodeSyncService.shared.retryPendingCLIRepairs()
+
             // Learn WHOSE account each stored Claude login belongs to, one
             // profile per sweep, oldest unstamped first. Until a profile is
             // stamped, every account-keyed check (adoption matching, the
@@ -2149,6 +2163,16 @@ private func observeCredentialChanges() {
         // dead logins behind a message suggesting none were ever synced, and
         // .sessionKeyNotFound is not counted as a credential error by the
         // sweep's banner accounting (dead logins never surfaced in the UI).
+        // A login the CLI holds whose access token expired while no CLI ran:
+        // the widget does not redeem it (the CLI renews its own login), so
+        // there is nothing to read with yet. Stale, not dead — no `/login`.
+        if profile.cliCredentialsJSON != nil, ClaudeCodeSyncService.shared.isAwaitingCLIRenewal(profile.id) {
+            throw AppError(
+                code: .cliRenewalPending,
+                message: "'\(profile.name)' is waiting for Claude Code to renew its login — usage shown as last measured",
+                isRecoverable: true
+            )
+        }
         if profile.cliCredentialsJSON != nil {
             throw AppError(
                 code: .sessionKeyExpired,
@@ -2362,39 +2386,44 @@ private func observeCredentialChanges() {
 
                 // Convert to AppError and log
                 let appError = AppError.wrap(error)
-                ErrorLogger.shared.log(appError, severity: .error)
-
-                // Record failure for circuit breaker
-                ErrorRecovery.shared.recordFailure(for: .api)
-
-                // Track error state for UI banners
-                self.consecutiveRefreshFailures += 1
-                self.lastRefreshError = appError.message
-
-                // Track credential errors specifically
-                if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
-                    self.hasCredentialError = true
-                    if let profileId = self.profileManager.activeProfile?.id {
-                        self.credentialErrorProfileIds.insert(profileId)
-                    }
-                }
-
-                // Account-level throttle: reflect it instead of keeping a
-                // frozen pre-throttle percentage on screen (see the sweep-path
-                // twin of this call for the full rationale).
-                if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: profile) {
-                    self.usage = stamped
-                    self.updateAllStatusBarIcons()
-                    self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
-                }
-
-                // Check if this refresh was triggered within last 5 seconds
-                // (indicates user-initiated action like saving session key)
-                if abs(self.lastRefreshTriggerTime.timeIntervalSinceNow) < 5 {
-                    ErrorPresenter.shared.showAlert(for: appError)
+                if appError.code == .cliRenewalPending {
+                    // Awaiting the CLI's own renewal: stale, not failing.
+                    LoggingService.shared.log("MenuBarManager: \(appError.message)", type: .info)
                 } else {
-                    // Background refresh - just log
-                    LoggingService.shared.logError("MenuBarManager: Failed to fetch usage - [\(appError.code.rawValue)] \(appError.message)")
+                    ErrorLogger.shared.log(appError, severity: .error)
+
+                    // Record failure for circuit breaker
+                    ErrorRecovery.shared.recordFailure(for: .api)
+
+                    // Track error state for UI banners
+                    self.consecutiveRefreshFailures += 1
+                    self.lastRefreshError = appError.message
+
+                    // Track credential errors specifically
+                    if appError.code == .apiUnauthorized || appError.code == .sessionKeyExpired {
+                        self.hasCredentialError = true
+                        if let profileId = self.profileManager.activeProfile?.id {
+                            self.credentialErrorProfileIds.insert(profileId)
+                        }
+                    }
+
+                    // Account-level throttle: reflect it instead of keeping a
+                    // frozen pre-throttle percentage on screen (see the sweep-path
+                    // twin of this call for the full rationale).
+                    if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: profile) {
+                        self.usage = stamped
+                        self.updateAllStatusBarIcons()
+                        self.checkAutoSwitchIfNeeded(usage: stamped, currentProfile: profile)
+                    }
+
+                    // Check if this refresh was triggered within last 5 seconds
+                    // (indicates user-initiated action like saving session key)
+                    if abs(self.lastRefreshTriggerTime.timeIntervalSinceNow) < 5 {
+                        ErrorPresenter.shared.showAlert(for: appError)
+                    } else {
+                        // Background refresh - just log
+                        LoggingService.shared.logError("MenuBarManager: Failed to fetch usage - [\(appError.code.rawValue)] \(appError.message)")
+                    }
                 }
             }
 
@@ -2554,6 +2583,12 @@ private func observeCredentialChanges() {
                 LoggingService.shared.log("MenuBarManager: manual refresh saved usage for '\(profile.name)' - session: \(newUsage.sessionPercentage)%", type: .info)
             } catch {
                 let appError = AppError.wrap(error)
+
+                // Awaiting the CLI's own renewal: stale, not failing.
+                if appError.code == .cliRenewalPending {
+                    LoggingService.shared.log("MenuBarManager: \(appError.message)", type: .info)
+                    return
+                }
 
                 // Same rescue as the sweep: the user clicked refresh on the
                 // account being burned and the usage endpoint refused — read

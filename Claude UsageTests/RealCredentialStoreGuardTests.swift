@@ -195,4 +195,14 @@ final class RealCredentialEndpointRefusalTests: XCTestCase, ExpectsRealStoreRefu
         XCTAssertNil(LocalLimitSignalService.readCLICachedUsage())
         XCTAssertEqual(RealCredentialStoreGuard.refusedAttempts.count, before + 1)
     }
+
+    /// … and so does any explicit spelling of the real file.
+    func testTheCLICachedUsageRefusesTheRealFileByAnyPath() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        for path in [home + "/.claude.json", home + "/./.claude.json", home + "/.claude/../.claude.json"] {
+            let before = RealCredentialStoreGuard.refusedAttempts.count
+            XCTAssertNil(LocalLimitSignalService.readCLICachedUsage(path: path), path)
+            XCTAssertEqual(RealCredentialStoreGuard.refusedAttempts.count, before + 1, path)
+        }
+    }
 }

@@ -266,7 +266,16 @@ nonisolated enum LocalLimitSignalService {
     /// fixture `path`; the default, the real `~/.claude.json`, is never read
     /// under XCTest (`RealCredentialStoreGuard`).
     static func readCLICachedUsage(path: String? = nil) -> CLICachedUsage? {
-        if path == nil, RealCredentialStoreGuard.refuse("read ~/.claude.json (cached usage)") { return nil }
+        // The real file is refused under XCTest whether it is reached by the
+        // default or named explicitly (compared after resolving symlinks and
+        // `..`, so no spelling of the path slips through).
+        if RealCredentialStoreGuard.isTestRun {
+            func canonical(_ path: String) -> String {
+                URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+            }
+            let readsRealFile = path.map { canonical($0) == canonical(claudeConfigPath) } ?? true
+            if readsRealFile, RealCredentialStoreGuard.refuse("read ~/.claude.json (cached usage)") { return nil }
+        }
         guard let data = FileManager.default.contents(atPath: path ?? claudeConfigPath),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let cached = root["cachedUsageUtilization"] as? [String: Any],

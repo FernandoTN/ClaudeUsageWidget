@@ -998,8 +998,8 @@ class ProfileStore {
     /// Persists the roster. `allowEmpty` must be `true` for a deliberate delete-all —
     /// see the empty-overwrite guard below. `explicitCLILoginWrite` names the one
     /// profile whose Claude login the caller is deliberately REPLACING (a manual
-    /// sync, which may bring a different account's login with an earlier
-    /// expiry); every other profile's stored login only ever moves forward.
+    /// sync or an import). An ordinary save never changes a stored Claude login;
+    /// automatic writers go through `replaceCLILogin(_:expected:with:)`.
     func saveProfiles(_ profiles: [Profile], allowEmpty: Bool = false, explicitCLILoginWrite: UUID? = nil) {
         // 0. EMPTY-OVERWRITE GUARD. An empty array reaching here is nearly always a
         //    read that failed (a wedged cfprefsd hands every caller nil), not a user
@@ -1027,17 +1027,19 @@ class ProfileStore {
         //    destroying every credential on a slow Keychain. Intentional removal
         //    goes through clearProfileCredential(_:key:) instead.
         //
-        //    NEWEST CLAUDE LOGIN WINS. An ordinary save may only move a Claude
-        //    login FORWARD: a different login replaces the cached one only when
-        //    it is provably newer (`ClaudeLoginLifetime.isNewer`). Anything else
-        //    — older, a tie, or unknown expiries — is most likely a stale copy
-        //    (a roster array loaded before a refresh saved the rotated pair),
-        //    and writing it back would store a refresh token that has already
-        //    been redeemed: the profile then dies at its next refresh. The
-        //    cached login is kept. Deliberate replacements (a manual sync, a
-        //    redemption, `saveProfileCredentials(replacingCLILogin:)`) name
-        //    their profile in `explicitCLILoginWrite`.
-        let now = Date()
+        //    AN ORDINARY SAVE NEVER CHANGES A STORED CLAUDE LOGIN. A roster or
+        //    metadata save carries whatever login its array was loaded with,
+        //    and that copy can predate a refresh: writing it back stores a
+        //    refresh token that has already been redeemed, and the profile dies
+        //    at its next refresh. No comparison of expiries can tell such a copy
+        //    from a newer login reliably (a rotation may return a shorter
+        //    lifetime), so ordinary saves do not compare at all — the stored
+        //    login is kept. A login changes only through an explicit path:
+        //    `replaceCLILogin(_:expected:with:)` (the redemption, the re-sync and
+        //    the adoptions — compare-and-swap), a manual sync or an import
+        //    (`explicitCLILoginWrite`), and `clearProfileCredential` (removal).
+        //    A profile the cache has never seen (created by this save) takes the
+        //    login it is created with.
         for profile in profiles {
             let incoming = CachedCredentials(
                 claudeSessionKey: profile.claudeSessionKey,
@@ -1051,13 +1053,11 @@ class ProfileStore {
             let old = credentialCache[profile.id]
             var cliLogin = incoming.cliCredentialsJSON ?? old?.cliCredentialsJSON
             var keptCachedCLILogin = false
-            if let incomingCLI = incoming.cliCredentialsJSON,
-               let cachedCLI = old?.cliCredentialsJSON,
-               incomingCLI != cachedCLI,
-               profile.id != explicitCLILoginWrite,
-               !ClaudeLoginLifetime.isNewer(incomingCLI, than: cachedCLI, now: now) {
-                cliLogin = cachedCLI
-                keptCachedCLILogin = true
+            if let old, profile.id != explicitCLILoginWrite {
+                if incoming.cliCredentialsJSON != nil, incoming.cliCredentialsJSON != old.cliCredentialsJSON {
+                    keptCachedCLILogin = true
+                }
+                cliLogin = old.cliCredentialsJSON
             }
             let merged = CachedCredentials(
                 claudeSessionKey: incoming.claudeSessionKey ?? old?.claudeSessionKey,
@@ -1073,7 +1073,7 @@ class ProfileStore {
             cacheLock.unlock()
 
             if keptCachedCLILogin {
-                LoggingService.shared.log("ProfileStore: kept the stored Claude login for \(profile.id) (\(ClaudeLoginLifetime.summary(old?.cliCredentialsJSON))) — the copy being saved is not provably newer (\(ClaudeLoginLifetime.summary(incoming.cliCredentialsJSON)))")
+                LoggingService.shared.log("ProfileStore: kept the stored Claude login for \(profile.id) (\(ClaudeLoginLifetime.summary(old?.cliCredentialsJSON))) — an ordinary save does not change it (saved copy: \(ClaudeLoginLifetime.summary(incoming.cliCredentialsJSON)))")
             }
             if merged.filledNilFields(of: incoming) {
                 LoggingService.shared.log("ProfileStore: preserved cached credential(s) for \(profile.id) that the saved profile was missing (stale pre-hydration copy?)")
@@ -1409,6 +1409,34 @@ class ProfileStore {
         if let value {
             keychainService.saveProfileCredential(value, profileId: profileId, key: key)
         }
+    }
+
+    /// Replaces a profile's Claude login only if the stored one still equals
+    /// `expected` — compare-and-swap, atomic under the cache lock. The explicit
+    /// path for every automatic writer (a redemption's rotated pair, the
+    /// re-sync, the adoptions): a writer whose request was in flight while
+    /// something else replaced the login (a `/login` sync, another rotation)
+    /// fails here instead of overwriting it. Returns false, changing nothing,
+    /// when the stored login is not `expected`.
+    @discardableResult
+    func replaceCLILogin(_ profileId: UUID, expected: String?, with newLogin: String) -> Bool {
+        cacheLock.lock()
+        var cached = credentialCache[profileId] ?? CachedCredentials()
+        guard cached.cliCredentialsJSON == expected else {
+            cacheLock.unlock()
+            return false
+        }
+        cached.cliCredentialsJSON = newLogin
+        credentialCache[profileId] = cached
+        if cached.cliCredentialsJSON != expected {
+            bumpCredentialRevision(profileId)
+        }
+        cacheLock.unlock()
+
+        keychainQueue.async { [weak self] in
+            self?.writeCredentialItems(profileId: profileId, credentials: cached)
+        }
+        return true
     }
 
     /// Explicitly removes ONE credential from a profile — the only way a single

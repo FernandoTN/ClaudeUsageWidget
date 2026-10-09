@@ -85,11 +85,18 @@ extension ClaudeCodeSyncService.CLIStoreSeams {
     /// its own.
     nonisolated static func inMemory() -> ClaudeCodeSyncService.CLIStoreSeams {
         let store = InMemoryCredentialStore()
+        func half(_ key: String) -> ClaudeCodeSyncService.StoreHalf {
+            store[key].map { .contents($0) } ?? .absent
+        }
         return ClaudeCodeSyncService.CLIStoreSeams(
-            readSources: { (store["keychain"], store["file"]) },
-            write: { json in
+            readHalves: { (half("keychain"), half("file")) },
+            writeKeychain: { json in
                 store["keychain"] = json
+                return true
+            },
+            writeFile: { json in
                 store["file"] = json
+                return true
             },
             cachedAccountUUID: { store["accountUUID"] },
             writeAccountMetadata: { uuid, _, _ in store["accountUUID"] = uuid }

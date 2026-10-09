@@ -771,7 +771,17 @@ class ProfileManager: ObservableObject {
             // to the CLI is the failure this gate exists to prevent. The flag
             // clears on any successful refresh, adoption or re-sync, so a
             // revived account is not held out.
-            if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) || pastDeadline {
+            // AWAITING CLI RENEWAL is not dead. The renewal step just refused to
+            // redeem this login because the CLI holds (or owns) it, and its
+            // access token has expired because no CLI process has run to renew
+            // it — every quiet night for an idle owner. The CLI has this login
+            // already: there is nothing to apply, nothing to refuse, and no
+            // `/login` to ask for.
+            let awaitingCLIRenewal = cliSyncService.isAwaitingCLIRenewal(id)
+                && !cliSyncService.isLoginMarkedDead(id) && !pastDeadline
+            if awaitingCLIRenewal {
+                LoggingService.shared.log("'\(updatedProfile.name)' is the CLI's own login, awaiting the CLI's renewal — nothing to apply")
+            } else if cliSyncService.isTokenExpired(cliJSON) || cliSyncService.isLoginMarkedDead(id) || pastDeadline {
                 if pastDeadline {
                     LoggingService.shared.log("⛔️ '\(updatedProfile.name)' CLI login is at its server deadline (\(ClaudeLoginLifetime.summary(cliJSON))) — only /login renews it")
                 }
@@ -2299,7 +2309,10 @@ class ProfileManager: ObservableObject {
             let ownerJSON = reloaded[index].cliCredentialsJSON
             let ownerToken = ownerJSON.flatMap(sync.extractAccessToken(from:))
             let systemIsNewer = ownerJSON.map { ClaudeLoginLifetime.isNewer(systemJSON, than: $0, now: Date()) } ?? true
-            if ownerToken != systemToken, systemIsNewer {
+            // Through the compare-and-swap path: an ordinary save never changes
+            // a stored Claude login.
+            if ownerToken != systemToken, systemIsNewer,
+               profileStore.replaceCLILogin(owner.id, expected: ownerJSON, with: systemJSON) {
                 reloaded[index].cliCredentialsJSON = systemJSON
                 reloaded[index].hasCliAccount = true
                 reloaded[index].cliAccountSyncedAt = Date()
