@@ -3805,136 +3805,147 @@ private func observeCredentialChanges() {
             // Every exit from the walk — switched, deferred, exhausted, or a
             // thrown cancellation — releases the entry mark.
             defer { self.autoSwitchWalkInFlight = false }
-            var excluded: Set<UUID> = []
-            while true {
-                let queuedTarget = self.peekQueuedSwitchTarget(
-                    provider: currentProfile.providerKind,
-                    excluding: excluded,
-                    sessionThreshold: sessionThreshold,
-                    weeklyThreshold: weeklyThreshold,
-                    ignoreFableWeekly: ignoreFableWeekly
-                )
-                guard let nextProfile = queuedTarget
-                    ?? self.findNextAvailableProfile(after: currentProfile, excluding: excluded) else { break }
-                let cameFromQueue = queuedTarget?.id == nextProfile.id
-                // Re-check at every iteration: a switch that started after the
-                // guard above (other provider, user click) must not be stacked —
-                // retry cleanly on the next sweep instead of walking candidates
-                // on semaphore refusals.
-                guard !self.profileManager.isSwitchingProfile else {
-                    self.autoSwitchedProfileIds.remove(profileId)
-                    LoggingService.shared.log("AutoSwitch: another switch is in flight, deferring to next sweep")
-                    return
-                }
-
-                // Verify a STALE Claude candidate's real usage before taking the
-                // switch: rotation + burst-429 backoff can leave a candidate's
-                // cached percentages minutes old, and a heavily-used account (the
-                // kind that 429s its own usage endpoint) can climb 15-20pp in that
-                // window — landing the switch on an account that is about to hit
-                // the very limit we are escaping (observed live 2026-07-29:
-                // cached 51% vs ~70% real). One probe per candidate per switch;
-                // Codex/Grok candidates refresh every sweep and never need it.
-                if nextProfile.providerKind == .claude,
-                   let cached = nextProfile.claudeUsage,
-                   Date().timeIntervalSince(cached.lastUpdated) > 180 {
-                    do {
-                        let fresh = try await self.fetchUsageForProfile(nextProfile)
-                        self.profileManager.saveClaudeUsage(fresh, for: nextProfile.id)
-                        self.burstBackoffs.removeValue(forKey: nextProfile.id)
-                        var verified = nextProfile
-                        verified.claudeUsage = fresh
-                        self.noteClaudeReadAnswered(nextProfile)
-                        guard Self.candidateHasHeadroom(
-                            verified,
-                            sessionThreshold: sessionThreshold,
-                            weeklyThreshold: weeklyThreshold,
-                            ignoreFableWeekly: ignoreFableWeekly,
-                            loginCondemned: self.observedDeadLogins.isCondemned(nextProfile.id),
-                            now: Date()
-                        ) else {
-                            excluded.insert(nextProfile.id)
-                            LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' cached headroom was stale — fresh fetch shows none, trying next candidate")
-                            continue
-                        }
-                    } catch {
-                        let appError = AppError.wrap(error)
-                        if ObservedDeadLogins.isLoginRefusal(appError) {
-                            // The server just refused this candidate's login.
-                            // Switching the fleet into it would hand every
-                            // session a login the server refused a second ago,
-                            // so skip it for this walk. One refusal is not a
-                            // condemnation (a refresh race can cause one), but
-                            // it does count toward one.
-                            self.noteClaudeReadRefused(nextProfile, error: appError)
-                            excluded.insert(nextProfile.id)
-                            LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' usage read was refused as unauthorized — not switching into that login, trying next candidate")
-                            continue
-                        }
-                        if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: nextProfile) {
-                            // Account-level throttle = exhausted: never switch onto it.
-                            _ = stamped
-                            excluded.insert(nextProfile.id)
-                            LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' usage endpoint is account-throttled — treating as exhausted, trying next candidate")
-                            continue
-                        }
-                        if appError.code == .apiRateLimited {
-                            self.registerBurstBackoff(for: nextProfile, retryAfter: appError.retryAfterSeconds)
-                        }
-                        // Burst 429 / transient error: exhaustion unknown — proceed
-                        // on the cached estimate rather than refusing to switch at
-                        // all (the outgoing account is definitively at its limit).
-                        LoggingService.shared.log("AutoSwitch: could not verify '\(nextProfile.name)' usage (\(appError.code.rawValue)) — proceeding on cached estimate")
-                    }
-                }
-                if let condemnation {
-                    LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (login rejected by the server: \(condemnation.evidence.summary))")
-                } else {
-                    LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
-                }
-
-                let outcome = await self.profileManager.activateProfileDetailed(nextProfile.id)
-                switch Self.walkReaction(to: outcome) {
-                case .switched:
-                    self.preflightVerdicts[nextProfile.id] = PreflightVerdict(isLive: true, at: Date(), kind: .switched)
-                    // Consume the queue entry only now — the switch landed.
-                    if cameFromQueue {
-                        self.consumeQueuedSwitchTarget(nextProfile.id)
-                    }
-                    // activateProfile just recorded the switch; enrich it with
-                    // what only this walk knows (queued attribution + trigger
-                    // measurements).
-                    SharedDataStore.shared.amendLastSwitchEvent(
-                        trigger: cameFromQueue ? .queued : .auto,
-                        reason: condemnation.map { "login rejected by the server (\($0.evidence.summary))" }
-                            ?? "session \(Int(usage.effectiveSessionPercentage))% / weekly \(Int(usage.weeklyPercentage))% crossed threshold"
+            var cameFromQueue: [UUID: Bool] = [:]
+            let result = await Self.runCandidateWalk(
+                nextCandidate: { excluded in
+                    let queuedTarget = self.peekQueuedSwitchTarget(
+                        provider: currentProfile.providerKind,
+                        excluding: excluded,
+                        sessionThreshold: sessionThreshold,
+                        weeklyThreshold: weeklyThreshold,
+                        ignoreFableWeekly: ignoreFableWeekly
                     )
-                    // Send notification
-                    NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextProfile.name)
-                    return
+                    guard let nextProfile = queuedTarget
+                        ?? self.findNextAvailableProfile(after: currentProfile, excluding: excluded) else { return nil }
+                    cameFromQueue[nextProfile.id] = queuedTarget?.id == nextProfile.id
+                    return nextProfile
+                },
+                attempt: { nextProfile in
+                    // Re-check at every iteration: a switch that started after the
+                    // guard above (other provider, user click) must not be stacked —
+                    // retry cleanly on the next sweep instead of walking candidates
+                    // on semaphore refusals.
+                    guard !self.profileManager.isSwitchingProfile else {
+                        LoggingService.shared.log("AutoSwitch: another switch is in flight, deferring to next sweep")
+                        return .stopWalk
+                    }
 
-                case .deferToNextSweep:
-                    // The semaphore, not the candidate. Its credentials were
-                    // never even examined, so it must NOT be excluded or
-                    // recorded as a dead login — un-mark and let the next sweep
-                    // re-run the whole trigger.
-                    self.autoSwitchedProfileIds.remove(profileId)
-                    LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' activation did not land (\(outcome)) — candidate NOT excluded, queue NOT consumed, deferring to next sweep")
-                    return
+                    // Verify a STALE Claude candidate's real usage before taking the
+                    // switch: rotation + burst-429 backoff can leave a candidate's
+                    // cached percentages minutes old, and a heavily-used account (the
+                    // kind that 429s its own usage endpoint) can climb 15-20pp in that
+                    // window — landing the switch on an account that is about to hit
+                    // the very limit we are escaping (observed live 2026-07-29:
+                    // cached 51% vs ~70% real). One probe per candidate per switch;
+                    // Codex/Grok candidates refresh every sweep and never need it.
+                    if nextProfile.providerKind == .claude,
+                       let cached = nextProfile.claudeUsage,
+                       Date().timeIntervalSince(cached.lastUpdated) > 180 {
+                        do {
+                            let fresh = try await self.fetchUsageForProfile(nextProfile)
+                            self.profileManager.saveClaudeUsage(fresh, for: nextProfile.id)
+                            self.burstBackoffs.removeValue(forKey: nextProfile.id)
+                            var verified = nextProfile
+                            verified.claudeUsage = fresh
+                            self.noteClaudeReadAnswered(nextProfile)
+                            guard Self.candidateHasHeadroom(
+                                verified,
+                                sessionThreshold: sessionThreshold,
+                                weeklyThreshold: weeklyThreshold,
+                                ignoreFableWeekly: ignoreFableWeekly,
+                                loginCondemned: self.observedDeadLogins.isCondemned(nextProfile.id),
+                                now: Date()
+                            ) else {
+                                LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' cached headroom was stale — fresh fetch shows none, trying next candidate")
+                                return .skipped
+                            }
+                        } catch {
+                            let appError = AppError.wrap(error)
+                            if ObservedDeadLogins.isLoginRefusal(appError) {
+                                // The server just refused this candidate's login.
+                                // Switching the fleet into it would hand every
+                                // session a login the server refused a second ago,
+                                // so skip it for this walk. One refusal is not a
+                                // condemnation (a refresh race can cause one), but
+                                // it does count toward one.
+                                self.noteClaudeReadRefused(nextProfile, error: appError)
+                                LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' usage read was refused as unauthorized — not switching into that login, trying next candidate")
+                                return .skipped
+                            }
+                            if let stamped = self.stampAccountThrottleIfNeeded(appError, profile: nextProfile) {
+                                // Account-level throttle = exhausted: never switch onto it.
+                                _ = stamped
+                                LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' usage endpoint is account-throttled — treating as exhausted, trying next candidate")
+                                return .skipped
+                            }
+                            if appError.code == .apiRateLimited {
+                                self.registerBurstBackoff(for: nextProfile, retryAfter: appError.retryAfterSeconds)
+                            }
+                            // Burst 429 / transient error: exhaustion unknown — proceed
+                            // on the cached estimate rather than refusing to switch at
+                            // all (the outgoing account is definitively at its limit).
+                            LoggingService.shared.log("AutoSwitch: could not verify '\(nextProfile.name)' usage (\(appError.code.rawValue)) — proceeding on cached estimate")
+                        }
+                    }
+                    if let condemnation {
+                        LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (login rejected by the server: \(condemnation.evidence.summary))")
+                    } else {
+                        LoggingService.shared.log("AutoSwitch: Switching from '\(fromName)' to '\(nextProfile.name)' (thresholds session \(Int(sessionThreshold))% / weekly \(Int(weeklyThreshold))%)")
+                    }
 
-                case .excludeCandidate:
-                    excluded.insert(nextProfile.id)
-                    // The switch itself is the strongest liveness probe there
-                    // is — record it so the bar stops advertising this account.
-                    self.preflightVerdicts[nextProfile.id] = PreflightVerdict(isLive: false, at: Date(), kind: .switched)
-                    LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
+                    let outcome = await self.profileManager.activateProfileDetailed(nextProfile.id)
+                    switch Self.walkReaction(to: outcome) {
+                    case .switched:
+                        break
+                    case .deferToNextSweep:
+                        LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' activation did not land (\(outcome)) — machine-side, candidate NOT excluded, queue NOT consumed, deferring the walk to next sweep")
+                    case .skipForThisWalk:
+                        LoggingService.shared.log("AutoSwitch: '\(nextProfile.name)' activation deferred (\(outcome)) — skipped for this walk only (queue entry kept, not dead), trying next candidate")
+                    case .excludeCandidate:
+                        // The switch itself is the strongest liveness probe there
+                        // is — record it so the bar stops advertising this account.
+                        self.preflightVerdicts[nextProfile.id] = PreflightVerdict(isLive: false, at: Date(), kind: .switched)
+                        LoggingService.shared.log("AutoSwitch: could not take over '\(nextProfile.name)' login (dead credentials?), trying next candidate")
+                    }
+                    return .activated(outcome)
                 }
+            )
+
+            switch result {
+            case .switched(let switchedId):
+                let nextName = self.profileManager.profiles.first(where: { $0.id == switchedId })?.name ?? "?"
+                let queued = cameFromQueue[switchedId] ?? false
+                self.preflightVerdicts[switchedId] = PreflightVerdict(isLive: true, at: Date(), kind: .switched)
+                // Consume the queue entry only now — the switch landed.
+                if queued {
+                    self.consumeQueuedSwitchTarget(switchedId)
+                }
+                // activateProfile just recorded the switch; enrich it with
+                // what only this walk knows (queued attribution + trigger
+                // measurements).
+                SharedDataStore.shared.amendLastSwitchEvent(
+                    trigger: queued ? .queued : .auto,
+                    reason: condemnation.map { "login rejected by the server (\($0.evidence.summary))" }
+                        ?? "session \(Int(usage.effectiveSessionPercentage))% / weekly \(Int(usage.weeklyPercentage))% crossed threshold"
+                )
+                // Send notification
+                NotificationManager.shared.sendAutoSwitchNotification(fromProfile: fromName, toProfile: nextName)
+
+            case .deferredToNextSweep:
+                // Machine-side (another switch, a failed write), or every
+                // remaining candidate deferred: nothing landed and nobody was
+                // recorded dead — un-mark and let the next sweep re-run the
+                // whole trigger.
+                self.autoSwitchedProfileIds.remove(profileId)
+                LoggingService.shared.log("AutoSwitch: walk deferred to next sweep, staying on '\(fromName)'")
+
+            case .noSwitch:
+                // No candidate had headroom (or their logins were dead). Un-mark so the
+                // next sweep retries — a candidate's session window resetting must not
+                // strand us on an exhausted account for the rest of its weekly window.
+                self.autoSwitchedProfileIds.remove(profileId)
+                LoggingService.shared.log("AutoSwitch: no usable candidate right now, staying on '\(fromName)' (will retry)")
             }
-            // No candidate had headroom (or their logins were dead). Un-mark so the
-            // next sweep retries — a candidate's session window resetting must not
-            // strand us on an exhausted account for the rest of its weekly window.
-            self.autoSwitchedProfileIds.remove(profileId)
-            LoggingService.shared.log("AutoSwitch: no usable candidate right now, staying on '\(fromName)' (will retry)")
         }
     }
 
@@ -3942,12 +3953,15 @@ private func observeCredentialChanges() {
     enum CandidateWalkReaction {
         /// The switch landed — consume the queue entry and stop walking.
         case switched
-        /// Nothing was attempted because another switch holds the semaphore —
-        /// or the attempt could not WRITE the CLI's login store
-        /// (`credentialWriteFailed`). Stop walking and let the next sweep
-        /// retry, WITHOUT excluding the candidate: its credentials are not what
-        /// failed.
+        /// Machine-side: another switch holds the semaphore, or the attempt
+        /// could not WRITE the CLI's login store (`credentialWriteFailed`).
+        /// Stop walking and let the next sweep retry, WITHOUT excluding the
+        /// candidate: its credentials are not what failed.
         case deferToNextSweep
+        /// This candidate cannot be handed over right now (`handoffDeferred`:
+        /// its login awaits a renewal the app cannot confirm). Skip it for THIS
+        /// walk only — queue entry kept, not recorded dead — and try the next.
+        case skipForThisWalk
         /// The candidate itself is unusable — exclude it and try the next one.
         case excludeCandidate
     }
@@ -3964,11 +3978,17 @@ private func observeCredentialChanges() {
         switch outcome {
         case .activated, .alreadyActive:
             return .switched
-        case .switchInFlight, .credentialWriteFailed, .handoffDeferred:
-            // A failed write, or a login pending a renewal the app cannot
-            // confirm, is not the candidate's death: nothing was claimed, so
-            // retry next sweep — never exclude, never consume the queue entry.
+        case .switchInFlight, .credentialWriteFailed:
+            // A failed write is the machine's, not the candidate's: nothing
+            // was claimed and the login is fine, so retry the whole walk next
+            // sweep — never exclude, never consume the queue entry.
             return .deferToNextSweep
+        case .handoffDeferred:
+            // This candidate's login awaits a renewal the app cannot confirm.
+            // Not dead and not the machine's fault: skip it for this walk and
+            // try the next candidate — one deferring candidate must not keep a
+            // usable one from being tried.
+            return .skipForThisWalk
         case .profileNotFound, .credentialsRefused, .focusedWithoutApplying:
             // `focusedWithoutApplying` is a USER-initiated outcome and the walk
             // never sets `userInitiated`, so it cannot arrive here today. It is
@@ -3977,6 +3997,62 @@ private func observeCredentialChanges() {
             // and the candidate is unusable for this walk.
             return .excludeCandidate
         }
+    }
+
+    /// One candidate attempt, as the walk sees it.
+    enum CandidateAttempt {
+        /// Rejected for this walk before any activation (stale headroom, a
+        /// refused read, an account-level throttle).
+        case skipped
+        /// Stop the whole walk and retry next sweep without trying anyone else.
+        case stopWalk
+        /// The activation ran with this outcome.
+        case activated(ProfileManager.ActivationOutcome)
+    }
+
+    /// How a walk ended.
+    enum CandidateWalkResult: Equatable {
+        case switched(to: UUID)
+        /// Machine-side stop, or every candidate that remained deferred: retry
+        /// next sweep. Nothing was consumed or recorded dead.
+        case deferredToNextSweep
+        /// No candidate landed and none deferred.
+        case noSwitch
+    }
+
+    /// The candidate walk's control flow, with its two effects injected so a
+    /// test can drive it end to end: `nextCandidate` picks the next target
+    /// outside `excluded` (the queue first, then the ranking), and `attempt`
+    /// runs the pre-checks and the activation. A deferring candidate is
+    /// skipped for this walk only; the walk stops early only for a
+    /// machine-side reason.
+    static func runCandidateWalk(
+        nextCandidate: (_ excluded: Set<UUID>) -> Profile?,
+        attempt: (Profile) async -> CandidateAttempt
+    ) async -> CandidateWalkResult {
+        var excluded: Set<UUID> = []
+        var anyDeferred = false
+        while let candidate = nextCandidate(excluded) {
+            switch await attempt(candidate) {
+            case .stopWalk:
+                return .deferredToNextSweep
+            case .skipped:
+                excluded.insert(candidate.id)
+            case .activated(let outcome):
+                switch walkReaction(to: outcome) {
+                case .switched:
+                    return .switched(to: candidate.id)
+                case .deferToNextSweep:
+                    return .deferredToNextSweep
+                case .skipForThisWalk:
+                    excluded.insert(candidate.id)
+                    anyDeferred = true
+                case .excludeCandidate:
+                    excluded.insert(candidate.id)
+                }
+            }
+        }
+        return anyDeferred ? .deferredToNextSweep : .noSwitch
     }
 
     /// True when ANY of the profile's quota windows has crossed its threshold:
