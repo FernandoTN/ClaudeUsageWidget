@@ -489,32 +489,50 @@ revokes the access token issued with it AT ONCE. Two healthy accounts died
 within seconds of becoming active, because the 90 % preflight redeemed the pair
 the switch had just applied. Three rules now hold
 (`ClaudeLoginLifetime.swift`):
-- **No rotation after hand-off.** `ClaudeRefreshPolicy.decide` runs at every
-  redemption. The CLI's own login (the pointer, or the sole credentialed
-  profile) is redeemed only in its last 2 minutes, by a caller that writes the
-  result to the CLI. A login an activation is handing over (`beginHandoff`
-  until the claim) is redeemed only by that activation. The activation renews
-  BEFORE applying (`handoffFreshness`, 1 h). It WAITS for a redemption in
-  flight and always re-reads the store afterwards. Whether the rotated pair
-  goes to the CLI is re-decided when the redemption completes.
-- **Newest login wins** (`ClaudeLoginLifetime.isNewer`). The dead-marker is
-  never newer than anything. A lapsed deadline loses to a live one. Otherwise
-  the later `expiresAt` wins, and a tie is not newer. `readSystemCredentials`
-  returns nil when the Keychain holds the CLI's dead-marker and never falls back
-  to the file. The re-sync and both adoptions replace only with a newer login.
-  `ProfileStore.saveProfiles` refuses an older Claude login over a newer one
-  unless the write is `explicitCLILoginWrite` (manual sync).
+- **The widget never redeems a login the CLI holds.** `ClaudeRefreshPolicy.decide`
+  runs at every redemption. It refuses in three cases:
+  - the CLI's store (either half) holds this refresh token, compared by
+    fingerprint in memory; an unreadable store counts as held;
+  - the pointer names the profile (`isExplicitClaudeOwner`);
+  - an activation is handing the login over (`beginHandoff` until the claim).
+
+  The CLI's own process may be redeeming the same token, and no lock of ours
+  sees it. So the CLI renews its own login and the widget adopts the rotated
+  pair; an owner whose CLI has not refreshed shows stale usage. The activation
+  renews BEFORE applying (`handoffFreshness`, 1 h), WAITS for a redemption in
+  flight, and always re-reads the store afterwards. A rotated pair reaches the
+  CLI only as a repair, when the CLI's store holds the very token just consumed.
+- **Newest login wins** (`ClaudeLoginLifetime.isNewer`):
+  - The dead-marker is never newer than anything.
+  - Two logins whose deadlines are more than 60 s apart: the later deadline
+    wins, because each `/login` gets a fixed deadline that refreshes never move.
+  - Within one login (or with a deadline missing), a lapsed deadline loses,
+    then the later `expiresAt` wins. A tie is not newer.
+
+  Where it applies:
+  - `readSystemCredentials` returns nil for the dead-marker and never falls
+    back to the file.
+  - The re-sync and both adoptions replace only with a newer login.
+  - `ProfileStore.saveProfiles` lets an ordinary save move a Claude login only
+    FORWARD. Older, tied or unknown copies keep the cached login. Deliberate
+    replacements pass `explicitCLILoginWrite`: a manual sync, a redemption's
+    own save, and `saveProfileCredentials(replacingCLILogin:)`.
 - **Deadline.** A login at or within 1 h of `refreshTokenExpiresAt` (ms or s) is
   not a switch target (`candidateHasHeadroom`), is not live to the preflight, and
   is refused by the activation gate as dead. Refreshes store
   `refresh_token_expires_in`.
-**Tests never reach a real credential store** (`RealCredentialStoreGuard`).
-Under XCTest the Claude Code CLI's store (the Keychain item,
-`.credentials.json` and the `~/.claude.json` account metadata) defaults to an
-in-memory stand-in, and so do `KeychainService`'s per-profile and legacy items.
-The token and identity endpoints refuse. Every real primitive refuses and is
-recorded, and `RealStoreTouchObserver` fails any test during which a refusal
-happens. There is no opt-in. A test supplies its own stand-ins through
+
+**Tests never reach a real credential store** (`RealCredentialStoreGuard`,
+Debug builds only; Release compiles the stand-in mode out).
+- **What is stood in.** Under XCTest the Claude Code CLI's store (the Keychain
+  item, `.credentials.json` and the `~/.claude.json` account metadata) defaults
+  to an in-memory stand-in, and so do `KeychainService`'s per-profile and legacy
+  items. The token and identity endpoints refuse, and so does the default path of
+  `readCLICachedUsage`.
+- **How a touch fails the test.** Every real primitive refuses and is recorded.
+  `RealStoreTouchObserver` is armed at bundle load by the test bundle's
+  NSPrincipalClass, and it fails any test during which a refusal happens.
+- **No opt-in.** A test supplies its own stand-ins through
 `ClaudeCodeSyncService.set…ForTesting`. The guard was added after a 2026-10-09
 suite run rewrote the live CLI login.
 

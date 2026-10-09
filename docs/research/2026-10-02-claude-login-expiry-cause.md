@@ -483,22 +483,31 @@ its in-flight requests.
 
 The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
 
-1. **No rotation after hand-off.** `ClaudeRefreshPolicy.decide` runs at the moment of every
-   Claude redemption. The login the CLI holds is redeemed only in its last two minutes, by
-   a caller that writes the result to the CLI in the same step. The same applies to a login
-   an activation is handing over (`beginHandoff` through the claim). The activation renews
-   before it applies, with the preflight's one-hour window. It waits for a redemption
-   already in flight instead of skipping it, and always re-reads the store afterwards.
-   Whether a rotated pair goes to the CLI is decided again when the redemption completes.
-   The preflight skips a login being handed over and re-checks ownership after its await.
+1. **The widget never redeems a login the CLI holds.** `ClaudeRefreshPolicy.decide` runs
+   at the moment of every Claude redemption. It refuses when:
+   - the CLI's store holds that refresh token, compared by fingerprint in memory;
+   - the pointer names the profile;
+   - an activation is handing the login over.
+
+   The CLI can be redeeming the same token in its own process, so the widget leaves the
+   CLI's login to the CLI and adopts its rotation. The activation renews before it
+   applies, with the preflight's one-hour window. It waits for a redemption already in
+   flight instead of skipping it, and always re-reads the store afterwards. A rotated pair
+   reaches the CLI only as a repair, when the CLI holds the very token just consumed. The
+   preflight skips a login being handed over and re-checks ownership after its await.
    Fixes 1 to 3 of section 6, B.
-2. **Newest login wins.** `ClaudeLoginLifetime.isNewer` compares two logins. The dead-marker
-   is never newer than anything. A login past its deadline loses to one that is not. After
-   that, the later access-token expiry wins, and a tie is not newer. The store read returns
-   nothing when the Keychain holds the dead-marker, and never falls back to the file. The
-   switch-away re-sync, the Keychain adoption and identity adoption replace a stored login
-   only with a newer one. The profile store refuses to save an older login over a newer one
-   unless the write is an explicit sync. Fixes 4 and 5 of section 6, B.
+2. **Newest login wins.** `ClaudeLoginLifetime.isNewer` compares two logins:
+   - The dead-marker is never newer than anything.
+   - Two different logins (deadlines more than 60 s apart): the later deadline wins.
+     Each `/login` gets a fixed deadline that refreshes never move (cause A above).
+   - Within one login: a lapsed deadline loses, then the later access-token expiry wins,
+     and a tie is not newer.
+
+   The store read returns nothing when the Keychain holds the dead-marker, and never
+   falls back to the file. The switch-away re-sync, the Keychain adoption and identity
+   adoption replace a stored login only with a newer one. An ordinary save to the
+   profile store only moves a login forward. Explicit replacements (a sync, a
+   redemption's own save) are the exception. Fixes 4 and 5 of section 6, B.
 3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at
    or within one hour of its deadline is not a switch target (`candidateHasHeadroom`, so
    the walk, the queue peek, the stale re-verify and the fleet tile). The preflight verdict
@@ -507,7 +516,8 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
    the CLI does. Fix 2 of section 6, A, and part of fix 3.
 
 Not done here: fix 6 of B (re-applying a newer stored login over the dead-marker before
-condemning), the days-ahead deadline notice (fix 1 of A), and the CLI refresh lock. The
+condemning) and the days-ahead deadline notice (fix 1 of A). The CLI refresh lock is no
+longer needed: the widget never redeems the CLI's login. The
 fleet detector's 120-second post-switch grace explains why both accounts were condemned
 only about 30 minutes after they died. With the rotation gone it no longer delays
 anything, and it is unchanged.
