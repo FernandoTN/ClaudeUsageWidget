@@ -546,7 +546,8 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
    Keychain item is confirmed absent. The switch-away re-sync, the Keychain adoption and
    identity adoption all decide by this rule and write by compare-and-swap.
 
-   Two review rounds and a review panel (#186) settled the rule as "v3":
+   Two review rounds and a review panel (#186) settled the rule as "v3"; a third round
+   cut its scope:
    - **Among logins of the same account proven live, the CLI's wins.** No recency
      ordering of any kind: a non-owner profile can hold an independent second chain of
      the CLI's account that the widget heals later, which would always look newest.
@@ -558,17 +559,28 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
    - Two states seen live that day explain why nothing weaker counts. After the `/login`,
      `~/.claude.json`'s `oauthAccount` still named the OLD account. And one profile
      carried account X's stamp while holding account Y's live login.
-   - Two facts are kept per credential, keyed by a one-way tag and never by profile:
-     the token endpoint refused its grant (dead), and the account a fresh read of its own
-     unexpired token reported (the account only, never liveness). The second lets an
-     idle owner's expired login be placed when the CLI renews it.
+   - Three facts are kept per credential, keyed by a one-way tag and never by profile:
+     the token endpoint refused its grant (dead); the account a fresh read of its own
+     unexpired token reported (the account only, never liveness), which lets an idle
+     owner's expired login be placed when the CLI renews it; and this app sent its
+     grant. The last one (round 3) exists because a redeemed predecessor's access token
+     can keep answering for a while, so a stale copy of it would pass its own read. It
+     is written to disk and confirmed BEFORE the grant goes out, so a crash or a lost
+     answer leaves the credential marked. A marked credential is never adopted, synced
+     or applied.
    - The file is read only when the Keychain item is confirmed absent. No incomplete
      login (missing an access token, refresh token or expiry) is ever adopted, synced
      or applied.
-   - A login the CLI holds that a switch would overwrite, and that no profile holds, is
-     parked in one slot and offered through explicit Sync; the switch proceeds. An ordinary save to the profile store never changes a stored login;
-   only explicit paths do (compare-and-swap, a sync or import, removal). Fixes 4 and 5 of
-   section 6, B.
+   - Identity reads are budgeted: one per credential per operation, none of the stored
+     side when the CLI's login cannot authorize anything, failures held for 10 minutes,
+     and a 429 honoured.
+   - **Accepted residual:** a switch still overwrites a live CLI login that no profile can
+     adopt, as before #186; the repair is `/login`. A parking slot for it was built and
+     removed in round 3 (eviction, unconfirmed writes, races and stale recovery targets);
+     its requirements are recorded in CLAUDE.md for a follow-up card.
+
+   An ordinary save to the profile store never changes a stored login; only explicit
+   paths do (compare-and-swap, a sync or import, removal). Fixes 4 and 5 of section 6, B.
 3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at
    or within one hour of its deadline is not a switch target (`candidateHasHeadroom`, so
    the walk, the queue peek, the stale re-verify and the fleet tile). The preflight verdict

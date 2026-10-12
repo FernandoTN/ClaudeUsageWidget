@@ -1660,10 +1660,13 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(storedLogin(account.id), imported, "the relaunch restores the login memory held")
     }
 
-    /// A login the owner adopts from the CLI is reserved under ITS fingerprint
-    /// before any decision about it: while another caller is redeeming that
-    /// token, the owner leaves it alone (defense in depth — the fail-closed
-    /// store check refuses it too).
+    /// While another caller is redeeming a token, the owner leaves it alone:
+    /// it is never redeemed twice (defense in depth — the fail-closed store
+    /// check refuses it too). Since #186 round 3 the owner does not even adopt
+    /// it: the redemption record marks the token PENDING before its grant is
+    /// sent, and a pending login is never adopted. (Under #185 the owner
+    /// adopted it and reserved its fingerprint; the reservation still guards
+    /// any login an adoption does take.)
     func testAnAdoptedLoginIsReservedBeforeAnyDecision() async {
         let newer = login("owner", generation: 2, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
         let owner = profile("owner", login: login("owner", generation: 1, expiresIn: -5 * 60, deadlineIn: 20 * 86_400))
@@ -1687,8 +1690,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
             for: alias.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
         )
 
-        XCTAssertEqual(ownerResult, true, "the owner adopted the CLI's newer login …")
-        XCTAssertEqual(endpoint.redeemed, ["owner-refresh-2"], "… and never redeemed the token reserved elsewhere")
+        XCTAssertEqual(ownerResult, false, "a login whose grant is in flight is marked pending: never adopted …")
+        XCTAssertEqual(endpoint.redeemed, ["owner-refresh-2"], "… and never redeemed twice")
     }
 
     // MARK: - Final round
@@ -2361,6 +2364,51 @@ final class ClaudeLoginRotationTests: XCTestCase {
         await runSweepAdoption()
         XCTAssertEqual(reads.freshTotal, 1, "no read goes out while the endpoint asked to wait")
         XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1")
+    }
+
+    /// Once the hold has passed, the reads resume and a live login is adopted:
+    /// what was held was a failure, never a verdict for good.
+    func testHeldReadsAndDecisionsResumeOnceTheHoldHasPassed() async throws {
+        var throttled = true
+        let reads = countingIdentityEndpoint { token, _ in
+            throttled && token == "account-access-2" ? .throttled(retryAfter: 600) : nil
+        }
+        let owner = seedOwner("account", holding: login("account", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400))
+        cliStore.set(keychain: login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400), file: nil)
+        try await adopt(.keychainAdoption, into: owner.id)
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1")
+
+        throttled = false
+        sync.expireIdentityBudgetForTesting()
+        try await adopt(.keychainAdoption, into: owner.id)
+
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-2", "decided afresh, and adopted")
+        XCTAssertEqual(reads.freshCount("account-access-2"), 2)
+    }
+
+    /// What a grant that brought back no successor did to its credential.
+    func testWhatAGrantWithoutASuccessorDidToItsCredential() {
+        typealias Outcome = ClaudeRefreshPolicy.GrantOutcome
+        let cases: [(Error, Outcome, String)] = [
+            (ClaudeCodeError.tokenRefreshFailed(status: 400), .refused, "invalid_grant"),
+            (ClaudeCodeError.tokenRefreshFailed(status: 401), .refused, "401"),
+            (ClaudeCodeError.tokenRefreshFailed(status: 403), .refused, "403"),
+            (ClaudeCodeError.tokenRefreshFailed(status: 429), .notProcessed, "rate limited, not processed"),
+            (ClaudeCodeError.tokenRefreshFailed(status: 503), .ambiguous, "a 5xx may have consumed it"),
+            (ClaudeCodeError.tokenRefreshFailed(status: 200), .ambiguous, "a 200 without a readable successor"),
+            (ClaudeCodeError.tokenRefreshFailed(status: -1), .ambiguous, "no HTTP response"),
+            (ClaudeCodeError.invalidJSON, .ambiguous, "could be after the answer"),
+            (URLError(.cannotConnectToHost), .notProcessed, "never connected"),
+            (URLError(.notConnectedToInternet), .notProcessed, "offline"),
+            (URLError(.dnsLookupFailed), .notProcessed, "no name"),
+            (URLError(.secureConnectionFailed), .notProcessed, "TLS failed before the body"),
+            (URLError(.timedOut), .ambiguous, "the request may have arrived"),
+            (URLError(.networkConnectionLost), .ambiguous, "dropped mid-request"),
+            (URLError(.cancelled), .ambiguous, "cancelled mid-request"),
+        ]
+        for (error, expected, why) in cases {
+            XCTAssertEqual(ClaudeRefreshPolicy.grantOutcome(of: error), expected, why)
+        }
     }
 }
 

@@ -108,14 +108,17 @@ enum ClaudeLoginLifetime {
 
     /// What one login's OWN access token proves (#186 v3). Evidence comes only
     /// from that token, through a FRESH identity read that bypasses the
-    /// identity cache, plus two store-owned facts about the exact credential
-    /// (`ProfileStore`): the token endpoint refused its grant, and the account
-    /// a fresh read reported while it was live.
+    /// identity cache, plus three store-owned facts about the exact credential
+    /// (`ProfileStore`): the token endpoint refused its grant, this app sent
+    /// its grant (the redemption record), and the account a fresh read
+    /// reported while it was live.
     enum LoginEvidence: Equatable {
         /// A fresh read answered 2xx: live, and this account.
         case live(account: String)
-        /// The token endpoint refused its refresh grant, or its own UNEXPIRED
-        /// access token was refused (401/403): dead. `account` is the
+        /// The token endpoint refused its refresh grant, this app sent its
+        /// grant (pending or consumed: the predecessor's access token can keep
+        /// answering for a while, so its read proves nothing), or its own
+        /// UNEXPIRED access token was refused (401/403): dead. `account` is the
         /// credential's recorded account, when one was recorded.
         case dead(account: String?)
         /// Nothing proves it live or dead: its access token has expired (which
@@ -134,18 +137,20 @@ enum ClaudeLoginLifetime {
     /// The evidence one read produced. `identifiedAccount` is the account a
     /// fresh 2xx reported and `rejectedStatus` the status that refused it (both
     /// nil when no read was made, which is always so for an expired token).
-    /// A refused grant overrides any "alive" answer but never the account fact
-    /// (`recordedAccount`); the account record never establishes liveness.
+    /// A refused or redeemed grant overrides any "alive" answer but never the
+    /// account fact (`recordedAccount`); the account record never establishes
+    /// liveness.
     nonisolated static func evidence(
         identifiedAccount: String?,
         rejectedStatus: Int?,
         accessExpiry: Date?,
         grantRefused: Bool,
+        grantRedeemed: Bool = false,
         recordedAccount: String?,
         now: Date
     ) -> LoginEvidence {
         let known = recordedAccount ?? identifiedAccount
-        if grantRefused { return .dead(account: known) }
+        if grantRefused || grantRedeemed { return .dead(account: known) }
         let unexpired = accessExpiry.map { $0 > now } ?? false
         if unexpired, let identifiedAccount { return .live(account: identifiedAccount) }
         if unexpired, let status = rejectedStatus, status == 401 || status == 403 { return .dead(account: recordedAccount) }
@@ -295,4 +300,44 @@ enum ClaudeRefreshPolicy {
         if handoffInFlight, case .maintenance = role { return .refuseHandedOff }
         return .redeem
     }
+
+    /// What a refresh grant that brought back no successor did to its
+    /// credential, for the redemption record
+    /// (`ProfileStore.markClaudeRedemptionPending`, written before the send).
+    enum GrantOutcome: Equatable {
+        /// The token endpoint refused the grant (400/401/403). The refusal is
+        /// recorded; the pending mark stays (the credential is dead either way).
+        case refused
+        /// The grant certainly never left this Mac, or the endpoint answered
+        /// without processing it (429): the credential is untouched, and its
+        /// pending mark is taken back.
+        case notProcessed
+        /// Anything else — a timeout, a dropped connection, a 5xx, an answer
+        /// that could not be read: it may have been consumed, so the pending
+        /// mark stays.
+        case ambiguous
+    }
+
+    static func grantOutcome(of error: Error) -> GrantOutcome {
+        if case ClaudeCodeError.tokenRefreshFailed(let status) = error {
+            switch status {
+            case 400, 401, 403: return .refused
+            case 429: return .notProcessed
+            default: return .ambiguous
+            }
+        }
+        if let transport = error as? URLError, notSentCodes.contains(transport.code) { return .notProcessed }
+        return .ambiguous
+    }
+
+    /// Transport failures that happen before a request's body leaves this Mac:
+    /// no connection, no name, no connection to the host, a TLS handshake
+    /// that failed, a request that could not be built.
+    nonisolated private static let notSentCodes: Set<URLError.Code> = [
+        .notConnectedToInternet, .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost,
+        .internationalRoamingOff, .dataNotAllowed, .callIsActive, .secureConnectionFailed,
+        .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+        .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired,
+        .appTransportSecurityRequiresSecureConnection, .badURL, .unsupportedURL,
+    ]
 }

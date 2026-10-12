@@ -106,10 +106,10 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
   logins and silent token refreshes ONLY to the `Claude Code-credentials` Keychain item,
   never to `.credentials.json` — and this app rewrites that file on every profile switch,
   so reading the file first re-ingests the app's own stale write (this was the bug behind
-  "Resync never updates the token" and the forced CLI re-login on every switch). When both
-  sources hold valid JSON, the Keychain wins unless its login has lapsed and the file's
-  deadline is present and still ahead (`chooseSystemLogin`; see "The login the CLI holds
-  wins" and "Only the CLI's own login is adopted"). The read shells out to
+  "Resync never updates the token" and the forced CLI re-login on every switch). The
+  file is read ONLY when the Keychain item is confirmed absent; whenever the item exists
+  it is the answer, whatever either deadline says (`chooseSystemLogin`; see "Only the
+  CLI's own, complete login is taken"). The read shells out to
   `security`, so keep it off the main thread (`readSystemCredentialsOffMain()` exists for
   main-actor callers).
 - `ClaudeCodeSyncService.ensureFreshCredentials` **self-heals stale CLI OAuth tokens**:
@@ -528,7 +528,8 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
   `.handoffDeferred`: nothing claimed, the walk retries, and the queue is not
   consumed.
 - **The login the CLI holds wins** (`ClaudeLoginLifetime.cliLoginReplaces`,
-  owner's decision 2026-10-12; #186 v3 after two review rounds and a panel).
+  owner's decision 2026-10-12; #186 v3 after two review rounds and a panel,
+  scope cut after the third).
   Among logins of the SAME account that are proven live, the CLI's wins.
   Recency never decides: no access-expiry or deadline ordering. A non-owner
   profile can hold an independent second chain of the CLI's account that the
@@ -546,17 +547,36 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
       outlives a revoked token) answering 2xx means live, and that account;
     - 401/403 on an access token not yet expired by its own `expiresAt` means
       dead;
-    - an expired token proves nothing either way, nor does a transport error or
-      5xx: unknown.
-  - **Two store-owned facts per credential**, keyed by `ClaudeLoginLifetime.loginTag`
+    - an expired token proves nothing either way, nor does a transport error,
+      a 5xx or a 429: unknown.
+  - **Three store-owned facts per credential**, keyed by `ClaudeLoginLifetime.loginTag`
     (a domain-separated one-way hash of the refresh token, 32 hex digits) and
-    never by profile id. They live in their own journaled keys, so ordinary
-    roster saves never touch them, and are pruned only once the credential's
-    deadline has passed. There is no count eviction.
-    - `claudeRefusedLogins_v1`: the token endpoint ITSELF refused this
-      credential's grant. Dead, whatever its access token says.
-    - `claudeLoginAccounts_v1`: the account a fresh 2xx on this credential's own
-      unexpired token reported. An ACCOUNT fact, never liveness, and nothing
+    never by profile id. Ordinary roster saves never touch them, and an entry
+    is pruned only once its credential's deadline has passed. There is no
+    count eviction.
+    - `claudeRefusedLogins_v1` (a journaled key): the token endpoint ITSELF
+      refused this credential's grant. Dead, whatever its access token says.
+    - **The redemption record** (Codex round 3, major 1): this app SENT the
+      credential's grant. A predecessor's access token can keep answering 2xx
+      for a while after a redemption, so nothing about the token proves it
+      spent, and a stale writer that puts it back in the CLI's store would
+      otherwise win. `ensureFreshCredentials` writes a PENDING mark, confirmed,
+      BEFORE the grant goes out, and sends nothing when it cannot. A successor
+      promotes it to CONSUMED. A 429, or a transport failure before the request
+      left the Mac, takes it back (`ClaudeRefreshPolicy.grantOutcome`). A
+      refusal, a timeout, a dropped connection, a 5xx or a crash leaves it
+      pending. Either mark makes the credential dead evidence: never adopted,
+      never synced (`syncToProfile` throws `.redeemedLogin`) and never applied
+      (`applyProfileCredentials` throws, and the activation gate refuses it). A
+      consumed one is never sent again; a pending one is, by its own profile
+      only, because no live successor exists anywhere (the profile would hold
+      it), and a hand-off renews a pending one whatever its expiry. It is NOT a
+      preferences key: cfprefsd has no oracle at write time. It is
+      `~/Library/Application Support/Claude Usage/claude-redeemed-logins.json`,
+      written atomically, flushed with `F_FULLFSYNC` and read back
+      (`FileClaudeRedemptionRecord`); XCTest uses an in-memory record.
+    - `claudeLoginAccounts_v1` (a journaled key): the account a fresh 2xx on this
+      credential's own unexpired token reported. An ACCOUNT fact, never liveness, and nothing
       carries it to a successor. It is how the idle owner works: its token
       expires overnight, the CLI renews, and the expired credential's recorded
       account places it. The sweep records each credential the CLI holds once,
@@ -578,15 +598,36 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
     credential changes: `.notOwner` when its own login is another account's
     (stamp corrected), `.unverifiedOwner` when nothing places it.
     `waitForIdentityAdoption` is the tests' completion barrier.
-  - **Nothing a switch overwrites is lost.** Before an activation writes the
-    CLI's store, `parkCLILoginBeforeApplying` parks a complete CLI login that
-    no profile holds and that is not proven dead. It goes to ONE store-owned,
-    CAS-written Keychain slot (`ProfileStore.parkedCLILogin`), with a
-    notification. This covers the outgoing re-sync that could not adopt it for
-    any reason, and a same-owner re-apply. The switch proceeds; nothing adopts
-    the parked login automatically. Settings › Accounts › Login offers it on the
-    profile it came from (`syncParkedLogin`, an explicit Sync with the
-    duplicate guard) or discards it.
+  - **The identity-read budget** (Codex round 3, minor 7). One operation (a
+    sweep's adoption pass, one switch) reads each credential once
+    (`ClaudeCodeSyncService.EvidenceScope`). The CLI's side is read first, and
+    a CLI login not proven live authorizes nothing, so the stored side is not
+    read (its records still count). A read with no usable answer, and a
+    decision that refused, are held for 10 min (`failedReadHold`) per
+    credential, or per profile, credential pair and stamp. A changed credential
+    on either side is decided at once. A success and an adopting decision are
+    never held, so nothing held is ever taken for liveness. An identity 429
+    stops every identity read for its Retry-After (1 min to 1 h; without one,
+    1 min doubling to 30 min); any 2xx ends it.
+  - **ACCEPTED RESIDUAL: a switch can overwrite a live CLI login no profile can
+    adopt.** When the outgoing re-sync cannot prove the CLI's login into the
+    owner (unknown identity, another account, a lost CAS) or a switch
+    re-applies the owner over the CLI's own renewal, the apply overwrites it.
+    #185 and earlier behaved the same, and the repair is `/login`. A parking
+    slot was built and removed (#186, Codex round 3). Requirements for the
+    follow-up card "Preserve an unadoptable live CLI login across a switch":
+    - never evict an unresolved login automatically: with one slot, an
+      occupied slot defers the next destructive switch, or several are kept;
+    - preserved means a confirmed Keychain write, never a queued one, before
+      the shared login is overwritten or a preserved copy is deleted;
+    - the preservation outcome tells safe-to-overwrite from unreadable,
+      failed and changed; the exact shared snapshot is re-validated right
+      before the replacement (restart when it changed), the app's check and
+      write are serialized, and the external CLI's remaining race is named;
+    - Save and Discard carry the tag of the login the user was shown and
+      reject a changed slot;
+    - the recovery destination is selectable (or follows the login's own
+      identified account); the owner at the time is metadata only.
 - **Only the CLI's own, complete login is taken** (`ClaudeCodeSyncService.SystemLogin`,
   `readSystemLogin`).
   - The file is read ONLY when the Keychain item is confirmed absent (the
@@ -595,7 +636,7 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
   - A truncated item yields a PARTIAL login (an access token rebuilt by
     pattern), for reads only: `isAdoptable` is false.
   - COMPLETENESS (`ClaudeLoginLifetime.isComplete`, structural: an access
-    token, a refresh token and an expiry) gates every adoption, park, explicit
+    token, a refresh token and an expiry) gates every adoption, explicit
     Sync (`syncToProfile` throws `.incompleteLogin` from any source) and apply
     (`applyProfileCredentials` throws). Reads for a usage fetch still get the
     access token.

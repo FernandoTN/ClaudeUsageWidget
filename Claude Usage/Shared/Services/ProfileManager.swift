@@ -641,6 +641,8 @@ class ProfileManager: ObservableObject {
         let handsOffClaudeLogin = target?.cliCredentialsJSON != nil && applyScope.contains(.claude)
         if handsOffClaudeLogin { cliSyncService.beginHandoff(id) }
         defer { if handsOffClaudeLogin { cliSyncService.endHandoff(id) } }
+        // One switch reads each login's identity at most once.
+        let evidenceScope = ClaudeCodeSyncService.EvidenceScope()
 
         // 1. Claude side: the CLI Keychain login is about to be replaced — re-adopt
         //    it (incl. any silent token refresh) into the profile that owns it.
@@ -657,7 +659,7 @@ class ProfileManager: ObservableObject {
                 // Async + account-matched: the `security` read stays off-main inside,
                 // and the outgoing profile refuses a login known to be another
                 // account's (see adoptionDecision).
-                try await ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: outgoingId)
+                try await ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: outgoingId, scope: evidenceScope)
                 LoggingService.shared.log("✓ Re-synced outgoing Claude account before switching")
             } catch {
                 LoggingService.shared.logError("Failed to re-sync outgoing Claude account (non-fatal)", error: error)
@@ -748,7 +750,8 @@ class ProfileManager: ObservableObject {
                 for: id,
                 adoptSystemKeychain: ownsCLILoginAlready,
                 freshFor: ClaudeRefreshPolicy.handoffFreshness,
-                role: .handoff
+                role: .handoff,
+                scope: evidenceScope
             )
             // Re-read unconditionally: after waiting on another caller's
             // redemption, `renewed` is false while the store holds the rotated
@@ -794,7 +797,17 @@ class ProfileManager: ObservableObject {
             let renewal = cliSyncService.cliRenewalState(id)
             let pendingRenewal = renewal != nil && cliSyncService.isTokenExpired(cliJSON)
                 && !cliSyncService.isLoginMarkedDead(id) && !pastDeadline
-            if pendingRenewal, renewal == .renewable, isExplicitClaudeOwner(id) {
+            // A login whose grant this app already sent may be spent, whatever
+            // its access token says (#186, Codex round 3): never applied. A
+            // pending one was renewed above if it could be; still pending, it
+            // is refused without a /login notice (a later renewal may resolve
+            // it). A consumed one lost its successor: only /login renews it.
+            let redemptionMark = profileStore.claudeRedemptionMark(ofClaudeLogin: cliJSON)
+            if let redemptionMark {
+                refusedProviders.append(.claude)
+                if redemptionMark == .consumed { cliSyncService.notifyReloginNeeded(for: id, force: false) }
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' holds a login this app already sent to the token endpoint (\(redemptionMark.rawValue)) — NOT applied, outgoing login kept")
+            } else if pendingRenewal, renewal == .renewable, isExplicitClaudeOwner(id) {
                 LoggingService.shared.log("'\(updatedProfile.name)' is the CLI's own login, awaiting the CLI's renewal — nothing to apply")
             } else if pendingRenewal {
                 deferredProviders.append(.claude)
@@ -2321,6 +2334,8 @@ class ProfileManager: ObservableObject {
         }
 
         let sync = ClaudeCodeSyncService.shared
+        // One pass reads each login's identity at most once.
+        let evidenceScope = ClaudeCodeSyncService.EvidenceScope()
         // Only the CLI's own login: the file only when the Keychain item is
         // confirmed absent, never a partial login out of a truncated one.
         guard let system = try? await sync.readSystemLoginOffMain(), system.isAdoptable,
@@ -2331,11 +2346,12 @@ class ProfileManager: ObservableObject {
         // (`ProfileStore.recordedAccount`): the idle owner whose token later
         // expires is placed by it when the CLI renews. Later sweeps route on
         // the cached identity (the fresh read filled the cache).
-        // Without a live answer there is nothing to route this sweep (one read
-        // per sweep while the endpoint is out, as before).
+        // Without a live answer there is nothing to route this sweep. A read
+        // that got no usable answer is not repeated for `failedReadHold`, and
+        // a login this app redeemed is not read at all (it is never adopted).
         if ClaudeLoginLifetime.loginTag(systemJSON) != nil,
            profileStore.recordedAccount(ofClaudeLogin: systemJSON) == nil {
-            guard case .live = await sync.loginEvidence(systemJSON) else { return .noSharedLogin }
+            guard case .live = await sync.loginEvidence(systemJSON, scope: evidenceScope) else { return .noSharedLogin }
         }
         guard let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return .noSharedLogin }
 
@@ -2383,7 +2399,8 @@ class ProfileManager: ObservableObject {
         let ownerJSON = reloaded[index].cliCredentialsJSON
         var adopt = false
         if !holdsSharedLogin(owner) {
-            let verdict = await sync.adoptionVerdict(profileId: owner.id, stored: ownerJSON, cliLogin: systemJSON)
+            let verdict = await sync.adoptionVerdict(profileId: owner.id, stored: ownerJSON, cliLogin: systemJSON,
+                                                     scope: evidenceScope)
             guard !isSwitchingProfile, await sharedLoginIsStill(systemToken), !isSwitchingProfile else { return .skipped }
             // The reads were awaits: act on the roster as it is now, and only
             // while the owner still holds the login the decision was about.

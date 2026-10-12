@@ -80,12 +80,16 @@ class ClaudeCodeSyncService {
         tokenEndpointForTesting = endpoint
     }
 
+    /// Installing either identity stand-in starts a fresh identity-read
+    /// budget: what was held came from the previous stand-in.
     func setIdentityFetcherForTesting(_ fetcher: ((String) async -> AccountIdentity?)?) {
         identityFetcherForTesting = fetcher
+        expireIdentityBudgetForTesting()
     }
 
     func setIdentityProbeForTesting(_ probe: ((_ accessToken: String, _ fresh: Bool) async -> IdentityProbe)?) {
         identityProbeForTesting = probe
+        expireIdentityBudgetForTesting()
     }
     #else
     private static let cliStoreSeams: CLIStoreSeams? = nil
@@ -677,6 +681,13 @@ class ClaudeCodeSyncService {
             LoggingService.shared.log("⛔️ Claude sync refused: the CLI's login is incomplete (\(system.source == .partialKeychain ? "a truncated Keychain payload" : "missing a refresh token or expiry"))")
             throw ClaudeCodeError.incompleteLogin
         }
+        // A credential whose grant this app sent (the redemption record) may
+        // be spent whatever its access token answers: storing it would only
+        // keep a login that is never applied, and its successor may live on.
+        if let mark = ProfileStore.shared.claudeRedemptionMark(ofClaudeLogin: system.json) {
+            LoggingService.shared.log("⛔️ Claude sync refused: the CLI holds a login this app already redeemed (\(mark.rawValue))")
+            throw ClaudeCodeError.redeemedLogin
+        }
         let jsonData = system.json
 
         // Validate JSON format
@@ -752,6 +763,11 @@ class ClaudeCodeSyncService {
         guard ClaudeLoginLifetime.isComplete(jsonData) else {
             LoggingService.shared.log("⛔️ Not applying '\(profile.name)': its stored login is incomplete (no refresh token or no expiry)")
             throw ClaudeCodeError.incompleteLogin
+        }
+        // Nor one whose grant this app already sent: it may be spent.
+        if let mark = ProfileStore.shared.claudeRedemptionMark(ofClaudeLogin: jsonData) {
+            LoggingService.shared.log("⛔️ Not applying '\(profile.name)': this app already redeemed its login (\(mark.rawValue))")
+            throw ClaudeCodeError.redeemedLogin
         }
 
         LoggingService.shared.log("📦 Found CLI credentials, syncing to ~/.claude/.credentials.json...")
@@ -995,7 +1011,8 @@ class ClaudeCodeSyncService {
         for profileId: UUID,
         adoptSystemKeychain: Bool,
         freshFor: TimeInterval = ClaudeRefreshPolicy.healWindow,
-        role: ClaudeRefreshPolicy.Role = .maintenance
+        role: ClaudeRefreshPolicy.Role = .maintenance,
+        scope: EvidenceScope? = nil
     ) async -> Bool {
         // Per-profile and per-token mutex: the sweep, the milestone preflight
         // and a profile activation can all try to heal the same login
@@ -1035,7 +1052,7 @@ class ClaudeCodeSyncService {
         // CAS on the stored snapshot the decision was made for.
         if adoptSystemKeychain,
            let system = try? await readSystemLoginOffMain(), system.isAdoptable,
-           await adoptionDecision(profileId: profileId, stored: storedJSON, cliLogin: system.json) {
+           await adoptionDecision(profileId: profileId, stored: storedJSON, cliLogin: system.json, scope: scope) {
             let systemJSON = system.json
             if ProfileStore.shared.replaceCLILogin(profileId, expected: storedJSON, with: systemJSON) {
                 storedJSON = systemJSON
@@ -1061,27 +1078,43 @@ class ClaudeCodeSyncService {
 
         let expiry = extractTokenExpiry(from: storedJSON) ?? .distantPast
         let refreshToken = ClaudeLoginLifetime.refreshToken(storedJSON) ?? ""
+        // This app's own record of the credential's grant. A CONSUMED one is
+        // never sent again: its successor was issued (and lost, since the
+        // profile still holds the predecessor), and only /login renews the
+        // account. A PENDING one may be sent again — no live successor exists
+        // anywhere, or the profile would hold it — and a hand-off renews it
+        // whatever its expiry, because a pending login is never applied.
+        let redemptionMark = ProfileStore.shared.claudeRedemptionMark(ofClaudeLogin: storedJSON)
+        if redemptionMark == .consumed, expiry.timeIntervalSinceNow < freshFor, !reloginNotifiedProfiles.contains(profileId) {
+            LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' holds a login this app already redeemed, whose successor was lost — only /login renews it")
+            notifyReloginNeeded(for: profileId)
+        }
+        let dueWithin = redemptionMark == .pending && role == .handoff ? TimeInterval.greatestFiniteMagnitude : freshFor
         // Back off dead logins: a revoked refresh token cannot heal itself, so
         // don't redeem it again on every sweep (that was 120 failed calls/hour).
         // The flag re-arms when fresh credentials arrive via re-sync/adoption.
-        let canRedeem = !refreshToken.isEmpty && !reloginNotifiedProfiles.contains(profileId)
+        let canRedeem = !refreshToken.isEmpty && !reloginNotifiedProfiles.contains(profileId) && redemptionMark != .consumed
         let consumed = refreshToken.isEmpty ? nil : ClaudeLoginLifetime.fingerprint(refreshToken)
         var decision = ClaudeRefreshPolicy.Decision.notNeeded
         var inspection = CLIStoreInspection(holds: nil, holdsDeadMarker: false)
-        if canRedeem, let consumed, expiry.timeIntervalSinceNow < freshFor {
-            // Read the CLI's store only when a redemption is otherwise due. The
-            // decision follows with no await in between, so the ownership and
-            // hand-off state it reads is the state the request is sent under.
-            inspection = await inspectCLIStoreOffMain(for: consumed)
-            decision = ClaudeRefreshPolicy.decide(
+        let currentDecision = { [self] (consumed: String) in
+            ClaudeRefreshPolicy.decide(
                 timeLeft: expiry.timeIntervalSinceNow,
-                freshFor: freshFor,
+                freshFor: dueWithin,
                 canRedeem: canRedeem,
                 cliHoldsThisLogin: inspection.holds,
                 ownsCLILogin: ProfileManager.shared.isExplicitClaudeOwner(profileId),
                 handoffInFlight: handoffsInFlight.contains(profileId) || handoffHolds(consumed, other: profileId),
                 role: role
             )
+        }
+        if canRedeem, let consumed, expiry.timeIntervalSinceNow < dueWithin {
+            // Read the CLI's store only when a redemption is otherwise due. The
+            // decision follows with no await in between, so the ownership and
+            // hand-off state it reads is the state the request is sent under
+            // (and it is re-checked after the record's write, below).
+            inspection = await inspectCLIStoreOffMain(for: consumed)
+            decision = currentDecision(consumed)
             if decision == .refuseHandedOff {
                 let reason = inspection.holds == nil
                     ? "the CLI's store could not be conclusively read"
@@ -1097,21 +1130,47 @@ class ClaudeCodeSyncService {
         }
 
         if decision == .redeem, let consumed {
+            // RECORD BEFORE SENDING (#186, Codex round 3). The grant consumes
+            // this refresh token, and the predecessor's access token can keep
+            // answering for a while, so nothing about the token itself proves
+            // it spent. The pending mark is written, flushed and read back
+            // BEFORE the grant goes out; it is promoted on success and stays on
+            // a crash or an ambiguous answer. A marked credential is never
+            // adopted, synced or applied. No confirmed record: no grant.
+            var sendable = await ProfileStore.shared.markClaudeRedemptionPending(storedJSON)
+            if !sendable {
+                LoggingService.shared.logError("ensureFreshCredentials: NOT redeeming '\(profile.name)' — its redemption could not be recorded on disk first")
+            } else if currentDecision(consumed) != .redeem {
+                // The write was an await: ownership or a hand-off may have
+                // moved. The CLI's store cannot have taken this token
+                // meanwhile: only an activation's apply writes it, and a
+                // hand-off of this profile or token waits for this call.
+                sendable = false
+                await ProfileStore.shared.clearClaudeRedemptionPending(storedJSON)
+                LoggingService.shared.log("ensureFreshCredentials: NOT redeeming '\(profile.name)' — the CLI's ownership or a hand-off moved while the redemption was recorded")
+            }
             var successor: String?
-            do {
-                successor = try await refreshOAuthToken(credentialsJSON: storedJSON)
-            } catch {
-                LoggingService.shared.logError("ensureFreshCredentials: OAuth token refresh failed (non-fatal)", error: error)
-                if case ClaudeCodeError.tokenRefreshFailed(let status) = error,
-                   status == 400 || status == 401 || status == 403 {
-                    // The stored refresh token is revoked — unrecoverable app-side.
-                    // The token endpoint's own verdict, bound to this exact
-                    // credential: death evidence for every adoption decision.
-                    ProfileStore.shared.recordRefusedClaudeLogin(storedJSON)
-                    notifyReloginNeeded(for: profileId)
+            if sendable {
+                do {
+                    successor = try await refreshOAuthToken(credentialsJSON: storedJSON)
+                } catch {
+                    LoggingService.shared.logError("ensureFreshCredentials: OAuth token refresh failed (non-fatal)", error: error)
+                    switch ClaudeRefreshPolicy.grantOutcome(of: error) {
+                    case .refused:
+                        // The stored refresh token is revoked — unrecoverable app-side.
+                        // The token endpoint's own verdict, bound to this exact
+                        // credential: death evidence for every adoption decision.
+                        ProfileStore.shared.recordRefusedClaudeLogin(storedJSON)
+                        notifyReloginNeeded(for: profileId)
+                    case .notProcessed:
+                        await ProfileStore.shared.clearClaudeRedemptionPending(storedJSON)
+                    case .ambiguous:
+                        LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)''s redemption got no readable answer — its login stays marked pending (never adopted, synced or applied) until a redemption resolves it")
+                    }
                 }
             }
             if let successor {
+                await ProfileStore.shared.markClaudeRedemptionConsumed(storedJSON)
                 // Compare-and-swap: store the successor only over the pair that
                 // was redeemed. A login synced in while the request was in
                 // flight wins, and the successor is discarded.
@@ -1169,33 +1228,119 @@ class ClaudeCodeSyncService {
 
     // MARK: - Login Evidence (#186 v3)
 
+    /// The evidence one operation — a sweep's identity adoption pass, or one
+    /// switch — has already read, per credential. A credential is read at
+    /// most once per operation; the scope dies with it, so nothing it holds
+    /// is ever taken for liveness later.
+    final class EvidenceScope {
+        fileprivate var read: [String: ClaudeLoginLifetime.LoginEvidence] = [:]
+    }
+
+    /// An in-memory key for one credential: a fingerprint of its access and
+    /// refresh tokens together. Never persisted, never logged.
+    nonisolated static func credentialKey(_ login: String?) -> String {
+        guard let login else { return "-" }
+        let oauth = ClaudeLoginLifetime.oauth(login)
+        let access = oauth?["accessToken"] as? String ?? ""
+        let refresh = ClaudeLoginLifetime.refreshToken(login) ?? ""
+        return ClaudeLoginLifetime.fingerprint(access + "|" + refresh)
+    }
+
+    /// How long an identity read that got no usable answer for a credential,
+    /// and an adoption decision that refused a pair of credentials, are not
+    /// repeated (Codex round 3, minor 7: an unresolved pair drew two reads
+    /// every sweep). Only failures are held: a read that answered 2xx and a
+    /// decision that adopts are never reused, so nothing held here is ever
+    /// taken for liveness.
+    nonisolated static let failedReadHold: TimeInterval = 600
+
+    /// Identity reads with no usable answer (a 401/403, a 5xx, no answer, a
+    /// 429), per `credentialKey`, with the answer and when it may be asked again.
+    private var unansweredReads: [String: (probe: IdentityProbe, until: Date)] = [:]
+    /// Adoption decisions that refused, per profile, pair of credentials and
+    /// stamp, with when they may be made again.
+    private var refusedDecisions: [String: (verdict: AdoptionVerdict, until: Date)] = [:]
+    /// While set and in the future, no identity read is sent at all: the
+    /// endpoint answered 429.
+    private var identityBackoffUntil: Date?
+    /// The last hold applied without a Retry-After, doubled on each further 429.
+    private var identityBackoffStep: TimeInterval = 0
+
     /// A FRESH identity read of one access token. The identity cache is
     /// bypassed, because a cached identity outlives a revoked token (a pair
-    /// this app or the CLI redeemed); a 2xx refills it.
+    /// this app or the CLI redeemed); a 2xx refills it. Nothing is sent while
+    /// a 429's hold lasts.
     func probeAccountIdentity(accessToken: String) async -> IdentityProbe {
-        if let probe = identityProbeForTesting { return await probe(accessToken, true) }
-        if let fetch = identityFetcherForTesting {
-            return await fetch(accessToken).map { .identified($0) } ?? .unavailable
+        if let until = identityBackoffUntil, until > Date() {
+            return .throttled(retryAfter: until.timeIntervalSinceNow)
         }
-        // No test sends a token to the identity endpoint.
-        if RealCredentialStoreGuard.refuse("identity endpoint") { return .unavailable }
-        let probe = await requestIdentity(accessToken: accessToken)
-        if case .identified(let identity) = probe { cacheIdentity(identity, for: accessToken) }
+        let probe: IdentityProbe
+        if let seam = identityProbeForTesting {
+            probe = await seam(accessToken, true)
+        } else if let fetch = identityFetcherForTesting {
+            probe = await fetch(accessToken).map { .identified($0) } ?? .unavailable
+        } else {
+            // No test sends a token to the identity endpoint.
+            if RealCredentialStoreGuard.refuse("identity endpoint") { return .unavailable }
+            probe = await requestIdentity(accessToken: accessToken)
+            if case .identified(let identity) = probe { cacheIdentity(identity, for: accessToken) }
+        }
+        noteIdentityAnswer(probe)
+        return probe
+    }
+
+    /// A 429 holds every identity read back: for its Retry-After when it gave
+    /// one (at least a minute, at most an hour), otherwise for a minute,
+    /// doubling to half an hour on each further 429. Any 2xx ends the hold.
+    private func noteIdentityAnswer(_ probe: IdentityProbe) {
+        switch probe {
+        case .throttled(let retryAfter):
+            identityBackoffStep = identityBackoffStep == 0 ? 60 : min(identityBackoffStep * 2, 1800)
+            let hold = retryAfter.map { min(max($0, 60), 3600) } ?? identityBackoffStep
+            identityBackoffUntil = Date().addingTimeInterval(hold)
+            LoggingService.shared.log("Claude: the identity endpoint answered 429 — no identity read for \(Int(hold)) s; logins read meanwhile are unknown")
+        case .identified:
+            identityBackoffUntil = nil
+            identityBackoffStep = 0
+        case .rejected, .unavailable:
+            break
+        }
+    }
+
+    /// One fresh read of `login`'s own access token, unless the last one for
+    /// this exact credential got no usable answer within `failedReadHold`:
+    /// then that answer stands. A 2xx is never held.
+    private func freshIdentityRead(of login: String, token: String) async -> IdentityProbe {
+        let key = Self.credentialKey(login)
+        if let held = unansweredReads[key], held.until > Date() { return held.probe }
+        let probe = await probeAccountIdentity(accessToken: token)
+        if case .identified = probe {
+            unansweredReads[key] = nil
+        } else {
+            if unansweredReads.count >= 128 { unansweredReads = unansweredReads.filter { $0.value.until > Date() } }
+            unansweredReads[key] = (probe, Date().addingTimeInterval(Self.failedReadHold))
+        }
         return probe
     }
 
     /// What `login`'s own access token proves (`ClaudeLoginLifetime.evidence`):
-    /// a fresh read while it is unexpired, plus the store's two facts about
-    /// this exact credential, its refused grant and its recorded account. A
-    /// fresh 2xx records the credential's account.
-    func loginEvidence(_ login: String) async -> ClaudeLoginLifetime.LoginEvidence {
+    /// a fresh read while it is unexpired, plus the store's three facts about
+    /// this exact credential: its refused grant, this app's redemption of it,
+    /// and its recorded account. A fresh 2xx records the credential's account.
+    /// Within `scope` a credential is read once. `read: false` makes no
+    /// request: what the records and the scope already say.
+    func loginEvidence(_ login: String, scope: EvidenceScope? = nil, read: Bool = true) async -> ClaudeLoginLifetime.LoginEvidence {
+        let key = Self.credentialKey(login)
+        if let known = scope?.read[key] { return known }
         let store = ProfileStore.shared
         let refused = store.isRefusedClaudeLogin(login)
+        let redeemed = store.claudeRedemptionMark(ofClaudeLogin: login) != nil
         let expiry = ClaudeLoginLifetime.accessExpiry(login)
         var identified: String?
         var rejected: Int?
-        if !refused, let expiry, expiry > Date(), let token = extractAccessToken(from: login), !token.isEmpty {
-            switch await probeAccountIdentity(accessToken: token) {
+        let readsToken = read && !refused && !redeemed && (expiry.map { $0 > Date() } ?? false)
+        if readsToken, let token = extractAccessToken(from: login), !token.isEmpty {
+            switch await freshIdentityRead(of: login, token: token) {
             case .identified(let identity):
                 identified = identity.accountUUID
                 store.recordClaudeLoginAccount(login, account: identity.accountUUID)
@@ -1205,10 +1350,13 @@ class ClaudeCodeSyncService {
                 break
             }
         }
-        return ClaudeLoginLifetime.evidence(
+        let evidence = ClaudeLoginLifetime.evidence(
             identifiedAccount: identified, rejectedStatus: rejected, accessExpiry: expiry,
-            grantRefused: refused, recordedAccount: store.recordedAccount(ofClaudeLogin: login), now: Date()
+            grantRefused: refused, grantRedeemed: redeemed,
+            recordedAccount: store.recordedAccount(ofClaudeLogin: login), now: Date()
         )
+        if read { scope?.read[key] = evidence }
+        return evidence
     }
 
     /// Decisions already logged, keyed by profile and the CLI login's tag, so
@@ -1222,8 +1370,8 @@ class ClaudeCodeSyncService {
     /// the snapshot the decision was made for. `~/.claude.json`'s account
     /// record plays no part: it can only refuse a mismatch, and every adoption
     /// already requires the CLI login's own token to prove its account.
-    func adoptionDecision(profileId: UUID, stored: String?, cliLogin: String) async -> Bool {
-        await adoptionVerdict(profileId: profileId, stored: stored, cliLogin: cliLogin).adopt
+    func adoptionDecision(profileId: UUID, stored: String?, cliLogin: String, scope: EvidenceScope? = nil) async -> Bool {
+        await adoptionVerdict(profileId: profileId, stored: stored, cliLogin: cliLogin, scope: scope).adopt
     }
 
     /// One adoption decision with the evidence it was made on.
@@ -1233,29 +1381,53 @@ class ClaudeCodeSyncService {
         let stored: ClaudeLoginLifetime.LoginEvidence
     }
 
-    func adoptionVerdict(profileId: UUID, stored: String?, cliLogin: String) async -> AdoptionVerdict {
+    /// The CLI's side is read first, and only a CLI login proven live can
+    /// authorize anything: otherwise the stored side is not read (its records
+    /// still say what they know). A decision that refused is held for
+    /// `failedReadHold` per profile, pair of credentials and stamp; a changed
+    /// credential on either side is decided at once.
+    func adoptionVerdict(profileId: UUID, stored: String?, cliLogin: String, scope: EvidenceScope? = nil) async -> AdoptionVerdict {
         let now = Date()
         guard ClaudeLoginLifetime.isComplete(cliLogin), !ClaudeLoginLifetime.isDeadMarker(cliLogin),
               !ClaudeLoginLifetime.isLapsed(cliLogin, now: now),
               let stored, !ClaudeLoginLifetime.isSamePair(cliLogin, stored) else {
             return AdoptionVerdict(adopt: false, cli: .unknown(account: nil), stored: .unknown(account: nil))
         }
-        let cli = await loginEvidence(cliLogin)
-        let storedEvidence = await loginEvidence(stored)
         let stamp = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.claudeAccountUUID
+        let decisionKey = [profileId.uuidString, Self.credentialKey(cliLogin), Self.credentialKey(stored), stamp ?? "-"]
+            .joined(separator: "|")
+        if let held = refusedDecisions[decisionKey], held.until > now { return held.verdict }
+
+        let cli = await loginEvidence(cliLogin, scope: scope)
+        let cliIsLive: Bool
+        if case .live = cli { cliIsLive = true } else { cliIsLive = false }
+        let storedEvidence = await loginEvidence(stored, scope: scope, read: cliIsLive)
         let adopt = ClaudeLoginLifetime.cliLoginReplaces(
             stored, with: cliLogin, cli: cli, stored: storedEvidence, storedStamp: stamp, now: Date()
         )
-        if !adopt {
-            if case .live(let account) = cli, let other = storedEvidence.account, other != account {
-                recordRefusedWrite(profileId: profileId, cliAccountUUID: account, profileAccountUUID: other)
-            } else if loggedAdoptionDecisions.insert("\(profileId.uuidString)|\(ClaudeLoginLifetime.loginTag(cliLogin) ?? "-")").inserted {
-                let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "?"
-                LoggingService.shared.log("Claude: kept '\(name)''s stored login — the CLI's login is \(Self.describe(cli)), the stored one is \(Self.describe(storedEvidence)); explicit Sync is the user's path")
-            }
+        let verdict = AdoptionVerdict(adopt: adopt, cli: cli, stored: storedEvidence)
+        guard !adopt else { return verdict }
+        if refusedDecisions.count >= 128 { refusedDecisions = refusedDecisions.filter { $0.value.until > Date() } }
+        refusedDecisions[decisionKey] = (verdict, Date().addingTimeInterval(Self.failedReadHold))
+        if case .live(let account) = cli, let other = storedEvidence.account, other != account {
+            recordRefusedWrite(profileId: profileId, cliAccountUUID: account, profileAccountUUID: other)
+        } else if loggedAdoptionDecisions.insert("\(profileId.uuidString)|\(ClaudeLoginLifetime.loginTag(cliLogin) ?? "-")").inserted {
+            let name = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.name ?? "?"
+            LoggingService.shared.log("Claude: kept '\(name)''s stored login — the CLI's login is \(Self.describe(cli)), the stored one is \(Self.describe(storedEvidence)); explicit Sync is the user's path")
         }
-        return AdoptionVerdict(adopt: adopt, cli: cli, stored: storedEvidence)
+        return verdict
     }
+
+    #if DEBUG
+    /// Test-only: forgets every held read and decision and ends a 429's hold,
+    /// as if `failedReadHold` and the hold had passed.
+    func expireIdentityBudgetForTesting() {
+        unansweredReads = [:]
+        refusedDecisions = [:]
+        identityBackoffUntil = nil
+        identityBackoffStep = 0
+    }
+    #endif
 
     /// Log-safe wording for one side's evidence.
     nonisolated static func describe(_ evidence: ClaudeLoginLifetime.LoginEvidence) -> String {
@@ -1493,17 +1665,24 @@ class ClaudeCodeSyncService {
     /// is. Returns nil on any failure — callers must treat unknown identity as
     /// "no evidence", never as a mismatch.
     func fetchAccountIdentity(accessToken: String) async -> AccountIdentity? {
+        let held = identityBackoffUntil.map { $0 > Date() } ?? false
         if let probe = identityProbeForTesting {
-            if case .identified(let identity) = await probe(accessToken, false) { return identity }
+            guard !held else { return nil }
+            let answer = await probe(accessToken, false)
+            noteIdentityAnswer(answer)
+            if case .identified(let identity) = answer { return identity }
             return nil
         }
-        if let fetch = identityFetcherForTesting { return await fetch(accessToken) }
+        if let fetch = identityFetcherForTesting { return held ? nil : await fetch(accessToken) }
         // No test sends a token to the identity endpoint.
         if RealCredentialStoreGuard.refuse("identity endpoint") { return nil }
         let cacheKey = String(accessToken.suffix(24))
         if let cached = identityCache[cacheKey] { return cached }
+        guard !held else { return nil }
 
-        guard case .identified(let identity) = await requestIdentity(accessToken: accessToken) else { return nil }
+        let answer = await requestIdentity(accessToken: accessToken)
+        noteIdentityAnswer(answer)
+        guard case .identified(let identity) = answer else { return nil }
         cacheIdentity(identity, for: accessToken)
         return identity
     }
@@ -1518,7 +1697,11 @@ class ClaudeCodeSyncService {
         request.timeoutInterval = 15
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let status = (response as? HTTPURLResponse)?.statusCode else { return .unavailable }
+              let http = response as? HTTPURLResponse else { return .unavailable }
+        let status = http.statusCode
+        if status == 429 {
+            return .throttled(retryAfter: parseRetryAfter(http.value(forHTTPHeaderField: "Retry-After")))
+        }
         guard (200..<300).contains(status) else { return .rejected(status: status) }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let account = json["account"] as? [String: Any],
@@ -1561,7 +1744,7 @@ class ClaudeCodeSyncService {
               let token = extractAccessToken(from: json) else { return }
         let identity: AccountIdentity?
         if let expiry = ClaudeLoginLifetime.accessExpiry(json), expiry > Date() {
-            if case .identified(let fresh) = await probeAccountIdentity(accessToken: token) {
+            if case .identified(let fresh) = await freshIdentityRead(of: json, token: token) {
                 ProfileStore.shared.recordClaudeLoginAccount(json, account: fresh.accountUUID)
                 identity = fresh
             } else {
@@ -1911,7 +2094,7 @@ class ClaudeCodeSyncService {
     /// (2026-10-02 05:24:10): its revoked access token now fails its own
     /// fresh read. The dead marker never reaches here (2026-10-09 05:45:44,
     /// `readSystemCredentials`), nor does a partial login.
-    func resyncBeforeSwitching(for profileId: UUID) async throws {
+    func resyncBeforeSwitching(for profileId: UUID, scope: EvidenceScope? = nil) async throws {
         LoggingService.shared.log("Re-syncing CLI credentials before profile switch: \(profileId)")
 
         // Read fresh credentials from system (if user is logged in)
@@ -1928,7 +2111,7 @@ class ClaudeCodeSyncService {
 
         let stored = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.cliCredentialsJSON
         if stored != freshJSON {
-            guard await adoptionDecision(profileId: profileId, stored: stored, cliLogin: freshJSON) else {
+            guard await adoptionDecision(profileId: profileId, stored: stored, cliLogin: freshJSON, scope: scope) else {
                 LoggingService.shared.log("Re-sync kept the stored login (\(ClaudeLoginLifetime.summary(stored))); the CLI's (\(ClaudeLoginLifetime.summary(freshJSON))) was not proven into this profile")
                 return
             }
@@ -1975,6 +2158,7 @@ enum ClaudeCodeError: LocalizedError {
     case tokenRefreshFailed(status: Int)
     case accountAlreadySynced(profileName: String)
     case incompleteLogin
+    case redeemedLogin
 
     var errorDescription: String? {
         switch self {
@@ -1994,6 +2178,8 @@ enum ClaudeCodeError: LocalizedError {
             return "This Anthropic account is already synced to the profile \u{201C}\(profileName)\u{201D}. Two profiles on one account share one quota. Remove it there first, or run `claude` and `/login` with a different account before syncing here."
         case .incompleteLogin:
             return "Claude Code's login could not be read in full (no refresh token or no expiry). Run `claude` and `/login`, then sync again."
+        case .redeemedLogin:
+            return "This Claude Code login was already renewed by this app, so it may no longer work. Run `claude` and `/login`, then sync again."
         }
     }
 }
