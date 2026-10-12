@@ -100,7 +100,50 @@ struct AccountLoginTab: View {
                     }
                     if isBusy { ProgressView().scaleEffect(0.6) }
                 }
+                // A login a switch set aside instead of overwriting it, offered
+                // on the profile that owned it (`parkCLILoginBeforeApplying`).
+                if let parked = ProfileStore.shared.parkedCLILogin,
+                   parked.fromProfileId == nil || parked.fromProfileId == profile.id {
+                    parkedLoginBlock(parked)
+                }
             }
+        }
+    }
+
+    private func parkedLoginBlock(_ parked: ProfileStore.ParkedCLILogin) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("accounts.login.parked_title".localized(with: DashboardFormatting.age(parked.parkedAt)))
+                .font(DesignTokens.Typography.caption).foregroundColor(DesignRole.blocking.color)
+            Text("accounts.login.parked_body".localized).font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let account = parked.accountUUID {
+                Text("accounts.login.parked_account".localized(with: "accounts.account_suffix".localized(with: String(account.suffix(4)))))
+                    .font(DesignTokens.Typography.caption).foregroundColor(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button("accounts.login.parked_save".localized) { saveParkedClaude() }.disabled(isBusy)
+                Button("accounts.login.parked_discard".localized, role: .destructive) {
+                    ClaudeCodeSyncService.shared.discardParkedLogin()
+                    profileManager.loadProfiles()
+                }
+                .disabled(isBusy)
+            }
+        }
+    }
+
+    /// Explicit Sync of the parked login into THIS profile. It is not the
+    /// CLI's current login, so the profile does not claim the shared login.
+    private func saveParkedClaude() {
+        let id = profile.id
+        problem = nil
+        do {
+            try ClaudeCodeSyncService.shared.syncParkedLogin(into: id)
+            profileManager.loadProfiles()
+            Task { await ClaudeCodeSyncService.shared.stampAccountIdentity(for: id, force: true) }
+            NotificationCenter.default.post(name: .credentialsChanged, object: nil)
+            LoggingService.shared.log("AccountLoginTab: parked Claude login saved into \(id)")
+        } catch {
+            problem = error.localizedDescription
         }
     }
 

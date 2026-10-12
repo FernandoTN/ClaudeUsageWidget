@@ -542,23 +542,31 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
    is not newer"). The profile no longer held the login Claude Code was using.
 
    The store read returns nothing when the Keychain holds the dead-marker, and never
-   falls back to the file. Otherwise the Keychain wins. The file is used only when the
-   Keychain's login has lapsed and the file's deadline is present and still ahead. The
-   switch-away re-sync, the Keychain adoption and identity adoption all decide by this
-   rule and write by compare-and-swap.
+   falls back to the file. Otherwise the Keychain wins, and the file is used only when the
+   Keychain item is confirmed absent. The switch-away re-sync, the Keychain adoption and
+   identity adoption all decide by this rule and write by compare-and-swap.
 
-   Review of that change (#186) added three rules, two of them from states seen live that
-   day:
-   - Only token-bound evidence proves an account. After the `/login`, `~/.claude.json`'s
-     `oauthAccount` still named the OLD account, so it can refuse a mismatch but never
-     verify a match. A profile's account stamp counts only while it is bound to the login
-     it was verified against. One profile carried account X's stamp while holding account
-     Y's login.
-   - Only the CLI's own login is adopted: never the file read past an unreadable Keychain,
-     and never the partial login (an access token alone) rebuilt from a truncated Keychain
-     payload.
-   - Pairs this app redeemed are recorded durably with the profile, so no relaunch
-     forgets one. An ordinary save to the profile store never changes a stored login;
+   Two review rounds and a review panel (#186) settled the rule as "v3":
+   - **Among logins of the same account proven live, the CLI's wins.** No recency
+     ordering of any kind: a non-owner profile can hold an independent second chain of
+     the CLI's account that the widget heals later, which would always look newest.
+   - **Evidence comes only from each side's own access token, freshly read** (the
+     identity cache bypassed). A 2xx means live, with its account. A 401/403 on an
+     unexpired token means dead. An expired token or no answer means unknown, and
+     unknown means no automatic adoption: the stored login stays and explicit Sync is
+     the user's path.
+   - Two states seen live that day explain why nothing weaker counts. After the `/login`,
+     `~/.claude.json`'s `oauthAccount` still named the OLD account. And one profile
+     carried account X's stamp while holding account Y's live login.
+   - Two facts are kept per credential, keyed by a one-way tag and never by profile:
+     the token endpoint refused its grant (dead), and the account a fresh read of its own
+     unexpired token reported (the account only, never liveness). The second lets an
+     idle owner's expired login be placed when the CLI renews it.
+   - The file is read only when the Keychain item is confirmed absent. No incomplete
+     login (missing an access token, refresh token or expiry) is ever adopted, synced
+     or applied.
+   - A login the CLI holds that a switch would overwrite, and that no profile holds, is
+     parked in one slot and offered through explicit Sync; the switch proceeds. An ordinary save to the profile store never changes a stored login;
    only explicit paths do (compare-and-swap, a sync or import, removal). Fixes 4 and 5 of
    section 6, B.
 3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at

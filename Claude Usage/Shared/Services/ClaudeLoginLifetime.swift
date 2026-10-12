@@ -67,25 +67,22 @@ enum ClaudeLoginLifetime {
         return access.isEmpty && refresh.isEmpty
     }
 
-    /// Whether the login carries a refresh token, i.e. whether it can renew.
-    nonisolated static func hasRefreshToken(_ json: String) -> Bool {
-        !(oauth(json)?["refreshToken"] as? String ?? "").isEmpty
-    }
-
-    /// An access token and nothing else: no refresh token, no expiry. The
-    /// store read rebuilds exactly this from a Keychain payload the `security`
-    /// tool truncated. It can serve requests until its token dies and can
-    /// never renew, so no adoption, sync or apply takes it.
-    nonisolated static func isPartial(_ json: String) -> Bool {
+    /// Whether the login is COMPLETE: an access token, a refresh token and an
+    /// access-token expiry, checked structurally. Anything less — the access
+    /// token the store read rebuilds from a truncated Keychain payload, or an
+    /// access token and expiry without a refresh token — can serve requests
+    /// until its token dies and never renew, so no adoption, sync, park or
+    /// apply takes it, from any source.
+    nonisolated static func isComplete(_ json: String) -> Bool {
         guard let oauth = oauth(json) else { return false }
         return !(oauth["accessToken"] as? String ?? "").isEmpty
-            && (oauth["refreshToken"] as? String ?? "").isEmpty
-            && oauth["expiresAt"] == nil
+            && !(oauth["refreshToken"] as? String ?? "").isEmpty
+            && epochDate(oauth["expiresAt"]) != nil
     }
 
     /// A short tag for a login, derived one-way from its refresh token with a
-    /// domain prefix. It is persisted with the profile (the account stamp's
-    /// binding, the consumed-pair record), so it is never the in-memory
+    /// domain prefix. It is persisted (the store's refused-grant and account
+    /// records, the parked slot's key), so it is never the in-memory
     /// `fingerprint` and never the token. Nil without a refresh token.
     nonisolated static func loginTag(_ json: String?) -> String? {
         guard let json, let token = refreshToken(json), !token.isEmpty else { return nil }
@@ -109,64 +106,95 @@ enum ClaudeLoginLifetime {
         deadline(json).map { $0 <= now } ?? false
     }
 
-    /// What is known about whether the CLI's login and a stored one belong to
-    /// the same account. A KNOWN different account never reaches the ordering:
-    /// the account guard refuses it first. Only token-bound evidence verifies:
-    /// the identity the CLI login's own token reports, against a profile stamp
-    /// bound to the login the profile holds (`Profile.claudeStampIsBound`).
-    enum AccountMatch {
-        /// Both sides resolve to one account by token-bound evidence: the
-        /// account guard's `.write`, or the identity adoption's verified owner.
-        case verified
-        /// The two are not known to differ, but neither is proven: the
-        /// guard's `.noEvidence` (a side unidentified, or known only from
-        /// `~/.claude.json` or an unbound stamp).
-        case unverified
+    /// What one login's OWN access token proves (#186 v3). Evidence comes only
+    /// from that token, through a FRESH identity read that bypasses the
+    /// identity cache, plus two store-owned facts about the exact credential
+    /// (`ProfileStore`): the token endpoint refused its grant, and the account
+    /// a fresh read reported while it was live.
+    enum LoginEvidence: Equatable {
+        /// A fresh read answered 2xx: live, and this account.
+        case live(account: String)
+        /// The token endpoint refused its refresh grant, or its own UNEXPIRED
+        /// access token was refused (401/403): dead. `account` is the
+        /// credential's recorded account, when one was recorded.
+        case dead(account: String?)
+        /// Nothing proves it live or dead: its access token has expired (which
+        /// proves nothing either way), or the read got no answer (transport
+        /// error, 5xx). `account` as for `.dead`.
+        case unknown(account: String?)
+
+        var account: String? {
+            switch self {
+            case .live(let account): return account
+            case .dead(let account), .unknown(let account): return account
+            }
+        }
+    }
+
+    /// The evidence one read produced. `identifiedAccount` is the account a
+    /// fresh 2xx reported and `rejectedStatus` the status that refused it (both
+    /// nil when no read was made, which is always so for an expired token).
+    /// A refused grant overrides any "alive" answer but never the account fact
+    /// (`recordedAccount`); the account record never establishes liveness.
+    nonisolated static func evidence(
+        identifiedAccount: String?,
+        rejectedStatus: Int?,
+        accessExpiry: Date?,
+        grantRefused: Bool,
+        recordedAccount: String?,
+        now: Date
+    ) -> LoginEvidence {
+        let known = recordedAccount ?? identifiedAccount
+        if grantRefused { return .dead(account: known) }
+        let unexpired = accessExpiry.map { $0 > now } ?? false
+        if unexpired, let identifiedAccount { return .live(account: identifiedAccount) }
+        if unexpired, let status = rejectedStatus, status == 401 || status == 403 { return .dead(account: recordedAccount) }
+        return .unknown(account: recordedAccount)
     }
 
     /// Whether the login the CLI's store holds replaces a profile's stored one.
     ///
-    /// For one account, the login the CLI holds is authoritative. The widget
-    /// never redeems a login the CLI holds (`ClaudeRefreshPolicy`), so the
-    /// CLI's copy can only be the widget's or a newer one: the CLI renews its
-    /// own login, and a `/login` replaces it. The one way the CLI ever held an
-    /// OLDER pair was a predecessor the widget had consumed (2026-10-02), which
-    /// that policy prevents and `cliLoginConsumed` still refuses.
+    /// Among logins of the SAME account that are proven live, the login the
+    /// CLI holds wins. Recency never decides: no access-expiry or deadline
+    /// ordering at all. The widget never redeems a login the CLI holds
+    /// (`ClaudeRefreshPolicy`), so the CLI's copy is the CLI's own renewal or
+    /// a `/login`; and a non-owner profile can legitimately hold an
+    /// independent second chain of the CLI's account that the widget heals
+    /// later, which recency would rank first.
     ///
-    /// The deadline never ranks two live logins. Three `/login`s into one
-    /// account within seven minutes (2026-10-12) recorded deadlines out of
-    /// login order: the second's was the earliest by two and a half days, the
-    /// third's three hours before the first's. Ranking by it kept a superseded
-    /// pair over the one the CLI was using. It only drops a lapsed login.
+    /// The deadline never ranks two live logins either. Three `/login`s into
+    /// one account within seven minutes (2026-10-12) recorded deadlines out of
+    /// login order. It only drops a lapsed login.
     ///
-    /// 1. The CLI's dead marker, a partial login (`isPartial`) and a pair this
-    ///    app redeemed are never adopted.
-    /// 2. A profile with no stored login takes the CLI's.
-    /// 3. A lapsed CLI login never replaces a stored one, and a login without a
-    ///    refresh token never replaces one that has one. A live one replaces a
-    ///    stored one that is lapsed, the marker, or known dead
-    ///    (`storedLoginDead`: the caller's own evidence, e.g. a refused refresh).
-    /// 4. Two live, different logins: the CLI's wins when the account match is
-    ///    verified. Unverified, the stored login stays, so a missing identity
-    ///    never adopts a login the account guard could not place.
-    ///
-    /// No path orders two live logins of one account without this rule (the
-    /// CLI's store is on one side of every comparison), so no access-token
-    /// expiry fallback remains.
+    /// 1. The CLI's login must be complete (`isComplete`), not the dead
+    ///    marker, not lapsed, and PROVEN LIVE by its own fresh read.
+    /// 2. The stored side needs its own evidence: live as account A, or dead,
+    ///    or unknown liveness with a recorded account. Its account must be the
+    ///    CLI login's (a different one is contamination: refused). A dead
+    ///    login with no recorded account is replaced unless the profile's stamp
+    ///    names another account (weak evidence may refuse, never grant).
+    ///    Unknown with no recorded account: the stored login stays; explicit
+    ///    Sync is the user's path. So does an empty profile.
     nonisolated static func cliLoginReplaces(
         _ stored: String?,
         with cliLogin: String,
-        account: AccountMatch,
-        cliLoginConsumed: Bool = false,
-        storedLoginDead: Bool = false,
+        cli: LoginEvidence,
+        stored storedEvidence: LoginEvidence,
+        storedStamp: String?,
         now: Date
     ) -> Bool {
-        if isDeadMarker(cliLogin) || isPartial(cliLogin) || cliLoginConsumed { return false }
-        guard let stored else { return true }
-        if isSamePair(cliLogin, stored) || isLapsed(cliLogin, now: now) { return false }
-        if hasRefreshToken(stored), !hasRefreshToken(cliLogin) { return false }
-        if storedLoginDead || isDeadMarker(stored) || isLapsed(stored, now: now) { return true }
-        return account == .verified
+        guard isComplete(cliLogin), !isDeadMarker(cliLogin), !isLapsed(cliLogin, now: now),
+              case .live(let account) = cli else { return false }
+        guard let stored, !isSamePair(cliLogin, stored) else { return false }
+        switch storedEvidence {
+        case .live(let storedAccount):
+            return storedAccount == account
+        case .unknown(let recorded):
+            return recorded == account
+        case .dead(let recorded):
+            if let recorded { return recorded == account }
+            return storedStamp.map { $0.isEmpty || $0 == account } ?? true
+        }
     }
 
     /// Two copies carrying one token pair are one login, whatever else their

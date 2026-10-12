@@ -293,6 +293,8 @@
 "popover.suspected_projected" = "Couldn't refresh — estimating from the recent burn rate (last measured %d%% at %@). Retrying automatically.";
 "notification.projected_exhaustion.title" = "Active account is likely near its limit";
 "notification.projected_exhaustion.message" = "'%@' is estimated at ~%d%% from its recent burn rate, but usage reads keep failing so this is unconfirmed. No automatic switch happens on an estimate — switch manually if your sessions report rate limits.";
+"notification.claude_parked_login.title" = "Claude Code login set aside";
+"notification.claude_parked_login.message" = "A switch would have overwritten Claude Code's current login, which could not be confirmed as '%@'. It was kept: save it into a profile in Settings → Accounts → Login.";
 "notification.claude_relogin.title" = "Claude account needs re-login";
 "notification.claude_relogin.message" = "The saved Claude Code login for '%@' has expired and could not be refreshed. Run `claude` and `/login` with that account, then re-sync it in Settings → CLI Account.";
 "notification.claude_login_rejected.title" = "Claude login rejected by the server";
@@ -1046,6 +1048,11 @@
 "accounts.login.confirm_import" = "Import";
 "accounts.login.claude_how" = "Run /login in Claude Code as this account, then import. The shared login is one Keychain item on this Mac: importing makes this profile Active for Claude.";
 "accounts.login.claude_repair" = "This login is dead. Run /login in Claude Code as this account, then re-import.";
+"accounts.login.parked_title" = "Claude Code login set aside %@";
+"accounts.login.parked_body" = "A switch would have overwritten Claude Code's login, and it could not be confirmed as this profile's account, so it was kept here. Save it into this profile only if it is this profile's account.";
+"accounts.login.parked_account" = "Its own token reported %@.";
+"accounts.login.parked_save" = "Save into this profile";
+"accounts.login.parked_discard" = "Discard";
 "accounts.login.codex_how" = "Log a new account in through the button (an isolated CODEX_HOME — it never revokes the account the CLI is using), or import one you logged in yourself.";
 "accounts.login.codex_repair" = "This login is dead. Log the account in again through the button below — never `codex login` in ~/.codex, that revokes the active account.";
 "accounts.login.grok_how" = "Log in with the grok CLI, then import its ~/.grok/auth.json into this profile.";

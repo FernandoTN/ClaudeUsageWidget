@@ -375,11 +375,10 @@ evidence". Two live profiles held logins for ONE Anthropic account, invisible to
 all of them: one quota drawn as two tiles, two auto-switch candidates that share
 it, and an owner who read two exhausted accounts where the API said 19%. Three
 mechanisms close it. (1) `ClaudeCodeSyncService.stampNextUnstampedIdentity`, run
-at sweep end, resolves ONE login with no stamp bound to it per sweep, oldest
-first, with that PROFILE'S OWN token — never the system Keychain fallback, which
-holds the ACTIVE account's login and would stamp every profile with it and
-manufacture the duplicates. Ineligible: a stamp already bound to the stored
-login (see "Only token-bound evidence proves an account"), flagged dead, or an expired token (a
+at sweep end, resolves ONE unstamped login per sweep, oldest first, with that
+PROFILE'S OWN token — never the system Keychain fallback, which holds the ACTIVE
+account's login and would stamp every profile with it and manufacture the
+duplicates. Ineligible: already stamped, flagged dead, or an expired token (a
 background refresh rotates a refresh token the CLI may still hold). Costs nothing
 in steady state. (2) `ProfileManager.duplicateClaudeAccountGroups` groups stamped
 profiles by account on every roster mutation, logs and notifies once per episode,
@@ -395,31 +394,21 @@ profile whose own login is still usable is REPORTED rather than cleared — only
 byte-identical copies and dead same-account tokens are still wiped.
 
 **Identity-verified credential writes (the mechanism behind that duplicate)**:
-`adoptionAccountMatch` is the guard both AUTOMATIC write paths share — the
-pre-switch re-sync of the OUTGOING profile (`resyncBeforeSwitching`, reached from
-`activateProfileDetailed`) and the Keychain adoption inside
-`ensureFreshCredentials`. It used to return true whenever either side was
-unidentifiable, and an UNSTAMPED profile is unidentifiable, so "no evidence"
-read as permission. That is how the contamination happened: during the
-2026-09-03 cfprefsd write-rejection episode the on-disk active-profile pointers
-were stale, the outgoing re-sync trusted the pointer to name the outgoing
-profile, and the CLI's login was written into an unstamped profile that held a
-different account. The guard now resolves the target from its OWN stored token
-first (`stampAccountIdentity`, never from the incoming credentials — that would
-make every comparison trivially agree), then decides:
-`ClaudeCodeSyncService.credentialWriteDecision` returns `.write` on agreement,
-`.refuse` on disagreement, and `.noEvidence` only when neither side can be
-identified at all (unchanged behaviour — refusing there would break every
-legitimate adoption on a network failure). The guard hands the ordering rule
-`.verified` for `.write` and `.unverified` for `.noEvidence`: unverified, a live
-CLI login still replaces a lapsed one, but never a live one. The CLI login's
-account comes from the identity endpoint called with its own token; when that
-fails, `~/.claude.json`'s cached `oauthAccount.accountUuid` may still REFUSE a
-mismatch but never grants `.write` (it kept naming the old account after a
-`/login` into a new one, 2026-10-12). The target's stamp counts only while it is
-bound to the login the target holds; otherwise it is re-resolved from that
-login's own token first, and if that fails it too can only refuse
-(`credentialWriteDecision(cliIsTokenBound:profileIsTokenBound:)`). A refusal logs once per (profile, refused account) pair and is
+`ClaudeCodeSyncService.adoptionDecision` decides for every AUTOMATIC write path
+— the pre-switch re-sync of the OUTGOING profile (`resyncBeforeSwitching`,
+reached from `activateProfileDetailed`), the Keychain adoption inside
+`ensureFreshCredentials`, and the sweep's `adoptSystemLoginByIdentity`. "No
+evidence" once read as permission: during the 2026-09-03 cfprefsd
+write-rejection episode the on-disk active-profile pointers were stale, the
+outgoing re-sync trusted the pointer to name the outgoing profile, and the CLI's
+login was written into an unstamped profile that held a different account. Each
+side's account now comes from its OWN token, freshly read (never the target
+stamped from the incoming credentials, which would make every comparison agree),
+and an unknown side means no automatic write (see "The login the CLI holds
+wins"). Neither a profile stamp nor `~/.claude.json`'s cached
+`oauthAccount.accountUuid` ever grants a write (the stamp once named one account
+while the profile held another's live login; the record named the old account
+after a `/login` into a new one, 2026-10-12). A refusal logs once per (profile, refused account) pair and is
 counted in `refusedCredentialWrites`, which the duplicate/contamination log line
 reports. **Manual Sync has its own guard, the Codex twin, not this comparison**:
 `syncToProfile` clears the stamp by design because an explicit sync may bring a
@@ -539,81 +528,79 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
   `.handoffDeferred`: nothing claimed, the walk retries, and the queue is not
   consumed.
 - **The login the CLI holds wins** (`ClaudeLoginLifetime.cliLoginReplaces`,
-  owner's decision 2026-10-12). For one account, the login Claude Code's store
-  holds is authoritative. Since the widget never redeems a token the CLI holds,
-  the CLI's copy can only equal the widget's or be newer: the CLI renews its
-  own login, and a `/login` replaces it.
+  owner's decision 2026-10-12; #186 v3 after two review rounds and a panel).
+  Among logins of the SAME account that are proven live, the CLI's wins.
+  Recency never decides: no access-expiry or deadline ordering. A non-owner
+  profile can hold an independent second chain of the CLI's account that the
+  widget heals later, so it would always look newest.
   - **The deadline never ranks two live logins.** The 2026-10-12 counter-example:
     three `/login`s into one account within seven minutes recorded deadlines
     11-11 06:06, 11-08 15:43 and 11-11 03:07, not in login order. The old
     deadline-first rule kept the 13:06 pair after the 13:13 `/login`, so the
-    profile stopped holding the login the CLI used.
-  - The deadline only drops a lapsed login. A lapsed CLI login never replaces
-    a stored one, and a live one replaces a stored one that is lapsed or the
-    dead-marker. The dead-marker is never adopted, and no login without a
-    refresh token replaces one that has one.
-  - A pair this app redeemed is consumed and never adopted
-    (`ClaudeCodeSyncService.isConsumedPair`). That is the one way the CLI ever
-    held an older pair (2026-10-02), and the redemption policy prevents it. The
-    record is DURABLE: each redemption appends the consumed refresh token's tag
-    to the profile's `claudeConsumedLoginTags` (in `profiles_v3`, last 32)
-    BEFORE the successor is stored, so a relaunch cannot forget it. A
-    predecessor consumed before the record existed is caught by the next rule:
-    its access token died with the redemption, so its identity cannot be
-    resolved, and nothing else verifies it.
-  - Two live, different logins: the CLI's wins when the account match is
-    verified. Unverified, the stored login stays.
-  - A known different account never gets this far: the account guard refuses it.
-- **Only token-bound evidence proves an account** (review of #186; two of its
-  cases happened live on 2026-10-12).
-  - The CLI login's account: the identity endpoint called with that login's
-    own token. `~/.claude.json`'s `oauthAccount` may refuse a mismatch, never
-    verify a match: after a `/login` into a new account it still named the old
-    one.
-  - A profile's account: its stamp only while BOUND to the login it holds.
-    `Profile.claudeAccountStampTag` is the tag of the login whose own token
-    reported the stamp (`stampAccountIdentity`). A redemption carries a bound
-    stamp onto its successor, and so does a verified adoption. Anything else
-    leaves the stamp unbound (`Profile.claudeStampIsBound` false), and an
-    unbound stamp is re-resolved from the profile's own token before it counts
-    (`resolveUnboundStamp`, at most once per 30 min for one login, so a token
-    that cannot answer is not asked every sweep; every pre-binding stamp
-    starts unbound and the sweep's stamp pass binds one per sweep).
-    A profile carried account X's stamp while holding account Y's login, and
-    routing by that stamp overwrote the live Y login.
-  - `adoptSystemLoginByIdentityDetailed` resolves its routed owner BEFORE the
-    pointer, a stamp or a credential changes. The order is: the profile holding
-    the shared login, a bound stamp, an unbound stamp, then the organization,
-    the last only for a profile with NO account stamp. An unbound owner whose
-    own token turns out to be another account's is `.notOwner`, with its stamp
-    corrected. One that cannot be identified is `.unverifiedOwner` and nothing
-    changes, unless its login is lapsed or flagged dead, so `/login` still
-    revives it.
-  - Tags (`ClaudeLoginLifetime.loginTag`) are a domain-separated one-way hash
-    of the refresh token, truncated to 32 hex digits. They are never the token
-    and never the in-memory fingerprint. They are the only token-derived values
-    in `profiles_v3`.
-- **Only the CLI's own login is adopted** (`ClaudeCodeSyncService.SystemLogin`,
-  `readSystemLogin`).
-  - The store read keeps its provenance: the Keychain item, the file, or a
-    PARTIAL login rebuilt by pattern from a truncated Keychain payload (an
-    access token with no refresh token or expiry, `ClaudeLoginLifetime.isPartial`).
-  - `isAdoptable` takes the Keychain item, or the file when there is no item
-    (or the item's login lapsed). It never takes the file read past an
-    UNREADABLE Keychain: the file can hold a predecessor the CLI has consumed
-    since. It never takes a partial login.
-  - A partial login is never synced (`syncToProfile` throws `.partialLogin`) and
-    never applied to the CLI (`applyProfileCredentials` throws). Reads for a
-    usage fetch still get its access token.
+    profile stopped holding the login the CLI used. The deadline only drops a
+    lapsed CLI login.
+  - **Evidence comes only from each side's OWN access token**
+    (`ClaudeCodeSyncService.loginEvidence`, classified by
+    `ClaudeLoginLifetime.evidence`):
+    - a FRESH identity read that bypasses the identity cache (a cached identity
+      outlives a revoked token) answering 2xx means live, and that account;
+    - 401/403 on an access token not yet expired by its own `expiresAt` means
+      dead;
+    - an expired token proves nothing either way, nor does a transport error or
+      5xx: unknown.
+  - **Two store-owned facts per credential**, keyed by `ClaudeLoginLifetime.loginTag`
+    (a domain-separated one-way hash of the refresh token, 32 hex digits) and
+    never by profile id. They live in their own journaled keys, so ordinary
+    roster saves never touch them, and are pruned only once the credential's
+    deadline has passed. There is no count eviction.
+    - `claudeRefusedLogins_v1`: the token endpoint ITSELF refused this
+      credential's grant. Dead, whatever its access token says.
+    - `claudeLoginAccounts_v1`: the account a fresh 2xx on this credential's own
+      unexpired token reported. An ACCOUNT fact, never liveness, and nothing
+      carries it to a successor. It is how the idle owner works: its token
+      expires overnight, the CLI renews, and the expired credential's recorded
+      account places it. The sweep records each credential the CLI holds once,
+      while it is live.
+  - **The decision**, which needs the CLI's login complete, not lapsed and proven
+    live:
+    - stored live as the same account: the CLI's wins;
+    - stored unknown with a recorded account equal to the CLI's: the CLI's wins;
+    - stored dead: the CLI's wins unless its recorded account, or the profile's
+      stamp, names another account;
+    - stored unknown with no record, or an empty profile: the stored login stays,
+      and explicit Sync is the user's path.
 
-  Where it applies:
+    A different account is contamination and is refused. A profile stamp and
+    `~/.claude.json` may only refuse, never grant.
+  - The sweep's `adoptSystemLoginByIdentityDetailed` routes by holder, then
+    pointer, then stamp, then organization (unstamped profiles only). It decides
+    on the routed profile's OWN evidence before the pointer, a stamp or a
+    credential changes: `.notOwner` when its own login is another account's
+    (stamp corrected), `.unverifiedOwner` when nothing places it.
+    `waitForIdentityAdoption` is the tests' completion barrier.
+  - **Nothing a switch overwrites is lost.** Before an activation writes the
+    CLI's store, `parkCLILoginBeforeApplying` parks a complete CLI login that
+    no profile holds and that is not proven dead. It goes to ONE store-owned,
+    CAS-written Keychain slot (`ProfileStore.parkedCLILogin`), with a
+    notification. This covers the outgoing re-sync that could not adopt it for
+    any reason, and a same-owner re-apply. The switch proceeds; nothing adopts
+    the parked login automatically. Settings › Accounts › Login offers it on the
+    profile it came from (`syncParkedLogin`, an explicit Sync with the
+    duplicate guard) or discards it.
+- **Only the CLI's own, complete login is taken** (`ClaudeCodeSyncService.SystemLogin`,
+  `readSystemLogin`).
+  - The file is read ONLY when the Keychain item is confirmed absent (the
+    `security` tool's item-not-found). An unreadable item, or output that does
+    not decode (truncated), is unknown and never hands the file its authority.
+  - A truncated item yields a PARTIAL login (an access token rebuilt by
+    pattern), for reads only: `isAdoptable` is false.
+  - COMPLETENESS (`ClaudeLoginLifetime.isComplete`, structural: an access
+    token, a refresh token and an expiry) gates every adoption, park, explicit
+    Sync (`syncToProfile` throws `.incompleteLogin` from any source) and apply
+    (`applyProfileCredentials` throws). Reads for a usage fetch still get the
+    access token.
   - `readSystemCredentials` returns nil for the dead-marker and never falls
-    back to the file. Otherwise the Keychain wins. The file is used only when
-    the Keychain's login has lapsed and the file's deadline is present and
-    still ahead: a missing deadline is no evidence.
-  - The outgoing re-sync (`resyncBeforeSwitching`), the Keychain adoption in
-    `ensureFreshCredentials` and `adoptSystemLoginByIdentity` all decide with
-    it, by CAS.
+    back to the file.
   - No path orders two live logins without the CLI's store on one side, so no
     access-token-expiry fallback remains.
 - **An ordinary `ProfileStore.saveProfiles` never changes a stored Claude login.**
