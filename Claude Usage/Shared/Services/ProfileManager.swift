@@ -61,6 +61,9 @@ class ProfileManager: ObservableObject {
     /// read: every Claude renewal, adoption, Sync and switch is refused until
     /// it can (it is retried by itself).
     @Published private(set) var claudeRedemptionRecordUnreadable: Bool = false
+    /// Mirrors `ProfileStore.claudeRedemptionRepairOffered`: the banners and
+    /// the notification offer Repair (`repairClaudeRedemptionRecord`).
+    @Published private(set) var claudeRedemptionRepairOffered: Bool = false
     private var redemptionRecordObserver: NSObjectProtocol?
 
     private let profileStore = ProfileStore.shared
@@ -2125,15 +2128,56 @@ class ProfileManager: ObservableObject {
         }
     }
 
-    /// One user notification per episode; the dashboard and popover banners
-    /// read the published flag.
+    /// One user notification per episode, and one when Repair becomes
+    /// available; the dashboard and popover banners read the published flags.
+    /// A record that does not decode is rebuilt automatically.
     private func syncRedemptionRecordState() {
         let unreadable = profileStore.claudeRedemptionRecordUnreadable
-        guard unreadable != claudeRedemptionRecordUnreadable else { return }
-        claudeRedemptionRecordUnreadable = unreadable
-        if unreadable {
-            NotificationManager.shared.sendClaudeRedemptionRecordUnreadableNotification()
+        let offered = profileStore.claudeRedemptionRepairOffered
+        if unreadable != claudeRedemptionRecordUnreadable {
+            claudeRedemptionRecordUnreadable = unreadable
+            if unreadable {
+                NotificationManager.shared.sendClaudeRedemptionRecordUnreadableNotification()
+            }
         }
+        if offered != claudeRedemptionRepairOffered {
+            claudeRedemptionRepairOffered = offered
+            if offered {
+                NotificationManager.shared.sendClaudeRedemptionRepairNotification(failure: profileStore.claudeRedemptionRebuildFailure)
+            }
+        }
+        if profileStore.claudeRedemptionRecordProblem == .corrupt, profileStore.claudeRedemptionRebuildFailure == nil {
+            startAutomaticRedemptionRebuild()
+        }
+    }
+
+    /// The automatic rebuild of a record that does not decode: retrying
+    /// cannot fix malformed bytes. It waits (up to ten minutes) for every
+    /// profile's login to be loaded, so the rebuild knows them all.
+    private func startAutomaticRedemptionRebuild() {
+        guard !automaticRedemptionRebuildRunning else { return }
+        automaticRedemptionRebuildRunning = true
+        Task { @MainActor in
+            defer { self.automaticRedemptionRebuildRunning = false }
+            for _ in 0..<120 {
+                let outcome = await self.cliSyncService.rebuildRedemptionRecord(reason: "the record does not decode")
+                guard outcome == .notReady else { break }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+            self.syncRedemptionRecordState()
+        }
+    }
+    private var automaticRedemptionRebuildRunning = false
+
+    /// Repair (the banner, the popover and the notification's button): the
+    /// same quarantine and conservative rebuild, for a record that cannot be
+    /// read, or after a rebuild failed. A failure keeps everything closed and
+    /// says why.
+    @discardableResult
+    func repairClaudeRedemptionRecord() async -> ProfileStore.ClaudeRedemptionRebuildOutcome {
+        let outcome = await cliSyncService.rebuildRedemptionRecord(reason: "Repair")
+        syncRedemptionRecordState()
+        return outcome
     }
 
     private func syncPreferencesDegradedState() {

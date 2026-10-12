@@ -594,6 +594,41 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
       `.claudeRedemptionRecordHealthChanged`; `ProfileManager` republishes it,
       sends one notification per episode, and the dashboard and popover show a
       blocking banner.
+      **The conservative rebuild** (Codex round 5) is the way out, because
+      malformed bytes never heal and deleting the file would forget the
+      protection. `ProfileStore.rebuildClaudeRedemptionRecord`, reached
+      through `ClaudeCodeSyncService.rebuildRedemptionRecord`, works in two
+      steps:
+      1. It PRESERVES the damaged record under
+         `claude-redeemed-logins.corrupt-<UTC timestamp>.json`, never deleting
+         it. A hard link needs no read; where links are not supported, a copy;
+         a taken name gets `-2`, `-3`.
+      2. It REPLACES the record atomically with a new one, confirmed, in which
+         EVERY credential the widget knows is PENDING: every profile's stored
+         Claude login (it waits until all are loaded) and whatever either half
+         of the CLI's store holds.
+
+      The record's path is never left empty: an absent record would read as a
+      first launch.
+      - When it runs: a CORRUPT record (read, but undecodable) is rebuilt
+        automatically. An UNREADABLE one (a read error) is retried; after
+        10 min (`redemptionRepairOfferDelay`), or once a rebuild has failed,
+        Repair is offered. The banner, the popover and the notification's
+        button (`CLAUDE_REDEMPTION_RECORD`) all run
+        `ProfileManager.repairClaudeRedemptionRecord`.
+      - When it fails: a failed quarantine or write changes nothing, stays
+        closed and says why (log, notification, Repair still offered).
+      - Recovery takes the existing paths:
+        - a pending login is renewed by its own profile, or by a hand-off
+          whatever its expiry, into a clean successor;
+        - the owner keeps working: the CLI renews its own login and the owner
+          adopts the clean successor;
+        - a refused grant is dead, and `/login` repairs it;
+        - a `/login` after the rebuild is a new, clean credential, synced and
+          adopted normally.
+
+        A credential first seen after the rebuild is clean: the accepted cost
+        of a lost history.
     - `claudeLoginAccounts_v1` (a journaled key): the account a fresh 2xx on this
       credential's own unexpired token reported. An ACCOUNT fact, never liveness, and nothing
       carries it to a successor. It is how the idle owner works: its token

@@ -226,11 +226,21 @@ struct PopoverContentView: View {
                     color: .orange
                 )
             } else if profileManager.claudeRedemptionRecordUnreadable {
-                StatusBannerView(
-                    icon: "lock.trianglebadge.exclamationmark",
-                    message: "popover.banner.claude_redemption_record".localized,
-                    color: .orange
-                )
+                if profileManager.claudeRedemptionRepairOffered {
+                    StatusBannerView(
+                        icon: "lock.trianglebadge.exclamationmark",
+                        message: "popover.banner.claude_redemption_record_repair".localized,
+                        color: .orange
+                    ) {
+                        Task { await profileManager.repairClaudeRedemptionRecord() }
+                    }
+                } else {
+                    StatusBannerView(
+                        icon: "lock.trianglebadge.exclamationmark",
+                        message: "popover.banner.claude_redemption_record".localized,
+                        color: .orange
+                    )
+                }
             } else if let errorProfileName = credentialErrorProfileName {
                 StatusBannerView(
                     icon: "exclamationmark.triangle.fill",

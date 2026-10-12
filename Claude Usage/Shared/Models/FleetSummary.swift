@@ -802,4 +802,6 @@ struct FleetSummaryContext {
     /// (`ProfileStore.claudeRedemptionRecordUnreadable`): Claude renewals and
     /// switches are paused.
     var claudeRedemptionRecordUnreadable: Bool = false
+    /// Repair is offered for it (`ProfileManager.claudeRedemptionRepairOffered`).
+    var claudeRedemptionRepairOffered: Bool = false
 }

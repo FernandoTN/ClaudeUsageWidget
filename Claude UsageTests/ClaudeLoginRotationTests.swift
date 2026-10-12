@@ -2576,29 +2576,6 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertTrue(condition(), "never became true", file: file, line: line)
     }
 
-    /// A record whose bytes do not decode is unreadable too: it is never
-    /// replaced by the partial history this process could write.
-    func testACorruptRecordIsNeverReplacedByAPartialHistory() async {
-        let backing = InMemoryClaudeRedemptionRecord()
-        let damaged = Data("{\"0123\": {\"state\": ".utf8)
-        backing.stored = damaged
-        store.setClaudeRedemptionRecordForTesting(backing)
-        let original = login("account", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
-        let account = seedBesideAnotherOwner("account", holding: original)
-
-        _ = await sync.ensureFreshCredentials(
-            for: account.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
-        )
-        let marked = await store.markClaudeRedemptionPending(original)
-        await store.markClaudeRedemptionConsumed(original)
-        await store.clearClaudeRedemptionPending(original)
-
-        XCTAssertTrue(endpoint.redeemed.isEmpty)
-        XCTAssertEqual(marked, .notRecorded)
-        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .unknown)
-        XCTAssertEqual(backing.stored, damaged, "the damaged record is left as found")
-    }
-
     /// The app's file record tells a confirmed absence (first launch: empty)
     /// from a file it cannot read, and round-trips what it writes.
     func testTheFileRecordTellsAbsenceFromFailure() throws {
@@ -2630,6 +2607,202 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(first, .noSharedLogin)
         XCTAssertEqual(second, .noSharedLogin)
         XCTAssertEqual(reads.cached["account-access-2"] ?? 0, 1, "the failed lookup is held, not repeated next sweep")
+    }
+
+    // MARK: - Review round 5 (#186): the conservative rebuild
+
+    /// A record whose bytes do not decode, installed for one test.
+    private func installCorruptRecord(_ bytes: Data = Data("{\"0123\": {\"state\": ".utf8)) -> InMemoryClaudeRedemptionRecord {
+        let backing = InMemoryClaudeRedemptionRecord()
+        backing.stored = bytes
+        store.setClaudeRedemptionRecordForTesting(backing)
+        return backing
+    }
+
+    /// A check finds the record corrupt (if nothing has yet); the automatic
+    /// rebuild follows.
+    private func awaitAutomaticRebuild(probing login: String) async throws {
+        _ = store.claudeRedemptionStatus(ofClaudeLogin: login)
+        try await waitUntil { !self.store.claudeRedemptionRecordUnreadable }
+    }
+
+    /// Codex round 5. A record that does not decode is quarantined (kept,
+    /// never deleted) and rebuilt automatically, confirmed, with EVERY
+    /// credential the widget knows marked pending: every profile's stored
+    /// login and both halves of the CLI's store. Nothing is sent while it is
+    /// corrupt; afterwards none of those credentials is adopted, synced or
+    /// applied until renewed. A credential first seen after the rebuild is
+    /// clean.
+    func testACorruptRecordIsQuarantinedAndRebuiltWithEveryKnownLoginPending() async throws {
+        let damaged = Data("{\"0123\": {\"state\": ".utf8)
+        let backing = installCorruptRecord(damaged)
+        let original = login("account", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: original)
+        let otherLogin = try XCTUnwrap(cliStore.keychain)
+        let fileOnly = login("stale", generation: 3, expiresIn: -3600, deadlineIn: 20 * 86_400)
+        cliStore.set(keychain: otherLogin, file: fileOnly)
+
+        _ = await sync.ensureFreshCredentials(
+            for: account.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        XCTAssertTrue(endpoint.redeemed.isEmpty, "nothing is sent while the record does not decode")
+        try await waitUntil { !self.store.claudeRedemptionRecordUnreadable }
+
+        XCTAssertEqual(backing.quarantined.count, 1)
+        XCTAssertTrue(backing.quarantined.keys.first?.hasPrefix("claude-redeemed-logins.corrupt-") ?? false)
+        XCTAssertEqual(backing.quarantined.values.first ?? nil, damaged, "the damaged record is preserved")
+        for (known, why) in [(original, "a profile's login"), (otherLogin, "the CLI's Keychain item"), (fileOnly, "the CLI's file")] {
+            XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: known), .pending, why)
+        }
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: login("fresh", expiresIn: 3600, deadlineIn: 20 * 86_400)),
+                       .unmarked, "first seen after the rebuild: clean")
+        XCTAssertThrowsError(try sync.applyProfileCredentials(account.id), "not applied until renewed")
+        XCTAssertThrowsError(try sync.syncToProfile(account.id), "not synced until renewed")
+        let reSyncOwner = seedOwner("other", holding: login("other", generation: 4, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400))
+        try await adopt(.reSync, into: reSyncOwner.id)
+        XCTAssertEqual(refreshToken(storedLogin(reSyncOwner.id)), "other-refresh-4", "not adopted until renewed")
+    }
+
+    /// After the rebuild the owner's login is pending, and the owner keeps
+    /// working: the CLI renews its own login and the owner adopts the clean
+    /// successor. The widget never renews the CLI's login itself.
+    func testAPendingOwnerKeepsWorkingThroughTheCLIsOwnRenewal() async throws {
+        _ = installCorruptRecord()
+        let held = login("owner", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let owner = seedOwner("owner", holding: held)
+        cliStore.set(keychain: held, file: nil)
+        try await awaitAutomaticRebuild(probing: held)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: held), .pending)
+
+        let renewed = login("owner", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        cliStore.set(keychain: renewed, file: nil)
+        let outcome = await runSweepAdoption()
+
+        XCTAssertEqual(outcome, .owner(owner.id, adopted: true))
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-2")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: renewed), .unmarked, "the CLI's successor is clean")
+        XCTAssertTrue(endpoint.redeemed.isEmpty, "the widget never renews the CLI's login")
+    }
+
+    /// A hand-off renews a pending target whatever its expiry, and applies the
+    /// clean successor.
+    func testAHandOffRenewsAPendingTargetAndAppliesItsCleanSuccessor() async throws {
+        _ = installCorruptRecord()
+        let pendingLogin = login("target", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let outgoing = profile("outgoing", login: login("outgoing", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400))
+        let target = profile("target", login: pendingLogin)
+        seed([outgoing, target], focused: outgoing.id)
+        manager.claimActiveClaudeOwnership(outgoing.id)
+        cliStore.set(keychain: outgoing.cliCredentialsJSON, file: nil)
+        try await awaitAutomaticRebuild(probing: pendingLogin)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: pendingLogin), .pending)
+
+        let outcome = await manager.activateProfileDetailed(target.id, userInitiated: false)
+
+        XCTAssertEqual(outcome, .activated)
+        XCTAssertEqual(endpoint.redeemed, ["target-refresh-1"], "renewed first, though it had three hours left")
+        XCTAssertEqual(refreshToken(cliStore.keychain), "target-refresh-2", "the clean successor is applied")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: pendingLogin), .consumed)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: storedLogin(target.id) ?? ""), .unmarked)
+    }
+
+    /// A `/login` after the rebuild is a new credential: synced normally.
+    func testALoginAfterTheRebuildIsSyncable() async throws {
+        _ = installCorruptRecord()
+        let old = login("owner", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let owner = seedOwner("owner", holding: old)
+        cliStore.set(keychain: old, file: nil)
+        try await awaitAutomaticRebuild(probing: old)
+        XCTAssertThrowsError(try sync.syncToProfile(owner.id), "the CLI's known login is pending")
+
+        cliStore.set(keychain: login("owner", generation: 7, expiresIn: 8 * 3600, deadlineIn: 30 * 86_400), file: nil)
+        XCTAssertNoThrow(try sync.syncToProfile(owner.id))
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-7")
+    }
+
+    /// A read error that persists is never rebuilt on its own. Once it has
+    /// lasted ten minutes, Repair is offered. A Repair whose quarantine fails
+    /// changes nothing and stays closed, saying why; a Repair that succeeds
+    /// preserves the unreadable record and rebuilds with every known login
+    /// pending.
+    func testAPersistentReadErrorOffersRepairAfterTenMinutes() async throws {
+        let backing = InMemoryClaudeRedemptionRecord()
+        let unreadableBytes = Data("{}".utf8)
+        backing.stored = unreadableBytes
+        backing.failReads = true
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let held = login("account", expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: held)
+
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: held), .unknown)
+        XCTAssertFalse(store.claudeRedemptionRepairOffered, "not before ten minutes")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: held, now: Date().addingTimeInterval(9 * 60)), .unknown)
+        XCTAssertFalse(store.claudeRedemptionRepairOffered, "nine minutes: not yet")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: held, now: Date().addingTimeInterval(601)), .unknown)
+        XCTAssertTrue(store.claudeRedemptionRepairOffered)
+        try await waitUntil { self.manager.claudeRedemptionRepairOffered }
+        XCTAssertTrue(backing.quarantined.isEmpty, "a read error is never rebuilt on its own")
+
+        backing.failQuarantine = true
+        let failed = await manager.repairClaudeRedemptionRecord()
+        guard case .quarantineFailed = failed else { return XCTFail("expected a failed quarantine, got \(failed)") }
+        XCTAssertTrue(store.claudeRedemptionRecordUnreadable, "still closed")
+        XCTAssertNotNil(store.claudeRedemptionRebuildFailure, "and says why")
+        XCTAssertTrue(store.claudeRedemptionRepairOffered, "Repair is still offered")
+        XCTAssertEqual(backing.stored, unreadableBytes, "nothing replaced")
+        XCTAssertThrowsError(try sync.applyProfileCredentials(account.id))
+
+        backing.failQuarantine = false
+        let repaired = await manager.repairClaudeRedemptionRecord()
+        guard case .rebuilt = repaired else { return XCTFail("expected a rebuild, got \(repaired)") }
+        XCTAssertFalse(store.claudeRedemptionRecordUnreadable)
+        XCTAssertEqual(backing.quarantined.values.first ?? nil, unreadableBytes, "the unreadable record is preserved")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: held), .pending)
+        try await waitUntil { !self.manager.claudeRedemptionRecordUnreadable && !self.manager.claudeRedemptionRepairOffered }
+    }
+
+    /// The notification's button is Repair.
+    func testTheRepairNotificationActionRunsRepair() {
+        XCTAssertEqual(NotificationManager.responseAction(
+            actionIdentifier: NotificationManager.repairClaudeRedemptionRecordActionIdentifier,
+            categoryIdentifier: NotificationManager.claudeRedemptionRecordCategoryIdentifier
+        ), .repairClaudeRedemptionRecord)
+        XCTAssertEqual(NotificationManager.claudeRedemptionRecordCategory.actions.map(\.identifier),
+                       [NotificationManager.repairClaudeRedemptionRecordActionIdentifier])
+    }
+
+    /// The app's file record, in a temporary directory: a damaged record is
+    /// preserved under the quarantine name (an unreadable one too, through a
+    /// hard link that needs no read) and replaced atomically; a taken
+    /// quarantine name is never overwritten.
+    func testTheFileRecordPreservesADamagedRecordAndReplacesIt() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory.appendingPathComponent("cuw-redemption-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("record.json")
+        defer {
+            for item in (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [] {
+                try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: directory.appendingPathComponent(item).path)
+            }
+            try? fileManager.removeItem(at: directory)
+        }
+        let record = FileClaudeRedemptionRecord(url: path)
+
+        try Data("{not json".utf8).write(to: path)
+        try record.replaceQuarantining(with: Data("{}".utf8), quarantineName: "q.json")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("q.json")), Data("{not json".utf8))
+        XCTAssertEqual(try record.read(), Data("{}".utf8))
+
+        try Data("{\"secret history\":1}".utf8).write(to: path)
+        try fileManager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path.path)
+        XCTAssertThrowsError(try record.read(), "unreadable")
+        try record.replaceQuarantining(with: Data("{\"a\":1}".utf8), quarantineName: "q.json")
+        XCTAssertEqual(try record.read(), Data("{\"a\":1}".utf8), "replaced, and readable")
+        let second = directory.appendingPathComponent("q-2.json")
+        XCTAssertTrue(fileManager.fileExists(atPath: second.path), "the taken name is never overwritten")
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: second.path)
+        XCTAssertEqual(try Data(contentsOf: second), Data("{\"secret history\":1}".utf8), "the unreadable bytes are preserved")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("q.json")), Data("{not json".utf8))
     }
 }
 

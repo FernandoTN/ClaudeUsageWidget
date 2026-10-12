@@ -572,6 +572,11 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
      - the CLI's store is inspected again after the write, right before sending;
      - a record that cannot be read fails closed (no Claude login is renewed, adopted,
        synced or applied, with a banner) instead of reading as empty.
+
+     Round 5 added the way out: the damaged record is preserved and replaced by a
+     conservative rebuild that marks every login the widget knows as pending. It runs
+     automatically for a corrupt record, and by Repair for an unreadable one. Each of
+     those logins then renews before it is used again.
    - The file is read only when the Keychain item is confirmed absent. No incomplete
      login (missing an access token, refresh token or expiry) is ever adopted, synced
      or applied.

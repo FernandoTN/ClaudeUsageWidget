@@ -38,6 +38,9 @@ struct DashboardActions {
     /// The Codex block's "Restart" while the daemon still holds the previous
     /// login (`CodexDaemonService.restartDaemon`, verified exit).
     var restartCodexDaemon: () async -> Void = {}
+    /// The Claude redemption record banner's "Repair"
+    /// (`ProfileManager.repairClaudeRedemptionRecord`).
+    var repairClaudeRedemptionRecord: () async -> Void = {}
 }
 
 // MARK: - Store
@@ -298,7 +301,12 @@ extension DashboardBanner {
         }
     }
 
-    struct Action { var title: String; var sectionRawValue: String }
+    struct Action {
+        var title: String
+        var sectionRawValue: String?
+        /// Runs the redemption record's Repair instead of opening Settings.
+        var repairsRedemptionRecord = false
+    }
 
     var tier: Tier {
         switch self {
@@ -331,6 +339,8 @@ extension DashboardBanner {
     var action: Action? {
         switch self {
         case .deadLogins: return Action(title: "Accounts ›", sectionRawValue: "accounts")
+        case .claudeRedemptionRecordUnreadable(let repairOffered):
+            return repairOffered ? Action(title: "notification.claude_redemption_repair.action".localized, sectionRawValue: nil, repairsRedemptionRecord: true) : nil
         default: return nil
         }
     }
@@ -570,7 +580,13 @@ struct DashboardView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             if let action = banner.action {
-                Button(action.title) { actions.openSettings(action.sectionRawValue) }
+                Button(action.title) {
+                    if action.repairsRedemptionRecord {
+                        Task { await actions.repairClaudeRedemptionRecord() }
+                    } else {
+                        actions.openSettings(action.sectionRawValue)
+                    }
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 9.5, weight: .semibold))
                     .foregroundColor(DesignRole.action.color)

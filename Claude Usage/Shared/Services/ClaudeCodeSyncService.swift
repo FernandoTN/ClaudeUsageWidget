@@ -1526,6 +1526,42 @@ class ClaudeCodeSyncService {
         }
     }
 
+    // MARK: - Rebuilding a Damaged Redemption Record
+
+    /// The CONSERVATIVE REBUILD (Codex round 5): a redemption record that does
+    /// not decode is rebuilt automatically, and one that cannot be read is
+    /// rebuilt by Repair. Every credential this widget knows is marked
+    /// PENDING in the new record — every profile's stored login
+    /// (`ProfileStore`) and whatever either half of the CLI's store holds, a
+    /// truncated item included (its refresh token is recovered by pattern).
+    /// Recovery then takes the existing paths: a pending login is renewed by
+    /// its own profile, or by a hand-off whatever its expiry, into a clean
+    /// successor; the CLI renews its own login and the owner adopts the clean
+    /// successor; a refused grant is dead and `/login` repairs it; a fresh
+    /// `/login` is a new, clean credential.
+    func rebuildRedemptionRecord(reason: String) async -> ProfileStore.ClaudeRedemptionRebuildOutcome {
+        let halves = await withCheckedContinuation { (continuation: CheckedContinuation<(keychain: StoreHalf, file: StoreHalf), Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: self.readCLIStoreHalves())
+            }
+        }
+        var cliLogins: [String] = []
+        var unreadable: [String] = []
+        for (name, half) in [("Keychain item", halves.keychain), ("credentials file", halves.file)] {
+            switch half {
+            case .contents(let raw): cliLogins.append(raw)
+            case .unreadable: unreadable.append(name)
+            case .absent: break
+            }
+        }
+        if !unreadable.isEmpty {
+            LoggingService.shared.log("Claude: rebuilding the redemption record without the CLI's \(unreadable.joined(separator: " and ")) (unreadable now)")
+        }
+        let outcome = await ProfileStore.shared.rebuildClaudeRedemptionRecord(alsoPending: cliLogins)
+        LoggingService.shared.log("Claude: redemption record rebuild (\(reason)): \(outcome)")
+        return outcome
+    }
+
     // MARK: - Awaiting CLI Renewal
 
     /// Why a login refused a redemption, with its access token spent, is still

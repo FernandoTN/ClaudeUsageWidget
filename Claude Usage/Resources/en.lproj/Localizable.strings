@@ -324,6 +324,10 @@
 "notification.duplicate_claude_account.message" = "%@ hold logins for the SAME Anthropic account. Their usage is one quota shown twice, and auto-switch will not rotate between them. Remove one, or log it in to a different account.";
 "notification.claude_redemption_record.title" = "Claude login switching paused";
 "notification.claude_redemption_record.message" = "The widget's record of the Claude logins it has renewed can't be read, so it renews, adopts, syncs and switches to no Claude login until it can. It keeps retrying on its own.";
+"notification.claude_redemption_repair.title" = "Repair the Claude login record?";
+"notification.claude_redemption_repair.message" = "The widget's record of renewed Claude logins still can't be read. Repair keeps the damaged file, writes a new record and marks every Claude login it knows as needing renewal; each renews before it is used again.";
+"notification.claude_redemption_repair.message_failed" = "Repairing the Claude login record failed (%@). Claude renewals and switches stay paused; try Repair again.";
+"notification.claude_redemption_repair.action" = "Repair";
 "notification.preferences_degraded.title" = "Preferences service unavailable";
 "notification.preferences_degraded.message" = "Showing cached data; settings changes may not save until macOS's cfprefsd is restarted.";
 "codex.about_title" = "About Codex accounts";
@@ -806,6 +810,7 @@
 "popover.banner.updated_ago" = "Updated %dm ago";
 "popover.banner.preferences_degraded" = "macOS preferences unavailable — cached data; changes may not save";
 "popover.banner.claude_redemption_record" = "Claude login record unreadable — renewals and switches paused";
+"popover.banner.claude_redemption_record_repair" = "Claude login record unreadable — renewals and switches paused. Click to repair.";
 
 // MARK: - Overage Balance
 "popover.overage_balance" = "Balance";
