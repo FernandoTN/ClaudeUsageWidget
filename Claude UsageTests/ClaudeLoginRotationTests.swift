@@ -2547,6 +2547,35 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(refreshToken(storedLogin(owner.id)), "b-refresh-2", "readable again: decided as usual")
     }
 
+    /// The unreadable record is a status, not just a refusal: the store's flag
+    /// (and the published one the banners read) is set while it lasts and
+    /// cleared once the record reads again.
+    func testAnUnreadableRecordIsSurfacedUntilItReadsAgain() async throws {
+        let backing = InMemoryClaudeRedemptionRecord()
+        backing.failReads = true
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let probe = login("account", expiresIn: 3600, deadlineIn: 20 * 86_400)
+
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: probe), .unknown)
+        XCTAssertTrue(store.claudeRedemptionRecordUnreadable)
+        try await waitUntil { self.manager.claudeRedemptionRecordUnreadable }
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: probe), .unknown, "not read again before the retry interval")
+
+        backing.failReads = false
+        store.reloadClaudeRedemptionRecordForTesting()
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: probe), .unmarked)
+        XCTAssertFalse(store.claudeRedemptionRecordUnreadable)
+        try await waitUntil { !self.manager.claudeRedemptionRecordUnreadable }
+    }
+
+    private func waitUntil(_ condition: @escaping () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while !condition(), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(condition(), "never became true", file: file, line: line)
+    }
+
     /// A record whose bytes do not decode is unreadable too: it is never
     /// replaced by the partial history this process could write.
     func testACorruptRecordIsNeverReplacedByAPartialHistory() async {

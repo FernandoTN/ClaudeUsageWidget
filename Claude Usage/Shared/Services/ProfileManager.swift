@@ -56,6 +56,13 @@ class ProfileManager: ObservableObject {
     /// Observer for `.preferencesDegradedStateChanged`.
     private var preferencesDegradedObserver: NSObjectProtocol?
 
+    /// Mirrors `ProfileStore.claudeRedemptionRecordUnreadable` for SwiftUI.
+    /// True while the record of the Claude logins this app redeemed cannot be
+    /// read: every Claude renewal, adoption, Sync and switch is refused until
+    /// it can (it is retried by itself).
+    @Published private(set) var claudeRedemptionRecordUnreadable: Bool = false
+    private var redemptionRecordObserver: NSObjectProtocol?
+
     private let profileStore = ProfileStore.shared
     private let cliSyncService = ClaudeCodeSyncService.shared
 
@@ -802,11 +809,17 @@ class ProfileManager: ObservableObject {
             // pending one was renewed above if it could be; still pending, it
             // is refused without a /login notice (a later renewal may resolve
             // it). A consumed one lost its successor: only /login renews it.
+            // An unreadable record confirms nothing about any login: refused
+            // too, without a /login notice (the record heals by itself).
             let redemption = profileStore.claudeRedemptionStatus(ofClaudeLogin: cliJSON)
             if redemption != .unmarked {
                 refusedProviders.append(.claude)
                 if redemption == .consumed { cliSyncService.notifyReloginNeeded(for: id, force: false) }
-                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' holds a login this app already sent to the token endpoint (\(redemption)) — NOT applied, outgoing login kept")
+                if redemption == .unknown {
+                    LoggingService.shared.log("⛔️ '\(updatedProfile.name)' NOT applied — the redemption record cannot be read, so its login cannot be confirmed unredeemed; outgoing login kept")
+                } else {
+                    LoggingService.shared.log("⛔️ '\(updatedProfile.name)' holds a login this app already sent to the token endpoint (\(redemption)) — NOT applied, outgoing login kept")
+                }
             } else if pendingRenewal, renewal == .renewable, isExplicitClaudeOwner(id) {
                 LoggingService.shared.log("'\(updatedProfile.name)' is the CLI's own login, awaiting the CLI's renewal — nothing to apply")
             } else if pendingRenewal {
@@ -2098,6 +2111,29 @@ class ProfileManager: ObservableObject {
             }
         }
         syncPreferencesDegradedState()
+        if redemptionRecordObserver == nil {
+            redemptionRecordObserver = NotificationCenter.default.addObserver(
+                forName: .claudeRedemptionRecordHealthChanged,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    ProfileManager.shared.syncRedemptionRecordState()
+                }
+            }
+            syncRedemptionRecordState()
+        }
+    }
+
+    /// One user notification per episode; the dashboard and popover banners
+    /// read the published flag.
+    private func syncRedemptionRecordState() {
+        let unreadable = profileStore.claudeRedemptionRecordUnreadable
+        guard unreadable != claudeRedemptionRecordUnreadable else { return }
+        claudeRedemptionRecordUnreadable = unreadable
+        if unreadable {
+            NotificationManager.shared.sendClaudeRedemptionRecordUnreadableNotification()
+        }
     }
 
     private func syncPreferencesDegradedState() {

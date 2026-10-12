@@ -798,4 +798,8 @@ struct FleetSummaryContext {
     /// (`MenuBarManager.makeFleetCapacityForecast`); nil with no usable
     /// measured account.
     var capacity: FleetCapacityForecast? = nil
+    /// The record of the Claude logins this app redeemed cannot be read
+    /// (`ProfileStore.claudeRedemptionRecordUnreadable`): Claude renewals and
+    /// switches are paused.
+    var claudeRedemptionRecordUnreadable: Bool = false
 }

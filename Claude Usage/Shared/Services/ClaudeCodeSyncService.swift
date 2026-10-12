@@ -685,8 +685,13 @@ class ClaudeCodeSyncService {
         // A credential whose grant this app sent (the redemption record) may
         // be spent whatever its access token answers: storing it would only
         // keep a login that is never applied, and its successor may live on.
-        let redemption = ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: system.json)
-        if redemption != .unmarked {
+        switch ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: system.json) {
+        case .unmarked:
+            break
+        case .unknown:
+            LoggingService.shared.log("⛔️ Claude sync refused: the redemption record cannot be read, so the CLI's login cannot be confirmed unredeemed")
+            throw ClaudeCodeError.redemptionRecordUnreadable
+        case let redemption:
             LoggingService.shared.log("⛔️ Claude sync refused: the CLI holds a login this app already redeemed (\(redemption))")
             throw ClaudeCodeError.redeemedLogin
         }
@@ -767,8 +772,13 @@ class ClaudeCodeSyncService {
             throw ClaudeCodeError.incompleteLogin
         }
         // Nor one whose grant this app already sent: it may be spent.
-        let redemption = ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: jsonData)
-        if redemption != .unmarked {
+        switch ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: jsonData) {
+        case .unmarked:
+            break
+        case .unknown:
+            LoggingService.shared.log("⛔️ Not applying '\(profile.name)': the redemption record cannot be read, so its login cannot be confirmed unredeemed")
+            throw ClaudeCodeError.redemptionRecordUnreadable
+        case let redemption:
             LoggingService.shared.log("⛔️ Not applying '\(profile.name)': this app already redeemed its login (\(redemption))")
             throw ClaudeCodeError.redeemedLogin
         }
@@ -1096,7 +1106,10 @@ class ClaudeCodeSyncService {
         // Back off dead logins: a revoked refresh token cannot heal itself, so
         // don't redeem it again on every sweep (that was 120 failed calls/hour).
         // The flag re-arms when fresh credentials arrive via re-sync/adoption.
-        let canRedeem = !refreshToken.isEmpty && !reloginNotifiedProfiles.contains(profileId) && redemptionMark != .consumed
+        // An unreadable record confirms nothing: no grant is sent until it can
+        // be read (and a pending mark could not be recorded anyway).
+        let canRedeem = !refreshToken.isEmpty && !reloginNotifiedProfiles.contains(profileId)
+            && redemptionMark != .consumed && redemptionMark != .unknown
         let consumed = refreshToken.isEmpty ? nil : ClaudeLoginLifetime.fingerprint(refreshToken)
         var decision = ClaudeRefreshPolicy.Decision.notNeeded
         var inspection = CLIStoreInspection(holds: nil, holdsDeadMarker: false)
@@ -1140,17 +1153,33 @@ class ClaudeCodeSyncService {
             // BEFORE the grant goes out; it is promoted on success and stays on
             // a crash or an ambiguous answer. A marked credential is never
             // adopted, synced or applied. No confirmed record: no grant.
-            var sendable = await ProfileStore.shared.markClaudeRedemptionPending(storedJSON).maySend
+            // Only a mark THIS attempt introduced is ever taken back. A pending
+            // mark an earlier attempt left stays whatever this one gets back:
+            // a 429, a failure before sending or a withdrawal says nothing
+            // about the earlier request (Codex round 4, major 1).
+            let marked = await ProfileStore.shared.markClaudeRedemptionPending(storedJSON)
+            var sendable = marked.maySend
             if !sendable {
                 LoggingService.shared.logError("ensureFreshCredentials: NOT redeeming '\(profile.name)' — its redemption could not be recorded on disk first")
-            } else if currentDecision(consumed) != .redeem {
-                // The write was an await: ownership or a hand-off may have
-                // moved. The CLI's store cannot have taken this token
-                // meanwhile: only an activation's apply writes it, and a
-                // hand-off of this profile or token waits for this call.
-                sendable = false
+            } else {
+                // The write was an await. Inspect BOTH halves of the CLI's
+                // store again — an external writer (the CLI, or anything
+                // restoring a copy) may have put this token there meanwhile —
+                // then decide on ownership and hand-offs, with NO await
+                // between this inspection and the request (Codex round 4,
+                // major 3). `refreshOAuthToken` does not suspend before it
+                // sends.
+                inspection = await inspectCLIStoreOffMain(for: consumed)
+                if currentDecision(consumed) != .redeem {
+                    sendable = false
+                    let reason = inspection.holds == false
+                        ? "the CLI's ownership or a hand-off moved"
+                        : "the CLI's store holds this token now, or could not be read"
+                    LoggingService.shared.log("ensureFreshCredentials: NOT redeeming '\(profile.name)' — \(reason) while the redemption was being recorded")
+                }
+            }
+            if !sendable, marked == .introduced {
                 await ProfileStore.shared.clearClaudeRedemptionPending(storedJSON)
-                LoggingService.shared.log("ensureFreshCredentials: NOT redeeming '\(profile.name)' — the CLI's ownership or a hand-off moved while the redemption was recorded")
             }
             var successor: String?
             if sendable {
@@ -1166,7 +1195,11 @@ class ClaudeCodeSyncService {
                         ProfileStore.shared.recordRefusedClaudeLogin(storedJSON)
                         notifyReloginNeeded(for: profileId)
                     case .notProcessed:
-                        await ProfileStore.shared.clearClaudeRedemptionPending(storedJSON)
+                        if marked == .introduced {
+                            await ProfileStore.shared.clearClaudeRedemptionPending(storedJSON)
+                        } else {
+                            LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)''s retry was not processed — the earlier attempt's pending mark stands")
+                        }
                     case .ambiguous:
                         LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)''s redemption got no readable answer — its login stays marked pending (never adopted, synced or applied) until a redemption resolves it")
                     }
@@ -1260,6 +1293,9 @@ class ClaudeCodeSyncService {
     /// Identity reads with no usable answer (a 401/403, a 5xx, no answer, a
     /// 429), per `credentialKey`, with the answer and when it may be asked again.
     private var unansweredReads: [String: (probe: IdentityProbe, until: Date)] = [:]
+    /// Cached-kind lookups (`fetchAccountIdentity`) that got no answer, per
+    /// access-token fingerprint, with when they may be asked again.
+    private var unansweredLookups: [String: Date] = [:]
     /// Adoption decisions that refused, per profile, pair of credentials and
     /// stamp, with when they may be made again.
     private var refusedDecisions: [String: (verdict: AdoptionVerdict, until: Date)] = [:]
@@ -1426,6 +1462,7 @@ class ClaudeCodeSyncService {
     /// as if `failedReadHold` and the hold had passed.
     func expireIdentityBudgetForTesting() {
         unansweredReads = [:]
+        unansweredLookups = [:]
         refusedDecisions = [:]
         identityBackoffUntil = nil
         identityBackoffStep = 0
@@ -1668,25 +1705,41 @@ class ClaudeCodeSyncService {
     /// is. Returns nil on any failure — callers must treat unknown identity as
     /// "no evidence", never as a mismatch.
     func fetchAccountIdentity(accessToken: String) async -> AccountIdentity? {
-        let held = identityBackoffUntil.map { $0 > Date() } ?? false
+        if identityProbeForTesting == nil, identityFetcherForTesting == nil {
+            // No test sends a token to the identity endpoint.
+            if RealCredentialStoreGuard.refuse("identity endpoint") { return nil }
+            if let cached = identityCache[String(accessToken.suffix(24))] { return cached }
+        }
+        // A lookup that got no answer is not repeated for `failedReadHold`
+        // (Codex round 4, minor (a): after a relaunch the sweep routes on
+        // this lookup every pass), and none is sent during a 429's hold.
+        let lookupKey = ClaudeLoginLifetime.fingerprint(accessToken)
+        if let until = unansweredLookups[lookupKey], until > Date() { return nil }
+        if let until = identityBackoffUntil, until > Date() { return nil }
+
+        let identity: AccountIdentity?
         if let probe = identityProbeForTesting {
-            guard !held else { return nil }
             let answer = await probe(accessToken, false)
             noteIdentityAnswer(answer)
-            if case .identified(let identity) = answer { return identity }
-            return nil
+            if case .identified(let found) = answer { identity = found } else { identity = nil }
+        } else if let fetch = identityFetcherForTesting {
+            identity = await fetch(accessToken)
+        } else {
+            let answer = await requestIdentity(accessToken: accessToken)
+            noteIdentityAnswer(answer)
+            if case .identified(let found) = answer {
+                cacheIdentity(found, for: accessToken)
+                identity = found
+            } else {
+                identity = nil
+            }
         }
-        if let fetch = identityFetcherForTesting { return held ? nil : await fetch(accessToken) }
-        // No test sends a token to the identity endpoint.
-        if RealCredentialStoreGuard.refuse("identity endpoint") { return nil }
-        let cacheKey = String(accessToken.suffix(24))
-        if let cached = identityCache[cacheKey] { return cached }
-        guard !held else { return nil }
-
-        let answer = await requestIdentity(accessToken: accessToken)
-        noteIdentityAnswer(answer)
-        guard case .identified(let identity) = answer else { return nil }
-        cacheIdentity(identity, for: accessToken)
+        if identity == nil {
+            if unansweredLookups.count >= 128 { unansweredLookups = unansweredLookups.filter { $0.value > Date() } }
+            unansweredLookups[lookupKey] = Date().addingTimeInterval(Self.failedReadHold)
+        } else {
+            unansweredLookups[lookupKey] = nil
+        }
         return identity
     }
 
@@ -2162,6 +2215,7 @@ enum ClaudeCodeError: LocalizedError {
     case accountAlreadySynced(profileName: String)
     case incompleteLogin
     case redeemedLogin
+    case redemptionRecordUnreadable
 
     var errorDescription: String? {
         switch self {
@@ -2183,6 +2237,8 @@ enum ClaudeCodeError: LocalizedError {
             return "Claude Code's login could not be read in full (no refresh token or no expiry). Run `claude` and `/login`, then sync again."
         case .redeemedLogin:
             return "This Claude Code login was already renewed by this app, so it may no longer work. Run `claude` and `/login`, then sync again."
+        case .redemptionRecordUnreadable:
+            return "The widget's record of the Claude logins it has renewed cannot be read, so no Claude login can be synced or switched to until it can. It is retried automatically."
         }
     }
 }

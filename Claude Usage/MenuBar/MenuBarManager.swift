@@ -4745,7 +4745,8 @@ private func observeCredentialChanges() {
             preferencesDegraded: profileManager.preferencesDegraded,
             isSwitching: profileManager.isSwitchingProfile,
             now: now,
-            capacity: makeFleetCapacityForecast(now: now)
+            capacity: makeFleetCapacityForecast(now: now),
+            claudeRedemptionRecordUnreadable: profileManager.claudeRedemptionRecordUnreadable
         )
     }
 

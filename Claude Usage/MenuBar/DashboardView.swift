@@ -302,7 +302,7 @@ extension DashboardBanner {
 
     var tier: Tier {
         switch self {
-        case .preferencesDegraded: return .blocking
+        case .preferencesDegraded, .claudeRedemptionRecordUnreadable: return .blocking
         case .deadLogins: return .actionable
         case .noCandidate, .hiddenByOverflow: return .informational
         }
@@ -311,6 +311,7 @@ extension DashboardBanner {
     var icon: String {
         switch self {
         case .preferencesDegraded: return "externaldrive.badge.exclamationmark"
+        case .claudeRedemptionRecordUnreadable: return "lock.trianglebadge.exclamationmark"
         case .deadLogins: return "person.crop.circle.badge.exclamationmark"
         case .noCandidate: return "arrow.right.circle"
         case .hiddenByOverflow: return "eye.slash"
@@ -320,6 +321,7 @@ extension DashboardBanner {
     var message: String {
         switch self {
         case .preferencesDegraded: return "popover.banner.preferences_degraded".localized
+        case .claudeRedemptionRecordUnreadable: return "popover.banner.claude_redemption_record".localized
         case .deadLogins(let count): return "\(count) dead login\(count == 1 ? "" : "s") — repair in Accounts"
         case .noCandidate(let provider): return "\(DashboardFormatting.title(provider)): nowhere to switch to"
         case .hiddenByOverflow(let provider): return "\(DashboardFormatting.title(provider)) is not visible in the menu bar"

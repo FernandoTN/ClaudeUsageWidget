@@ -685,6 +685,7 @@ class ProfileStore {
         refusedLock.unlock()
         redemptionLock.lock()
         redemptions = nil  // re-read from its backing, likewise
+        redemptionReadFailedAt = nil
         redemptionLock.unlock()
         credentialHydrationState = .loading
         warmCacheFromKeychain()
@@ -1566,21 +1567,66 @@ class ProfileStore {
     private var redemptionBacking: ClaudeRedemptionRecordBacking = RealCredentialStoreGuard.isTestRun
         ? InMemoryClaudeRedemptionRecord()
         : FileClaudeRedemptionRecord(url: FileClaudeRedemptionRecord.defaultURL)
+    /// The record as last read, plus this process's own changes. Nil until it
+    /// is read, and STAYS nil while it cannot be read or decoded: an
+    /// unreadable record is never taken for an empty one (Codex round 4,
+    /// major 2), never written over, and read again later.
     private var redemptions: [String: ClaudeRedemptionEntry]?
     private let redemptionLock = NSLock()
     /// Serial: each write puts the snapshot taken when it was enqueued, so the
     /// record ends on the latest one.
     private let redemptionQueue = DispatchQueue(label: "com.claudewidget.profilestore.redemptions", qos: .userInitiated)
+    /// When the record last failed to read. It is read again at most every
+    /// `redemptionRetryInterval`, not on every check.
+    private var redemptionReadFailedAt: Date?
+    private static let redemptionRetryInterval: TimeInterval = 15
+    private var redemptionRecordUnreadable = false
 
-    /// Under `redemptionLock`.
-    private func loadedRedemptions(now: Date) -> [String: ClaudeRedemptionEntry] {
+    /// True while the redemption record cannot be read or decoded. Every
+    /// Claude redemption, adoption, explicit Sync and apply is refused
+    /// meanwhile (`ClaudeRedemptionStatus.unknown`). Posts
+    /// `.claudeRedemptionRecordHealthChanged` on each transition.
+    var claudeRedemptionRecordUnreadable: Bool {
+        redemptionLock.lock()
+        defer { redemptionLock.unlock() }
+        return redemptionRecordUnreadable
+    }
+
+    /// Under `redemptionLock`. Nil: the record cannot be read, and nothing
+    /// about any credential can be confirmed. A confirmed absence (the first
+    /// launch) is an empty record.
+    private func loadedRedemptions(now: Date) -> [String: ClaudeRedemptionEntry]? {
         if redemptions == nil {
-            redemptions = (try? redemptionBacking.read())
-                .flatMap { $0 }
-                .flatMap { try? JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) } ?? [:]
+            if let failedAt = redemptionReadFailedAt, now.timeIntervalSince(failedAt) < Self.redemptionRetryInterval {
+                return nil
+            }
+            do {
+                let data = try redemptionBacking.read()
+                redemptions = try data.map { try JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) } ?? [:]
+                redemptionReadFailedAt = nil
+                noteRedemptionRecordHealth(unreadable: false, error: nil)
+            } catch {
+                redemptionReadFailedAt = now
+                noteRedemptionRecordHealth(unreadable: true, error: error)
+                return nil
+            }
         }
         let cutoff = now.timeIntervalSince1970
         return redemptions!.filter { $0.value.deadline == 0 || $0.value.deadline > cutoff }
+    }
+
+    /// Under `redemptionLock`. Logs and posts each transition, once.
+    private func noteRedemptionRecordHealth(unreadable: Bool, error: Error?) {
+        guard unreadable != redemptionRecordUnreadable else { return }
+        redemptionRecordUnreadable = unreadable
+        if let error {
+            LoggingService.shared.logError("ProfileStore: ⛔️ the Claude redemption record cannot be read — no Claude login is renewed, adopted, synced or applied until it can (retried every \(Int(Self.redemptionRetryInterval)) s)", error: error)
+        } else {
+            LoggingService.shared.log("ProfileStore: the Claude redemption record is readable again")
+        }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .claudeRedemptionRecordHealthChanged, object: nil)
+        }
     }
 
     /// What the record says about one credential.
@@ -1600,7 +1646,8 @@ class ProfileStore {
         guard let tag = ClaudeLoginLifetime.loginTag(login) else { return .unmarked }
         redemptionLock.lock()
         defer { redemptionLock.unlock() }
-        switch loadedRedemptions(now: now)[tag]?.state {
+        guard let record = loadedRedemptions(now: now) else { return .unknown }
+        switch record[tag]?.state {
         case .pending: return .pending
         case .consumed: return .consumed
         case nil: return .unmarked
@@ -1629,7 +1676,10 @@ class ProfileStore {
     func markClaudeRedemptionPending(_ login: String, now: Date = Date()) async -> PendingMarkResult {
         guard let tag = ClaudeLoginLifetime.loginTag(login) else { return .notRecorded }
         redemptionLock.lock()
-        var record = loadedRedemptions(now: now)
+        guard var record = loadedRedemptions(now: now) else {
+            redemptionLock.unlock()
+            return .notRecorded
+        }
         let previous = record[tag]
         guard previous?.state != .consumed else {
             redemptionLock.unlock()
@@ -1654,7 +1704,11 @@ class ProfileStore {
     func markClaudeRedemptionConsumed(_ login: String, now: Date = Date()) async {
         guard let tag = ClaudeLoginLifetime.loginTag(login) else { return }
         redemptionLock.lock()
-        var record = loadedRedemptions(now: now)
+        guard var record = loadedRedemptions(now: now) else {
+            redemptionLock.unlock()
+            LoggingService.shared.logError("ProfileStore: a redemption's consumed mark could not be recorded — the record cannot be read")
+            return
+        }
         record[tag] = ClaudeRedemptionEntry(state: .consumed, deadline: ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0)
         redemptions = record
         redemptionLock.unlock()
@@ -1668,8 +1722,7 @@ class ProfileStore {
     func clearClaudeRedemptionPending(_ login: String, now: Date = Date()) async {
         guard let tag = ClaudeLoginLifetime.loginTag(login) else { return }
         redemptionLock.lock()
-        var record = loadedRedemptions(now: now)
-        guard record[tag]?.state == .pending else {
+        guard var record = loadedRedemptions(now: now), record[tag]?.state == .pending else {
             redemptionLock.unlock()
             return
         }
@@ -1683,7 +1736,12 @@ class ProfileStore {
     /// read-back holds `state` for `tag` (nil: holds no entry for it).
     private func persistRedemptions(confirming tag: String, as state: ClaudeRedemptionMark?) async -> Bool {
         redemptionLock.lock()
-        let snapshot = redemptions ?? [:]
+        // Only a record that was read in full is ever written back: never a
+        // partial history over one that could not be read.
+        guard let snapshot = redemptions else {
+            redemptionLock.unlock()
+            return false
+        }
         let backing = redemptionBacking
         redemptionLock.unlock()
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
@@ -1734,14 +1792,18 @@ class ProfileStore {
         redemptionLock.lock()
         redemptionBacking = backing ?? InMemoryClaudeRedemptionRecord()
         redemptions = nil
+        redemptionReadFailedAt = nil
+        noteRedemptionRecordHealth(unreadable: false, error: nil)
         redemptionLock.unlock()
     }
 
-    /// Test-only: a relaunch. What the process held in memory is dropped and
-    /// the record is read back from its backing.
+    /// Test-only: a relaunch, or the retry interval passing. What the process
+    /// held in memory is dropped and the record is read back from its backing
+    /// at the next check.
     func reloadClaudeRedemptionRecordForTesting() {
         redemptionLock.lock()
         redemptions = nil
+        redemptionReadFailedAt = nil
         redemptionLock.unlock()
     }
     #endif

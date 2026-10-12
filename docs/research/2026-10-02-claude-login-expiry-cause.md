@@ -567,7 +567,11 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
      can keep answering for a while, so a stale copy of it would pass its own read. It
      is written to disk and confirmed BEFORE the grant goes out, so a crash or a lost
      answer leaves the credential marked. A marked credential is never adopted, synced
-     or applied.
+     or applied. Round 4 tightened it:
+     - only the attempt that wrote a mark may take it back;
+     - the CLI's store is inspected again after the write, right before sending;
+     - a record that cannot be read fails closed (no Claude login is renewed, adopted,
+       synced or applied, with a banner) instead of reading as empty.
    - The file is read only when the Keychain item is confirmed absent. No incomplete
      login (missing an access token, refresh token or expiry) is ever adopted, synced
      or applied.

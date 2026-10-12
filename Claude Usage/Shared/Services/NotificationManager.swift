@@ -861,6 +861,29 @@ class NotificationManager {
         }
     }
 
+    /// Alerts that the record of the Claude logins this app redeemed cannot be
+    /// read, so every Claude renewal, adoption, Sync and switch is refused
+    /// until it can. Once per episode (`ProfileManager.syncRedemptionRecordState`).
+    func sendClaudeRedemptionRecordUnreadableNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.claude_redemption_record.title".localized
+        content.body = "notification.claude_redemption_record.message".localized
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "claude_redemption_record_unreadable",
+            content: content,
+            trigger: nil
+        )
+
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send redemption-record notification: \(error)")
+            }
+        }
+    }
+
     /// The StormWatchdog's sustained-idle-burn alarm. Fixed identifier: a
     /// re-post replaces the pending banner rather than stacking. Routed
     /// through `deliver` like everything else so it is logged and the XCTest

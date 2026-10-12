@@ -561,11 +561,18 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
       for a while after a redemption, so nothing about the token proves it
       spent, and a stale writer that puts it back in the CLI's store would
       otherwise win. `ensureFreshCredentials` writes a PENDING mark, confirmed,
-      BEFORE the grant goes out, and sends nothing when it cannot. A successor
-      promotes it to CONSUMED. A 429, or a transport failure before the request
-      left the Mac, takes it back (`ClaudeRefreshPolicy.grantOutcome`). A
-      refusal, a timeout, a dropped connection, a 5xx or a crash leaves it
-      pending. Either mark makes the credential dead evidence: never adopted,
+      BEFORE the grant goes out, and sends nothing when it cannot. That write
+      is an await, so both halves of the CLI's store are inspected AGAIN after
+      it, and ownership and hand-offs decided, with no await between that
+      inspection and the request (an external writer can restore the token
+      meanwhile). A successor promotes the mark to CONSUMED. A 429, a
+      transport failure before the request left the Mac
+      (`ClaudeRefreshPolicy.grantOutcome`) or a withdrawal before sending takes
+      it back — but ONLY a mark this attempt introduced
+      (`PendingMarkResult.introduced`): an earlier attempt's pending mark
+      survives every unsuccessful retry, because the retry says nothing about
+      the earlier request. A refusal, a timeout, a dropped connection, a 5xx or
+      a crash leaves it pending. Either mark makes the credential dead evidence: never adopted,
       never synced (`syncToProfile` throws `.redeemedLogin`) and never applied
       (`applyProfileCredentials` throws, and the activation gate refuses it). A
       consumed one is never sent again; a pending one is, by its own profile
@@ -575,6 +582,18 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
       `~/Library/Application Support/Claude Usage/claude-redeemed-logins.json`,
       written atomically, flushed with `F_FULLFSYNC` and read back
       (`FileClaudeRedemptionRecord`); XCTest uses an in-memory record.
+      **An unreadable record fails CLOSED** (Codex round 4, major 2). A
+      confirmed absence (no file: the first launch) is an empty record; a read
+      error or bytes that do not decode are NOT. The store then answers
+      `.unknown` for every credential: no grant is sent, and no Claude login
+      is adopted, synced (`.redemptionRecordUnreadable`) or applied (the
+      activation gate refuses it without a `/login` notice). The record is
+      never cached as empty and never written over (only a record read in
+      full is ever written back); it is read again every 15 s.
+      `ProfileStore.claudeRedemptionRecordUnreadable` posts
+      `.claudeRedemptionRecordHealthChanged`; `ProfileManager` republishes it,
+      sends one notification per episode, and the dashboard and popover show a
+      blocking banner.
     - `claudeLoginAccounts_v1` (a journaled key): the account a fresh 2xx on this
       credential's own unexpired token reported. An ACCOUNT fact, never liveness, and nothing
       carries it to a successor. It is how the idle owner works: its token
@@ -604,7 +623,9 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
     a CLI login not proven live authorizes nothing, so the stored side is not
     read (its records still count). A read with no usable answer, and a
     decision that refused, are held for 10 min (`failedReadHold`) per
-    credential, or per profile, credential pair and stamp. A changed credential
+    credential, or per profile, credential pair and stamp; so is a routing
+    lookup (`fetchAccountIdentity`) that got no answer, which after a relaunch
+    is what the sweep routes on. A changed credential
     on either side is decided at once. A success and an adopting decision are
     never held, so nothing held is ever taken for liveness. An identity 429
     stops every identity read for its Retry-After (1 min to 1 h; without one,

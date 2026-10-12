@@ -225,6 +225,12 @@ struct PopoverContentView: View {
                     message: "popover.banner.preferences_degraded".localized,
                     color: .orange
                 )
+            } else if profileManager.claudeRedemptionRecordUnreadable {
+                StatusBannerView(
+                    icon: "lock.trianglebadge.exclamationmark",
+                    message: "popover.banner.claude_redemption_record".localized,
+                    color: .orange
+                )
             } else if let errorProfileName = credentialErrorProfileName {
                 StatusBannerView(
                     icon: "exclamationmark.triangle.fill",
