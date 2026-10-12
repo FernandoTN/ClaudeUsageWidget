@@ -277,10 +277,31 @@ class KeychainService {
     ///   - profileId: The UUID of the profile
     ///   - key: A short key name (e.g. "claude-key", "api-key", "cli-creds")
     func saveProfileCredential(_ value: String, profileId: UUID, key: String) {
-        let service = profileCredentialService(profileId: profileId, key: key)
+        saveCredentialItem(value, service: profileCredentialService(profileId: profileId, key: key),
+                           name: "profile credential \(key) for \(profileId.uuidString.prefix(8))")
+    }
+
+    /// The one Claude Code login an activation set aside instead of
+    /// overwriting it (`ProfileStore.parkedCLILogin`). Same item kind and ACL
+    /// path as the per-profile credentials.
+    private static let parkedCLILoginService = "com.claudewidget.parked-cli-login"
+
+    func saveParkedCLILogin(_ value: String) {
+        saveCredentialItem(value, service: Self.parkedCLILoginService, name: "parked CLI login")
+    }
+
+    func loadParkedCLILogin() -> String? {
+        loadCredentialItem(service: Self.parkedCLILoginService, name: "parked CLI login")
+    }
+
+    func deleteParkedCLILogin() {
+        deleteCredentialItem(service: Self.parkedCLILoginService, name: "parked CLI login")
+    }
+
+    private func saveCredentialItem(_ value: String, service: String, name: String) {
         if usesTestStore {
             Self.testItems[service] = value
-            LoggingService.shared.log("Keychain: Saved profile credential \(key) for \(profileId.uuidString.prefix(8)) (XCTest in-memory store)")
+            LoggingService.shared.log("Keychain: Saved \(name) (XCTest in-memory store)")
             return
         }
         var result = runSecurityTool([
@@ -292,7 +313,7 @@ class KeychainService {
         ])
         if result.status != 0 {
             // A legacy SecItem-created item can refuse the in-place update; replace it.
-            deleteProfileCredential(profileId: profileId, key: key)
+            deleteCredentialItem(service: service, name: name)
             result = runSecurityTool([
                 "add-generic-password",
                 "-s", service,
@@ -302,9 +323,9 @@ class KeychainService {
             ])
         }
         if result.status == 0 {
-            LoggingService.shared.log("Keychain: Saved profile credential \(key) for \(profileId.uuidString.prefix(8))")
+            LoggingService.shared.log("Keychain: Saved \(name)")
         } else {
-            LoggingService.shared.logError("Keychain: Failed to save profile credential \(key), status: \(result.status) \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+            LoggingService.shared.logError("Keychain: Failed to save \(name), status: \(result.status) \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
     }
 
@@ -314,7 +335,11 @@ class KeychainService {
     ///   - key: A short key name (e.g. "claude-key", "api-key", "cli-creds")
     /// - Returns: The stored credential string, or nil if not found
     func loadProfileCredential(profileId: UUID, key: String) -> String? {
-        let service = profileCredentialService(profileId: profileId, key: key)
+        loadCredentialItem(service: profileCredentialService(profileId: profileId, key: key),
+                           name: "profile credential \(key)")
+    }
+
+    private func loadCredentialItem(service: String, name: String) -> String? {
         if usesTestStore { return Self.testItems[service] }
         let result = runSecurityTool([
             "find-generic-password",
@@ -325,7 +350,7 @@ class KeychainService {
         guard result.status == 0 else {
             // 44 = item not found; anything else is a real failure worth logging.
             if result.status != 44 {
-                LoggingService.shared.logError("Keychain: Failed to read profile credential \(key), status: \(result.status)")
+                LoggingService.shared.logError("Keychain: Failed to read \(name), status: \(result.status)")
             }
             return nil
         }
@@ -336,11 +361,15 @@ class KeychainService {
     /// Deletes one per-profile credential item (security CLI first, SecItemDelete
     /// as fallback for items created by older builds with signature-bound ACLs).
     func deleteProfileCredential(profileId: UUID, key: String) {
-        let service = profileCredentialService(profileId: profileId, key: key)
+        deleteCredentialItem(service: profileCredentialService(profileId: profileId, key: key),
+                             name: "profile credential \(key) for \(profileId.uuidString.prefix(8))")
+    }
+
+    private func deleteCredentialItem(service: String, name: String) {
         if usesTestStore {
             if Self.testItems[service] != nil {
                 Self.testItems[service] = nil
-                LoggingService.shared.log("Keychain: Deleted profile credential \(key) for \(profileId.uuidString.prefix(8)) (XCTest in-memory store)")
+                LoggingService.shared.log("Keychain: Deleted \(name) (XCTest in-memory store)")
             }
             return
         }
@@ -350,7 +379,7 @@ class KeychainService {
             "-a", Self.profileCredentialAccount
         ])
         if result.status == 0 {
-            LoggingService.shared.log("Keychain: Deleted profile credential \(key) for \(profileId.uuidString.prefix(8))")
+            LoggingService.shared.log("Keychain: Deleted \(name)")
             return
         }
         // Deleting is not gated on the partition list the way reading is, so the
@@ -362,9 +391,9 @@ class KeychainService {
         ]
         let status = SecItemDelete(query as CFDictionary)
         if status == errSecSuccess {
-            LoggingService.shared.log("Keychain: Deleted profile credential \(key) for \(profileId.uuidString.prefix(8)) (API fallback)")
+            LoggingService.shared.log("Keychain: Deleted \(name) (API fallback)")
         } else if status != errSecItemNotFound && result.status != 44 {
-            LoggingService.shared.logError("Keychain: Failed to delete profile credential \(key), status: \(status)")
+            LoggingService.shared.logError("Keychain: Failed to delete \(name), status: \(status)")
         }
     }
 

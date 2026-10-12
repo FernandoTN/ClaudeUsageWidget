@@ -208,6 +208,8 @@ class ProfileStore {
         RegisteredKey(Keys.activeClaudeProfileId, .profileStore, .live, ui: "Active & Auto-switch; ⇄ selector"),
         RegisteredKey(Keys.activeCodexProfileId, .profileStore, .live, ui: "Active & Auto-switch; ⇄ selector"),
         RegisteredKey(Keys.activeGrokProfileId, .profileStore, .live, ui: "Active & Auto-switch; ⇄ selector"),
+        RegisteredKey(refusedClaudeLoginsKey, .profileStore, .live, ui: "none (login adoption evidence)"),
+        RegisteredKey(claudeLoginAccountsKey, .profileStore, .live, ui: "none (login adoption evidence)"),
     ]
 
     // MARK: - Preferences (cfprefsd) degradation resilience
@@ -544,10 +546,12 @@ class ProfileStore {
         cacheLock.lock()
         pendingHydrationIds = Set(ids)
         clearedWhilePending.removeAll()
+        let parkedGeneration = parkedHydrationGeneration
         cacheLock.unlock()
 
         keychainQueue.async { [weak self] in
             guard let self else { return }
+            self.hydrateParkedLogin(generation: parkedGeneration)
             var success = true
             if !ids.isEmpty {
                 success = self.readCredentialsIntoCache(profileIds: ids, deadline: deadline)
@@ -676,7 +680,13 @@ class ProfileStore {
     func resetAndRewarmCredentialCacheForTesting() {
         cacheLock.lock()
         credentialCache.removeAll()
+        parkedLogin = nil
+        parkedHydrationGeneration += 1
         cacheLock.unlock()
+        refusedLock.lock()
+        refusedLogins = nil  // re-read from the preferences store, as a relaunch would
+        loginAccounts = nil
+        refusedLock.unlock()
         credentialHydrationState = .loading
         warmCacheFromKeychain()
     }
@@ -1441,6 +1451,169 @@ class ProfileStore {
         cacheLock.unlock()
         return true
     }
+
+    // MARK: - Parked CLI login (store-owned)
+
+    /// A Claude Code login an activation found in the CLI's store, could not
+    /// adopt into any profile, and was about to overwrite. It is kept here so a
+    /// switch never destroys the only copy of a live login, and offered to the
+    /// user through explicit Sync; nothing adopts it automatically.
+    struct ParkedCLILogin: Codable, Equatable {
+        /// The full credentials JSON. Secret: it lives in the Keychain only.
+        let login: String
+        /// `ClaudeLoginLifetime.loginTag(login)`, the slot's CAS key.
+        let tag: String
+        let parkedAt: Date
+        /// The profile that owned the CLI's login when it was parked.
+        let fromProfileId: UUID?
+        /// The account its own token reported, when an identity read succeeded.
+        let accountUUID: String?
+        /// Why it was not adopted, log-safe.
+        let reason: String
+    }
+
+    /// ONE slot. Guarded by `cacheLock`; persisted on `keychainQueue` in the
+    /// order it changes, like every credential write.
+    private var parkedLogin: ParkedCLILogin?
+
+    var parkedCLILogin: ParkedCLILogin? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return parkedLogin
+    }
+
+    /// Compare-and-swap on the slot: writes `parked` (nil empties it) only if
+    /// the slot's current tag is `expectedTag` (nil = empty). Returns false,
+    /// changing nothing, otherwise.
+    @discardableResult
+    func replaceParkedCLILogin(expectedTag: String?, with parked: ParkedCLILogin?) -> Bool {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        guard parkedLogin?.tag == expectedTag else { return false }
+        parkedLogin = parked
+        let encoded = parked.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+        keychainQueue.async { [weak self] in
+            if let encoded {
+                self?.keychainService.saveParkedCLILogin(encoded)
+            } else {
+                self?.keychainService.deleteParkedCLILogin()
+            }
+        }
+        return true
+    }
+
+    /// Reads the slot back from the Keychain. MUST run on `keychainQueue`.
+    /// A slot changed in memory since the warm began is kept.
+    private func hydrateParkedLogin(generation: Int) {
+        let decoded = keychainService.loadParkedCLILogin()
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode(ParkedCLILogin.self, from: $0) }
+        cacheLock.lock()
+        if generation == parkedHydrationGeneration, parkedLogin == nil { parkedLogin = decoded }
+        cacheLock.unlock()
+    }
+    private var parkedHydrationGeneration = 0
+
+    // MARK: - Refused Claude logins (store-owned)
+
+    /// Tags (`ClaudeLoginLifetime.loginTag`) of Claude logins whose refresh
+    /// grant the token endpoint ITSELF refused, each with its login's deadline
+    /// in seconds since 1970 (0: none recorded). Death evidence bound to the
+    /// exact credential, never to a profile id. It has its own key, written
+    /// only here, so an ordinary roster save cannot erase it, and it goes
+    /// through the write journal. An entry leaves only once its deadline has
+    /// passed; there is no count eviction.
+    static let refusedClaudeLoginsKey = "claudeRefusedLogins_v1"
+    private var refusedLogins: [String: Double]?
+    private let refusedLock = NSLock()
+
+    private func loadedRefusedLogins(now: Date) -> [String: Double] {
+        if refusedLogins == nil {
+            refusedLogins = (defaults.dictionary(forKey: Self.refusedClaudeLoginsKey) as? [String: Double]) ?? [:]
+        }
+        let cutoff = now.timeIntervalSince1970
+        return refusedLogins!.filter { $0.value == 0 || $0.value > cutoff }
+    }
+
+    /// Records that the token endpoint refused `login`'s refresh grant.
+    func recordRefusedClaudeLogin(_ login: String, now: Date = Date()) {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return }
+        refusedLock.lock()
+        defer { refusedLock.unlock() }
+        var record = loadedRefusedLogins(now: now)
+        record[tag] = ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0
+        refusedLogins = record
+        writeSingleShot(record, forKey: Self.refusedClaudeLoginsKey)
+    }
+
+    /// Whether the token endpoint refused this exact login's refresh grant.
+    func isRefusedClaudeLogin(_ login: String, now: Date = Date()) -> Bool {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return false }
+        refusedLock.lock()
+        defer { refusedLock.unlock() }
+        return loadedRefusedLogins(now: now)[tag] != nil
+    }
+
+    // MARK: - Recorded Claude login accounts (store-owned)
+
+    /// The account a FRESH identity read of a credential's own UNEXPIRED access
+    /// token reported, keyed by the credential's tag, with its deadline. A
+    /// credential's account never changes, so this is a fact about that exact
+    /// credential: it says which account, never whether it is live, and
+    /// nothing carries it to a successor (a new credential needs its own
+    /// fresh read). Store-owned like the refused record: its own key, the
+    /// write journal, pruned only once the credential's deadline has passed.
+    static let claudeLoginAccountsKey = "claudeLoginAccounts_v1"
+    private var loginAccounts: [String: [String: Any]]?
+
+    private func loadedLoginAccounts(now: Date) -> [String: [String: Any]] {
+        if loginAccounts == nil {
+            loginAccounts = (defaults.dictionary(forKey: Self.claudeLoginAccountsKey) as? [String: [String: Any]]) ?? [:]
+        }
+        let cutoff = now.timeIntervalSince1970
+        return loginAccounts!.filter {
+            let deadline = $0.value["deadline"] as? Double ?? 0
+            return deadline == 0 || deadline > cutoff
+        }
+    }
+
+    /// Records the account a fresh 2xx on `login`'s own unexpired access token reported.
+    func recordClaudeLoginAccount(_ login: String, account: String, now: Date = Date()) {
+        guard let tag = ClaudeLoginLifetime.loginTag(login), !account.isEmpty else { return }
+        refusedLock.lock()
+        defer { refusedLock.unlock() }
+        var record = loadedLoginAccounts(now: now)
+        guard record[tag]?["account"] as? String != account else { return }
+        record[tag] = ["account": account, "deadline": ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0]
+        loginAccounts = record
+        writeSingleShot(record, forKey: Self.claudeLoginAccountsKey)
+    }
+
+    /// The account recorded for this exact credential, if any.
+    func recordedAccount(ofClaudeLogin login: String, now: Date = Date()) -> String? {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return nil }
+        refusedLock.lock()
+        defer { refusedLock.unlock() }
+        return loadedLoginAccounts(now: now)[tag]?["account"] as? String
+    }
+
+    #if DEBUG
+    /// Test-only: empties the refused record, the account record and the
+    /// parked slot (tests reuse synthetic token names, which real tokens never do).
+    func resetLoginRecordsForTesting() {
+        refusedLock.lock()
+        refusedLogins = [:]
+        writeSingleShot(nil, forKey: Self.refusedClaudeLoginsKey)
+        loginAccounts = [:]
+        writeSingleShot(nil, forKey: Self.claudeLoginAccountsKey)
+        refusedLock.unlock()
+        cacheLock.lock()
+        parkedLogin = nil
+        parkedHydrationGeneration += 1
+        cacheLock.unlock()
+        keychainQueue.async { [weak self] in self?.keychainService.deleteParkedCLILogin() }
+    }
+    #endif
 
     /// Explicitly removes ONE credential from a profile — the only way a single
     /// credential leaves the Keychain. Drops it from the in-memory cache

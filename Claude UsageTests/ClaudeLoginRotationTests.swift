@@ -56,6 +56,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
         endpoint = FakeTokenEndpoint()
         let endpoint = endpoint
         installCLIStoreSeams()
+        store.resetLoginRecordsForTesting()
+        sync.setIdentityProbeForTesting(nil)
         sync.setTokenEndpointForTesting { await endpoint.redeem($0) }
         // Every synthetic token is "<account>-access-…"; the account is its prefix.
         sync.setIdentityFetcherForTesting { token in
@@ -121,6 +123,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
         sync.setCLIStoreForTesting(nil)
         sync.setTokenEndpointForTesting { _ in (503, nil) }
         sync.setIdentityFetcherForTesting { _ in nil }
+        sync.setIdentityProbeForTesting(nil)
+        store.resetLoginRecordsForTesting()
         try await super.tearDown()
     }
 

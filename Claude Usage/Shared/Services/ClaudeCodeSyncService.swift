@@ -63,6 +63,13 @@ class ClaudeCodeSyncService {
     /// XCTest stand-in for the account-identity endpoint.
     private var identityFetcherForTesting: ((String) async -> AccountIdentity?)?
 
+    /// XCTest stand-in for the identity endpoint with its answer in full: the
+    /// identity, the HTTP status that refused it, or no answer. `fresh` is true
+    /// when the caller bypasses the identity cache, so a test can model an
+    /// identity cached while a token was live and refused once it was revoked.
+    /// Takes precedence over `identityFetcherForTesting`.
+    private var identityProbeForTesting: ((_ accessToken: String, _ fresh: Bool) async -> IdentityProbe)?
+
     /// Installs a test's own stand-in; nil restores a fresh empty one. Never
     /// the real store.
     func setCLIStoreForTesting(_ seams: CLIStoreSeams?) {
@@ -76,10 +83,15 @@ class ClaudeCodeSyncService {
     func setIdentityFetcherForTesting(_ fetcher: ((String) async -> AccountIdentity?)?) {
         identityFetcherForTesting = fetcher
     }
+
+    func setIdentityProbeForTesting(_ probe: ((_ accessToken: String, _ fresh: Bool) async -> IdentityProbe)?) {
+        identityProbeForTesting = probe
+    }
     #else
     private static let cliStoreSeams: CLIStoreSeams? = nil
     private let tokenEndpointForTesting: ((String) async -> (status: Int, payload: [String: Any]?))? = nil
     private let identityFetcherForTesting: ((String) async -> AccountIdentity?)? = nil
+    private let identityProbeForTesting: ((String, Bool) async -> IdentityProbe)? = nil
     #endif
 
     // MARK: - The CLI Store, Half by Half
@@ -1441,10 +1453,20 @@ class ClaudeCodeSyncService {
 
     // MARK: - Account Identity
 
-    struct AccountIdentity {
+    struct AccountIdentity: Equatable {
         let accountUUID: String
         let organizationUUID: String
         let email: String
+    }
+
+    /// What one identity request said about one access token.
+    enum IdentityProbe: Equatable {
+        case identified(AccountIdentity)
+        /// The endpoint answered with this non-2xx HTTP status.
+        case rejected(status: Int)
+        /// No answer: a transport error, a 2xx body that could not be read, or
+        /// a refusal under XCTest.
+        case unavailable
     }
 
     /// In-memory token → identity cache (identities are immutable per token;
@@ -1461,6 +1483,10 @@ class ClaudeCodeSyncService {
     /// is. Returns nil on any failure — callers must treat unknown identity as
     /// "no evidence", never as a mismatch.
     func fetchAccountIdentity(accessToken: String) async -> AccountIdentity? {
+        if let probe = identityProbeForTesting {
+            if case .identified(let identity) = await probe(accessToken, false) { return identity }
+            return nil
+        }
         if let fetch = identityFetcherForTesting { return await fetch(accessToken) }
         // No test sends a token to the identity endpoint.
         if RealCredentialStoreGuard.refuse("identity endpoint") { return nil }
