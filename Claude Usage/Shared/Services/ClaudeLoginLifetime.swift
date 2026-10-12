@@ -71,8 +71,8 @@ enum ClaudeLoginLifetime {
     /// access-token expiry, checked structurally. Anything less — the access
     /// token the store read rebuilds from a truncated Keychain payload, or an
     /// access token and expiry without a refresh token — can serve requests
-    /// until its token dies and never renew, so no adoption, sync, park or
-    /// apply takes it, from any source.
+    /// until its token dies and never renew, so no adoption, sync or apply
+    /// takes it, from any source.
     nonisolated static func isComplete(_ json: String) -> Bool {
         guard let oauth = oauth(json) else { return false }
         return !(oauth["accessToken"] as? String ?? "").isEmpty
@@ -81,9 +81,9 @@ enum ClaudeLoginLifetime {
     }
 
     /// A short tag for a login, derived one-way from its refresh token with a
-    /// domain prefix. It is persisted (the store's refused-grant and account
-    /// records, the parked slot's key), so it is never the in-memory
-    /// `fingerprint` and never the token. Nil without a refresh token.
+    /// domain prefix. It is persisted (the store's refused-grant, account and
+    /// redemption records), so it is never the in-memory `fingerprint` and
+    /// never the token. Nil without a refresh token.
     nonisolated static func loginTag(_ json: String?) -> String? {
         guard let json, let token = refreshToken(json), !token.isEmpty else { return nil }
         return String(fingerprint("cuw-login-tag-v1:" + token).prefix(32))

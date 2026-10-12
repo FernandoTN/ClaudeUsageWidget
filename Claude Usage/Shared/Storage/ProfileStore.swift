@@ -683,6 +683,9 @@ class ProfileStore {
         refusedLogins = nil  // re-read from the preferences store, as a relaunch would
         loginAccounts = nil
         refusedLock.unlock()
+        redemptionLock.lock()
+        redemptions = nil  // re-read from its backing, likewise
+        redemptionLock.unlock()
         credentialHydrationState = .loading
         warmCacheFromKeychain()
     }
@@ -1531,8 +1534,157 @@ class ProfileStore {
         return loadedLoginAccounts(now: now)[tag]?["account"] as? String
     }
 
+    // MARK: - Redeemed Claude logins (store-owned, confirmed durable)
+
+    /// What this app has done with one credential's refresh grant. Either mark
+    /// means the credential may be spent, whatever its access token answers:
+    /// the predecessor's access token can keep answering for a while after a
+    /// redemption, so nothing about the token proves it consumed.
+    nonisolated enum ClaudeRedemptionMark: String, Codable {
+        /// The grant is about to be sent, or was sent and the answer was lost
+        /// (a timeout, a dropped connection, a 5xx, the process dying).
+        case pending
+        /// The token endpoint answered with a successor.
+        case consumed
+    }
+
+    /// Tag (`ClaudeLoginLifetime.loginTag`) → mark and the credential's
+    /// deadline (seconds since 1970; 0: none). Keyed by credential, never by
+    /// profile id; ordinary roster saves never touch it; an entry leaves only
+    /// once its deadline has passed, with no count eviction — the refused
+    /// record's rules. It is NOT in the preferences store: a pending mark must
+    /// be durable and CONFIRMED before its grant is sent, and cfprefsd has no
+    /// oracle at write time (it can reject a write while every in-process
+    /// read-back returns the value it threw away; see "Preferences
+    /// degradation"). A file written atomically, flushed to the drive and read
+    /// back is one (`FileClaudeRedemptionRecord`).
+    nonisolated struct ClaudeRedemptionEntry: Codable, Equatable {
+        var state: ClaudeRedemptionMark
+        var deadline: Double
+    }
+
+    private var redemptionBacking: ClaudeRedemptionRecordBacking = RealCredentialStoreGuard.isTestRun
+        ? InMemoryClaudeRedemptionRecord()
+        : FileClaudeRedemptionRecord(url: FileClaudeRedemptionRecord.defaultURL)
+    private var redemptions: [String: ClaudeRedemptionEntry]?
+    private let redemptionLock = NSLock()
+    /// Serial: each write puts the snapshot taken when it was enqueued, so the
+    /// record ends on the latest one.
+    private let redemptionQueue = DispatchQueue(label: "com.claudewidget.profilestore.redemptions", qos: .userInitiated)
+
+    /// Under `redemptionLock`.
+    private func loadedRedemptions(now: Date) -> [String: ClaudeRedemptionEntry] {
+        if redemptions == nil {
+            redemptions = redemptionBacking.read()
+                .flatMap { try? JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) } ?? [:]
+        }
+        let cutoff = now.timeIntervalSince1970
+        return redemptions!.filter { $0.value.deadline == 0 || $0.value.deadline > cutoff }
+    }
+
+    /// The mark this app holds for this exact credential, if any.
+    func claudeRedemptionMark(ofClaudeLogin login: String, now: Date = Date()) -> ClaudeRedemptionMark? {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return nil }
+        redemptionLock.lock()
+        defer { redemptionLock.unlock() }
+        return loadedRedemptions(now: now)[tag]?.state
+    }
+
+    /// Marks `login`'s grant as about to be sent. Returns true only once the
+    /// record is written, flushed and read back with the mark in it; on false
+    /// the mark is taken back and the grant must not be sent. A consumed
+    /// credential is never marked pending again.
+    func markClaudeRedemptionPending(_ login: String, now: Date = Date()) async -> Bool {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return false }
+        redemptionLock.lock()
+        var record = loadedRedemptions(now: now)
+        let previous = record[tag]
+        guard previous?.state != .consumed else {
+            redemptionLock.unlock()
+            return false
+        }
+        record[tag] = ClaudeRedemptionEntry(state: .pending, deadline: ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0)
+        redemptions = record
+        redemptionLock.unlock()
+        let confirmed = await persistRedemptions(confirming: tag, as: .pending)
+        if !confirmed, previous == nil {
+            redemptionLock.lock()
+            if redemptions?[tag]?.state == .pending { redemptions?[tag] = nil }
+            redemptionLock.unlock()
+        }
+        return confirmed
+    }
+
+    /// Promotes `login`'s mark to consumed: its grant returned a successor.
+    /// Unconfirmed, the file keeps the pending mark, which blocks the
+    /// credential just the same.
+    func markClaudeRedemptionConsumed(_ login: String, now: Date = Date()) async {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return }
+        redemptionLock.lock()
+        var record = loadedRedemptions(now: now)
+        record[tag] = ClaudeRedemptionEntry(state: .consumed, deadline: ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0)
+        redemptions = record
+        redemptionLock.unlock()
+        if !(await persistRedemptions(confirming: tag, as: .consumed)) {
+            LoggingService.shared.logError("ProfileStore: a redemption's consumed mark was not confirmed on disk — its pending mark still blocks the credential")
+        }
+    }
+
+    /// Takes back a PENDING mark: the grant certainly did not reach the token
+    /// endpoint, or it answered without processing it. A consumed mark stays.
+    func clearClaudeRedemptionPending(_ login: String, now: Date = Date()) async {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return }
+        redemptionLock.lock()
+        var record = loadedRedemptions(now: now)
+        guard record[tag]?.state == .pending else {
+            redemptionLock.unlock()
+            return
+        }
+        record[tag] = nil
+        redemptions = record
+        redemptionLock.unlock()
+        _ = await persistRedemptions(confirming: tag, as: nil)
+    }
+
+    /// Writes the record as it stands now and reads it back: true when the
+    /// read-back holds `state` for `tag` (nil: holds no entry for it).
+    private func persistRedemptions(confirming tag: String, as state: ClaudeRedemptionMark?) async -> Bool {
+        redemptionLock.lock()
+        let snapshot = redemptions ?? [:]
+        let backing = redemptionBacking
+        redemptionLock.unlock()
+        let result: Result<Void, Error> = await withCheckedContinuation { continuation in
+            redemptionQueue.async {
+                continuation.resume(returning: Self.writeConfirmed(snapshot, to: backing, tag: tag, state: state))
+            }
+        }
+        if case .failure(let error) = result {
+            LoggingService.shared.logError("ProfileStore: the redemption record could not be confirmed on disk", error: error)
+            return false
+        }
+        return true
+    }
+
+    nonisolated private static func writeConfirmed(
+        _ snapshot: [String: ClaudeRedemptionEntry],
+        to backing: ClaudeRedemptionRecordBacking,
+        tag: String,
+        state: ClaudeRedemptionMark?
+    ) -> Result<Void, Error> {
+        do {
+            let data = try JSONEncoder().encode(snapshot)
+            try backing.write(data)
+            let readBack = backing.read().flatMap { try? JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) }
+            guard let readBack, readBack[tag]?.state == state else { throw CocoaError(.fileReadCorruptFile) }
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+
     #if DEBUG
-    /// Test-only: empties the refused record and the account record (tests
+    /// Test-only: empties the refused record, the account record and the
+    /// redemption record, which goes back to a fresh in-memory backing (tests
     /// reuse synthetic token names, which real tokens never do).
     func resetLoginRecordsForTesting() {
         refusedLock.lock()
@@ -1541,6 +1693,23 @@ class ProfileStore {
         loginAccounts = [:]
         writeSingleShot(nil, forKey: Self.claudeLoginAccountsKey)
         refusedLock.unlock()
+        setClaudeRedemptionRecordForTesting(nil)
+    }
+
+    /// Test-only: the redemption record's backing (nil: a fresh in-memory one).
+    func setClaudeRedemptionRecordForTesting(_ backing: ClaudeRedemptionRecordBacking?) {
+        redemptionLock.lock()
+        redemptionBacking = backing ?? InMemoryClaudeRedemptionRecord()
+        redemptions = nil
+        redemptionLock.unlock()
+    }
+
+    /// Test-only: a relaunch. What the process held in memory is dropped and
+    /// the record is read back from its backing.
+    func reloadClaudeRedemptionRecordForTesting() {
+        redemptionLock.lock()
+        redemptions = nil
+        redemptionLock.unlock()
     }
     #endif
 
@@ -1603,5 +1772,77 @@ class ProfileStore {
         profile.cliCredentialsJSON = cached?.cliCredentialsJSON
         profile.codexCredentialsJSON = cached?.codexCredentialsJSON
         profile.grokCredentialsJSON = cached?.grokCredentialsJSON
+    }
+}
+
+// MARK: - The redemption record's backing
+
+/// Where `ProfileStore`'s redemption record lives. `write` returns only once
+/// the bytes are durable, or throws; the store reads them back to confirm.
+nonisolated protocol ClaudeRedemptionRecordBacking: AnyObject {
+    func read() -> Data?
+    func write(_ data: Data) throws
+}
+
+/// The app's record, beside the telemetry ledger. Holds one-way tags and
+/// deadlines only, never a token. Written atomically (a temporary file renamed
+/// over the old one) and flushed to the drive (`F_FULLFSYNC`) before `write`
+/// returns.
+nonisolated final class FileClaudeRedemptionRecord: ClaudeRedemptionRecordBacking {
+    let url: URL
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    /// `~/Library/Application Support/Claude Usage/claude-redeemed-logins.json`.
+    static var defaultURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("Claude Usage", isDirectory: true)
+            .appendingPathComponent("claude-redeemed-logins.json")
+    }
+
+    func read() -> Data? {
+        try? Data(contentsOf: url)
+    }
+
+    func write(_ data: Data) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        let descriptor = open(url.path, O_RDWR)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { close(descriptor) }
+        guard fcntl(descriptor, F_FULLFSYNC) == 0 || fsync(descriptor) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+}
+
+/// XCTest's record: in memory for the process, so a test can drop the
+/// store's copy and read it back as a relaunch would
+/// (`reloadClaudeRedemptionRecordForTesting`). `failWrites` makes every write
+/// fail, as a full disk would.
+nonisolated final class InMemoryClaudeRedemptionRecord: ClaudeRedemptionRecordBacking, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Data?
+    private var _failWrites = false
+
+    var failWrites: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _failWrites }
+        set { lock.lock(); _failWrites = newValue; lock.unlock() }
+    }
+
+    func read() -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func write(_ data: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !_failWrites else { throw CocoaError(.fileWriteOutOfSpace) }
+        stored = data
     }
 }

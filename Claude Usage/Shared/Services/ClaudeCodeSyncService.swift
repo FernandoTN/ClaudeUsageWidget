@@ -1201,7 +1201,7 @@ class ClaudeCodeSyncService {
                 store.recordClaudeLoginAccount(login, account: identity.accountUUID)
             case .rejected(let status):
                 rejected = status
-            case .unavailable:
+            case .unavailable, .throttled:
                 break
             }
         }
@@ -1474,6 +1474,9 @@ class ClaudeCodeSyncService {
         /// No answer: a transport error, a 2xx body that could not be read, or
         /// a refusal under XCTest.
         case unavailable
+        /// A 429: the endpoint asked to be left alone for `retryAfter` seconds
+        /// (nil: it did not say). No answer about the token.
+        case throttled(retryAfter: TimeInterval?)
     }
 
     /// In-memory token → identity cache (identities are immutable per token;
