@@ -2092,7 +2092,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
     }
 
     private func entries(_ backing: InMemoryClaudeRedemptionRecord) -> [String: ProfileStore.ClaudeRedemptionEntry] {
-        backing.read().flatMap { try? JSONDecoder().decode([String: ProfileStore.ClaudeRedemptionEntry].self, from: $0) } ?? [:]
+        ((try? backing.read()) ?? nil).flatMap { try? JSONDecoder().decode([String: ProfileStore.ClaudeRedemptionEntry].self, from: $0) } ?? [:]
     }
 
     /// Codex round 3, major 1. The widget redeems a login while another
@@ -2143,8 +2143,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(seen.stateWhenSent, .pending, "written and read back before the grant went out")
         XCTAssertEqual(entries(backing)[tag]?.state, .consumed, "promoted once the successor arrived")
         store.reloadClaudeRedemptionRecordForTesting()
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: original), .consumed, "and it survives a relaunch")
-        XCTAssertNil(store.claudeRedemptionMark(ofClaudeLogin: storedLogin(account.id) ?? ""), "the successor carries no mark")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .consumed, "and it survives a relaunch")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: storedLogin(account.id) ?? ""), .unmarked, "the successor carries no mark")
     }
 
     /// A pending mark that cannot be confirmed on disk sends nothing: no
@@ -2162,7 +2162,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
         XCTAssertTrue(endpoint.redeemed.isEmpty, "no confirmed record, no grant")
         XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-1")
-        XCTAssertNil(store.claudeRedemptionMark(ofClaudeLogin: original))
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .unmarked)
     }
 
     /// The grant reached the token endpoint (which consumed it) and the answer
@@ -2181,7 +2181,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(endpoint.redeemed, ["account-refresh-1"])
         XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-1", "no successor arrived")
         store.reloadClaudeRedemptionRecordForTesting()  // the relaunch
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: original), .pending)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .pending)
         sync.setTokenEndpointForTesting { await endpoint.redeem($0) }
 
         // Adoption: the CLI's store holds the pending pair; the account's owner
@@ -2212,8 +2212,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
     /// 429 was never processed so the mark is taken back, and an unreadable
     /// answer (a 5xx) leaves it pending.
     func testEachAnswerToAGrantLeavesItsRecordAsItShould() async {
-        let cases: [(status: Int, mark: ProfileStore.ClaudeRedemptionMark?)] = [
-            (200, .consumed), (400, .pending), (429, nil), (503, .pending)
+        let cases: [(status: Int, mark: ProfileStore.ClaudeRedemptionStatus)] = [
+            (200, .consumed), (400, .pending), (429, .unmarked), (503, .pending)
         ]
         for (index, item) in cases.enumerated() {
             let endpoint = endpoint
@@ -2227,7 +2227,7 @@ final class ClaudeLoginRotationTests: XCTestCase {
                 for: account.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
             )
 
-            XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: original), item.mark, "HTTP \(item.status)")
+            XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), item.mark, "HTTP \(item.status)")
             discard(account)
         }
     }
@@ -2241,31 +2241,31 @@ final class ClaudeLoginRotationTests: XCTestCase {
         let pastDeadline = login("account", generation: 2, expiresIn: 6 * 3600, deadlineIn: -60)
         let noDeadline = login("account", generation: 3, expiresIn: 6 * 3600)
         let pendingLive = await store.markClaudeRedemptionPending(live)
-        XCTAssertTrue(pendingLive)
+        XCTAssertEqual(pendingLive, .introduced)
         await store.markClaudeRedemptionConsumed(pastDeadline)
         let pendingNoDeadline = await store.markClaudeRedemptionPending(noDeadline)
-        XCTAssertTrue(pendingNoDeadline)
+        XCTAssertEqual(pendingNoDeadline, .introduced)
 
         let roster = [profile("someone", login: nil)]
         seed(roster, focused: roster[0].id)
         store.saveProfiles(roster)
 
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: live), .pending)
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: noDeadline), .pending, "no deadline: kept")
-        XCTAssertNil(store.claudeRedemptionMark(ofClaudeLogin: pastDeadline), "pruned once its deadline passed")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: live), .pending)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: noDeadline), .pending, "no deadline: kept")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: pastDeadline), .unmarked, "pruned once its deadline passed")
         for i in 0..<300 {
             _ = await store.markClaudeRedemptionPending(login("bulk", generation: i, expiresIn: 3600, deadlineIn: 20 * 86_400))
         }
         store.reloadClaudeRedemptionRecordForTesting()
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: login("bulk", generation: 0, expiresIn: 3600, deadlineIn: 20 * 86_400)),
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: login("bulk", generation: 0, expiresIn: 3600, deadlineIn: 20 * 86_400)),
                        .pending, "no count eviction, and a relaunch reads it back")
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: live), .pending)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: live), .pending)
 
         await store.markClaudeRedemptionConsumed(live)
         let again = await store.markClaudeRedemptionPending(live)
-        XCTAssertFalse(again, "a consumed credential is never sent again")
+        XCTAssertEqual(again, .notRecorded, "a consumed credential is never sent again")
         await store.clearClaudeRedemptionPending(live)
-        XCTAssertEqual(store.claudeRedemptionMark(ofClaudeLogin: live), .consumed, "clearing takes back only a pending mark")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: live), .consumed, "clearing takes back only a pending mark")
     }
 
     /// Codex round 3, minor 7. One sweep pass reads the CLI's new credential
@@ -2409,6 +2409,198 @@ final class ClaudeLoginRotationTests: XCTestCase {
         for (error, expected, why) in cases {
             XCTAssertEqual(ClaudeRefreshPolicy.grantOutcome(of: error), expected, why)
         }
+    }
+
+    // MARK: - Review round 4 (#186): uncertainty survives, the record fails closed
+
+    /// A token endpoint that gives its answers in order (the last one again
+    /// once they run out), counting the grants it is sent.
+    private final class ScriptedEndpoint {
+        var answers: [() throws -> (status: Int, payload: [String: Any]?)] = []
+        var sent = 0
+    }
+
+    private func installScriptedEndpoint(_ answers: [() throws -> (status: Int, payload: [String: Any]?)]) -> ScriptedEndpoint {
+        let scripted = ScriptedEndpoint()
+        scripted.answers = answers
+        sync.setTokenEndpointForTesting { _ in
+            let answer = scripted.answers[min(scripted.sent, scripted.answers.count - 1)]
+            scripted.sent += 1
+            return try answer()
+        }
+        return scripted
+    }
+
+    /// Codex round 4, major 1. One credential, three attempts in a row: the
+    /// first answer is lost (it may have consumed the token), the retry is
+    /// rate limited (not processed), the next never leaves the Mac. Neither
+    /// retry says anything about the first attempt, so the pending mark
+    /// stands, and the credential is never applied, synced or adopted.
+    func testAnUnsuccessfulRetryNeverClearsAnEarlierUncertainRedemption() async throws {
+        let scripted = installScriptedEndpoint([
+            { (504, nil) },
+            { (429, nil) },
+            { throw URLError(.cannotConnectToHost) },
+        ])
+        let original = login("account", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: original)
+        for attempt in ["lost answer", "429", "never sent"] {
+            _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false, freshFor: 4 * 3600)
+            XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .pending, "after the \(attempt) attempt")
+        }
+        XCTAssertEqual(scripted.sent, 3)
+
+        XCTAssertThrowsError(try sync.applyProfileCredentials(account.id), "never applied")
+        let outcome = await manager.activateProfileDetailed(account.id, userInitiated: false)
+        XCTAssertNotEqual(outcome, .activated)
+        XCTAssertFalse(cliStore.writes.contains { ClaudeLoginLifetime.isSamePair($0, original) })
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .pending, "the activation's retry changes nothing")
+
+        let owner = seedOwner("account", holding: login("account", generation: 5, expiresIn: 6 * 3600, deadlineIn: 20 * 86_400))
+        cliStore.set(keychain: original, file: nil)
+        for path in AdoptionPath.allCases {
+            try await adopt(path, into: owner.id)
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-5", "\(path.rawValue): never adopted")
+        }
+        XCTAssertThrowsError(try sync.syncToProfile(owner.id), "never synced")
+    }
+
+    /// The same for an attempt withdrawn before sending: ownership moves to
+    /// the profile while its pending mark is being written. Nothing is sent,
+    /// and the earlier attempt's mark stands.
+    func testAWithdrawnRetryNeverClearsAnEarlierUncertainRedemption() async {
+        let backing = InMemoryClaudeRedemptionRecord()
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let scripted = installScriptedEndpoint([{ (504, nil) }])
+        let original = login("account", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: original)
+        _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false, freshFor: 4 * 3600)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .pending)
+
+        let manager = manager
+        let id = account.id
+        backing.onWrite = { [weak backing] in
+            backing?.onWrite = nil
+            DispatchQueue.main.sync { MainActor.assumeIsolated { manager.claimActiveClaudeOwnership(id) } }
+        }
+        _ = await sync.ensureFreshCredentials(for: account.id, adoptSystemKeychain: false, freshFor: 4 * 3600)
+
+        XCTAssertEqual(scripted.sent, 1, "withdrawn: the CLI's owner is never redeemed")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .pending, "the earlier mark stands")
+    }
+
+    /// Codex round 4, major 3. The CLI's store gains the token while its
+    /// pending mark is being written. Both halves are inspected again after
+    /// the write, right before sending: nothing is sent, and the mark this
+    /// attempt introduced is taken back.
+    func testATokenTheCLIStoreGainsDuringThePendingWriteIsNeverSent() async {
+        let backing = InMemoryClaudeRedemptionRecord()
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let original = login("account", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: original)
+        let cliStore = cliStore
+        backing.onWrite = { [weak backing] in
+            backing?.onWrite = nil
+            cliStore.set(keychain: original, file: nil)  // an external writer restores it
+        }
+
+        _ = await sync.ensureFreshCredentials(
+            for: account.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+
+        XCTAssertTrue(endpoint.redeemed.isEmpty, "the CLI holds it now: never redeemed")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .unmarked, "this attempt's mark is taken back")
+        XCTAssertEqual(refreshToken(storedLogin(account.id)), "account-refresh-1")
+    }
+
+    /// Codex round 4, major 2. A record that cannot be read is not an empty
+    /// one: no grant is sent, and no credential is adopted, synced or applied,
+    /// because none can be confirmed unredeemed. It is never written over
+    /// while it cannot be read, and is read again once it can.
+    func testAnUnreadableRecordFailsClosedUntilItCanBeRead() async throws {
+        let backing = InMemoryClaudeRedemptionRecord()
+        backing.failReads = true
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let original = login("account", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: original)
+
+        _ = await sync.ensureFreshCredentials(
+            for: account.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        XCTAssertTrue(endpoint.redeemed.isEmpty, "no grant while the record cannot be read")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .unknown)
+        XCTAssertThrowsError(try sync.applyProfileCredentials(account.id), "never applied")
+
+        let owner = seedOwner("b", holding: login("b", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400))
+        cliStore.set(keychain: login("b", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400), file: nil)
+        for path in AdoptionPath.allCases {
+            try await adopt(path, into: owner.id)
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "b-refresh-1", "\(path.rawValue): nothing adopted")
+        }
+        XCTAssertThrowsError(try sync.syncToProfile(owner.id), "nothing synced")
+        XCTAssertNil(backing.stored, "never written while it cannot be read")
+
+        backing.failReads = false
+        store.reloadClaudeRedemptionRecordForTesting()
+        sync.expireIdentityBudgetForTesting()
+        try await adopt(.keychainAdoption, into: owner.id)
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "b-refresh-2", "readable again: decided as usual")
+    }
+
+    /// A record whose bytes do not decode is unreadable too: it is never
+    /// replaced by the partial history this process could write.
+    func testACorruptRecordIsNeverReplacedByAPartialHistory() async {
+        let backing = InMemoryClaudeRedemptionRecord()
+        let damaged = Data("{\"0123\": {\"state\": ".utf8)
+        backing.stored = damaged
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let original = login("account", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: original)
+
+        _ = await sync.ensureFreshCredentials(
+            for: account.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        let marked = await store.markClaudeRedemptionPending(original)
+        await store.markClaudeRedemptionConsumed(original)
+        await store.clearClaudeRedemptionPending(original)
+
+        XCTAssertTrue(endpoint.redeemed.isEmpty)
+        XCTAssertEqual(marked, .notRecorded)
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: original), .unknown)
+        XCTAssertEqual(backing.stored, damaged, "the damaged record is left as found")
+    }
+
+    /// The app's file record tells a confirmed absence (first launch: empty)
+    /// from a file it cannot read, and round-trips what it writes.
+    func testTheFileRecordTellsAbsenceFromFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cuw-redemption-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let record = FileClaudeRedemptionRecord(url: directory.appendingPathComponent("record.json"))
+        XCTAssertNil(try record.read(), "no file yet: confirmed absent")
+        try record.write(Data("{}".utf8))
+        XCTAssertEqual(try record.read(), Data("{}".utf8))
+
+        let blocked = FileClaudeRedemptionRecord(url: directory)  // a directory where the file should be
+        XCTAssertThrowsError(try blocked.read(), "unreadable is not absent")
+    }
+
+    /// Codex round 4, minor (a). After a relaunch the CLI's credential has a
+    /// recorded account, so the pass routes on a cached lookup. A lookup that
+    /// got no answer is not repeated every sweep.
+    func testARoutingLookupThatFailedIsNotRetriedEverySweep() async {
+        let reads = countingIdentityEndpoint { token, fresh in !fresh && token == "account-access-2" ? .unavailable : nil }
+        let cliLogin = login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        store.recordClaudeLoginAccount(cliLogin, account: "acct-account")
+        _ = seedOwner("account", holding: login("account", generation: 1, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400))
+        cliStore.set(keychain: cliLogin, file: nil)
+
+        let first = await runSweepAdoption()
+        let second = await runSweepAdoption()
+
+        XCTAssertEqual(first, .noSharedLogin)
+        XCTAssertEqual(second, .noSharedLogin)
+        XCTAssertEqual(reads.cached["account-access-2"] ?? 0, 1, "the failed lookup is held, not repeated next sweep")
     }
 }
 

@@ -802,11 +802,11 @@ class ProfileManager: ObservableObject {
             // pending one was renewed above if it could be; still pending, it
             // is refused without a /login notice (a later renewal may resolve
             // it). A consumed one lost its successor: only /login renews it.
-            let redemptionMark = profileStore.claudeRedemptionMark(ofClaudeLogin: cliJSON)
-            if let redemptionMark {
+            let redemption = profileStore.claudeRedemptionStatus(ofClaudeLogin: cliJSON)
+            if redemption != .unmarked {
                 refusedProviders.append(.claude)
-                if redemptionMark == .consumed { cliSyncService.notifyReloginNeeded(for: id, force: false) }
-                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' holds a login this app already sent to the token endpoint (\(redemptionMark.rawValue)) — NOT applied, outgoing login kept")
+                if redemption == .consumed { cliSyncService.notifyReloginNeeded(for: id, force: false) }
+                LoggingService.shared.log("⛔️ '\(updatedProfile.name)' holds a login this app already sent to the token endpoint (\(redemption)) — NOT applied, outgoing login kept")
             } else if pendingRenewal, renewal == .renewable, isExplicitClaudeOwner(id) {
                 LoggingService.shared.log("'\(updatedProfile.name)' is the CLI's own login, awaiting the CLI's renewal — nothing to apply")
             } else if pendingRenewal {

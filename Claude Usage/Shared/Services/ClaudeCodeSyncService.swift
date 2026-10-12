@@ -58,7 +58,7 @@ class ClaudeCodeSyncService {
     /// XCTest stand-in for the token endpoint: receives the refresh token being
     /// redeemed, returns the HTTP status and JSON payload. No test redeems a
     /// real refresh token.
-    private var tokenEndpointForTesting: ((String) async -> (status: Int, payload: [String: Any]?))?
+    private var tokenEndpointForTesting: ((String) async throws -> (status: Int, payload: [String: Any]?))?
 
     /// XCTest stand-in for the account-identity endpoint.
     private var identityFetcherForTesting: ((String) async -> AccountIdentity?)?
@@ -76,7 +76,8 @@ class ClaudeCodeSyncService {
         Self.cliStoreSeams = seams ?? CLIStoreSeams.inMemory()
     }
 
-    func setTokenEndpointForTesting(_ endpoint: ((String) async -> (status: Int, payload: [String: Any]?))?) {
+    /// A test's token endpoint can throw, as a transport failure would.
+    func setTokenEndpointForTesting(_ endpoint: ((String) async throws -> (status: Int, payload: [String: Any]?))?) {
         tokenEndpointForTesting = endpoint
     }
 
@@ -93,7 +94,7 @@ class ClaudeCodeSyncService {
     }
     #else
     private static let cliStoreSeams: CLIStoreSeams? = nil
-    private let tokenEndpointForTesting: ((String) async -> (status: Int, payload: [String: Any]?))? = nil
+    private let tokenEndpointForTesting: ((String) async throws -> (status: Int, payload: [String: Any]?))? = nil
     private let identityFetcherForTesting: ((String) async -> AccountIdentity?)? = nil
     private let identityProbeForTesting: ((String, Bool) async -> IdentityProbe)? = nil
     #endif
@@ -247,8 +248,8 @@ class ClaudeCodeSyncService {
         let json: String
         let source: Source
 
-        /// Whether an automatic path may treat this login as the CLI's own
-        /// (adopt it, park it). It still has to be complete
+        /// Whether an automatic path may treat this login as the CLI's own,
+        /// that is, adopt it. It still has to be complete
         /// (`ClaudeLoginLifetime.isComplete`) and proven by its own token.
         var isAdoptable: Bool { source != .partialKeychain }
     }
@@ -684,8 +685,9 @@ class ClaudeCodeSyncService {
         // A credential whose grant this app sent (the redemption record) may
         // be spent whatever its access token answers: storing it would only
         // keep a login that is never applied, and its successor may live on.
-        if let mark = ProfileStore.shared.claudeRedemptionMark(ofClaudeLogin: system.json) {
-            LoggingService.shared.log("⛔️ Claude sync refused: the CLI holds a login this app already redeemed (\(mark.rawValue))")
+        let redemption = ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: system.json)
+        if redemption != .unmarked {
+            LoggingService.shared.log("⛔️ Claude sync refused: the CLI holds a login this app already redeemed (\(redemption))")
             throw ClaudeCodeError.redeemedLogin
         }
         let jsonData = system.json
@@ -765,8 +767,9 @@ class ClaudeCodeSyncService {
             throw ClaudeCodeError.incompleteLogin
         }
         // Nor one whose grant this app already sent: it may be spent.
-        if let mark = ProfileStore.shared.claudeRedemptionMark(ofClaudeLogin: jsonData) {
-            LoggingService.shared.log("⛔️ Not applying '\(profile.name)': this app already redeemed its login (\(mark.rawValue))")
+        let redemption = ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: jsonData)
+        if redemption != .unmarked {
+            LoggingService.shared.log("⛔️ Not applying '\(profile.name)': this app already redeemed its login (\(redemption))")
             throw ClaudeCodeError.redeemedLogin
         }
 
@@ -894,7 +897,7 @@ class ClaudeCodeSyncService {
         let statusCode: Int
         let responsePayload: [String: Any]?
         if let endpoint = tokenEndpointForTesting {
-            (statusCode, responsePayload) = await endpoint(refreshToken)
+            (statusCode, responsePayload) = try await endpoint(refreshToken)
         } else {
             // No test redeems a refresh token over the network.
             if RealCredentialStoreGuard.refuse("token endpoint (refresh_token grant)") {
@@ -1084,7 +1087,7 @@ class ClaudeCodeSyncService {
         // account. A PENDING one may be sent again — no live successor exists
         // anywhere, or the profile would hold it — and a hand-off renews it
         // whatever its expiry, because a pending login is never applied.
-        let redemptionMark = ProfileStore.shared.claudeRedemptionMark(ofClaudeLogin: storedJSON)
+        let redemptionMark = ProfileStore.shared.claudeRedemptionStatus(ofClaudeLogin: storedJSON)
         if redemptionMark == .consumed, expiry.timeIntervalSinceNow < freshFor, !reloginNotifiedProfiles.contains(profileId) {
             LoggingService.shared.log("ensureFreshCredentials: '\(profile.name)' holds a login this app already redeemed, whose successor was lost — only /login renews it")
             notifyReloginNeeded(for: profileId)
@@ -1137,7 +1140,7 @@ class ClaudeCodeSyncService {
             // BEFORE the grant goes out; it is promoted on success and stays on
             // a crash or an ambiguous answer. A marked credential is never
             // adopted, synced or applied. No confirmed record: no grant.
-            var sendable = await ProfileStore.shared.markClaudeRedemptionPending(storedJSON)
+            var sendable = await ProfileStore.shared.markClaudeRedemptionPending(storedJSON).maySend
             if !sendable {
                 LoggingService.shared.logError("ensureFreshCredentials: NOT redeeming '\(profile.name)' — its redemption could not be recorded on disk first")
             } else if currentDecision(consumed) != .redeem {
@@ -1334,7 +1337,7 @@ class ClaudeCodeSyncService {
         if let known = scope?.read[key] { return known }
         let store = ProfileStore.shared
         let refused = store.isRefusedClaudeLogin(login)
-        let redeemed = store.claudeRedemptionMark(ofClaudeLogin: login) != nil
+        let redeemed = store.claudeRedemptionStatus(ofClaudeLogin: login) != .unmarked
         let expiry = ClaudeLoginLifetime.accessExpiry(login)
         var identified: String?
         var rejected: Int?

@@ -1575,33 +1575,65 @@ class ProfileStore {
     /// Under `redemptionLock`.
     private func loadedRedemptions(now: Date) -> [String: ClaudeRedemptionEntry] {
         if redemptions == nil {
-            redemptions = redemptionBacking.read()
+            redemptions = (try? redemptionBacking.read())
+                .flatMap { $0 }
                 .flatMap { try? JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) } ?? [:]
         }
         let cutoff = now.timeIntervalSince1970
         return redemptions!.filter { $0.value.deadline == 0 || $0.value.deadline > cutoff }
     }
 
-    /// The mark this app holds for this exact credential, if any.
-    func claudeRedemptionMark(ofClaudeLogin login: String, now: Date = Date()) -> ClaudeRedemptionMark? {
-        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return nil }
-        redemptionLock.lock()
-        defer { redemptionLock.unlock() }
-        return loadedRedemptions(now: now)[tag]?.state
+    /// What the record says about one credential.
+    nonisolated enum ClaudeRedemptionStatus: Equatable {
+        /// This app has not sent its grant.
+        case unmarked
+        case pending
+        case consumed
+        /// The record cannot be read: nothing about the credential can be
+        /// confirmed.
+        case unknown
     }
 
-    /// Marks `login`'s grant as about to be sent. Returns true only once the
-    /// record is written, flushed and read back with the mark in it; on false
-    /// the mark is taken back and the grant must not be sent. A consumed
+    /// The record's status for this exact credential. A login without a
+    /// refresh token has no grant to send: unmarked.
+    func claudeRedemptionStatus(ofClaudeLogin login: String, now: Date = Date()) -> ClaudeRedemptionStatus {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return .unmarked }
+        redemptionLock.lock()
+        defer { redemptionLock.unlock() }
+        switch loadedRedemptions(now: now)[tag]?.state {
+        case .pending: return .pending
+        case .consumed: return .consumed
+        case nil: return .unmarked
+        }
+    }
+
+    /// What marking a grant pending did.
+    nonisolated enum PendingMarkResult: Equatable {
+        /// THIS attempt wrote the mark, confirmed: it may send, and it alone
+        /// may take the mark back.
+        case introduced
+        /// An earlier attempt's pending mark stands, confirmed: it may send,
+        /// and the mark outlives whatever this attempt gets back.
+        case alreadyPending
+        /// Nothing confirmed (a consumed credential, a write that was not read
+        /// back, an unreadable record): send nothing.
+        case notRecorded
+
+        var maySend: Bool { self != .notRecorded }
+    }
+
+    /// Marks `login`'s grant as about to be sent, and returns only once the
+    /// record is written, flushed and read back with the mark in it. A mark
+    /// this attempt introduced and could not confirm is taken back. A consumed
     /// credential is never marked pending again.
-    func markClaudeRedemptionPending(_ login: String, now: Date = Date()) async -> Bool {
-        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return false }
+    func markClaudeRedemptionPending(_ login: String, now: Date = Date()) async -> PendingMarkResult {
+        guard let tag = ClaudeLoginLifetime.loginTag(login) else { return .notRecorded }
         redemptionLock.lock()
         var record = loadedRedemptions(now: now)
         let previous = record[tag]
         guard previous?.state != .consumed else {
             redemptionLock.unlock()
-            return false
+            return .notRecorded
         }
         record[tag] = ClaudeRedemptionEntry(state: .pending, deadline: ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0)
         redemptions = record
@@ -1612,7 +1644,8 @@ class ProfileStore {
             if redemptions?[tag]?.state == .pending { redemptions?[tag] = nil }
             redemptionLock.unlock()
         }
-        return confirmed
+        guard confirmed else { return .notRecorded }
+        return previous == nil ? .introduced : .alreadyPending
     }
 
     /// Promotes `login`'s mark to consumed: its grant returned a successor.
@@ -1674,7 +1707,7 @@ class ProfileStore {
         do {
             let data = try JSONEncoder().encode(snapshot)
             try backing.write(data)
-            let readBack = backing.read().flatMap { try? JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) }
+            let readBack = try backing.read().flatMap { try JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) }
             guard let readBack, readBack[tag]?.state == state else { throw CocoaError(.fileReadCorruptFile) }
             return .success(())
         } catch {
@@ -1777,10 +1810,12 @@ class ProfileStore {
 
 // MARK: - The redemption record's backing
 
-/// Where `ProfileStore`'s redemption record lives. `write` returns only once
-/// the bytes are durable, or throws; the store reads them back to confirm.
+/// Where `ProfileStore`'s redemption record lives. `read` returns nil ONLY
+/// when the record is confirmed absent (a first launch), and throws when it
+/// cannot be read. `write` returns only once the bytes are durable, or
+/// throws; the store reads them back to confirm.
 nonisolated protocol ClaudeRedemptionRecordBacking: AnyObject {
-    func read() -> Data?
+    func read() throws -> Data?
     func write(_ data: Data) throws
 }
 
@@ -1803,8 +1838,14 @@ nonisolated final class FileClaudeRedemptionRecord: ClaudeRedemptionRecordBackin
             .appendingPathComponent("claude-redeemed-logins.json")
     }
 
-    func read() -> Data? {
-        try? Data(contentsOf: url)
+    func read() throws -> Data? {
+        do {
+            return try Data(contentsOf: url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return nil
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+            return nil
+        }
     }
 
     func write(_ data: Data) throws {
@@ -1822,27 +1863,52 @@ nonisolated final class FileClaudeRedemptionRecord: ClaudeRedemptionRecordBackin
 /// XCTest's record: in memory for the process, so a test can drop the
 /// store's copy and read it back as a relaunch would
 /// (`reloadClaudeRedemptionRecordForTesting`). `failWrites` makes every write
-/// fail, as a full disk would.
+/// fail, as a full disk would; `failReads` makes every read fail, as an
+/// unreadable file would; `stored` can hold bytes that do not decode; and
+/// `onWrite` runs inside each write, before it lands, so a test can act
+/// while the pending mark is being written.
 nonisolated final class InMemoryClaudeRedemptionRecord: ClaudeRedemptionRecordBacking, @unchecked Sendable {
     private let lock = NSLock()
-    private var stored: Data?
+    private var _stored: Data?
     private var _failWrites = false
+    private var _failReads = false
+    private var _onWrite: (() -> Void)?
 
-    var failWrites: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return _failWrites }
-        set { lock.lock(); _failWrites = newValue; lock.unlock() }
-    }
-
-    func read() -> Data? {
+    private func locked<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
-        return stored
+        return body()
+    }
+
+    var failWrites: Bool {
+        get { locked { _failWrites } }
+        set { locked { _failWrites = newValue } }
+    }
+    var failReads: Bool {
+        get { locked { _failReads } }
+        set { locked { _failReads = newValue } }
+    }
+    var stored: Data? {
+        get { locked { _stored } }
+        set { locked { _stored = newValue } }
+    }
+    var onWrite: (() -> Void)? {
+        get { locked { _onWrite } }
+        set { locked { _onWrite = newValue } }
+    }
+
+    func read() throws -> Data? {
+        let (fails, data) = locked { (_failReads, _stored) }
+        guard !fails else { throw CocoaError(.fileReadNoPermission) }
+        return data
     }
 
     func write(_ data: Data) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !_failWrites else { throw CocoaError(.fileWriteOutOfSpace) }
-        stored = data
+        locked { _onWrite }?()
+        try locked { () -> Result<Void, Error> in
+            guard !_failWrites else { return .failure(CocoaError(.fileWriteOutOfSpace)) }
+            _stored = data
+            return .success(())
+        }.get()
     }
 }
