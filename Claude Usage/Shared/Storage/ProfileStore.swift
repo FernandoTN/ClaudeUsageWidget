@@ -546,12 +546,10 @@ class ProfileStore {
         cacheLock.lock()
         pendingHydrationIds = Set(ids)
         clearedWhilePending.removeAll()
-        let parkedGeneration = parkedHydrationGeneration
         cacheLock.unlock()
 
         keychainQueue.async { [weak self] in
             guard let self else { return }
-            self.hydrateParkedLogin(generation: parkedGeneration)
             var success = true
             if !ids.isEmpty {
                 success = self.readCredentialsIntoCache(profileIds: ids, deadline: deadline)
@@ -680,8 +678,6 @@ class ProfileStore {
     func resetAndRewarmCredentialCacheForTesting() {
         cacheLock.lock()
         credentialCache.removeAll()
-        parkedLogin = nil
-        parkedHydrationGeneration += 1
         cacheLock.unlock()
         refusedLock.lock()
         refusedLogins = nil  // re-read from the preferences store, as a relaunch would
@@ -1452,68 +1448,6 @@ class ProfileStore {
         return true
     }
 
-    // MARK: - Parked CLI login (store-owned)
-
-    /// A Claude Code login an activation found in the CLI's store, could not
-    /// adopt into any profile, and was about to overwrite. It is kept here so a
-    /// switch never destroys the only copy of a live login, and offered to the
-    /// user through explicit Sync; nothing adopts it automatically.
-    struct ParkedCLILogin: Codable, Equatable {
-        /// The full credentials JSON. Secret: it lives in the Keychain only.
-        let login: String
-        /// `ClaudeLoginLifetime.loginTag(login)`, the slot's CAS key.
-        let tag: String
-        let parkedAt: Date
-        /// The profile that owned the CLI's login when it was parked.
-        let fromProfileId: UUID?
-        /// The account its own token reported, when an identity read succeeded.
-        let accountUUID: String?
-        /// Why it was not adopted, log-safe.
-        let reason: String
-    }
-
-    /// ONE slot. Guarded by `cacheLock`; persisted on `keychainQueue` in the
-    /// order it changes, like every credential write.
-    private var parkedLogin: ParkedCLILogin?
-
-    var parkedCLILogin: ParkedCLILogin? {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        return parkedLogin
-    }
-
-    /// Compare-and-swap on the slot: writes `parked` (nil empties it) only if
-    /// the slot's current tag is `expectedTag` (nil = empty). Returns false,
-    /// changing nothing, otherwise.
-    @discardableResult
-    func replaceParkedCLILogin(expectedTag: String?, with parked: ParkedCLILogin?) -> Bool {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        guard parkedLogin?.tag == expectedTag else { return false }
-        parkedLogin = parked
-        let encoded = parked.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-        keychainQueue.async { [weak self] in
-            if let encoded {
-                self?.keychainService.saveParkedCLILogin(encoded)
-            } else {
-                self?.keychainService.deleteParkedCLILogin()
-            }
-        }
-        return true
-    }
-
-    /// Reads the slot back from the Keychain. MUST run on `keychainQueue`.
-    /// A slot changed in memory since the warm began is kept.
-    private func hydrateParkedLogin(generation: Int) {
-        let decoded = keychainService.loadParkedCLILogin()
-            .flatMap { $0.data(using: .utf8) }
-            .flatMap { try? JSONDecoder().decode(ParkedCLILogin.self, from: $0) }
-        cacheLock.lock()
-        if generation == parkedHydrationGeneration, parkedLogin == nil { parkedLogin = decoded }
-        cacheLock.unlock()
-    }
-    private var parkedHydrationGeneration = 0
-
     // MARK: - Refused Claude logins (store-owned)
 
     /// Tags (`ClaudeLoginLifetime.loginTag`) of Claude logins whose refresh
@@ -1598,8 +1532,8 @@ class ProfileStore {
     }
 
     #if DEBUG
-    /// Test-only: empties the refused record, the account record and the
-    /// parked slot (tests reuse synthetic token names, which real tokens never do).
+    /// Test-only: empties the refused record and the account record (tests
+    /// reuse synthetic token names, which real tokens never do).
     func resetLoginRecordsForTesting() {
         refusedLock.lock()
         refusedLogins = [:]
@@ -1607,11 +1541,6 @@ class ProfileStore {
         loginAccounts = [:]
         writeSingleShot(nil, forKey: Self.claudeLoginAccountsKey)
         refusedLock.unlock()
-        cacheLock.lock()
-        parkedLogin = nil
-        parkedHydrationGeneration += 1
-        cacheLock.unlock()
-        keychainQueue.async { [weak self] in self?.keychainService.deleteParkedCLILogin() }
     }
     #endif
 

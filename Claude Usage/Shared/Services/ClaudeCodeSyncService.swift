@@ -1266,88 +1266,6 @@ class ClaudeCodeSyncService {
         }
     }
 
-    // MARK: - Parking the CLI's Login Before a Switch Overwrites It
-
-    /// Before an activation writes `incoming` over the CLI's store: when the
-    /// CLI holds a complete login that no profile holds, that the slot does not
-    /// already keep and that is not proven dead, it is parked in the ONE
-    /// store-owned slot (`ProfileStore.parkedCLILogin`, compare-and-swap) and
-    /// the user is told. Nothing adopts it automatically; explicit Sync offers
-    /// it (`syncParkedLogin`). The switch then proceeds: whatever the outgoing
-    /// re-sync could not adopt — unknown identity, a different account, a
-    /// failed CAS, a same-owner re-apply — survives the overwrite.
-    @discardableResult
-    func parkCLILoginBeforeApplying(_ incoming: String, outgoingOwner: UUID?) async -> ProfileStore.ParkedCLILogin? {
-        guard let system = try? await readSystemLoginOffMain(), system.isAdoptable else { return nil }
-        let current = system.json
-        guard ClaudeLoginLifetime.isComplete(current), !ClaudeLoginLifetime.isDeadMarker(current),
-              !ClaudeLoginLifetime.isSamePair(current, incoming),
-              let tag = ClaudeLoginLifetime.loginTag(current) else { return nil }
-        let store = ProfileStore.shared
-        let held = store.loadProfiles().contains {
-            $0.cliCredentialsJSON.map { ClaudeLoginLifetime.isSamePair($0, current) } ?? false
-        }
-        guard !held, store.parkedCLILogin?.tag != tag else { return nil }
-        let evidence = await loginEvidence(current)
-        if case .dead = evidence {
-            LoggingService.shared.log("Claude: the CLI's login is dead by its own evidence — not parked before the switch overwrites it")
-            return nil
-        }
-        let ownerName = outgoingOwner.flatMap { id in store.loadProfiles().first(where: { $0.id == id })?.name }
-        let parked = ProfileStore.ParkedCLILogin(
-            login: current, tag: tag, parkedAt: Date(), fromProfileId: outgoingOwner,
-            accountUUID: evidence.account, reason: "not adopted at the switch (\(Self.describe(evidence)))"
-        )
-        for _ in 0..<2 {
-            let previous = store.parkedCLILogin
-            guard store.replaceParkedCLILogin(expectedTag: previous?.tag, with: parked) else { continue }
-            if previous != nil {
-                LoggingService.shared.log("Claude: the previously parked CLI login was replaced by a newer one")
-            }
-            LoggingService.shared.log("Claude: ⚠️ parked the CLI's login (\(ClaudeLoginLifetime.summary(current))) before the switch overwrote it — it was not adopted into '\(ownerName ?? "?")'; offered through explicit Sync")
-            NotificationManager.shared.sendClaudeParkedLoginNotification(profileName: ownerName ?? "Claude")
-            return parked
-        }
-        return nil
-    }
-
-    /// Explicit Sync of the parked login into `profileId`: the user's choice,
-    /// like `syncToProfile`. The duplicate guard runs on its account when one
-    /// is known; the slot is emptied by CAS on the tag it held.
-    func syncParkedLogin(into profileId: UUID) throws {
-        let store = ProfileStore.shared
-        guard let parked = store.parkedCLILogin else { throw ClaudeCodeError.noParkedLogin }
-        guard ClaudeLoginLifetime.isComplete(parked.login) else { throw ClaudeCodeError.incompleteLogin }
-        var profiles = store.loadProfiles()
-        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else {
-            throw ClaudeCodeError.noProfileCredentials
-        }
-        if let account = parked.accountUUID,
-           let holder = Self.duplicateAccountHolder(accountUUID: account, target: profileId, profiles: profiles,
-                                                    accountUUIDOf: { $0.claudeAccountUUID }) {
-            throw ClaudeCodeError.accountAlreadySynced(profileName: holder.name)
-        }
-        profiles[index].cliCredentialsJSON = parked.login
-        profiles[index].hasCliAccount = true
-        profiles[index].cliAccountSyncedAt = Date()
-        profiles[index].claudeAccountUUID = nil
-        profiles[index].claudeAccountEmail = nil
-        profiles[index].claudeOrganizationUUID = nil
-        store.saveProfiles(profiles, explicitCLILoginWrite: profileId)
-        store.replaceParkedCLILogin(expectedTag: parked.tag, with: nil)
-        reloginNotifiedProfiles.remove(profileId)
-        renewalStates.removeValue(forKey: profileId)
-        markLoginUncontaminated(profileId)
-        LoggingService.shared.log("Synced the parked CLI login into profile: \(profileId)")
-    }
-
-    /// Drops the parked login (the user's choice).
-    func discardParkedLogin() {
-        guard let tag = ProfileStore.shared.parkedCLILogin?.tag else { return }
-        ProfileStore.shared.replaceParkedCLILogin(expectedTag: tag, with: nil)
-        LoggingService.shared.log("Discarded the parked CLI login")
-    }
-
     // MARK: - The CLI Holds This Token
 
     /// What the CLI's store says about one refresh token.
@@ -1983,9 +1901,9 @@ class ClaudeCodeSyncService {
     /// profile takes the CLI's login only when the CLI login's own token proves
     /// it live and the stored login's own evidence places it in the same
     /// account. Among same-account logins proven live, the CLI's wins; recency
-    /// and deadlines never decide (2026-10-12). Anything not adopted here is
-    /// parked by the activation before it overwrites the CLI's store
-    /// (`parkCLILoginBeforeApplying`), and the switch proceeds. Saving a
+    /// and deadlines never decide (2026-10-12). A login not adopted here is
+    /// overwritten by the activation's apply, as before #186: an ACCEPTED
+    /// RESIDUAL whose repair is `/login` (see CLAUDE.md). Saving a
     /// consumed pair over the profile destroyed the only live copy of a login
     /// (2026-10-02 05:24:10): its revoked access token now fails its own
     /// fresh read. The dead marker never reaches here (2026-10-09 05:45:44,
@@ -2008,7 +1926,7 @@ class ClaudeCodeSyncService {
         let stored = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.cliCredentialsJSON
         if stored != freshJSON {
             guard await adoptionDecision(profileId: profileId, stored: stored, cliLogin: freshJSON) else {
-                LoggingService.shared.log("Re-sync kept the stored login (\(ClaudeLoginLifetime.summary(stored))); the CLI's (\(ClaudeLoginLifetime.summary(freshJSON))) is parked before the switch overwrites it")
+                LoggingService.shared.log("Re-sync kept the stored login (\(ClaudeLoginLifetime.summary(stored))); the CLI's (\(ClaudeLoginLifetime.summary(freshJSON))) was not proven into this profile")
                 return
             }
         }
@@ -2054,7 +1972,6 @@ enum ClaudeCodeError: LocalizedError {
     case tokenRefreshFailed(status: Int)
     case accountAlreadySynced(profileName: String)
     case incompleteLogin
-    case noParkedLogin
 
     var errorDescription: String? {
         switch self {
@@ -2074,8 +1991,6 @@ enum ClaudeCodeError: LocalizedError {
             return "This Anthropic account is already synced to the profile \u{201C}\(profileName)\u{201D}. Two profiles on one account share one quota. Remove it there first, or run `claude` and `/login` with a different account before syncing here."
         case .incompleteLogin:
             return "Claude Code's login could not be read in full (no refresh token or no expiry). Run `claude` and `/login`, then sync again."
-        case .noParkedLogin:
-            return "There is no set-aside Claude Code login to save."
         }
     }
 }

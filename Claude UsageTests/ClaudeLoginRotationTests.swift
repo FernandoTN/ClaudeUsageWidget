@@ -1142,23 +1142,6 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(store.recordedAccount(ofClaudeLogin: live), "acct-account")
     }
 
-    /// The parked slot is ONE compare-and-swap slot.
-    func testTheParkedSlotIsCompareAndSwap() {
-        let first = login("a", expiresIn: 3600, deadlineIn: 20 * 86_400)
-        let second = login("b", expiresIn: 3600, deadlineIn: 20 * 86_400)
-        func parked(_ json: String) -> ProfileStore.ParkedCLILogin {
-            ProfileStore.ParkedCLILogin(login: json, tag: ClaudeLoginLifetime.loginTag(json)!, parkedAt: Date(),
-                                        fromProfileId: nil, accountUUID: nil, reason: "test")
-        }
-        XCTAssertTrue(store.replaceParkedCLILogin(expectedTag: nil, with: parked(first)))
-        XCTAssertFalse(store.replaceParkedCLILogin(expectedTag: nil, with: parked(second)), "the slot is not empty")
-        XCTAssertEqual(store.parkedCLILogin?.login, first)
-        XCTAssertTrue(store.replaceParkedCLILogin(expectedTag: ClaudeLoginLifetime.loginTag(first), with: parked(second)))
-        XCTAssertEqual(store.parkedCLILogin?.login, second)
-        XCTAssertTrue(store.replaceParkedCLILogin(expectedTag: ClaudeLoginLifetime.loginTag(second), with: nil))
-        XCTAssertNil(store.parkedCLILogin)
-    }
-
     /// The token endpoint's own refusal is recorded for the exact credential it
     /// refused, never for the profile, and is then death evidence for that
     /// credential wherever it appears.
@@ -1181,37 +1164,6 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(evidence, .dead(account: nil), "refused: dead, though its access token still has time")
     }
 
-    /// The explicit Sync of a parked login: into the profile the user picks,
-    /// the slot emptied, and never into a profile another one already holds
-    /// the account for.
-    func testAParkedLoginIsSavedOnlyByExplicitSync() throws {
-        let parkedLogin = login("owner", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
-        var owner = profile("owner", login: login("owner", generation: 1, expiresIn: -3600, deadlineIn: 20 * 86_400))
-        owner.claudeAccountUUID = "acct-owner"
-        var holder = profile("holder", login: login("owner", generation: 7, expiresIn: 3600, deadlineIn: 20 * 86_400))
-        holder.claudeAccountUUID = "acct-owner"
-        let elsewhere = profile("elsewhere", login: nil)
-        seed([owner, elsewhere], focused: owner.id)
-        let record = ProfileStore.ParkedCLILogin(login: parkedLogin, tag: ClaudeLoginLifetime.loginTag(parkedLogin)!,
-                                                 parkedAt: Date(), fromProfileId: owner.id, accountUUID: "acct-owner",
-                                                 reason: "test")
-        XCTAssertTrue(store.replaceParkedCLILogin(expectedTag: nil, with: record))
-
-        try sync.syncParkedLogin(into: owner.id)
-        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-2")
-        XCTAssertNil(store.parkedCLILogin, "the slot is emptied")
-        XCTAssertThrowsError(try sync.syncParkedLogin(into: owner.id), "nothing left to save")
-        discard(owner)
-
-        // Into another profile while one already holds the account: refused.
-        seed([holder, elsewhere], focused: holder.id)
-        XCTAssertTrue(store.replaceParkedCLILogin(expectedTag: nil, with: record))
-        XCTAssertThrowsError(try sync.syncParkedLogin(into: elsewhere.id))
-        XCTAssertNil(storedLogin(elsewhere.id))
-        sync.discardParkedLogin()
-        XCTAssertNil(store.parkedCLILogin)
-    }
-
     // MARK: - Review round 2 (#186): v3 — evidence from each side's own token
 
     /// Every synthetic token "<account>-access-<n>" identifies as "acct-<account>".
@@ -1227,10 +1179,10 @@ final class ClaudeLoginRotationTests: XCTestCase {
         sync.setIdentityProbeForTesting { token, fresh in answer(token, fresh) ?? Self.syntheticIdentity(token) }
     }
 
-    /// Whether some profile, or the parked slot, still holds this login.
+    /// Whether some profile or the CLI's store still holds this login.
     private func preservedAnywhere(_ json: String) -> Bool {
         store.loadProfiles().contains { $0.cliCredentialsJSON.map { ClaudeLoginLifetime.isSamePair($0, json) } ?? false }
-            || (store.parkedCLILogin.map { ClaudeLoginLifetime.isSamePair($0.login, json) } ?? false)
+            || [cliStore.keychain, cliStore.file].contains { $0.map { ClaudeLoginLifetime.isSamePair($0, json) } ?? false }
     }
 
     /// Round 2, major 1. The Keychain answers with a payload the `security`
@@ -1302,11 +1254,15 @@ final class ClaudeLoginRotationTests: XCTestCase {
         }
     }
 
-    /// Round 2, major 4. After an upgrade the owner holds an expired pair the
+    /// Round 2, major 4 — an ACCEPTED RESIDUAL since round 3 (the gate cut
+    /// the parking slot). After an upgrade the owner holds an expired pair the
     /// CLI has consumed, whose own token cannot answer, while the CLI holds the
-    /// live rotation. Nothing can verify the rotation into the owner, and the
-    /// switch must still proceed — without destroying the CLI's only live login.
-    func testASwitchNeverDestroysTheOnlyCopyOfTheCLIsLogin() async {
+    /// live rotation. Nothing can verify the rotation into the owner; the
+    /// switch proceeds and overwrites it, exactly as #185 and earlier did, and
+    /// the repair is `/login`. This test pins that behaviour: the follow-up
+    /// card "Preserve an unadoptable live CLI login across a switch" flips its
+    /// last assertion.
+    func testASwitchStillOverwritesACLILoginNoProfileCanAdopt() async {
         let consumed = login("owner", generation: 1, expiresIn: -3600, deadlineIn: 20 * 86_400)
         let live = login("owner", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
         identityEndpoint { token, _ in token == "owner-access-1" ? .rejected(status: 401) : nil }
@@ -1321,7 +1277,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
         XCTAssertEqual(outcome, .activated, "the switch proceeds")
         XCTAssertEqual(refreshToken(cliStore.keychain), "target-refresh-1")
-        XCTAssertTrue(preservedAnywhere(live), "the CLI's only live login survives the switch")
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-1", "the unverifiable rotation is not adopted")
+        XCTAssertFalse(preservedAnywhere(live), "accepted residual: the overwritten login is kept nowhere")
     }
 
     /// Round 2, major 5. Explicit Sync takes no incomplete login, from any
@@ -1389,8 +1346,9 @@ final class ClaudeLoginRotationTests: XCTestCase {
     }
 
     /// Counter-case (c). The CLI's login cannot be identified at the outgoing
-    /// re-sync (a transient failure). It is parked, and the switch proceeds.
-    func testATransientIdentityFailureAtTheSwitchParksTheCLIsLoginAndTheSwitchProceeds() async {
+    /// re-sync (a transient failure). Nothing is adopted on unknown evidence,
+    /// and the switch is neither deferred nor stalled.
+    func testATransientIdentityFailureAtTheSwitchAdoptsNothingAndTheSwitchProceeds() async {
         let stored = login("owner", generation: 1, expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
         let rotated = login("owner", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
         identityEndpoint { token, _ in token == "owner-access-2" ? .unavailable : nil }
@@ -1405,10 +1363,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
         XCTAssertEqual(outcome, .activated, "the switch is not deferred")
         XCTAssertEqual(manager.activeClaudeProfileId, target.id)
-        XCTAssertEqual(store.parkedCLILogin.map { refreshToken($0.login) } ?? nil, "owner-refresh-2",
-                       "the CLI's login was parked before it was overwritten")
-        XCTAssertEqual(store.parkedCLILogin?.fromProfileId, owner.id)
-        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-1", "and not adopted")
+        XCTAssertEqual(refreshToken(cliStore.keychain), "target-refresh-1")
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "owner-refresh-1", "nothing adopted on unknown evidence")
     }
 
     /// Counter-case (d). The CLI's login is verified as account X and the

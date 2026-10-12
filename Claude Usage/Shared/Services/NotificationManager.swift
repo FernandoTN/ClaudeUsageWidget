@@ -499,30 +499,6 @@ class NotificationManager {
         }
     }
 
-    /// Tells the user a switch set aside the Claude Code login it would have
-    /// overwritten (`ClaudeCodeSyncService.parkCLILoginBeforeApplying`): the
-    /// widget could not prove it into `profileName`, so it waits in
-    /// Settings › Accounts › Login to be saved explicitly.
-    func sendClaudeParkedLoginNotification(profileName: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "notification.claude_parked_login.title".localized
-        content.body = "notification.claude_parked_login.message".localized(with: profileName)
-        content.sound = .default
-        content.categoryIdentifier = "INFO_ALERT"
-
-        let request = UNNotificationRequest(
-            identifier: "claude_parked_login",
-            content: content,
-            trigger: nil
-        )
-
-        deliver(request, profile: profileName) { error in
-            if let error = error {
-                LoggingService.shared.logError("Failed to send parked-login notification: \(error)")
-            }
-        }
-    }
-
     /// Alerts that the SERVER is refusing a Claude login whose stored token may
     /// look healthy (`ObservedDeadLogins`). Sent once per condemnation, and
     /// the caller holds that guarantee: the registry hands out a verdict only

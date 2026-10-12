@@ -815,12 +815,6 @@ class ProfileManager: ObservableObject {
             } else {
                 let targetProfileId = updatedProfile.id
                 let targetProfileName = updatedProfile.name
-                // The CLI's store is about to be overwritten. A complete login
-                // it holds that no profile holds — the outgoing re-sync could
-                // not prove it into the owner, or this re-applies the owner over
-                // the CLI's own renewal — is parked first, never destroyed, and
-                // the switch proceeds (`parkCLILoginBeforeApplying`).
-                await cliSyncService.parkCLILoginBeforeApplying(cliJSON, outgoingOwner: providerOwnerId(for: .claude))
                 let applied: Bool = await runOffMainActor {
                     do {
                         try ClaudeCodeSyncService.shared.applyProfileCredentials(targetProfileId)
