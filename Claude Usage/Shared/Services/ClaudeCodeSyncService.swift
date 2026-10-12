@@ -64,11 +64,9 @@ class ClaudeCodeSyncService {
     private var identityFetcherForTesting: ((String) async -> AccountIdentity?)?
 
     /// Installs a test's own stand-in; nil restores a fresh empty one. Never
-    /// the real store. A new store starts with nothing redeemed: tests reuse
-    /// synthetic token names, which real tokens never do.
+    /// the real store.
     func setCLIStoreForTesting(_ seams: CLIStoreSeams?) {
         Self.cliStoreSeams = seams ?? CLIStoreSeams.inMemory()
-        redeemedTokens = []
     }
 
     func setTokenEndpointForTesting(_ endpoint: ((String) async -> (status: Int, payload: [String: Any]?))?) {
@@ -209,8 +207,48 @@ class ClaudeCodeSyncService {
     /// the profile's live one (2026-10-02 and 2026-10-09).
     ///
     /// Shells out to `security` — never call on the main thread; use
-    /// `readSystemCredentialsOffMain()` from main-actor contexts.
+    /// `readSystemCredentialsOffMain()` from main-actor contexts. The automatic
+    /// adoption paths read `readSystemLogin()` instead, which says where the
+    /// login came from.
     func readSystemCredentials() throws -> String? {
+        try readSystemLogin()?.json
+    }
+
+    /// The CLI's login as the store read found it, and where it came from.
+    struct SystemLogin: Equatable {
+        enum Source: Equatable {
+            /// The Keychain item: the store the CLI reads first and writes.
+            case keychain
+            /// `~/.claude/.credentials.json`.
+            case file
+            /// An access token pulled by pattern out of a Keychain payload the
+            /// `security` tool truncated (`ClaudeLoginLifetime.isPartial`).
+            case partialKeychain
+        }
+        let json: String
+        let source: Source
+        /// The Keychain item could not be read at all.
+        let keychainUnreadable: Bool
+
+        /// Whether an AUTOMATIC adoption may take this login as the CLI's own:
+        /// the Keychain item, or the file when there conclusively is no item
+        /// (the CLI then reads the file), or when the item's login has lapsed
+        /// and the file carries a deadline still to come. Never a file read
+        /// past an unreadable Keychain: the CLI reads the item first, and the
+        /// file can hold a predecessor the CLI has consumed since. Never a
+        /// partial login.
+        var isAdoptable: Bool {
+            switch source {
+            case .keychain: return true
+            case .file: return !keychainUnreadable
+            case .partialKeychain: return false
+            }
+        }
+    }
+
+    /// `readSystemCredentials`, with the login's provenance. Shells out to
+    /// `security`: off the main thread only.
+    func readSystemLogin() throws -> SystemLogin? {
         let halves = readCLIStoreHalves()
         var keychainRaw: String?
         var keychainError: Error?
@@ -219,6 +257,7 @@ class ClaudeCodeSyncService {
         case .unreadable: keychainError = ClaudeCodeError.keychainReadFailed(status: -1)
         case .absent: break
         }
+        let keychainUnreadable = keychainError != nil
 
         // Accept the keychain payload only if it is complete, valid JSON
         var keychainJSON: String?
@@ -243,10 +282,12 @@ class ClaudeCodeSyncService {
             guard let file = fileJSON else { return nil }
             if let keychain = keychainJSON {
                 LoggingService.shared.log("Using credentials file (the Keychain's login has passed its deadline: \(ClaudeLoginLifetime.summary(keychain)); file: \(ClaudeLoginLifetime.summary(file)))")
+            } else if keychainUnreadable {
+                LoggingService.shared.log("Using credentials file (Keychain unreadable: not adoptable as the CLI's login)")
             } else {
-                LoggingService.shared.log("Using credentials file (Keychain unavailable)")
+                LoggingService.shared.log("Using credentials file (no Keychain item)")
             }
-            return file
+            return SystemLogin(json: file, source: .file, keychainUnreadable: keychainUnreadable)
         case .keychain:
             guard let keychain = keychainJSON else { return nil }
             if fileJSON != nil {
@@ -254,18 +295,20 @@ class ClaudeCodeSyncService {
             } else {
                 LoggingService.shared.log("Using system Keychain credentials (no credentials file)")
             }
-            return keychain
+            return SystemLogin(json: keychain, source: .keychain, keychainUnreadable: false)
         case .none:
             break
         }
 
-        // Keychain data present but invalid (likely truncated >2KB) — try regex extraction
+        // Keychain data present but invalid (likely truncated >2KB) — try regex
+        // extraction. The result is PARTIAL: an access token with no refresh
+        // token and no expiry. Usable for a read, never adopted or applied.
         if let raw = keychainRaw {
             LoggingService.shared.log("Keychain JSON is invalid (likely truncated), attempting regex extraction")
             if let token = extractAccessTokenViaRegex(from: raw) {
                 let minimalJSON = "{\"claudeAiOauth\":{\"accessToken\":\"\(token)\"}}"
-                LoggingService.shared.log("Built minimal credentials from regex-extracted token")
-                return minimalJSON
+                LoggingService.shared.log("Built a partial login (access token only) from the truncated Keychain payload")
+                return SystemLogin(json: minimalJSON, source: .partialKeychain, keychainUnreadable: false)
             }
             throw ClaudeCodeError.invalidJSON
         }
@@ -280,9 +323,14 @@ class ClaudeCodeSyncService {
     /// Reads system credentials on a background queue and *suspends* — rather than
     /// blocks — the calling actor. Safe to call from the main actor.
     func readSystemCredentialsOffMain() async throws -> String? {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
+        try await readSystemLoginOffMain()?.json
+    }
+
+    /// `readSystemLogin` on a background queue, suspending the caller.
+    func readSystemLoginOffMain() async throws -> SystemLogin? {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SystemLogin?, Error>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(with: Result { try self.readSystemCredentials() })
+                continuation.resume(with: Result { try self.readSystemLogin() })
             }
         }
     }
@@ -301,9 +349,10 @@ class ClaudeCodeSyncService {
     /// or nil. The Keychain item holds the CLI's login: it is the store the CLI
     /// itself reads first and writes, and the file is this app's own last
     /// write. When both halves hold a login, the file wins only when the
-    /// Keychain's has lapsed (deadline passed) and the file's has not. A later
-    /// deadline in the file proves nothing: deadlines are not in login order
-    /// (2026-10-12, `ClaudeLoginLifetime.cliLoginReplaces`).
+    /// Keychain's has lapsed (deadline passed) and the file AFFIRMATIVELY has
+    /// not: its deadline is present and still to come. A missing deadline is
+    /// no evidence, and a later deadline proves nothing about order: deadlines
+    /// are not in login order (2026-10-12, `ClaudeLoginLifetime.cliLoginReplaces`).
     nonisolated static func chooseSystemLogin(keychain: String?, file: String?, now: Date) -> SystemLoginChoice {
         if let keychain, ClaudeLoginLifetime.isDeadMarker(keychain) { return .keychainDeadMarker }
         guard let keychain else {
@@ -311,7 +360,8 @@ class ClaudeCodeSyncService {
             return .file
         }
         guard let file, !ClaudeLoginLifetime.isDeadMarker(file) else { return .keychain }
-        if ClaudeLoginLifetime.isLapsed(keychain, now: now), !ClaudeLoginLifetime.isLapsed(file, now: now) {
+        if ClaudeLoginLifetime.isLapsed(keychain, now: now),
+           let fileDeadline = ClaudeLoginLifetime.deadline(file), fileDeadline > now {
             return .file
         }
         return .keychain
@@ -625,9 +675,17 @@ class ClaudeCodeSyncService {
 
     /// Syncs credentials from system to profile (one-time copy)
     func syncToProfile(_ profileId: UUID) throws {
-        guard let jsonData = try readSystemCredentials() else {
+        guard let system = try readSystemLogin() else {
             throw ClaudeCodeError.noCredentialsFound
         }
+        // A partial login (an access token out of a truncated Keychain
+        // payload) can never renew, and storing it would later apply it to
+        // the CLI over a complete one.
+        guard system.source != .partialKeychain else {
+            LoggingService.shared.log("⛔️ Claude sync refused: the Keychain payload was truncated, so only a partial login (no refresh token) could be read")
+            throw ClaudeCodeError.partialLogin
+        }
+        let jsonData = system.json
 
         // Validate JSON format
         guard let data = jsonData.data(using: .utf8),
@@ -676,6 +734,7 @@ class ClaudeCodeSyncService {
         profiles[index].claudeAccountUUID = nil
         profiles[index].claudeAccountEmail = nil
         profiles[index].claudeOrganizationUUID = nil
+        profiles[index].claudeAccountStampTag = nil
         // Explicit: the user chose this login for this profile, even when it
         // expires before the one it replaces (a different account's `/login`).
         ProfileStore.shared.saveProfiles(profiles, explicitCLILoginWrite: profileId)
@@ -697,6 +756,11 @@ class ClaudeCodeSyncService {
               let jsonData = profile.cliCredentialsJSON else {
             LoggingService.shared.log("❌ No CLI credentials found for profile: \(profileId)")
             throw ClaudeCodeError.noProfileCredentials
+        }
+        // Never hand the CLI a login that cannot renew in place of the one it has.
+        guard !ClaudeLoginLifetime.isPartial(jsonData) else {
+            LoggingService.shared.log("⛔️ Not applying '\(profile.name)': its stored login is partial (an access token with no refresh token or expiry)")
+            throw ClaudeCodeError.partialLogin
         }
 
         LoggingService.shared.log("📦 Found CLI credentials, syncing to ~/.claude/.credentials.json...")
@@ -976,14 +1040,17 @@ class ClaudeCodeSyncService {
         guard var storedJSON = profile.cliCredentialsJSON else { return false }
         var changed = false
 
-        // The ordering is checked as if verified first, so the account guard
-        // (an identity lookup) runs only when there is something to adopt.
+        // Only the CLI's own login is adopted (`SystemLogin.isAdoptable`). The
+        // ordering is checked as if verified first, so the account guard (an
+        // identity lookup) runs only when there is something to adopt.
         if adoptSystemKeychain,
-           let systemJSON = try? await readSystemCredentialsOffMain(),
-           cliLoginReplaces(storedJSON, with: systemJSON, account: .verified),
-           let match = await adoptionAccountMatch(profileId: profileId, systemJSON: systemJSON),
-           cliLoginReplaces(storedJSON, with: systemJSON, account: match) {
+           let system = try? await readSystemLoginOffMain(), system.isAdoptable,
+           cliLoginReplaces(storedJSON, with: system.json, account: .verified),
+           let match = await adoptionAccountMatch(profileId: profileId, systemJSON: system.json),
+           cliLoginReplaces(storedJSON, with: system.json, account: match) {
+            let systemJSON = system.json
             if ProfileStore.shared.replaceCLILogin(profileId, expected: storedJSON, with: systemJSON) {
+                if match == .verified { carryStampBinding(profileId, from: storedJSON, to: systemJSON) }
                 storedJSON = systemJSON
                 changed = true
                 reloginNotifiedProfiles.remove(profileId)  // fresh login arrived — re-arm
@@ -1055,12 +1122,16 @@ class ClaudeCodeSyncService {
                 }
             }
             if let successor {
-                // A response that kept the refresh token consumed nothing.
-                if Self.refreshTokenFingerprint(of: successor) != consumed { recordRedeemed(consumed) }
+                // Durable before the successor is stored. A response that kept
+                // the refresh token consumed nothing.
+                if Self.refreshTokenFingerprint(of: successor) != consumed {
+                    recordConsumedLogin(storedJSON, for: profileId)
+                }
                 // Compare-and-swap: store the successor only over the pair that
                 // was redeemed. A login synced in while the request was in
                 // flight wins, and the successor is discarded.
                 if ProfileStore.shared.replaceCLILogin(profileId, expected: storedJSON, with: successor) {
+                    carryStampBinding(profileId, from: storedJSON, to: successor)
                     storedJSON = successor
                     changed = true
                     reloginNotifiedProfiles.remove(profileId)
@@ -1098,6 +1169,7 @@ class ClaudeCodeSyncService {
             guard let json = alias.cliCredentialsJSON,
                   Self.refreshTokenFingerprint(of: json) == consumed,
                   ProfileStore.shared.replaceCLILogin(alias.id, expected: json, with: successor) else { continue }
+            carryStampBinding(alias.id, from: json, to: successor)
             reloginNotifiedProfiles.remove(alias.id)
             renewalStates.removeValue(forKey: alias.id)
             shared.append(alias.name)
@@ -1112,35 +1184,67 @@ class ClaudeCodeSyncService {
         return ClaudeLoginLifetime.fingerprint(token)
     }
 
-    // MARK: - Redeemed Tokens
+    // MARK: - Consumed Pairs
 
-    /// Fingerprints of the refresh tokens this process redeemed, oldest first.
-    /// A pair carrying one is consumed: its refresh token is spent and its
-    /// access token was revoked by the redemption. The CLI could hold such a
-    /// pair only through the hand-off race `ClaudeRefreshPolicy` closed, and
-    /// adopting it would replace the only live copy of the login (2026-10-02
-    /// 05:24:10). So no adoption takes one. In memory and bounded: it backs up
-    /// that policy, it is not a record of every redemption.
-    private var redeemedTokens: [String] = []
-    private static let redeemedTokenLimit = 256
+    /// How many consumed tags a profile keeps. Each redemption of the profile's
+    /// login adds one; the CLI could only ever hold one of them through the
+    /// hand-off race `ClaudeRefreshPolicy` closed.
+    nonisolated static let consumedLoginTagLimit = 32
 
-    private func recordRedeemed(_ fingerprint: String) {
-        guard !redeemedTokens.contains(fingerprint) else { return }
-        redeemedTokens.append(fingerprint)
-        if redeemedTokens.count > Self.redeemedTokenLimit { redeemedTokens.removeFirst() }
+    /// `tags` with `tag` appended (moved to the end if present), oldest dropped
+    /// beyond `limit`.
+    nonisolated static func appendingConsumedTag(_ tag: String, to tags: [String]?,
+                                                 limit: Int = consumedLoginTagLimit) -> [String] {
+        var result = (tags ?? []).filter { $0 != tag }
+        result.append(tag)
+        if result.count > limit { result.removeFirst(result.count - limit) }
+        return result
     }
 
-    /// Whether `json` is a pair this process already redeemed.
-    func isRedeemedPair(_ json: String) -> Bool {
-        Self.refreshTokenFingerprint(of: json).map(redeemedTokens.contains) ?? false
+    /// Records, with the profile, that this app redeemed the refresh token of
+    /// `consumed`: that pair's refresh token is spent and its access token was
+    /// revoked by the redemption. The CLI could hold such a pair only through
+    /// the hand-off race `ClaudeRefreshPolicy` closed, and adopting it would
+    /// replace the only live copy of the login (2026-10-02 05:24:10). Persisted
+    /// in `profiles_v3` BEFORE the successor is stored, so no relaunch can
+    /// forget a consumption whose successor survived it.
+    private func recordConsumedLogin(_ consumed: String, for profileId: UUID) {
+        guard let tag = ClaudeLoginLifetime.loginTag(consumed) else { return }
+        var profiles = ProfileStore.shared.loadProfiles()
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else { return }
+        profiles[index].claudeConsumedLoginTags = Self.appendingConsumedTag(tag, to: profiles[index].claudeConsumedLoginTags)
+        ProfileStore.shared.saveProfiles(profiles)
     }
 
-    /// `ClaudeLoginLifetime.cliLoginReplaces`, with this process's redeemed
-    /// pairs and the current time. Every automatic path that moves the CLI's
-    /// login into a profile decides with this.
-    func cliLoginReplaces(_ stored: String?, with cliLogin: String, account: ClaudeLoginLifetime.AccountMatch) -> Bool {
+    /// Whether `json` is a pair this app redeemed, for any profile.
+    func isConsumedPair(_ json: String) -> Bool {
+        guard let tag = ClaudeLoginLifetime.loginTag(json) else { return false }
+        return ProfileStore.shared.loadProfiles().contains { $0.claudeConsumedLoginTags?.contains(tag) ?? false }
+    }
+
+    /// Moves a BOUND account stamp from the login it was verified against onto
+    /// the login that replaced it, when the replacement is provably the same
+    /// account: its own rotation, or a login the account guard verified by
+    /// token-bound identity. A stamp that was not bound stays unbound.
+    private func carryStampBinding(_ profileId: UUID, from previous: String, to successor: String) {
+        guard let previousTag = ClaudeLoginLifetime.loginTag(previous),
+              let successorTag = ClaudeLoginLifetime.loginTag(successor) else { return }
+        var profiles = ProfileStore.shared.loadProfiles()
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }),
+              profiles[index].claudeAccountStampTag == previousTag,
+              !(profiles[index].claudeAccountUUID ?? "").isEmpty else { return }
+        profiles[index].claudeAccountStampTag = successorTag
+        ProfileStore.shared.saveProfiles(profiles)
+    }
+
+    /// `ClaudeLoginLifetime.cliLoginReplaces`, with the consumed-pair record
+    /// and the current time. Every automatic path that moves the CLI's login
+    /// into a profile decides with this.
+    func cliLoginReplaces(_ stored: String?, with cliLogin: String, account: ClaudeLoginLifetime.AccountMatch,
+                          storedLoginDead: Bool = false) -> Bool {
         ClaudeLoginLifetime.cliLoginReplaces(stored, with: cliLogin, account: account,
-                                             cliLoginConsumed: isRedeemedPair(cliLogin), now: Date())
+                                             cliLoginConsumed: isConsumedPair(cliLogin),
+                                             storedLoginDead: storedLoginDead, now: Date())
     }
 
     // MARK: - The CLI Holds This Token
@@ -1395,15 +1499,24 @@ class ClaudeCodeSyncService {
     /// Persists the account identity behind a profile's stored CLI token so future
     /// adoptions can be account-matched and switches can update the CLI's cached
     /// account display. `force` overwrites (use after an explicit re-sync, where
-    /// the account may have changed); otherwise stamps only missing identities.
+    /// the account may have changed); otherwise stamps only missing identities
+    /// and stamps not bound to the login stored now.
+    ///
+    /// The stamp is BOUND to the login whose own token reported it
+    /// (`Profile.claudeAccountStampTag`), and only while the profile still
+    /// holds that login when the answer arrives.
     func stampAccountIdentity(for profileId: UUID, force: Bool = false) async {
         guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
-              force || profile.claudeAccountUUID == nil || profile.claudeAccountEmail == nil,
+              force || profile.claudeAccountUUID == nil || profile.claudeAccountEmail == nil
+                  || !profile.claudeStampIsBound,
               let json = profile.cliCredentialsJSON,
               let token = extractAccessToken(from: json),
               let identity = await fetchAccountIdentity(accessToken: token) else { return }
 
         var profiles = ProfileStore.shared.loadProfiles()
+        // The answer is about `json`. A login replaced during the lookup is
+        // resolved by the next call, never stamped with this one's account.
+        guard profiles.first(where: { $0.id == profileId })?.cliCredentialsJSON == json else { return }
         // A profile that ALREADY carried a stamp and whose own token now reports
         // a different account did not change accounts by itself — something
         // wrote another account's login into it. Record that before the stamp is
@@ -1416,15 +1529,18 @@ class ClaudeCodeSyncService {
                 markLoginContaminated(profileId, held: held, reported: identity.accountUUID)
             }
         }
+        let tag = ClaudeLoginLifetime.loginTag(json)
         if let index = profiles.firstIndex(where: { $0.id == profileId }),
            profiles[index].claudeAccountUUID != identity.accountUUID
-            || profiles[index].claudeAccountEmail != identity.email
-            || profiles[index].claudeOrganizationUUID != identity.organizationUUID {
+            || profiles[index].claudeAccountEmail != (identity.email.isEmpty ? nil : identity.email)
+            || profiles[index].claudeOrganizationUUID != (identity.organizationUUID.isEmpty ? nil : identity.organizationUUID)
+            || profiles[index].claudeAccountStampTag != tag {
             profiles[index].claudeAccountUUID = identity.accountUUID
             profiles[index].claudeAccountEmail = identity.email.isEmpty ? nil : identity.email
             profiles[index].claudeOrganizationUUID = identity.organizationUUID.isEmpty ? nil : identity.organizationUUID
+            profiles[index].claudeAccountStampTag = tag
             ProfileStore.shared.saveProfiles(profiles)
-            LoggingService.shared.log("Claude: stamped account identity for '\(profiles[index].name)'")
+            LoggingService.shared.log("Claude: stamped account identity for '\(profiles[index].name)' (bound to its stored login)")
         }
     }
 
@@ -1446,10 +1562,10 @@ class ClaudeCodeSyncService {
     }
 
     /// The single profile this sweep will resolve an identity for: the oldest
-    /// eligible unstamped login. One per sweep, so the pass costs at most one
-    /// `api.anthropic.com` request per 30 s — well inside the per-IP budget the
-    /// usage sweep already lives under — and costs NOTHING in steady state,
-    /// because a stamped profile is never a candidate again.
+    /// eligible login with no stamp bound to it. One per sweep, so the pass
+    /// costs at most one `api.anthropic.com` request per 30 s — well inside the
+    /// per-IP budget the usage sweep already lives under — and costs NOTHING in
+    /// steady state, because a bound stamp is never a candidate again.
     nonisolated static func selectIdentityStampId(candidates: [IdentityStampCandidate]) -> UUID? {
         candidates
             .filter(\.isEligible)
@@ -1457,8 +1573,9 @@ class ClaudeCodeSyncService {
             .map(\.id)
     }
 
-    /// Resolves and persists the account identity of ONE unstamped Claude login
-    /// per call, using that profile's OWN token.
+    /// Resolves and persists the account identity of ONE Claude login with no
+    /// stamp bound to it per call, using that profile's OWN token. Stamps from
+    /// before binding existed are re-verified this way, one per sweep.
     ///
     /// Why this exists: `stampAccountIdentity` only ever ran for the profile
     /// being APPLIED to the CLI, so a profile that was synced once and never
@@ -1486,14 +1603,49 @@ class ClaudeCodeSyncService {
             )
         }
         guard let target = Self.selectIdentityStampId(candidates: candidates) else { return nil }
-        await stampAccountIdentity(for: target)
+        await resolveUnboundStamp(for: target)
         return target
     }
 
-    /// Whether the background pass may spend a request on this profile.
+    /// Logins whose own token could not resolve their stamp, by profile: the
+    /// login's tag and when. Every stamp from before binding starts unbound,
+    /// and a login that cannot answer (an expired or server-rejected token)
+    /// must not be asked again every sweep, nor starve the others as the
+    /// oldest candidate. In memory: a relaunch retries each once.
+    private var unresolvedStamps: [UUID: (tag: String?, at: Date)] = [:]
+    nonisolated static let unresolvedStampRetry: TimeInterval = 30 * 60
+
+    /// Whether this login's stamp failed to resolve within `unresolvedStampRetry`.
+    private func stampRecentlyUnresolved(_ profile: Profile, now: Date = Date()) -> Bool {
+        guard let miss = unresolvedStamps[profile.id],
+              miss.tag == ClaudeLoginLifetime.loginTag(profile.cliCredentialsJSON) else { return false }
+        return now.timeIntervalSince(miss.at) < Self.unresolvedStampRetry
+    }
+
+    /// Re-resolves a stamp not bound to the stored login from that login's own
+    /// token (`stampAccountIdentity`), at most once per `unresolvedStampRetry`
+    /// for one login. A bound stamp is left alone.
+    func resolveUnboundStamp(for profileId: UUID) async {
+        guard let profile = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }),
+              !profile.claudeStampIsBound, profile.cliCredentialsJSON != nil,
+              !stampRecentlyUnresolved(profile) else { return }
+        await stampAccountIdentity(for: profileId, force: true)
+        guard let after = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId }) else { return }
+        if after.claudeStampIsBound {
+            unresolvedStamps.removeValue(forKey: profileId)
+        } else {
+            unresolvedStamps[profileId] = (ClaudeLoginLifetime.loginTag(after.cliCredentialsJSON), Date())
+        }
+    }
+
+    /// Whether the background pass may spend a request on this profile: a
+    /// login with no stamp, or with a stamp not bound to it (from before
+    /// binding existed, or left behind by a login that replaced the one it
+    /// was verified against).
     private func isIdentityStampEligible(_ profile: Profile) -> Bool {
         guard profile.carriesClaudeAccount,
-              profile.claudeAccountUUID == nil,
+              !profile.claudeStampIsBound,
+              !stampRecentlyUnresolved(profile),
               let json = profile.cliCredentialsJSON else { return false }
         guard !isLoginMarkedDead(profile.id) else { return false }
         // Expired means the only way to get a usable token is a refresh, and a
@@ -1563,16 +1715,32 @@ class ClaudeCodeSyncService {
     /// the entire fix: an unstamped profile used to pass this guard on "no
     /// evidence either way", which is how the CLI's login was written into a
     /// profile holding a different account.
+    ///
+    /// Only token-bound evidence proves an account (review of #186). Either
+    /// side may be weaker: the CLI login's account known only from
+    /// `~/.claude.json` (`cliIsTokenBound: false`, which survived a `/login`
+    /// into another account on 2026-10-12), or a profile stamp not bound to
+    /// the login it holds (`profileIsTokenBound: false`). Weaker evidence can
+    /// still REFUSE a mismatch, but agreement then is only `.noEvidence`,
+    /// never `.write`.
     nonisolated static func credentialWriteDecision(
         cliAccountUUID: String?,
         profileAccountUUID: String?,
-        stampedFromOwnToken: String? = nil
+        stampedFromOwnToken: String? = nil,
+        cliIsTokenBound: Bool = true,
+        profileIsTokenBound: Bool = true
     ) -> CredentialWriteDecision {
-        let target = [profileAccountUUID, stampedFromOwnToken]
-            .compactMap { $0 }
-            .first { !$0.isEmpty }
+        let target: (uuid: String, tokenBound: Bool)?
+        if let stamp = profileAccountUUID, !stamp.isEmpty {
+            target = (stamp, profileIsTokenBound)
+        } else if let own = stampedFromOwnToken, !own.isEmpty {
+            target = (own, true)
+        } else {
+            target = nil
+        }
         guard let cli = cliAccountUUID, !cli.isEmpty, let target else { return .noEvidence }
-        return cli == target ? .write : .refuse
+        guard cli == target.uuid else { return .refuse }
+        return cliIsTokenBound && target.tokenBound ? .write : .noEvidence
     }
 
     /// The OTHER profile already stamped with `accountUUID`, if any. Pure (each
@@ -1592,16 +1760,19 @@ class ClaudeCodeSyncService {
         }
     }
 
-    /// The account behind the CLI's current login. The identity endpoint is the
-    /// authority; `~/.claude.json`'s cached `oauthAccount.accountUuid` is the
-    /// fallback for when it cannot be reached, so a refused network call does
-    /// not silently downgrade the guard to "no evidence".
-    private func cliLoginAccountUUID(systemJSON: String) async -> String? {
+    /// The account behind the CLI's current login. The identity endpoint,
+    /// called with that login's OWN access token, is token-bound evidence.
+    /// `~/.claude.json`'s cached `oauthAccount.accountUuid` is the fallback
+    /// when it cannot be reached: it names whoever the CLI last recorded, and
+    /// it went on naming the old account after a `/login` into a new one
+    /// (2026-10-12). So it may refuse a mismatch, never prove a match
+    /// (`credentialWriteDecision(cliIsTokenBound: false)`).
+    private func cliLoginAccount(systemJSON: String) async -> (uuid: String?, isTokenBound: Bool) {
         if let token = extractAccessToken(from: systemJSON),
            let identity = await fetchAccountIdentity(accessToken: token) {
-            return identity.accountUUID
+            return (identity.accountUUID, true)
         }
-        return cliCachedAccountUUID()
+        return (cliCachedAccountUUID(), false)
     }
 
     /// The account the CLI itself believes it is logged into, read from
@@ -1712,37 +1883,38 @@ class ClaudeCodeSyncService {
     /// `ensureFreshCredentials` — so neither can write an account into a profile
     /// that is not that account.
     ///
+    /// A stamp is evidence of the target's account only while it is BOUND to
+    /// the login the target holds (`Profile.claudeStampIsBound`): a profile
+    /// stamped with one account once held another account's login, and the
+    /// CLI's login of the stamped account overwrote it (2026-10-12). An unbound
+    /// stamp is resolved from the target's own token first; when that cannot
+    /// be done, it may still refuse a mismatch but never verifies a match.
+    ///
     /// Returns nil when the write is refused, else what the ordering rule
     /// (`ClaudeLoginLifetime.cliLoginReplaces`) needs to know: `.verified` when
-    /// both identities agree, `.unverified` when neither could be resolved.
+    /// both identities agree by token-bound evidence, `.unverified` otherwise.
     private func adoptionAccountMatch(profileId: UUID, systemJSON: String) async -> ClaudeLoginLifetime.AccountMatch? {
-        let cliUUID = await cliLoginAccountUUID(systemJSON: systemJSON)
-        var profileUUID = ProfileStore.shared.loadProfiles()
-            .first(where: { $0.id == profileId })?.claudeAccountUUID
-
-        var stamped: String? = nil
-        if profileUUID?.isEmpty ?? true {
-            // Resolve the TARGET from its own stored token, never from the
-            // incoming credentials — stamping it from those would make every
-            // comparison trivially agree and rebuild the hole.
-            await stampAccountIdentity(for: profileId)
-            stamped = ProfileStore.shared.loadProfiles()
-                .first(where: { $0.id == profileId })?.claudeAccountUUID
-            profileUUID = stamped
-        }
+        let cli = await cliLoginAccount(systemJSON: systemJSON)
+        // Resolve the TARGET from its own stored token, never from the incoming
+        // credentials — stamping it from those would make every comparison
+        // trivially agree and rebuild the hole.
+        await resolveUnboundStamp(for: profileId)
+        let target = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })
+        let profileUUID = target?.claudeAccountUUID
 
         switch Self.credentialWriteDecision(
-            cliAccountUUID: cliUUID, profileAccountUUID: profileUUID, stampedFromOwnToken: stamped
+            cliAccountUUID: cli.uuid, profileAccountUUID: profileUUID,
+            cliIsTokenBound: cli.isTokenBound, profileIsTokenBound: target?.claudeStampIsBound ?? false
         ) {
         case .write:
             return .verified
         case .noEvidence:
-            // No evidence either way: the pointer's word stands, so the write
-            // is allowed, but the CLI's login is not known to be this
-            // account's, and two live logins are not reordered on that.
+            // Not known to differ: the pointer's word stands, so the write is
+            // allowed, but the CLI's login is not proven to be this account's,
+            // and two live logins are not reordered on that.
             return .unverified
         case .refuse:
-            recordRefusedWrite(profileId: profileId, cliAccountUUID: cliUUID, profileAccountUUID: profileUUID)
+            recordRefusedWrite(profileId: profileId, cliAccountUUID: cli.uuid, profileAccountUUID: profileUUID)
             return nil
         }
     }
@@ -1821,23 +1993,32 @@ class ClaudeCodeSyncService {
     /// pair this app redeemed. Saving such a consumed pair over the profile
     /// destroyed the only live copy of a login (2026-10-02 05:24:10), and the
     /// dead marker never reaches here (2026-10-09 05:45:44,
-    /// `readSystemCredentials`).
+    /// `readSystemCredentials`). Only the CLI's own login is taken
+    /// (`SystemLogin.isAdoptable`): never the file read past an unreadable
+    /// Keychain, never a partial login out of a truncated one.
     func resyncBeforeSwitching(for profileId: UUID) async throws {
         LoggingService.shared.log("Re-syncing CLI credentials before profile switch: \(profileId)")
 
         // Read fresh credentials from system (if user is logged in)
-        guard let freshJSON = try await readSystemCredentialsOffMain() else {
+        guard let system = try await readSystemLoginOffMain() else {
             // No credentials in system - user not logged into CLI anymore
             LoggingService.shared.log("No system credentials found - skipping re-sync")
             return
         }
+        guard system.isAdoptable else {
+            LoggingService.shared.log("Re-sync skipped: \(system.source == .partialKeychain ? "the Keychain payload was truncated (partial login)" : "the Keychain could not be read, so the credentials file is not known to be the CLI's login")")
+            return
+        }
+        let freshJSON = system.json
 
         let stored = ProfileStore.shared.loadProfiles().first(where: { $0.id == profileId })?.cliCredentialsJSON
         // Checked as if verified first, so the identity lookup runs only when
         // there is something to adopt.
         if stored != freshJSON, !cliLoginReplaces(stored, with: freshJSON, account: .verified) {
-            let reason = isRedeemedPair(freshJSON) ? "a pair this app already redeemed"
-                : ClaudeLoginLifetime.isLapsed(freshJSON, now: Date()) ? "past its deadline" : "the same token pair"
+            let reason = isConsumedPair(freshJSON) ? "a pair this app already redeemed"
+                : ClaudeLoginLifetime.isLapsed(freshJSON, now: Date()) ? "past its deadline"
+                : stored.map { ClaudeLoginLifetime.isSamePair(freshJSON, $0) } == true ? "the same token pair"
+                : "a login that cannot renew"
             LoggingService.shared.log("Re-sync kept the stored login (\(ClaudeLoginLifetime.summary(stored))) — the CLI's copy is \(reason) (\(ClaudeLoginLifetime.summary(freshJSON)))")
             return
         }
@@ -1846,7 +2027,7 @@ class ClaudeCodeSyncService {
             return
         }
         if stored != freshJSON, !cliLoginReplaces(stored, with: freshJSON, account: match) {
-            LoggingService.shared.log("Re-sync kept the stored login (\(ClaudeLoginLifetime.summary(stored))) — neither login's account could be identified, and two live logins are not reordered without that (\(ClaudeLoginLifetime.summary(freshJSON)))")
+            LoggingService.shared.log("Re-sync kept the stored login (\(ClaudeLoginLifetime.summary(stored))) — the CLI login's account is not proven by token-bound evidence, and two live logins are not reordered without that (\(ClaudeLoginLifetime.summary(freshJSON)))")
             return
         }
 
@@ -1865,6 +2046,7 @@ class ClaudeCodeSyncService {
                 LoggingService.shared.log("Re-sync skipped: the stored login changed while the CLI's was being verified")
                 return
             }
+            if match == .verified, let stored { carryStampBinding(profileId, from: stored, to: freshJSON) }
         }
 
         var profiles = ProfileStore.shared.loadProfiles()
@@ -1890,6 +2072,7 @@ enum ClaudeCodeError: LocalizedError {
     case noProfileCredentials
     case tokenRefreshFailed(status: Int)
     case accountAlreadySynced(profileName: String)
+    case partialLogin
 
     var errorDescription: String? {
         switch self {
@@ -1907,6 +2090,8 @@ enum ClaudeCodeError: LocalizedError {
             return "Failed to refresh the Claude Code OAuth token (HTTP \(status)). Please re-sync your CLI account."
         case .accountAlreadySynced(let profileName):
             return "This Anthropic account is already synced to the profile \u{201C}\(profileName)\u{201D}. Two profiles on one account share one quota. Remove it there first, or run `claude` and `/login` with a different account before syncing here."
+        case .partialLogin:
+            return "Claude Code's Keychain entry could only be read in part (no refresh token). Run `claude` and `/login`, then sync again."
         }
     }
 }

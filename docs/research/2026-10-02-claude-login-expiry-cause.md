@@ -542,10 +542,23 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
    is not newer"). The profile no longer held the login Claude Code was using.
 
    The store read returns nothing when the Keychain holds the dead-marker, and never
-   falls back to the file. Otherwise the Keychain wins, and the file is used only when
-   the Keychain's login has lapsed and the file's has not. The switch-away re-sync, the
-   Keychain adoption and identity adoption all decide by this rule and write by
-   compare-and-swap. An ordinary save to the profile store never changes a stored login;
+   falls back to the file. Otherwise the Keychain wins. The file is used only when the
+   Keychain's login has lapsed and the file's deadline is present and still ahead. The
+   switch-away re-sync, the Keychain adoption and identity adoption all decide by this
+   rule and write by compare-and-swap.
+
+   Review of that change (#186) added three rules, two of them from states seen live that
+   day:
+   - Only token-bound evidence proves an account. After the `/login`, `~/.claude.json`'s
+     `oauthAccount` still named the OLD account, so it can refuse a mismatch but never
+     verify a match. A profile's account stamp counts only while it is bound to the login
+     it was verified against. One profile carried account X's stamp while holding account
+     Y's login.
+   - Only the CLI's own login is adopted: never the file read past an unreadable Keychain,
+     and never the partial login (an access token alone) rebuilt from a truncated Keychain
+     payload.
+   - Pairs this app redeemed are recorded durably with the profile, so no relaunch
+     forgets one. An ordinary save to the profile store never changes a stored login;
    only explicit paths do (compare-and-swap, a sync or import, removal). Fixes 4 and 5 of
    section 6, B.
 3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at

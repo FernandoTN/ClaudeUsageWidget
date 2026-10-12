@@ -67,6 +67,31 @@ enum ClaudeLoginLifetime {
         return access.isEmpty && refresh.isEmpty
     }
 
+    /// Whether the login carries a refresh token, i.e. whether it can renew.
+    nonisolated static func hasRefreshToken(_ json: String) -> Bool {
+        !(oauth(json)?["refreshToken"] as? String ?? "").isEmpty
+    }
+
+    /// An access token and nothing else: no refresh token, no expiry. The
+    /// store read rebuilds exactly this from a Keychain payload the `security`
+    /// tool truncated. It can serve requests until its token dies and can
+    /// never renew, so no adoption, sync or apply takes it.
+    nonisolated static func isPartial(_ json: String) -> Bool {
+        guard let oauth = oauth(json) else { return false }
+        return !(oauth["accessToken"] as? String ?? "").isEmpty
+            && (oauth["refreshToken"] as? String ?? "").isEmpty
+            && oauth["expiresAt"] == nil
+    }
+
+    /// A short tag for a login, derived one-way from its refresh token with a
+    /// domain prefix. It is persisted with the profile (the account stamp's
+    /// binding, the consumed-pair record), so it is never the in-memory
+    /// `fingerprint` and never the token. Nil without a refresh token.
+    nonisolated static func loginTag(_ json: String?) -> String? {
+        guard let json, let token = refreshToken(json), !token.isEmpty else { return nil }
+        return String(fingerprint("cuw-login-tag-v1:" + token).prefix(32))
+    }
+
     // MARK: - Deadline (cause A)
 
     /// True when the login's server deadline has passed or falls within
@@ -86,12 +111,16 @@ enum ClaudeLoginLifetime {
 
     /// What is known about whether the CLI's login and a stored one belong to
     /// the same account. A KNOWN different account never reaches the ordering:
-    /// the account guard refuses it first.
+    /// the account guard refuses it first. Only token-bound evidence verifies:
+    /// the identity the CLI login's own token reports, against a profile stamp
+    /// bound to the login the profile holds (`Profile.claudeStampIsBound`).
     enum AccountMatch {
-        /// The two resolve to one account: the account guard's `.write`, or
-        /// the profile the CLI login's live identity was routed to.
+        /// Both sides resolve to one account by token-bound evidence: the
+        /// account guard's `.write`, or the identity adoption's verified owner.
         case verified
-        /// Neither side could be identified (the guard's `.noEvidence`).
+        /// The two are not known to differ, but neither is proven: the
+        /// guard's `.noEvidence` (a side unidentified, or known only from
+        /// `~/.claude.json` or an unbound stamp).
         case unverified
     }
 
@@ -110,10 +139,13 @@ enum ClaudeLoginLifetime {
     /// third's three hours before the first's. Ranking by it kept a superseded
     /// pair over the one the CLI was using. It only drops a lapsed login.
     ///
-    /// 1. The CLI's dead marker and a pair this app redeemed are never adopted.
+    /// 1. The CLI's dead marker, a partial login (`isPartial`) and a pair this
+    ///    app redeemed are never adopted.
     /// 2. A profile with no stored login takes the CLI's.
-    /// 3. A lapsed CLI login never replaces a stored one. A live one replaces a
-    ///    stored one that is lapsed or the marker.
+    /// 3. A lapsed CLI login never replaces a stored one, and a login without a
+    ///    refresh token never replaces one that has one. A live one replaces a
+    ///    stored one that is lapsed, the marker, or known dead
+    ///    (`storedLoginDead`: the caller's own evidence, e.g. a refused refresh).
     /// 4. Two live, different logins: the CLI's wins when the account match is
     ///    verified. Unverified, the stored login stays, so a missing identity
     ///    never adopts a login the account guard could not place.
@@ -126,12 +158,14 @@ enum ClaudeLoginLifetime {
         with cliLogin: String,
         account: AccountMatch,
         cliLoginConsumed: Bool = false,
+        storedLoginDead: Bool = false,
         now: Date
     ) -> Bool {
-        if isDeadMarker(cliLogin) || cliLoginConsumed { return false }
+        if isDeadMarker(cliLogin) || isPartial(cliLogin) || cliLoginConsumed { return false }
         guard let stored else { return true }
         if isSamePair(cliLogin, stored) || isLapsed(cliLogin, now: now) { return false }
-        if isDeadMarker(stored) || isLapsed(stored, now: now) { return true }
+        if hasRefreshToken(stored), !hasRefreshToken(cliLogin) { return false }
+        if storedLoginDead || isDeadMarker(stored) || isLapsed(stored, now: now) { return true }
         return account == .verified
     }
 

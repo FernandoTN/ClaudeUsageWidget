@@ -54,13 +54,8 @@ final class ClaudeLoginRotationTests: XCTestCase {
         // CLI store, token endpoint or identity endpoint.
         cliStore = FakeCLIStore()
         endpoint = FakeTokenEndpoint()
-        let cliStore = cliStore
         let endpoint = endpoint
-        sync.setCLIStoreForTesting(ClaudeCodeSyncService.CLIStoreSeams(
-            readHalves: { cliStore.halves() },
-            writeKeychain: { cliStore.writeKeychain($0) },
-            writeFile: { cliStore.writeFile($0) }
-        ))
+        installCLIStoreSeams()
         sync.setTokenEndpointForTesting { await endpoint.redeem($0) }
         // Every synthetic token is "<account>-access-…"; the account is its prefix.
         sync.setIdentityFetcherForTesting { token in
@@ -130,6 +125,18 @@ final class ClaudeLoginRotationTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    /// The CLI's store as `cliStore` stands it in: both credential halves and
+    /// `~/.claude.json`'s `oauthAccount` record (`cachedAccount`).
+    private func installCLIStoreSeams() {
+        let cliStore = cliStore
+        sync.setCLIStoreForTesting(ClaudeCodeSyncService.CLIStoreSeams(
+            readHalves: { cliStore.halves() },
+            writeKeychain: { cliStore.writeKeychain($0) },
+            writeFile: { cliStore.writeFile($0) },
+            cachedAccountUUID: { cliStore.cachedAccount }
+        ))
+    }
 
     /// A synthetic Claude Code login. `account` names the account (the
     /// identity seam reads it back out of the access token); `generation`
@@ -500,6 +507,22 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertFalse(replaces(longer, with: refreshedEarlier, consumed: true))
         XCTAssertFalse(replaces(nil, with: refreshedEarlier, consumed: true))
 
+        // A partial login (an access token out of a truncated Keychain payload)
+        // is never adopted, and no login that cannot renew replaces one that can.
+        let partial = #"{"claudeAiOauth":{"accessToken":"acct-access-4"}}"#
+        XCTAssertTrue(L.isPartial(partial))
+        XCTAssertFalse(replaces(longer, with: partial))
+        XCTAssertFalse(replaces(nil, with: partial))
+        let noRefresh = login("acct", generation: 8, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400, refreshToken: false)
+        XCTAssertFalse(L.isPartial(noRefresh), "it has an expiry")
+        XCTAssertFalse(replaces(longer, with: noRefresh))
+
+        // A stored login the caller knows is dead counts as not live.
+        XCTAssertTrue(L.cliLoginReplaces(longer, with: refreshedEarlier, account: .unverified,
+                                         storedLoginDead: true, now: now))
+        XCTAssertFalse(L.cliLoginReplaces(longer, with: lapsed, account: .verified,
+                                          storedLoginDead: true, now: now), "but a lapsed CLI login still replaces nothing")
+
         // Nothing stored: the profile takes the CLI's login.
         XCTAssertTrue(replaces(nil, with: longer, .unverified))
     }
@@ -542,13 +565,15 @@ final class ClaudeLoginRotationTests: XCTestCase {
         )
         XCTAssertEqual(endpoint.redeemed, ["outgoing-refresh-1"])
         XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2")
-        XCTAssertTrue(sync.isRedeemedPair(original))
+        XCTAssertTrue(sync.isConsumedPair(original))
+        XCTAssertFalse(sync.isConsumedPair(storedLogin(outgoing.id)!))
 
         // … and the CLI then shows the consumed pair.
         manager.claimActiveClaudeOwnership(outgoing.id)
         cliStore.set(keychain: original, file: original)
         for path in AdoptionPath.allCases {
-            try await adopt(path, into: outgoing.id)
+            let outcome = try await adopt(path, into: outgoing.id)
+            if path == .sweep { XCTAssertEqual(outcome, .owner(outgoing.id, adopted: false)) }
             XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2",
                            "\(path.rawValue): the consumed pair never replaces its successor")
         }
@@ -616,19 +641,24 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
     private func discard(_ profile: Profile) {
         sync.markLoginRevived(profile.id)
+        sync.markLoginUncontaminated(profile.id)
         store.deleteProfileCredentials(profileId: profile.id)
     }
 
-    /// The sweep's last step (`adoptSystemLoginByIdentity`, run at the end of
-    /// every sweep). A pass the app itself started returns this call early, so
-    /// it is retried, bounded.
+    /// The sweep's last step (`adoptSystemLoginByIdentityDetailed`, run at the
+    /// end of every sweep). A pass the app itself started is awaited first
+    /// (`waitForIdentityAdoption`), so this call is the one that runs; if it
+    /// was skipped anyway the test fails rather than passing on a no-op.
     @discardableResult
-    private func runSweepAdoption() async -> String? {
-        for _ in 0..<50 {
-            if let owner = await manager.adoptSystemLoginByIdentity() { return owner }
-            await Task.yield()
+    private func runSweepAdoption(file: StaticString = #filePath, line: UInt = #line) async
+        -> ProfileManager.IdentityAdoptionOutcome {
+        for _ in 0..<3 {
+            await manager.waitForIdentityAdoption()
+            let outcome = await manager.adoptSystemLoginByIdentityDetailed()
+            if outcome != .skipped { return outcome }
         }
-        return nil
+        XCTFail("the sweep's identity adoption never ran", file: file, line: line)
+        return .skipped
     }
 
     /// The three automatic paths that move the CLI's login into a profile.
@@ -638,12 +668,18 @@ final class ClaudeLoginRotationTests: XCTestCase {
         case keychainAdoption = "Keychain adoption"
     }
 
-    private func adopt(_ path: AdoptionPath, into id: UUID) async throws {
+    /// Runs one path. The sweep's outcome is returned so a test can assert
+    /// which branch decided; the other two are direct calls.
+    @discardableResult
+    private func adopt(_ path: AdoptionPath, into id: UUID,
+                       file: StaticString = #filePath, line: UInt = #line) async throws
+        -> ProfileManager.IdentityAdoptionOutcome? {
         switch path {
-        case .sweep: await runSweepAdoption()
+        case .sweep: return await runSweepAdoption(file: file, line: line)
         case .reSync: try await sync.resyncBeforeSwitching(for: id)
         case .keychainAdoption: _ = await sync.ensureFreshCredentials(for: id, adoptSystemKeychain: true)
         }
+        return nil
     }
 
     /// 2026-10-12, replayed. After the 13:13 `/login` the widget kept the
@@ -657,8 +693,9 @@ final class ClaudeLoginRotationTests: XCTestCase {
             let owner = seedOwner("account", holding: logins[0])
             cliStore.set(keychain: logins[2], file: file)
 
-            await runSweepAdoption()
+            let outcome = await runSweepAdoption()
 
+            XCTAssertEqual(outcome, .owner(owner.id, adopted: true))
             XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-3",
                            "file \(file == nil ? "absent" : "holding the 13:06 pair"): the profile must hold the login Claude Code is using")
             discard(owner)
@@ -676,8 +713,9 @@ final class ClaudeLoginRotationTests: XCTestCase {
                     let owner = seedOwner("account", holding: logins[stored])
                     cliStore.set(keychain: logins[held], file: nil)
 
-                    try await adopt(path, into: owner.id)
+                    let outcome = try await adopt(path, into: owner.id)
 
+                    if path == .sweep { XCTAssertEqual(outcome, .owner(owner.id, adopted: true)) }
                     XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-\(held + 1)",
                                    "\(path.rawValue): the profile holds login \(stored + 1), the CLI holds \(held + 1)")
                     discard(owner)
@@ -696,14 +734,16 @@ final class ClaudeLoginRotationTests: XCTestCase {
         for path in AdoptionPath.allCases {
             var owner = seedOwner("account", holding: live)
             cliStore.set(keychain: lapsed, file: nil)
-            try await adopt(path, into: owner.id)
+            var outcome = try await adopt(path, into: owner.id)
+            if path == .sweep { XCTAssertEqual(outcome, .owner(owner.id, adopted: false), "verified, and kept") }
             XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1",
                            "\(path.rawValue): a lapsed CLI login never replaces a live one")
             discard(owner)
 
             owner = seedOwner("account", holding: lapsed)
             cliStore.set(keychain: live, file: nil)
-            try await adopt(path, into: owner.id)
+            outcome = try await adopt(path, into: owner.id)
+            if path == .sweep { XCTAssertEqual(outcome, .owner(owner.id, adopted: true)) }
             XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1",
                            "\(path.rawValue): a live CLI login replaces a lapsed one")
             discard(owner)
@@ -718,8 +758,9 @@ final class ClaudeLoginRotationTests: XCTestCase {
             let owner = seedOwner("account", holding: own)
             cliStore.set(keychain: others, file: nil)
 
-            try await adopt(path, into: owner.id)
+            let outcome = try await adopt(path, into: owner.id)
 
+            if path == .sweep { XCTAssertEqual(outcome, .noOwner, "no profile is the other account's") }
             XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1", path.rawValue)
             discard(owner)
         }
@@ -782,6 +823,345 @@ final class ClaudeLoginRotationTests: XCTestCase {
 
         cliStore.set(keychain: logins[2], file: logins[0])
         XCTAssertEqual(try refreshToken(sync.readSystemCredentials()), "account-refresh-3")
+    }
+
+    // MARK: - Review round 1 (#186): only token-bound evidence proves an account
+
+    /// Item 1, a replay of 2026-10-12. After a `/login` moved the CLI to another
+    /// account, `~/.claude.json`'s `oauthAccount` still named the OLD account.
+    /// With the new login's identity unavailable, that stale record agreed with
+    /// the old account's stamp and "verified" the write, so the new account's
+    /// login replaced the old account's live one. Cached metadata may refuse a
+    /// mismatch; it never proves a match.
+    func testStaleCLIAccountMetadataNeverVerifiesAnotherAccountsLogin() async throws {
+        let ownLogin = login("old", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
+        let newAccountsLogin = login("new", expiresIn: 8 * 3600, deadlineIn: 25 * 86_400)
+        // The new login's own identity cannot be fetched.
+        sync.setIdentityFetcherForTesting { token in
+            token.hasPrefix("old-access")
+                ? ClaudeCodeSyncService.AccountIdentity(accountUUID: "acct-old", organizationUUID: "", email: "")
+                : nil
+        }
+        for path in [AdoptionPath.reSync, .keychainAdoption] {
+            let owner = seedOwner("old", holding: ownLogin)
+            cliStore.set(keychain: newAccountsLogin, file: nil)
+            cliStore.cachedAccount = "acct-old"  // stale: still the account before the /login
+
+            try await adopt(path, into: owner.id)
+
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "old-refresh-1",
+                           "\(path.rawValue): a stale account record never lets another account's login in")
+            discard(owner)
+        }
+    }
+
+    /// Item 2, a replay of 2026-10-12: a profile carried account X's stamp
+    /// while it held account Y's login. Routed by that stamp, the CLI's X login
+    /// replaced the live Y login. A stamp proves an account only while it is
+    /// bound to the login it was verified against.
+    func testAStampNotBoundToTheStoredLoginNeverRoutesAnAdoption() async throws {
+        let heldLogin = login("y", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
+        let xLogin = login("x", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        for path in AdoptionPath.allCases {
+            let mislabeled = seedOwner("x", holding: heldLogin)  // stamped acct-x, holds Y's login
+            cliStore.set(keychain: xLogin, file: nil)
+
+            let outcome = try await adopt(path, into: mislabeled.id)
+
+            if path == .sweep {
+                XCTAssertEqual(outcome, .notOwner(mislabeled.id), "resolved from its own token before anything changed")
+                XCTAssertEqual(manager.activeClaudeProfileId, mislabeled.id, "the pointer was not moved on the stamp's word")
+            }
+            XCTAssertEqual(refreshToken(storedLogin(mislabeled.id)), "y-refresh-1",
+                           "\(path.rawValue): the profile's own live login stays")
+            discard(mislabeled)
+        }
+    }
+
+    /// Item 2: the organization fallback never takes a profile whose stamp
+    /// names a different account, even when the organizations match.
+    func testTheOrganizationFallbackNeverTakesAProfileStampedWithAnotherAccount() async {
+        sync.setIdentityFetcherForTesting { token in
+            guard let account = token.components(separatedBy: "-access").first, account != token else { return nil }
+            return ClaudeCodeSyncService.AccountIdentity(
+                accountUUID: "acct-\(account)", organizationUUID: "org-shared", email: ""
+            )
+        }
+        var other = profile("other", login: login("y", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400))
+        other.claudeAccountUUID = "acct-y"
+        other.organizationId = "org-shared"
+        seed([other], focused: other.id)
+        manager.claimActiveClaudeOwnership(other.id)
+        cliStore.set(keychain: login("x", expiresIn: 8 * 3600, deadlineIn: 20 * 86_400), file: nil)
+
+        let outcome = await runSweepAdoption()
+
+        XCTAssertEqual(outcome, .noOwner)
+        XCTAssertEqual(refreshToken(storedLogin(other.id)), "y-refresh-1")
+    }
+
+    /// Item 3. The CLI rotated its login in the Keychain and the profile adopted
+    /// the rotation, while the file still held the predecessor the CLI consumed.
+    /// With the Keychain item then unreadable, the file must not stand in for it.
+    func testAnUnreadableKeychainNeverHandsItsAuthorityToTheFile() async throws {
+        let predecessor = login("account", generation: 1, expiresIn: 2 * 3600, deadlineIn: 20 * 86_400)
+        let rotated = login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        for path in AdoptionPath.allCases {
+            let owner = seedOwner("account", holding: rotated)
+            cliStore.set(keychain: nil, file: predecessor)
+            cliStore.keychainUnreadable = true
+
+            let outcome = try await adopt(path, into: owner.id)
+
+            if path == .sweep { XCTAssertEqual(outcome, .noSharedLogin) }
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-2", path.rawValue)
+            cliStore.keychainUnreadable = false
+            discard(owner)
+        }
+    }
+
+    /// Item 3: the lapsed-Keychain exception needs affirmative evidence that
+    /// the file's login is live — a deadline that is present and not passed.
+    func testALapsedKeychainLoginYieldsToTheFileOnlyOnAPresentDeadline() {
+        let now = Date()
+        typealias S = ClaudeCodeSyncService
+        let lapsed = login("account", generation: 1, expiresIn: 6 * 3600, deadlineIn: -3600)
+        let undated = login("account", generation: 2, expiresIn: 8 * 3600)
+        let dated = login("account", generation: 3, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        XCTAssertEqual(S.chooseSystemLogin(keychain: lapsed, file: undated, now: now), .keychain,
+                       "a missing deadline is no evidence the file's login is live")
+        XCTAssertEqual(S.chooseSystemLogin(keychain: lapsed, file: dated, now: now), .file)
+    }
+
+    /// Item 4. A Keychain payload the `security` tool cut short yields only an
+    /// access token. That partial login never replaces a complete stored pair.
+    func testATruncatedKeychainLoginNeverReplacesACompleteOne() async throws {
+        let complete = login("account", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
+        let cut = String(complete[..<complete.range(of: "\"expiresAt\"")!.lowerBound])
+        for path in AdoptionPath.allCases {
+            let owner = seedOwner("account", holding: complete)
+            cliStore.set(keychain: cut, file: nil)
+
+            let outcome = try await adopt(path, into: owner.id)
+
+            if path == .sweep { XCTAssertEqual(outcome, .noSharedLogin, "a partial login is not the CLI's login") }
+            XCTAssertEqual(storedLogin(owner.id), complete, "\(path.rawValue): the refresh token, expiry and deadline stay")
+            discard(owner)
+        }
+    }
+
+    /// Item 4: a partial login is never synced into a profile, and one already
+    /// stored is never written to the CLI's store.
+    func testAPartialLoginIsNeverSyncedOrApplied() throws {
+        let complete = login("account", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
+        let cut = String(complete[..<complete.range(of: "\"expiresAt\"")!.lowerBound])
+        let target = profile("target", login: nil)
+        let holder = profile("holder", login: #"{"claudeAiOauth":{"accessToken":"holder-access-1"}}"#)
+        seed([target, holder], focused: target.id)
+        cliStore.set(keychain: cut, file: nil)
+
+        XCTAssertThrowsError(try sync.syncToProfile(target.id), "a partial login is not synced")
+        XCTAssertNil(storedLogin(target.id))
+
+        XCTAssertThrowsError(try sync.applyProfileCredentials(holder.id), "a partial login is not applied")
+        XCTAssertTrue(cliStore.writes.isEmpty && cliStore.fileWrites.isEmpty, "nothing reaches the CLI's store")
+    }
+
+    /// Item 5. The record of a pair this app redeemed survives a relaunch: it
+    /// is stored with the profile, not held in memory.
+    func testAPairThisAppRedeemedStaysConsumedAfterARelaunch() async throws {
+        let original = login("outgoing", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        var outgoing = profile("outgoing", login: original)
+        outgoing.claudeAccountUUID = "acct-outgoing"
+        let other = profile("other", login: login("other", expiresIn: 6 * 3600))
+        seed([other, outgoing], focused: other.id)
+        manager.claimActiveClaudeOwnership(other.id)
+        cliStore.set(keychain: other.cliCredentialsJSON, file: nil)
+        _ = await sync.ensureFreshCredentials(
+            for: outgoing.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2")
+
+        // A relaunch: the CLI store is read afresh and the credential cache is
+        // rebuilt from the Keychain. `~/.claude.json` names the account, as it
+        // normally does.
+        installCLIStoreSeams()
+        await store.flushKeychainWrites()
+        store.resetAndRewarmCredentialCacheForTesting()
+        let deadline = Date().addingTimeInterval(10)
+        while store.credentialHydrationState == .loading, Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        cliStore.cachedAccount = "acct-outgoing"
+        manager.claimActiveClaudeOwnership(outgoing.id)
+        cliStore.set(keychain: original, file: original)
+        for path in AdoptionPath.allCases {
+            let outcome = try await adopt(path, into: outgoing.id)
+            if path == .sweep { XCTAssertEqual(outcome, .owner(outgoing.id, adopted: false)) }
+            XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2",
+                           "\(path.rawValue): the consumed pair never replaces its successor")
+        }
+        XCTAssertEqual(endpoint.redeemed, ["outgoing-refresh-1"])
+    }
+
+    /// Item 5: a predecessor consumed before any record existed. Bookkeeping
+    /// cannot tell it from a newer login, but its access token died with the
+    /// redemption, so its own identity cannot be fetched, and the account
+    /// record alone never verifies it. The stored login stays.
+    func testALegacyConsumedPredecessorIsNeverAdoptedWithoutTokenBoundEvidence() async throws {
+        let predecessor = login("account", generation: 1, expiresIn: 2 * 3600, deadlineIn: 20 * 86_400)
+        let successor = login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        sync.setIdentityFetcherForTesting { token in
+            token == "account-access-1"
+                ? nil  // revoked by the redemption
+                : ClaudeCodeSyncService.AccountIdentity(accountUUID: "acct-account", organizationUUID: "", email: "")
+        }
+        for path in [AdoptionPath.reSync, .keychainAdoption] {
+            let owner = seedOwner("account", holding: successor)
+            cliStore.set(keychain: predecessor, file: nil)
+            cliStore.cachedAccount = "acct-account"
+
+            try await adopt(path, into: owner.id)
+
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-2", path.rawValue)
+            discard(owner)
+        }
+    }
+
+    /// The stricter routing keeps `/login` able to revive a dead profile whose
+    /// stamp predates binding and whose own token can no longer answer: a
+    /// login the app knows is dead is replaced on the stamp's routing. A live
+    /// one is not — that profile is left alone until its identity is known.
+    func testALoginStillRevivesADeadProfileWhoseStampCannotBeVerified() async {
+        let stale = login("account", generation: 1, expiresIn: -3600, deadlineIn: 20 * 86_400)
+        let fresh = login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: 30 * 86_400)
+        sync.setIdentityFetcherForTesting { token in
+            token == "account-access-1"
+                ? nil  // the stored login's own token cannot answer
+                : ClaudeCodeSyncService.AccountIdentity(accountUUID: "acct-account", organizationUUID: "", email: "")
+        }
+
+        var owner = seedOwner("account", holding: stale)
+        cliStore.set(keychain: fresh, file: nil)
+        var outcome = await runSweepAdoption()
+        XCTAssertEqual(outcome, .unverifiedOwner(owner.id), "not known dead, not verified: nothing changes")
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1")
+        discard(owner)
+
+        owner = seedOwner("account", holding: stale)
+        sync.notifyReloginNeeded(for: owner.id)  // the app knows this login is dead
+        outcome = await runSweepAdoption()
+        XCTAssertEqual(outcome, .owner(owner.id, adopted: true))
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-2", "the /login revived it")
+        XCTAssertFalse(sync.isLoginMarkedDead(owner.id))
+        XCTAssertEqual(store.loadProfiles().first(where: { $0.id == owner.id })?.claudeStampIsBound, true,
+                       "and its stamp is now bound to the login whose own token reported it")
+        discard(owner)
+    }
+
+    /// Every stamp from before binding starts unbound. One whose own token
+    /// cannot answer is asked once per retry window, not on every sweep.
+    func testAStampThatCannotBeResolvedIsNotAskedAgainEverySweep() async {
+        final class Counter { var asked = 0 }
+        let counter = Counter()
+        sync.setIdentityFetcherForTesting { token in
+            if token == "account-access-1" { counter.asked += 1; return nil }
+            return ClaudeCodeSyncService.AccountIdentity(accountUUID: "acct-account", organizationUUID: "", email: "")
+        }
+        let owner = seedOwner("account", holding: login("account", generation: 1, expiresIn: -3600, deadlineIn: 20 * 86_400))
+        cliStore.set(keychain: login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400), file: nil)
+
+        let first = await runSweepAdoption()
+        let second = await runSweepAdoption()
+        _ = await sync.ensureFreshCredentials(for: owner.id, adoptSystemKeychain: true)
+
+        XCTAssertEqual(first, .unverifiedOwner(owner.id))
+        XCTAssertEqual(second, .unverifiedOwner(owner.id))
+        XCTAssertEqual(counter.asked, 1, "asked once, then left for the retry window")
+        XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1")
+        discard(owner)
+    }
+
+    /// Item 1 and 2, the decision itself: weaker evidence (the CLI's account
+    /// record, an unbound stamp) refuses a mismatch and never verifies a match.
+    func testOnlyTokenBoundEvidenceVerifiesAWrite() {
+        typealias S = ClaudeCodeSyncService
+        XCTAssertEqual(S.credentialWriteDecision(cliAccountUUID: "a", profileAccountUUID: "a"), .write)
+        XCTAssertEqual(S.credentialWriteDecision(cliAccountUUID: "a", profileAccountUUID: "a", cliIsTokenBound: false),
+                       .noEvidence, "~/.claude.json agreeing proves nothing")
+        XCTAssertEqual(S.credentialWriteDecision(cliAccountUUID: "a", profileAccountUUID: "b", cliIsTokenBound: false),
+                       .refuse, "but it refuses a mismatch")
+        XCTAssertEqual(S.credentialWriteDecision(cliAccountUUID: "a", profileAccountUUID: "a", profileIsTokenBound: false),
+                       .noEvidence, "nor does an unbound stamp prove anything")
+        XCTAssertEqual(S.credentialWriteDecision(cliAccountUUID: "a", profileAccountUUID: "b", profileIsTokenBound: false),
+                       .refuse)
+        XCTAssertEqual(S.credentialWriteDecision(cliAccountUUID: "a", profileAccountUUID: nil, stampedFromOwnToken: "a",
+                                                 cliIsTokenBound: false), .noEvidence)
+    }
+
+    /// Item 2: a stamp is bound only to the login it was verified against. The
+    /// tag is one-way and domain-separated: neither the token nor its
+    /// in-memory fingerprint.
+    func testAStampIsBoundOnlyToTheLoginItWasVerifiedAgainst() {
+        var p = profile("p", login: login("p", expiresIn: 3600))
+        p.claudeAccountUUID = "acct-p"
+        XCTAssertFalse(p.claudeStampIsBound, "a stamp from before binding")
+        p.claudeAccountStampTag = ClaudeLoginLifetime.loginTag(p.cliCredentialsJSON)
+        XCTAssertTrue(p.claudeStampIsBound)
+        p.cliCredentialsJSON = login("p", generation: 2, expiresIn: 3600)
+        XCTAssertFalse(p.claudeStampIsBound, "the login it was verified against was replaced")
+        p.cliCredentialsJSON = nil
+        XCTAssertFalse(p.claudeStampIsBound)
+
+        let tag = ClaudeLoginLifetime.loginTag(login("p", expiresIn: 3600))
+        XCTAssertEqual(tag?.count, 32)
+        XCTAssertFalse(tag?.contains("refresh") ?? true)
+        XCTAssertFalse(ClaudeLoginLifetime.fingerprint("p-refresh-1").hasPrefix(tag ?? "-"))
+        XCTAssertNil(ClaudeLoginLifetime.loginTag(#"{"claudeAiOauth":{"accessToken":"p-access-1"}}"#))
+    }
+
+    /// Items 3 and 4: the store read says where a login came from, and only
+    /// the CLI's own login is adoptable. Reads for a usage fetch still work.
+    func testTheStoreReadSaysWhereALoginCameFrom() throws {
+        let complete = login("account", expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
+        let cut = String(complete[..<complete.range(of: "\"expiresAt\"")!.lowerBound])
+
+        cliStore.set(keychain: complete, file: nil)
+        var read = try XCTUnwrap(sync.readSystemLogin())
+        XCTAssertEqual(read.source, .keychain)
+        XCTAssertTrue(read.isAdoptable)
+
+        cliStore.set(keychain: nil, file: complete)
+        read = try XCTUnwrap(sync.readSystemLogin())
+        XCTAssertEqual(read.source, .file)
+        XCTAssertTrue(read.isAdoptable, "no Keychain item: the CLI reads the file")
+
+        cliStore.keychainUnreadable = true
+        read = try XCTUnwrap(sync.readSystemLogin())
+        XCTAssertEqual(read.source, .file)
+        XCTAssertFalse(read.isAdoptable, "an unreadable Keychain: the file is not known to be the CLI's login")
+        cliStore.keychainUnreadable = false
+
+        cliStore.set(keychain: cut, file: nil)
+        read = try XCTUnwrap(sync.readSystemLogin())
+        XCTAssertEqual(read.source, .partialKeychain)
+        XCTAssertFalse(read.isAdoptable)
+        XCTAssertTrue(ClaudeLoginLifetime.isPartial(read.json))
+        XCTAssertFalse(ClaudeLoginLifetime.isPartial(complete))
+        XCTAssertEqual(try sync.readSystemCredentials(), read.json, "a read for a usage fetch still gets the token")
+    }
+
+    /// Item 5: the per-profile record keeps the newest tags, capped.
+    func testTheConsumedRecordKeepsTheNewestTags() {
+        typealias S = ClaudeCodeSyncService
+        var tags: [String]?
+        for i in 0..<(S.consumedLoginTagLimit + 8) { tags = S.appendingConsumedTag("t\(i)", to: tags) }
+        XCTAssertEqual(tags?.count, S.consumedLoginTagLimit)
+        XCTAssertEqual(tags?.first, "t8")
+        XCTAssertEqual(tags?.last, "t\(S.consumedLoginTagLimit + 7)")
+        let again = S.appendingConsumedTag("t20", to: tags)
+        XCTAssertEqual(again.count, S.consumedLoginTagLimit, "a repeat moves, it does not grow")
+        XCTAssertEqual(again.last, "t20")
     }
 
     /// The store itself: an ORDINARY save never changes a stored Claude login —
@@ -1398,6 +1778,7 @@ final class FakeCLIStore: @unchecked Sendable {
     private var _fileUnreadable = false
     private var _failKeychainWrites = false
     private var _failFileWrites = false
+    private var _cachedAccount: String?
 
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock(); defer { lock.unlock() }
@@ -1425,6 +1806,12 @@ final class FakeCLIStore: @unchecked Sendable {
     var failFileWrites: Bool {
         get { locked { _failFileWrites } }
         set { locked { _failFileWrites = newValue } }
+    }
+    /// `~/.claude.json`'s `oauthAccount.accountUuid`: who the CLI last recorded
+    /// itself as. Not bound to any token, and it can go stale across a `/login`.
+    var cachedAccount: String? {
+        get { locked { _cachedAccount } }
+        set { locked { _cachedAccount = newValue } }
     }
 
     func set(keychain: String?, file: String?) {

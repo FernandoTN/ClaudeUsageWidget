@@ -2265,18 +2265,70 @@ class ProfileManager: ObservableObject {
     /// triggered from launch AND from sweep-end; overlapping passes would race
     /// each other's saves).
     private var identityAdoptionInFlight = false
+    /// Callers suspended in `waitForIdentityAdoption`, woken when the pass ends.
+    private var identityAdoptionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// What one identity adoption pass did.
+    enum IdentityAdoptionOutcome: Equatable {
+        /// Nothing was decided: a switch or another pass was in flight, or the
+        /// shared login changed under the pass.
+        case skipped
+        /// No login the CLI itself holds (`SystemLogin.isAdoptable`) whose own
+        /// token could be identified.
+        case noSharedLogin
+        /// No profile is routed this login's account.
+        case noOwner
+        /// The profile routed by its stamp holds another account's login: its
+        /// own token said so, and its stamp was corrected.
+        case notOwner(UUID)
+        /// Routed by a stamp not bound to its login, or by organization alone,
+        /// and its own login could not be identified. Nothing changed.
+        case unverifiedOwner(UUID)
+        /// The owner, proven by token-bound evidence; `adopted` when this pass
+        /// moved the CLI's login into it.
+        case owner(UUID, adopted: Bool)
+    }
+
+    /// Suspends until the identity adoption pass in flight, if any, finishes.
+    func waitForIdentityAdoption() async {
+        guard identityAdoptionInFlight else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            identityAdoptionWaiters.append(continuation)
+        }
+    }
 
     @discardableResult
     func adoptSystemLoginByIdentity() async -> String? {
+        guard case .owner(let id, _) = await adoptSystemLoginByIdentityDetailed() else { return nil }
+        return profileStore.loadProfiles().first(where: { $0.id == id })?.name
+    }
+
+    /// The pass itself. Only token-bound evidence proves an account (review of
+    /// #186): the CLI login's account comes from its own token, and a profile
+    /// is its owner only when it holds that very login or carries a stamp
+    /// BOUND to the login it holds (`Profile.claudeStampIsBound`). Any other
+    /// routed profile is resolved from its own token BEFORE the pointer, a
+    /// stamp or a credential changes: a profile stamped with one account once
+    /// held another account's live login, and routing by that stamp alone
+    /// overwrote it (2026-10-12).
+    func adoptSystemLoginByIdentityDetailed() async -> IdentityAdoptionOutcome {
         // Never touch shared-login bookkeeping mid-switch (contamination window).
-        guard !isSwitchingProfile, !identityAdoptionInFlight else { return nil }
+        guard !isSwitchingProfile, !identityAdoptionInFlight else { return .skipped }
         identityAdoptionInFlight = true
-        defer { identityAdoptionInFlight = false }
+        defer {
+            identityAdoptionInFlight = false
+            let waiters = identityAdoptionWaiters
+            identityAdoptionWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
 
         let sync = ClaudeCodeSyncService.shared
-        guard let systemJSON = try? await sync.readSystemCredentialsOffMain(),
-              let systemToken = sync.extractAccessToken(from: systemJSON),
-              let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return nil }
+        // Only the CLI's own login: never the file read past an unreadable
+        // Keychain, never a partial login out of a truncated one.
+        guard let system = try? await sync.readSystemLoginOffMain(), system.isAdoptable,
+              let systemToken = sync.extractAccessToken(from: system.json),
+              let identity = await sync.fetchAccountIdentity(accessToken: systemToken) else { return .noSharedLogin }
+        let systemJSON = system.json
 
         // The awaits above are suspension points: a switch may have STARTED (or
         // finished, rewriting the shared login) while the identity fetch was in
@@ -2284,11 +2336,9 @@ class ProfileManager: ObservableObject {
         // adoption stays identity-keyed either way (a token can only ever land
         // in the profile its LIVE identity matches), but a stale pass could
         // still wobble the ownership pointer for a sweep.
-        guard !isSwitchingProfile else { return nil }
-        guard let recheckJSON = try? await sync.readSystemCredentialsOffMain(),
-              sync.extractAccessToken(from: recheckJSON) == systemToken,
-              !isSwitchingProfile else {
-            return nil  // the shared login changed under us — next sweep re-runs
+        guard !isSwitchingProfile else { return .skipped }
+        guard await sharedLoginIsStill(systemToken), !isSwitchingProfile else {
+            return .skipped  // the shared login changed under us — next sweep re-runs
         }
 
         var reloaded = profileStore.loadProfiles()
@@ -2298,22 +2348,69 @@ class ProfileManager: ObservableObject {
         // and picking by array order there would hand the pointer to whichever
         // profile happens to be stored first and then treat the true holder as
         // contaminated. Resolve by evidence instead: the profile whose stored
-        // token IS the shared login wins, then the standing pointer, and only
-        // then the account stamp.
+        // token IS the shared login wins, then a BOUND stamp (the standing
+        // pointer first), then an unbound one, and only then the organization
+        // — for a profile with no account stamp at all, because one stamped
+        // with a different account is that account's.
+        let holdsSharedLogin: (Profile) -> Bool = {
+            $0.cliCredentialsJSON.flatMap(sync.extractAccessToken(from:)) == systemToken
+        }
         let stampMatches = reloaded.filter { $0.claudeAccountUUID == identity.accountUUID }
-        let owner = stampMatches.first(where: {
-                $0.cliCredentialsJSON.flatMap(sync.extractAccessToken(from:)) == systemToken
-            })
+        let bound = stampMatches.filter(\.claudeStampIsBound)
+        let routed = stampMatches.first(where: holdsSharedLogin)
+            ?? bound.first(where: { $0.id == activeClaudeProfileId })
+            ?? bound.first
             ?? stampMatches.first(where: { $0.id == activeClaudeProfileId })
             ?? stampMatches.first
             ?? reloaded.first(where: {
-                $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
+                ($0.claudeAccountUUID ?? "").isEmpty
+                    && $0.cliCredentialsJSON != nil && !identity.organizationUUID.isEmpty
                     && $0.organizationId == identity.organizationUUID
             })
-        guard let owner else { return nil }
+        guard var owner = routed else { return .noOwner }
+
+        // Resolve identity before changing credentials or ownership.
+        var verified = holdsSharedLogin(owner)
+            || (owner.claudeAccountUUID == identity.accountUUID && owner.claudeStampIsBound)
+        if !verified {
+            await sync.resolveUnboundStamp(for: owner.id)
+            guard !isSwitchingProfile, await sharedLoginIsStill(systemToken), !isSwitchingProfile else { return .skipped }
+            reloaded = profileStore.loadProfiles()
+            applyPendingOverlay(to: &reloaded)
+            guard let resolved = reloaded.first(where: { $0.id == owner.id }) else { return .noOwner }
+            owner = resolved
+            if owner.claudeStampIsBound {
+                guard owner.claudeAccountUUID == identity.accountUUID else {
+                    LoggingService.shared.log("ProfileManager: the CLI's login was routed to '\(owner.name)', but its own login is another account's — ownership and credentials left alone")
+                    return .notOwner(owner.id)
+                }
+                verified = true
+            }
+        }
+        guard let index = reloaded.firstIndex(where: { $0.id == owner.id }) else { return .noOwner }
+
+        // Adopt the shared login into its owner when the stored copy is a
+        // DIFFERENT token (a /login, or the CLI's own refresh): for one account
+        // the login the CLI holds wins whichever deadline is later
+        // (`ClaudeLoginLifetime.cliLoginReplaces`), and a lapsed CLI login never
+        // replaces a live stored one. An owner not verified only gets it over a
+        // login that is lapsed or dead — and a known-dead one counts only when
+        // its stamp routed it, so `/login` still revives a profile whose stamp
+        // predates binding and whose own token can no longer answer.
+        let ownerJSON = reloaded[index].cliCredentialsJSON
+        let ownerToken = ownerJSON.flatMap(sync.extractAccessToken(from:))
+        let stampRouted = owner.claudeAccountUUID == identity.accountUUID
+        let adopt = ownerToken != systemToken && sync.cliLoginReplaces(
+            ownerJSON, with: systemJSON, account: verified ? .verified : .unverified,
+            storedLoginDead: stampRouted && sync.isLoginMarkedDead(owner.id)
+        )
+        guard verified || adopt else {
+            LoggingService.shared.log("ProfileManager: the CLI's login was routed to '\(owner.name)' by \(stampRouted ? "an account stamp not bound to its login" : "its organization alone"), and its own login could not be identified — ownership and credentials left alone")
+            return .unverifiedOwner(owner.id)
+        }
 
         if activeClaudeProfileId != owner.id {
-            guard repairMayMovePointerNow(.claude, fileOwnerName: owner.name) else { return nil }
+            guard repairMayMovePointerNow(.claude, fileOwnerName: owner.name) else { return .skipped }
             LoggingService.shared.log("ProfileManager: ⚠️ active Claude pointer repaired — the shared login's identity matches '\(owner.name)', not '\(reloaded.first(where: { $0.id == activeClaudeProfileId })?.name ?? "none")'")
             setProviderOwner(.claude, to: owner.id, cause: .identityAdoption,
                              knownAccountStamp: identity.accountUUID)
@@ -2322,35 +2419,31 @@ class ProfileManager: ObservableObject {
         }
 
         var changed = false
-        if let index = reloaded.firstIndex(where: { $0.id == owner.id }) {
+        var adopted = false
+        // Through the compare-and-swap path: an ordinary save never changes a
+        // stored Claude login.
+        if adopt, profileStore.replaceCLILogin(owner.id, expected: ownerJSON, with: systemJSON) {
+            reloaded[index].cliCredentialsJSON = systemJSON
+            reloaded[index].hasCliAccount = true
+            reloaded[index].cliAccountSyncedAt = Date()
+            sync.markLoginRevived(owner.id)
+            changed = true
+            adopted = true
+            LoggingService.shared.log("ProfileManager: ✓ adopted the login the CLI holds into '\(owner.name)' (identity-matched; \(ClaudeLoginLifetime.summary(systemJSON)))")
+        }
+        // An owner holding the shared login is stamped with what that login's
+        // own token reported, bound to it.
+        if holdsSharedLogin(reloaded[index]) {
+            let tag = ClaudeLoginLifetime.loginTag(reloaded[index].cliCredentialsJSON)
+            let email = identity.email.isEmpty ? nil : identity.email
             if reloaded[index].claudeAccountUUID != identity.accountUUID
-                || reloaded[index].claudeAccountEmail != identity.email {
+                || reloaded[index].claudeAccountEmail != email
+                || reloaded[index].claudeAccountStampTag != tag {
                 reloaded[index].claudeAccountUUID = identity.accountUUID
-                reloaded[index].claudeAccountEmail = identity.email.isEmpty ? nil : identity.email
+                reloaded[index].claudeAccountEmail = email
                 reloaded[index].claudeOrganizationUUID = identity.organizationUUID.isEmpty ? nil : identity.organizationUUID
+                reloaded[index].claudeAccountStampTag = tag
                 changed = true
-            }
-
-            // Adopt the shared login into its owner when the stored copy is a
-            // DIFFERENT token (a /login, or the CLI's own refresh). The owner
-            // is the profile the shared login's live identity routes to, so
-            // the match is verified, and for one account the login the CLI
-            // holds wins whichever deadline is later
-            // (`ClaudeLoginLifetime.cliLoginReplaces`). A lapsed CLI login
-            // never replaces a live stored one.
-            let ownerJSON = reloaded[index].cliCredentialsJSON
-            let ownerToken = ownerJSON.flatMap(sync.extractAccessToken(from:))
-            let cliLoginWins = sync.cliLoginReplaces(ownerJSON, with: systemJSON, account: .verified)
-            // Through the compare-and-swap path: an ordinary save never changes
-            // a stored Claude login.
-            if ownerToken != systemToken, cliLoginWins,
-               profileStore.replaceCLILogin(owner.id, expected: ownerJSON, with: systemJSON) {
-                reloaded[index].cliCredentialsJSON = systemJSON
-                reloaded[index].hasCliAccount = true
-                reloaded[index].cliAccountSyncedAt = Date()
-                sync.markLoginRevived(owner.id)
-                changed = true
-                LoggingService.shared.log("ProfileManager: ✓ adopted the login the CLI holds into '\(owner.name)' (identity-matched; \(ClaudeLoginLifetime.summary(systemJSON)))")
             }
         }
 
@@ -2386,6 +2479,7 @@ class ProfileManager: ObservableObject {
             reloaded[index].claudeAccountUUID = nil
             reloaded[index].claudeAccountEmail = nil
             reloaded[index].claudeOrganizationUUID = nil
+            reloaded[index].claudeAccountStampTag = nil
             changed = true
             LoggingService.shared.log("ProfileManager: ⚠️ cleared '\(profile.name)' CLI credentials — \(sameToken ? "a copy of" : "a stale token from") '\(owner.name)'s account (cross-account contamination)")
         }
@@ -2396,7 +2490,15 @@ class ProfileManager: ObservableObject {
             applyPendingOverlay(to: &profiles)
             refreshFocusedProfileCopy()
         }
-        return owner.name
+        return .owner(owner.id, adopted: adopted)
+    }
+
+    /// Whether the CLI's own login still carries `accessToken`. Re-read after
+    /// an await, before anything acts on what was read before it.
+    private func sharedLoginIsStill(_ accessToken: String) async -> Bool {
+        let sync = ClaudeCodeSyncService.shared
+        guard let recheck = try? await sync.readSystemLoginOffMain(), recheck.isAdoptable else { return false }
+        return sync.extractAccessToken(from: recheck.json) == accessToken
     }
 
     /// The profile that owns ~/.codex/auth.json right now, by the file's own

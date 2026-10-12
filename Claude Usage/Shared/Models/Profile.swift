@@ -35,6 +35,16 @@ struct Profile: Codable, Identifiable, Equatable {
     /// token actually belongs to (the CLI only updates it on a manual /login).
     var claudeAccountEmail: String?
     var claudeOrganizationUUID: String?
+    /// What `claudeAccountUUID` was verified against: the tag
+    /// (`ClaudeLoginLifetime.loginTag`) of the login whose own token reported
+    /// that account. The stamp is evidence of the profile's account only while
+    /// it is bound, i.e. while this equals the tag of the login stored now
+    /// (`claudeStampIsBound`). Nil for a stamp from before binding existed.
+    var claudeAccountStampTag: String?
+    /// Tags of the refresh tokens this app redeemed for this profile, newest
+    /// last and capped: each is a consumed pair that no adoption may take back.
+    /// Persisted with the profile so a relaunch cannot forget one.
+    var claudeConsumedLoginTags: [String]?
 
     // MARK: - Codex Account (OpenAI Codex CLI)
     /// Full contents of the account's ~/.codex/auth.json — Keychain-only, never
@@ -154,6 +164,8 @@ struct Profile: Codable, Identifiable, Equatable {
         case claudeAccountUUID
         case claudeAccountEmail
         case claudeOrganizationUUID
+        case claudeAccountStampTag
+        case claudeConsumedLoginTags
         case codexEmail
         case codexAccountSyncedAt
         case codexAccountId
@@ -337,6 +349,17 @@ struct Profile: Codable, Identifiable, Equatable {
         guard let cliJSON = cliCredentialsJSON else { return false }
         return !ClaudeCodeSyncService.shared.isTokenExpired(cliJSON)
             || ClaudeCodeSyncService.shared.extractRefreshToken(from: cliJSON) != nil
+    }
+
+    /// Whether `claudeAccountUUID` is evidence of this profile's account: it was
+    /// verified against the login stored now (`claudeAccountStampTag`). A stamp
+    /// whose login was replaced since, or from before binding existed, is not:
+    /// a profile stamped with one account once held another account's login
+    /// (2026-10-12), and routing by that stamp overwrote the live login.
+    var claudeStampIsBound: Bool {
+        guard let uuid = claudeAccountUUID, !uuid.isEmpty,
+              let tag = claudeAccountStampTag else { return false }
+        return tag == ClaudeLoginLifetime.loginTag(cliCredentialsJSON)
     }
 
     var hasAnyCredentials: Bool {
