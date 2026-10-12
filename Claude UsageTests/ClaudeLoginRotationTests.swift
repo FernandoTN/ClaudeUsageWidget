@@ -2789,20 +2789,129 @@ final class ClaudeLoginRotationTests: XCTestCase {
         let record = FileClaudeRedemptionRecord(url: path)
 
         try Data("{not json".utf8).write(to: path)
-        try record.replaceQuarantining(with: Data("{}".utf8), quarantineName: "q.json")
+        XCTAssertEqual(try record.replaceQuarantining(with: Data("{}".utf8), quarantineName: "q.json"), "q.json")
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("q.json")), Data("{not json".utf8))
         XCTAssertEqual(try record.read(), Data("{}".utf8))
 
         try Data("{\"secret history\":1}".utf8).write(to: path)
         try fileManager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path.path)
         XCTAssertThrowsError(try record.read(), "unreadable")
-        try record.replaceQuarantining(with: Data("{\"a\":1}".utf8), quarantineName: "q.json")
+        XCTAssertEqual(try record.replaceQuarantining(with: Data("{\"a\":1}".utf8), quarantineName: "q.json"), "q-2.json")
         XCTAssertEqual(try record.read(), Data("{\"a\":1}".utf8), "replaced, and readable")
         let second = directory.appendingPathComponent("q-2.json")
         XCTAssertTrue(fileManager.fileExists(atPath: second.path), "the taken name is never overwritten")
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: second.path)
         XCTAssertEqual(try Data(contentsOf: second), Data("{\"secret history\":1}".utf8), "the unreadable bytes are preserved")
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("q.json")), Data("{not json".utf8))
+    }
+
+    // MARK: - Review round 6 (#186): the rebuild's completeness and its way out
+
+    /// Codex round 6, the write claim made true, on the real file: a
+    /// replacement whose read-back fails puts the damaged record back at its
+    /// path and leaves no quarantine name behind.
+    func testTheFileRecordPutsTheDamagedRecordBackWhenTheReplacementFails() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory.appendingPathComponent("cuw-redemption-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("record.json")
+        let record = FileClaudeRedemptionRecord(url: path)
+        try Data("{not json".utf8).write(to: path)
+
+        record.failVerificationForTesting = true
+        XCTAssertThrowsError(try record.replaceQuarantining(with: Data("{}".utf8), quarantineName: "q.json"))
+
+        XCTAssertEqual(try Data(contentsOf: path), Data("{not json".utf8), "the damaged record is back")
+        XCTAssertFalse(fileManager.fileExists(atPath: directory.appendingPathComponent("q.json").path), "nothing else left")
+    }
+
+    /// The same in the store: a rebuild whose replacement fails after the new
+    /// bytes landed changes nothing, stays closed, and offers Repair.
+    func testARebuildWhoseReplacementFailsChangesNothing() async throws {
+        let damaged = Data("{\"0123\": {\"state\": ".utf8)
+        let backing = installCorruptRecord(damaged)
+        backing.failAfterReplace = true
+        let held = login("account", expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        _ = seedBesideAnotherOwner("account", holding: held)
+
+        _ = store.claudeRedemptionStatus(ofClaudeLogin: held)
+        try await waitUntil { self.store.claudeRedemptionRepairOffered }
+
+        XCTAssertEqual(backing.stored, damaged, "the damaged record is back")
+        XCTAssertTrue(backing.quarantined.isEmpty, "and no quarantine name is left")
+        XCTAssertTrue(store.claudeRedemptionRecordUnreadable, "still closed")
+        XCTAssertNotNil(store.claudeRedemptionRebuildFailure)
+    }
+
+    /// Codex round 6, major 2. The rebuild reads every profile's stored login
+    /// DIRECTLY: hydration folds a failed Keychain read into "no credential",
+    /// and a login missed would come back clean. While one profile's read
+    /// fails, nothing is rebuilt and everything stays closed; once it reads,
+    /// the rebuild marks that login pending — here one only the Keychain
+    /// item holds.
+    func testARebuildNeverRunsWhileAProfilesLoginCannotBeRead() async throws {
+        let backing = InMemoryClaudeRedemptionRecord()
+        backing.stored = Data("{}".utf8)
+        backing.failReads = true
+        store.setClaudeRedemptionRecordForTesting(backing)
+        let cached = login("account", generation: 2, expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: cached)
+        await store.flushKeychainWrites()
+        let keychainOnly = login("account", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        KeychainService.shared.setProfileCredentialReadFailureForTesting(profileId: account.id, key: "cli-creds", failing: true)
+        defer { KeychainService.shared.setProfileCredentialReadFailureForTesting(profileId: account.id, key: "cli-creds", failing: false) }
+        _ = store.claudeRedemptionStatus(ofClaudeLogin: cached)
+
+        let blocked = await manager.repairClaudeRedemptionRecord()
+        XCTAssertEqual(blocked, .notReady)
+        XCTAssertTrue(store.claudeRedemptionRecordUnreadable, "still closed")
+        XCTAssertTrue(backing.quarantined.isEmpty, "nothing rebuilt")
+        XCTAssertEqual(backing.stored, Data("{}".utf8))
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: keychainOnly), .unknown)
+
+        // The item holds a login the in-memory cache does not (as when
+        // hydration folded the failed read into nil), and now reads.
+        KeychainService.shared.saveProfileCredential(keychainOnly, profileId: account.id, key: "cli-creds")
+        KeychainService.shared.setProfileCredentialReadFailureForTesting(profileId: account.id, key: "cli-creds", failing: false)
+        let repaired = await manager.repairClaudeRedemptionRecord()
+        guard case .rebuilt = repaired else { return XCTFail("expected a rebuild, got \(repaired)") }
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: keychainOnly), .pending, "the login only the Keychain held")
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: cached), .pending)
+    }
+
+    /// Codex round 6, major 1. The automatic rebuild of a corrupt record that
+    /// waits in vain for a profile's login to be readable records the failure
+    /// and offers Repair; credentials becoming ready later rebuild it
+    /// automatically.
+    func testAnExhaustedAutomaticRebuildOffersRepairAndResumesWhenCredentialsAreReady() async throws {
+        manager.automaticRedemptionRebuildAttempts = 2
+        manager.automaticRedemptionRebuildRetryInterval = 0.01
+        defer {
+            manager.automaticRedemptionRebuildAttempts = 120
+            manager.automaticRedemptionRebuildRetryInterval = 5
+        }
+        let damaged = Data("{\"0123\": {\"state\": ".utf8)
+        let held = login("account", expiresIn: 3 * 3600, deadlineIn: 20 * 86_400)
+        let account = seedBesideAnotherOwner("account", holding: held)
+        await store.flushKeychainWrites()
+        KeychainService.shared.setProfileCredentialReadFailureForTesting(profileId: account.id, key: "cli-creds", failing: true)
+        defer { KeychainService.shared.setProfileCredentialReadFailureForTesting(profileId: account.id, key: "cli-creds", failing: false) }
+        let backing = installCorruptRecord(damaged)
+
+        _ = store.claudeRedemptionStatus(ofClaudeLogin: held)
+        try await waitUntil { self.manager.claudeRedemptionRepairOffered }
+        XCTAssertTrue(store.claudeRedemptionRepairOffered, "exhausted: Repair is offered")
+        XCTAssertNotNil(store.claudeRedemptionRebuildFailure)
+        XCTAssertTrue(store.claudeRedemptionRecordUnreadable, "still closed")
+        XCTAssertEqual(backing.stored, damaged)
+
+        // Credentials become ready (a re-hydration that now reads the item).
+        KeychainService.shared.setProfileCredentialReadFailureForTesting(profileId: account.id, key: "cli-creds", failing: false)
+        store.resetAndRewarmCredentialCacheForTesting()
+        try await waitUntil { !self.store.claudeRedemptionRecordUnreadable }
+        XCTAssertEqual(store.claudeRedemptionStatus(ofClaudeLogin: held), .pending, "rebuilt automatically")
+        XCTAssertEqual(backing.quarantined.values.first ?? nil, damaged)
     }
 }
 

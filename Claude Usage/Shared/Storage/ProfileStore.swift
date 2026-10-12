@@ -1730,16 +1730,44 @@ class ProfileStore {
         let backing = redemptionBacking
         redemptionLock.unlock()
 
+        // Every existing profile's Claude credential, READ DIRECTLY: hydration
+        // folds a failed Keychain read into "no credential" and still settles
+        // `.ready`, and a login missed here would come back clean (Codex round
+        // 6). Each read must find the item or confirm it absent (`security`
+        // exit 44); any failure is `.notReady` — nothing rebuilt, still
+        // closed, retried. Profiles are the roster's and the cache's, and the
+        // cache's values (newer than the Keychain mid-write) are marked too.
         cacheLock.lock()
-        let storedLogins = credentialCache.values.compactMap(\.cliCredentialsJSON)
+        let cachedLogins = credentialCache.values.compactMap(\.cliCredentialsJSON)
+        let cachedIds = Array(credentialCache.keys)
         let unread = pendingHydrationIds
         cacheLock.unlock()
-        guard credentialHydrationState == .ready, unread.isEmpty else {
+        let profileIds = Array(Set(storedProfileIds() + cachedIds))
+        let keychainService = self.keychainService
+        let reads: [(UUID, KeychainService.CredentialRead)] = credentialHydrationState == .ready && unread.isEmpty
+            ? await withCheckedContinuation { continuation in
+                keychainQueue.async {
+                    continuation.resume(returning: profileIds.map { ($0, keychainService.readProfileCredential(profileId: $0, key: "cli-creds")) })
+                }
+            }
+            : []
+        let failedIds = reads.compactMap { id, read -> UUID? in
+            if case .failed = read { return id }
+            return nil
+        }
+        guard credentialHydrationState == .ready, unread.isEmpty, failedIds.isEmpty else {
             redemptionLock.lock()
             redemptionRebuildInFlight = false
             redemptionLock.unlock()
-            LoggingService.shared.log("ProfileStore: the Claude redemption record is not rebuilt yet — not every profile's login is loaded")
+            let why = failedIds.isEmpty
+                ? "not every profile's login is loaded"
+                : "the stored Claude login of \(failedIds.map { String($0.uuidString.prefix(8)) }.joined(separator: ", ")) could not be read"
+            LoggingService.shared.log("ProfileStore: the Claude redemption record is not rebuilt yet — \(why); it stays closed and is retried")
             return .notReady
+        }
+        let storedLogins = cachedLogins + reads.compactMap { _, read -> String? in
+            if case .value(let login) = read { return login }
+            return nil
         }
         var record: [String: ClaudeRedemptionEntry] = [:]
         for login in storedLogins + extraLogins {
@@ -1747,7 +1775,7 @@ class ProfileStore {
             record[tag] = ClaudeRedemptionEntry(state: .pending, deadline: ClaudeLoginLifetime.deadline(login)?.timeIntervalSince1970 ?? 0)
         }
         let quarantineName = Self.quarantineName(at: now)
-        let result: Result<Void, Error> = await withCheckedContinuation { continuation in
+        let result: Result<String, Error> = await withCheckedContinuation { continuation in
             redemptionQueue.async {
                 continuation.resume(returning: Self.replaceConfirmed(record, in: backing, quarantineName: quarantineName))
             }
@@ -1757,13 +1785,13 @@ class ProfileStore {
         redemptionRebuildInFlight = false
         let outcome: ClaudeRedemptionRebuildOutcome
         switch result {
-        case .success:
+        case .success(let quarantinedAs):
             redemptions = record
             redemptionReadFailedAt = nil
             redemptionUnreadableSince = nil
             redemptionRebuildFailure = nil
             noteRedemptionRecordProblem(nil, repairOffered: false, error: nil)
-            outcome = .rebuilt(pending: record.count, quarantinedAs: quarantineName)
+            outcome = .rebuilt(pending: record.count, quarantinedAs: quarantinedAs)
         case .failure(let error):
             let reason = (error as? ClaudeRedemptionRepairError).map(\.summary) ?? error.localizedDescription
             redemptionRebuildFailure = reason
@@ -1793,20 +1821,30 @@ class ProfileStore {
         return "claude-redeemed-logins.corrupt-\(formatter.string(from: date)).json"
     }
 
+    /// The backing preserves, replaces, flushes and reads the new record back
+    /// itself, and undoes the replacement when any step after it fails, so a
+    /// failure leaves the record as it was.
     nonisolated private static func replaceConfirmed(
         _ record: [String: ClaudeRedemptionEntry],
         in backing: ClaudeRedemptionRecordBacking,
         quarantineName: String
-    ) -> Result<Void, Error> {
+    ) -> Result<String, Error> {
         do {
             let data = try JSONEncoder().encode(record)
-            try backing.replaceQuarantining(with: data, quarantineName: quarantineName)
-            let readBack = try backing.read().flatMap { try JSONDecoder().decode([String: ClaudeRedemptionEntry].self, from: $0) }
-            guard readBack == record else { throw ClaudeRedemptionRepairError.unconfirmed }
-            return .success(())
+            return .success(try backing.replaceQuarantining(with: data, quarantineName: quarantineName))
         } catch {
             return .failure(error)
         }
+    }
+
+    /// The automatic rebuild gave up waiting for every profile's login to be
+    /// readable: recorded as a failure, so Repair is offered (Codex round 6).
+    func noteClaudeRedemptionRebuildStalled(_ reason: String) {
+        redemptionLock.lock()
+        defer { redemptionLock.unlock() }
+        guard redemptionProblem != nil else { return }
+        redemptionRebuildFailure = reason
+        noteRedemptionRecordProblem(redemptionProblem, repairOffered: true, error: nil)
     }
 
     /// What the record says about one credential.
@@ -2061,24 +2099,37 @@ class ProfileStore {
 nonisolated protocol ClaudeRedemptionRecordBacking: AnyObject {
     func read() throws -> Data?
     func write(_ data: Data) throws
-    /// Preserves the current record under `quarantineName` beside it — never
-    /// deleting it, and without needing to read it — then replaces the record
-    /// with `data` atomically, durable before returning. A failure to preserve
-    /// throws `ClaudeRedemptionRepairError.quarantine` and changes nothing.
-    func replaceQuarantining(with data: Data, quarantineName: String) throws
+    /// Preserves the current record under `quarantineName` beside it (or the
+    /// next free variant of it) — never deleting it, and without needing to
+    /// read it — then replaces the record with `data` atomically, flushes it
+    /// and reads it back. Returns the quarantine name used.
+    ///
+    /// A failure CHANGES NOTHING: when preserving fails, nothing was touched
+    /// (`.quarantine`); when anything after it fails — the write, the flush,
+    /// the read-back — the preserved record is moved back over the record's
+    /// path, atomically, and the error is thrown. Only when that move back
+    /// ALSO fails (`.restoreFailed`) can the path hold the new, unconfirmed
+    /// record, with the damaged one still under its quarantine name; the
+    /// store stays closed either way.
+    func replaceQuarantining(with data: Data, quarantineName: String) throws -> String
 }
 
 /// Why a rebuild of the redemption record failed.
 nonisolated enum ClaudeRedemptionRepairError: Error {
     /// The damaged record could not be preserved; nothing was replaced.
     case quarantine(Error)
-    /// The new record did not read back as written.
+    /// The new record did not read back as written; the damaged one was put back.
     case unconfirmed
+    /// A step after the replacement failed and the damaged record could not be
+    /// put back: the path may hold the new, unconfirmed record, and the damaged
+    /// one is still under its quarantine name.
+    case restoreFailed(Error)
 
     var summary: String {
         switch self {
         case .quarantine(let error): return "the damaged record could not be preserved: \(error.localizedDescription)"
-        case .unconfirmed: return "the new record did not read back as written"
+        case .unconfirmed: return "the new record did not read back as written; the damaged one was put back"
+        case .restoreFailed(let error): return "the new record could not be confirmed, and the damaged one could not be put back: \(error.localizedDescription)"
         }
     }
 }
@@ -2127,22 +2178,58 @@ nonisolated final class FileClaudeRedemptionRecord: ClaudeRedemptionRecordBackin
     /// reading them (a file that cannot be read can still be linked); where
     /// links are not supported, a copy. Then `write` renames a new file over
     /// the record, so the record's path is never left empty: an absent record
-    /// would read as a first launch, an empty history.
-    func replaceQuarantining(with data: Data, quarantineName: String) throws {
+    /// would read as a first launch, an empty history. A failed write, flush
+    /// or read-back renames the preserved link back over the path.
+    func replaceQuarantining(with data: Data, quarantineName: String) throws -> String {
         let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: url.path) {
-            let quarantine = Self.unusedURL(url.deletingLastPathComponent().appendingPathComponent(quarantineName))
+        let quarantine = Self.unusedURL(url.deletingLastPathComponent().appendingPathComponent(quarantineName))
+        guard fileManager.fileExists(atPath: url.path) else {
+            // Nothing to preserve (the record vanished meanwhile): only write
+            // what is confirmed, and leave no unconfirmed file behind.
             do {
-                try fileManager.linkItem(at: url, to: quarantine)
+                try write(data)
+                try verify(data)
             } catch {
-                do {
-                    try fileManager.copyItem(at: url, to: quarantine)
-                } catch {
-                    throw ClaudeRedemptionRepairError.quarantine(error)
-                }
+                try? fileManager.removeItem(at: url)
+                throw error
+            }
+            return quarantine.lastPathComponent
+        }
+        do {
+            try fileManager.linkItem(at: url, to: quarantine)
+        } catch {
+            do {
+                try fileManager.copyItem(at: url, to: quarantine)
+            } catch {
+                throw ClaudeRedemptionRepairError.quarantine(error)
             }
         }
-        try write(data)
+        do {
+            try write(data)
+            try verify(data)
+        } catch {
+            // Put the preserved record back over whatever the failed write
+            // left (a rename replaces the destination atomically). The
+            // quarantine name goes with it: nothing changed.
+            guard rename(quarantine.path, url.path) == 0 else {
+                throw ClaudeRedemptionRepairError.restoreFailed(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
+            }
+            throw error
+        }
+        return quarantine.lastPathComponent
+    }
+
+    #if DEBUG
+    /// Test-only: the read-back after a replacement fails, as a flush that
+    /// did not reach the drive would.
+    var failVerificationForTesting = false
+    #endif
+
+    private func verify(_ data: Data) throws {
+        #if DEBUG
+        if failVerificationForTesting { throw ClaudeRedemptionRepairError.unconfirmed }
+        #endif
+        guard try read() == data else { throw ClaudeRedemptionRepairError.unconfirmed }
     }
 
     /// `candidate`, or `candidate` with "-2", "-3" … before its extension when
@@ -2208,18 +2295,34 @@ nonisolated final class InMemoryClaudeRedemptionRecord: ClaudeRedemptionRecordBa
     /// Every record preserved by a rebuild, by quarantine name.
     var quarantined: [String: Data?] { locked { _quarantined } }
 
+    /// A replacement whose flush or read-back fails, after the new bytes landed.
+    var failAfterReplace: Bool {
+        get { locked { _failAfterReplace } }
+        set { locked { _failAfterReplace = newValue } }
+    }
+    private var _failAfterReplace = false
+
     /// The damaged bytes are kept as they were (an unreadable record's too:
-    /// a link needs no read), and the record is replaced by a new, readable one.
-    func replaceQuarantining(with data: Data, quarantineName: String) throws {
-        try locked { () -> Result<Void, Error> in
+    /// a link needs no read), and the record is replaced by a new, readable
+    /// one. A failure after preserving them puts everything back.
+    func replaceQuarantining(with data: Data, quarantineName: String) throws -> String {
+        try locked { () -> Result<String, Error> in
             guard !_failQuarantine else {
                 return .failure(ClaudeRedemptionRepairError.quarantine(CocoaError(.fileWriteNoPermission)))
             }
-            _quarantined[quarantineName] = _stored
-            guard !_failWrites else { return .failure(CocoaError(.fileWriteOutOfSpace)) }
+            let (previous, previousFailReads) = (_stored, _failReads)
+            _quarantined[quarantineName] = previous
+            func undo(_ error: Error) -> Result<String, Error> {
+                _stored = previous
+                _failReads = previousFailReads
+                _quarantined[quarantineName] = nil
+                return .failure(error)
+            }
+            guard !_failWrites else { return undo(CocoaError(.fileWriteOutOfSpace)) }
             _stored = data
             _failReads = false
-            return .success(())
+            guard !_failAfterReplace else { return undo(ClaudeRedemptionRepairError.unconfirmed) }
+            return .success(quarantineName)
         }.get()
     }
 

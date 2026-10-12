@@ -2152,22 +2152,37 @@ class ProfileManager: ObservableObject {
     }
 
     /// The automatic rebuild of a record that does not decode: retrying
-    /// cannot fix malformed bytes. It waits (up to ten minutes) for every
-    /// profile's login to be loaded, so the rebuild knows them all.
-    private func startAutomaticRedemptionRebuild() {
+    /// cannot fix malformed bytes. It waits (up to
+    /// `automaticRedemptionRebuildAttempts` × the interval, ten minutes) for
+    /// every profile's login to be readable, so the rebuild knows them all.
+    /// Giving up is recorded as a failure, which offers Repair; credentials
+    /// becoming ready later starts it again (Codex round 6).
+    func startAutomaticRedemptionRebuild() {
         guard !automaticRedemptionRebuildRunning else { return }
         automaticRedemptionRebuildRunning = true
         Task { @MainActor in
-            defer { self.automaticRedemptionRebuildRunning = false }
-            for _ in 0..<120 {
-                let outcome = await self.cliSyncService.rebuildRedemptionRecord(reason: "the record does not decode")
+            let attempts = max(1, self.automaticRedemptionRebuildAttempts)
+            var outcome = ProfileStore.ClaudeRedemptionRebuildOutcome.notReady
+            for attempt in 0..<attempts {
+                outcome = await self.cliSyncService.rebuildRedemptionRecord(reason: "the record does not decode")
                 guard outcome == .notReady else { break }
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if attempt + 1 < attempts {
+                    try? await Task.sleep(nanoseconds: UInt64(self.automaticRedemptionRebuildRetryInterval * 1_000_000_000))
+                }
             }
+            if outcome == .notReady {
+                self.profileStore.noteClaudeRedemptionRebuildStalled("not every profile's Claude login could be read")
+            }
+            // Cleared BEFORE the state sync, so a restart it asks for is not refused.
+            self.automaticRedemptionRebuildRunning = false
             self.syncRedemptionRecordState()
         }
     }
     private var automaticRedemptionRebuildRunning = false
+    /// The automatic rebuild's patience while some profile's login cannot be
+    /// read: attempts, and the wait between them (tests shorten both).
+    var automaticRedemptionRebuildAttempts = 120
+    var automaticRedemptionRebuildRetryInterval: TimeInterval = 5
 
     /// Repair (the banner, the popover and the notification's button): the
     /// same quarantine and conservative rebuild, for a record that cannot be
@@ -2176,6 +2191,9 @@ class ProfileManager: ObservableObject {
     @discardableResult
     func repairClaudeRedemptionRecord() async -> ProfileStore.ClaudeRedemptionRebuildOutcome {
         let outcome = await cliSyncService.rebuildRedemptionRecord(reason: "Repair")
+        if outcome == .notReady {
+            profileStore.noteClaudeRedemptionRebuildStalled("not every profile's Claude login could be read")
+        }
         syncRedemptionRecordState()
         return outcome
     }
@@ -2209,6 +2227,12 @@ class ProfileManager: ObservableObject {
     /// Re-reads profiles after the background Keychain credential load completes, so the
     /// UI picks up credentials that were not yet available at the synchronous startup load.
     private func reloadAfterCredentialSync() {
+        // A record that does not decode, and whose automatic rebuild waited in
+        // vain for every login to be readable: credentials are ready now, so
+        // the rebuild starts again (Codex round 6).
+        if profileStore.claudeRedemptionRecordProblem == .corrupt {
+            startAutomaticRedemptionRebuild()
+        }
         var reloaded = profileStore.loadProfiles()
         applyPendingOverlay(to: &reloaded)
         guard !reloaded.isEmpty else { return }

@@ -604,20 +604,36 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
          it. A hard link needs no read; where links are not supported, a copy;
          a taken name gets `-2`, `-3`.
       2. It REPLACES the record atomically with a new one, confirmed, in which
-         EVERY credential the widget knows is PENDING: every profile's stored
-         Claude login (it waits until all are loaded) and whatever either half
-         of the CLI's store holds.
+         EVERY credential the widget knows is PENDING:
+         - every profile's stored Claude login, READ DIRECTLY from its
+           Keychain item (`KeychainService.readProfileCredential` tells a
+           confirmed absence, exit 44, from a failure). Hydration folds a
+           failed read into "no credential", and a login missed there would
+           come back clean (Codex round 6). Any failed read is `.notReady`:
+           nothing rebuilt, still closed, retried;
+         - the in-memory cache's logins;
+         - whatever either half of the CLI's store holds.
 
       The record's path is never left empty: an absent record would read as a
       first launch.
       - When it runs: a CORRUPT record (read, but undecodable) is rebuilt
-        automatically. An UNREADABLE one (a read error) is retried; after
-        10 min (`redemptionRepairOfferDelay`), or once a rebuild has failed,
-        Repair is offered. The banner, the popover and the notification's
-        button (`CLAUDE_REDEMPTION_RECORD`) all run
+        automatically. While some login cannot be read it retries for up to
+        10 minutes; giving up is recorded as a failure, which offers Repair,
+        and credentials becoming ready later (`.profileCredentialsReady`)
+        start it again. An UNREADABLE record (a read error) is retried, and
+        after 10 min (`redemptionRepairOfferDelay`), or once a rebuild has
+        failed, Repair is offered. The banner, the popover and the
+        notification's button (`CLAUDE_REDEMPTION_RECORD`) all run
         `ProfileManager.repairClaudeRedemptionRecord`.
-      - When it fails: a failed quarantine or write changes nothing, stays
-        closed and says why (log, notification, Repair still offered).
+      - When it fails it changes nothing, stays closed and says why (log,
+        notification, Repair still offered):
+        - a failed preservation touched nothing;
+        - when the write, flush or read-back fails, the preserved link is
+          renamed back over the record's path (atomically), taking its
+          quarantine name with it;
+        - only if that move back also fails (`.restoreFailed`) can the path
+          hold the new, unconfirmed record, with the damaged one still under
+          its quarantine name. The store stays closed until it reads.
       - Recovery takes the existing paths:
         - a pending login is renewed by its own profile, or by a hand-off
           whatever its expiry, into a clean successor;

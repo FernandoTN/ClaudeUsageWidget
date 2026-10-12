@@ -315,7 +315,7 @@ class KeychainService {
     /// - Returns: The stored credential string, or nil if not found
     func loadProfileCredential(profileId: UUID, key: String) -> String? {
         let service = profileCredentialService(profileId: profileId, key: key)
-        if usesTestStore { return Self.testItems[service] }
+        if usesTestStore { return Self.testReadFailures[service] == nil ? Self.testItems[service] : nil }
         let result = runSecurityTool([
             "find-generic-password",
             "-s", service,
@@ -332,6 +332,55 @@ class KeychainService {
         let value = decodeSecurityToolPassword(result.stdout)
         return value.isEmpty ? nil : value
     }
+
+    /// What reading one per-profile credential found. `loadProfileCredential`
+    /// folds the last two into nil; the redemption record's rebuild must not,
+    /// because a credential it could not read would come back clean
+    /// (#186, Codex round 6).
+    enum CredentialRead: Equatable {
+        case value(String)
+        /// Confirmed absent: the `security` tool's item-not-found (exit 44).
+        case absent
+        /// Anything else: the item may exist and could not be read.
+        case failed(status: Int32)
+    }
+
+    /// `loadProfileCredential`, telling a confirmed absence from a failure.
+    /// Shells out to `security`: off the main thread only.
+    func readProfileCredential(profileId: UUID, key: String) -> CredentialRead {
+        let service = profileCredentialService(profileId: profileId, key: key)
+        if usesTestStore {
+            if Self.testReadFailures[service] != nil { return .failed(status: -1) }
+            return Self.testItems[service].map { .value($0) } ?? .absent
+        }
+        let result = runSecurityTool([
+            "find-generic-password",
+            "-s", service,
+            "-a", Self.profileCredentialAccount,
+            "-w"
+        ])
+        switch result.status {
+        case 0:
+            let value = decodeSecurityToolPassword(result.stdout)
+            return value.isEmpty ? .absent : .value(value)
+        case 44:
+            return .absent
+        default:
+            LoggingService.shared.logError("Keychain: Failed to read profile credential \(key) for \(profileId.uuidString.prefix(8)), status: \(result.status)")
+            return .failed(status: result.status)
+        }
+    }
+
+    /// XCTest: per-profile credential items whose reads fail, as a locked or
+    /// damaged item's would.
+    nonisolated private static let testReadFailures = InMemoryCredentialStore()
+
+    #if DEBUG
+    /// Test-only: makes reading one profile's credential fail, or clears that.
+    func setProfileCredentialReadFailureForTesting(profileId: UUID, key: String, failing: Bool) {
+        Self.testReadFailures[profileCredentialService(profileId: profileId, key: key)] = failing ? "1" : nil
+    }
+    #endif
 
     /// Deletes one per-profile credential item (security CLI first, SecItemDelete
     /// as fallback for items created by older builds with signature-bound ACLs).
