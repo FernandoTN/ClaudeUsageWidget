@@ -96,6 +96,12 @@ extension Notification.Name {
     /// served), or a later read succeeded and live values are back.
     static let preferencesDegradedStateChanged = Notification.Name("preferencesDegradedStateChanged")
 
+    /// Posted when `ProfileStore.claudeRedemptionRecordUnreadable` flips in
+    /// either direction: the record of the Claude logins this app redeemed
+    /// cannot be read (every Claude login operation is refused), or it can
+    /// again.
+    static let claudeRedemptionRecordHealthChanged = Notification.Name("claudeRedemptionRecordHealthChanged")
+
     /// Posted (object = profile UUID) after a USER-initiated profile activation
     /// succeeds — the auto-switch must respect the explicit choice instead of
     /// yanking an over-threshold account away on the next sweep.

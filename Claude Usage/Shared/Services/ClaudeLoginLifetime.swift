@@ -67,6 +67,28 @@ enum ClaudeLoginLifetime {
         return access.isEmpty && refresh.isEmpty
     }
 
+    /// Whether the login is COMPLETE: an access token, a refresh token and an
+    /// access-token expiry, checked structurally. Anything less — the access
+    /// token the store read rebuilds from a truncated Keychain payload, or an
+    /// access token and expiry without a refresh token — can serve requests
+    /// until its token dies and never renew, so no adoption, sync or apply
+    /// takes it, from any source.
+    nonisolated static func isComplete(_ json: String) -> Bool {
+        guard let oauth = oauth(json) else { return false }
+        return !(oauth["accessToken"] as? String ?? "").isEmpty
+            && !(oauth["refreshToken"] as? String ?? "").isEmpty
+            && epochDate(oauth["expiresAt"]) != nil
+    }
+
+    /// A short tag for a login, derived one-way from its refresh token with a
+    /// domain prefix. It is persisted (the store's refused-grant, account and
+    /// redemption records), so it is never the in-memory `fingerprint` and
+    /// never the token. Nil without a refresh token.
+    nonisolated static func loginTag(_ json: String?) -> String? {
+        guard let json, let token = refreshToken(json), !token.isEmpty else { return nil }
+        return String(fingerprint("cuw-login-tag-v1:" + token).prefix(32))
+    }
+
     // MARK: - Deadline (cause A)
 
     /// True when the login's server deadline has passed or falls within
@@ -76,44 +98,116 @@ enum ClaudeLoginLifetime {
         return deadline <= now.addingTimeInterval(deadlineMargin)
     }
 
-    // MARK: - Ordering (newest login wins)
+    // MARK: - Ordering (the login the CLI holds wins)
 
-    /// Two deadlines this close belong to ONE login. The deadline is fixed at
-    /// `/login` and refreshes do not move it (2026-10-02 research, cause A), but
-    /// it is computed on the local clock from a relative `*_expires_in`, so two
-    /// copies of one login can disagree by the latency of the call that
-    /// recorded them. Two distinct `/login`s are never this close in practice.
-    nonisolated static let sameLoginDeadlineTolerance: TimeInterval = 60
+    /// Whether the login's server deadline has passed. A credential without
+    /// the field never lapses here.
+    nonisolated static func isLapsed(_ json: String, now: Date) -> Bool {
+        deadline(json).map { $0 <= now } ?? false
+    }
 
-    /// Whether `candidate` is a NEWER login than `current`, so replacing
-    /// `current` with it loses nothing. In order:
-    ///
-    /// 1. The CLI's dead marker is never newer than anything, and anything
-    ///    else is newer than it — it marks a pair as consumed, it is not one.
-    /// 2. Two DIFFERENT logins (both carry a deadline, more than
-    ///    `sameLoginDeadlineTolerance` apart): the later deadline wins. Each
-    ///    `/login` gets a fresh deadline and refreshes never extend it, so the
-    ///    later deadline is the later `/login` — the one that renews longest,
-    ///    even when an older login's pair was refreshed after it and carries a
-    ///    later access-token expiry.
-    /// 3. One login, or a deadline missing on either side: a login past its
-    ///    deadline loses to one that is not; otherwise the later access-token
-    ///    expiry wins, strictly, and a tie is not newer. Every refresh issues a
-    ///    pair with a fixed lifetime, so within one login the expiry orders
-    ///    pairs by when they were issued, and the older pair is a consumed one.
-    nonisolated static func isNewer(_ candidate: String, than current: String, now: Date) -> Bool {
-        if isDeadMarker(candidate) { return false }
-        if isDeadMarker(current) { return true }
-        let candidateDeadline = deadline(candidate)
-        let currentDeadline = deadline(current)
-        if let candidateDeadline, let currentDeadline,
-           abs(candidateDeadline.timeIntervalSince(currentDeadline)) > sameLoginDeadlineTolerance {
-            return candidateDeadline > currentDeadline
+    /// What one login's OWN access token proves (#186 v3). Evidence comes only
+    /// from that token, through a FRESH identity read that bypasses the
+    /// identity cache, plus three store-owned facts about the exact credential
+    /// (`ProfileStore`): the token endpoint refused its grant, this app sent
+    /// its grant (the redemption record), and the account a fresh read
+    /// reported while it was live.
+    enum LoginEvidence: Equatable {
+        /// A fresh read answered 2xx: live, and this account.
+        case live(account: String)
+        /// The token endpoint refused its refresh grant, this app sent its
+        /// grant (pending or consumed: the predecessor's access token can keep
+        /// answering for a while, so its read proves nothing), or its own
+        /// UNEXPIRED access token was refused (401/403): dead. `account` is the
+        /// credential's recorded account, when one was recorded.
+        case dead(account: String?)
+        /// Nothing proves it live or dead: its access token has expired (which
+        /// proves nothing either way), or the read got no answer (transport
+        /// error, 5xx). `account` as for `.dead`.
+        case unknown(account: String?)
+
+        var account: String? {
+            switch self {
+            case .live(let account): return account
+            case .dead(let account), .unknown(let account): return account
+            }
         }
-        let candidateLapsed = candidateDeadline.map { $0 <= now } ?? false
-        let currentLapsed = currentDeadline.map { $0 <= now } ?? false
-        if candidateLapsed != currentLapsed { return !candidateLapsed }
-        return (accessExpiry(candidate) ?? .distantPast) > (accessExpiry(current) ?? .distantPast)
+    }
+
+    /// The evidence one read produced. `identifiedAccount` is the account a
+    /// fresh 2xx reported and `rejectedStatus` the status that refused it (both
+    /// nil when no read was made, which is always so for an expired token).
+    /// A refused or redeemed grant overrides any "alive" answer but never the
+    /// account fact (`recordedAccount`); the account record never establishes
+    /// liveness.
+    nonisolated static func evidence(
+        identifiedAccount: String?,
+        rejectedStatus: Int?,
+        accessExpiry: Date?,
+        grantRefused: Bool,
+        grantRedeemed: Bool = false,
+        recordedAccount: String?,
+        now: Date
+    ) -> LoginEvidence {
+        let known = recordedAccount ?? identifiedAccount
+        if grantRefused || grantRedeemed { return .dead(account: known) }
+        let unexpired = accessExpiry.map { $0 > now } ?? false
+        if unexpired, let identifiedAccount { return .live(account: identifiedAccount) }
+        if unexpired, let status = rejectedStatus, status == 401 || status == 403 { return .dead(account: recordedAccount) }
+        return .unknown(account: recordedAccount)
+    }
+
+    /// Whether the login the CLI's store holds replaces a profile's stored one.
+    ///
+    /// Among logins of the SAME account that are proven live, the login the
+    /// CLI holds wins. Recency never decides: no access-expiry or deadline
+    /// ordering at all. The widget never redeems a login the CLI holds
+    /// (`ClaudeRefreshPolicy`), so the CLI's copy is the CLI's own renewal or
+    /// a `/login`; and a non-owner profile can legitimately hold an
+    /// independent second chain of the CLI's account that the widget heals
+    /// later, which recency would rank first.
+    ///
+    /// The deadline never ranks two live logins either. Three `/login`s into
+    /// one account within seven minutes (2026-10-12) recorded deadlines out of
+    /// login order. It only drops a lapsed login.
+    ///
+    /// 1. The CLI's login must be complete (`isComplete`), not the dead
+    ///    marker, not lapsed, and PROVEN LIVE by its own fresh read.
+    /// 2. The stored side needs its own evidence: live as account A, or dead,
+    ///    or unknown liveness with a recorded account. Its account must be the
+    ///    CLI login's (a different one is contamination: refused). A dead
+    ///    login with no recorded account is replaced unless the profile's stamp
+    ///    names another account (weak evidence may refuse, never grant).
+    ///    Unknown with no recorded account: the stored login stays; explicit
+    ///    Sync is the user's path. So does an empty profile.
+    nonisolated static func cliLoginReplaces(
+        _ stored: String?,
+        with cliLogin: String,
+        cli: LoginEvidence,
+        stored storedEvidence: LoginEvidence,
+        storedStamp: String?,
+        now: Date
+    ) -> Bool {
+        guard isComplete(cliLogin), !isDeadMarker(cliLogin), !isLapsed(cliLogin, now: now),
+              case .live(let account) = cli else { return false }
+        guard let stored, !isSamePair(cliLogin, stored) else { return false }
+        switch storedEvidence {
+        case .live(let storedAccount):
+            return storedAccount == account
+        case .unknown(let recorded):
+            return recorded == account
+        case .dead(let recorded):
+            if let recorded { return recorded == account }
+            return storedStamp.map { $0.isEmpty || $0 == account } ?? true
+        }
+    }
+
+    /// Two copies carrying one token pair are one login, whatever else their
+    /// JSON says (the CLI may rewrite its item with other fields).
+    nonisolated static func isSamePair(_ a: String, _ b: String) -> Bool {
+        guard let left = oauth(a), let right = oauth(b) else { return a == b }
+        return left["accessToken"] as? String == right["accessToken"] as? String
+            && left["refreshToken"] as? String == right["refreshToken"] as? String
     }
 
     /// A log-safe description of a login: its expiries, never a token.
@@ -151,8 +245,9 @@ enum ClaudeLoginLifetime {
 /// CLI holds or is being handed — not even in its last minutes and not even
 /// with the result written back: the CLI process can be redeeming the same
 /// token at that moment, and no lock the widget holds can see it. The CLI
-/// refreshes its own login and the widget adopts the rotated pair (newest login
-/// wins). A hand-off renews BEFORE it applies.
+/// refreshes its own login and the widget adopts the rotated pair (the login
+/// the CLI holds wins, `ClaudeLoginLifetime.cliLoginReplaces`). A hand-off
+/// renews BEFORE it applies.
 enum ClaudeRefreshPolicy {
     /// A login is renewed before it is handed to the CLI unless its access
     /// token has at least this long left — the same window the candidate
@@ -205,4 +300,44 @@ enum ClaudeRefreshPolicy {
         if handoffInFlight, case .maintenance = role { return .refuseHandedOff }
         return .redeem
     }
+
+    /// What a refresh grant that brought back no successor did to its
+    /// credential, for the redemption record
+    /// (`ProfileStore.markClaudeRedemptionPending`, written before the send).
+    enum GrantOutcome: Equatable {
+        /// The token endpoint refused the grant (400/401/403). The refusal is
+        /// recorded; the pending mark stays (the credential is dead either way).
+        case refused
+        /// The grant certainly never left this Mac, or the endpoint answered
+        /// without processing it (429): the credential is untouched, and its
+        /// pending mark is taken back.
+        case notProcessed
+        /// Anything else — a timeout, a dropped connection, a 5xx, an answer
+        /// that could not be read: it may have been consumed, so the pending
+        /// mark stays.
+        case ambiguous
+    }
+
+    static func grantOutcome(of error: Error) -> GrantOutcome {
+        if case ClaudeCodeError.tokenRefreshFailed(let status) = error {
+            switch status {
+            case 400, 401, 403: return .refused
+            case 429: return .notProcessed
+            default: return .ambiguous
+            }
+        }
+        if let transport = error as? URLError, notSentCodes.contains(transport.code) { return .notProcessed }
+        return .ambiguous
+    }
+
+    /// Transport failures that happen before a request's body leaves this Mac:
+    /// no connection, no name, no connection to the host, a TLS handshake
+    /// that failed, a request that could not be built.
+    nonisolated private static let notSentCodes: Set<URLError.Code> = [
+        .notConnectedToInternet, .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost,
+        .internationalRoamingOff, .dataNotAllowed, .callIsActive, .secureConnectionFailed,
+        .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+        .serverCertificateHasUnknownRoot, .clientCertificateRejected, .clientCertificateRequired,
+        .appTransportSecurityRequiresSecureConnection, .badURL, .unsupportedURL,
+    ]
 }

@@ -182,69 +182,42 @@ final class ClaudeDuplicateAccountTests: XCTestCase {
 
     // MARK: - Identity-verified credential writes
 
+    /// Two complete synthetic logins (#186 v3 decides on each side's own
+    /// evidence; the logins only have to be complete and different).
+    private let storedLogin = #"{"claudeAiOauth":{"accessToken":"s-access-1","refreshToken":"s-refresh-1","expiresAt":4102444800000}}"#
+    private let cliLogin = #"{"claudeAiOauth":{"accessToken":"c-access-1","refreshToken":"c-refresh-1","expiresAt":4102444800000}}"#
+
+    private func writes(cli: ClaudeLoginLifetime.LoginEvidence, stored: ClaudeLoginLifetime.LoginEvidence,
+                        stamp: String? = nil) -> Bool {
+        ClaudeLoginLifetime.cliLoginReplaces(storedLogin, with: cliLogin, cli: cli, stored: stored,
+                                             storedStamp: stamp, now: now)
+    }
+
     func testWriteGuardRefusesAnAccountThatIsNotTheTargetsOwn() {
         // The write path that made the contamination: the CLI's login is about
-        // to be copied into a profile named by a (stale) pointer.
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: "76582cd6", profileAccountUUID: "76582cd6"
-            ),
-            .write
-        )
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: "76582cd6", profileAccountUUID: "aa11bb22"
-            ),
-            .refuse
-        )
-        // Neither side identifiable is NOT a mismatch — refusing there would
-        // break every legitimate adoption on a network failure. The caller's
-        // own bookkeeping stands, exactly as before.
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: nil, profileAccountUUID: "aa11bb22"
-            ),
-            .noEvidence
-        )
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: "76582cd6", profileAccountUUID: nil
-            ),
-            .noEvidence
-        )
+        // to be copied into a profile named by a (stale) pointer. Each side's
+        // account comes from its OWN token's fresh read.
+        XCTAssertTrue(writes(cli: .live(account: "76582cd6"), stored: .live(account: "76582cd6")))
+        XCTAssertFalse(writes(cli: .live(account: "76582cd6"), stored: .live(account: "aa11bb22")))
+        XCTAssertFalse(writes(cli: .live(account: "76582cd6"), stored: .live(account: "aa11bb22"), stamp: "76582cd6"),
+                       "a stamp naming the CLI's account does not override the target's own token")
+        // Neither side identifiable is no automatic write at all (#186 v3): the
+        // stored login stays, and explicit Sync is the repair.
+        XCTAssertFalse(writes(cli: .unknown(account: nil), stored: .live(account: "aa11bb22")))
+        XCTAssertFalse(writes(cli: .live(account: "76582cd6"), stored: .unknown(account: nil)))
     }
 
     func testUnstampedTargetIsResolvedFromItsOwnTokenBeforeDeciding() {
         // 'Beacon' carried NO stamp, so the old guard waved the write through on
-        // "no evidence either way". Resolving the target from its OWN token
-        // first is what turns that into a verdict: the identity the target's own
-        // login reports decides, and it refuses when it disagrees.
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: "76582cd6",
-                profileAccountUUID: nil,
-                stampedFromOwnToken: "aa11bb22"
-            ),
-            .refuse
-        )
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: "76582cd6",
-                profileAccountUUID: nil,
-                stampedFromOwnToken: "76582cd6"
-            ),
-            .write
-        )
-        // The target's own token could not be identified either (dead login,
-        // endpoint refused): still no evidence, still not a refusal.
-        XCTAssertEqual(
-            ClaudeCodeSyncService.credentialWriteDecision(
-                cliAccountUUID: "76582cd6",
-                profileAccountUUID: nil,
-                stampedFromOwnToken: nil
-            ),
-            .noEvidence
-        )
+        // "no evidence either way". The identity the target's own login reports
+        // decides, and it refuses when it disagrees.
+        XCTAssertFalse(writes(cli: .live(account: "76582cd6"), stored: .live(account: "aa11bb22")))
+        XCTAssertTrue(writes(cli: .live(account: "76582cd6"), stored: .live(account: "76582cd6")))
+        // The target's own token could not answer, but the account its
+        // credential was recorded under can still place it — or refuse.
+        XCTAssertTrue(writes(cli: .live(account: "76582cd6"), stored: .unknown(account: "76582cd6")))
+        XCTAssertFalse(writes(cli: .live(account: "76582cd6"), stored: .unknown(account: "aa11bb22")))
+        XCTAssertFalse(writes(cli: .live(account: "76582cd6"), stored: .unknown(account: nil)))
     }
 
     // MARK: - Manual sync duplicate guard

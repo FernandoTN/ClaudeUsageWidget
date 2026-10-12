@@ -693,6 +693,7 @@ shortcuts, diagnostics (preferences-degraded state and the last write check,
 | `popoverShowRemainingTime` (legacy) → `popoverTimeDisplay`, `timeFormatPreference` | SharedDataStore | yes | unchanged (existing one-time migration kept) | Display › Popover |
 | `switchHistory_v1`, `measuredSessionHistory_v1` | SharedDataStore | yes | unchanged; read by stage 4 | Dashboard |
 | `claudeDeadLogins_v1`, `codexDeadLogins_v1`, `grokDeadLogins_v1`, **`claudeContaminatedLogins_v1`** (#64) | services | yes | unchanged (raw `UserDefaults.standard` writes for Claude/Grok/contaminated; the Codex one honours the test suite — journal routing and the test-suite fix are the fixes session's open item; the registry does not fix it) | Accounts › Login banner; Advanced "forget" |
+| **`claudeRefusedLogins_v1`**, **`claudeLoginAccounts_v1`** (#186) | ProfileStore | **new** (2026-10-12), journaled | Login adoption evidence, keyed by a domain-separated one-way tag of each credential's refresh token (never a token): logins whose refresh grant the token endpoint refused, and the account a fresh identity read of a credential's own unexpired token reported. Store-owned (ordinary roster saves never touch them), pruned only once each credential's deadline has passed | none (login adoption evidence) |
 | `sentNotifications` | NotificationManager | yes | unchanged (name-keyed; §11) | — |
 | `codexAutoImported_v1`, `grokAutoImported_v1`, `grokDisplayBackfill_v1` | ProfileManager | yes | untouched | — |
 | `legacyBundleDefaultsMigrated_v1` | MigrationService | yes | untouched | — |

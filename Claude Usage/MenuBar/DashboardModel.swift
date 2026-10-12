@@ -276,6 +276,9 @@ struct RecentSwitch: Hashable {
 
 enum DashboardBanner: Hashable {
     case preferencesDegraded
+    /// The Claude redemption record cannot be used: renewals and switches
+    /// paused. `repairOffered`: the banner carries a Repair button.
+    case claudeRedemptionRecordUnreadable(repairOffered: Bool)
     case deadLogins(count: Int)
     case noCandidate(Profile.ProviderKind)
     case hiddenByOverflow(Profile.ProviderKind)
@@ -406,6 +409,9 @@ struct DashboardSnapshot: Hashable {
         var sections: [ProviderSection] = []
         var banners: [DashboardBanner] = []
         if inputs.context.preferencesDegraded { banners.append(.preferencesDegraded) }
+        if inputs.context.claudeRedemptionRecordUnreadable {
+            banners.append(.claudeRedemptionRecordUnreadable(repairOffered: inputs.context.claudeRedemptionRepairOffered))
+        }
         let deadCount = readiness.values.filter { $0 == .dead }.count
         if deadCount > 0 { banners.append(.deadLogins(count: deadCount)) }
 

@@ -231,6 +231,24 @@ final class DashboardModelTests: XCTestCase {
         XCTAssertTrue(snap.sections[0].hiddenByOverflow)
     }
 
+    /// An unreadable Claude redemption record pauses every Claude renewal and
+    /// switch (#186): a blocking banner, right after the preferences one.
+    func testAnUnreadableRedemptionRecordIsABlockingBanner() {
+        let a = claude("A", usage(session: 10))
+        var inp = inputs([a], active: [a.id], degraded: true)
+        inp.context.claudeRedemptionRecordUnreadable = true
+        let snap = DashboardSnapshot.build(inp)
+        XCTAssertEqual(Array(snap.banners.prefix(2)), [.preferencesDegraded, .claudeRedemptionRecordUnreadable(repairOffered: false)])
+        XCTAssertEqual(DashboardBanner.claudeRedemptionRecordUnreadable(repairOffered: false).tier, .blocking)
+        XCTAssertNil(DashboardBanner.claudeRedemptionRecordUnreadable(repairOffered: false).action, "no Repair before it is offered")
+
+        inp.context.claudeRedemptionRepairOffered = true
+        let offered = DashboardSnapshot.build(inp)
+        XCTAssertTrue(offered.banners.contains(.claudeRedemptionRecordUnreadable(repairOffered: true)))
+        XCTAssertEqual(DashboardBanner.claudeRedemptionRecordUnreadable(repairOffered: true).action?.repairsRedemptionRecord, true,
+                       "the banner's button runs Repair")
+    }
+
     func testRecentSwitchesAreNewestFirstCappedAndProviderTagged() {
         let a = claude("A", usage()), x = codex("X", usage(weekly: 1, sessionWindow: false))
         var history: [SwitchEvent] = []

@@ -826,6 +826,10 @@ class MenuBarManager: NSObject, ObservableObject {
                     // and the snapshot follows `.codexDaemonStateChanged`.
                     await CodexDaemonService.shared.restartDaemon(reason: "dashboard Restart")
                     self?.rebuildDashboardSnapshot()
+                },
+                repairClaudeRedemptionRecord: { [weak self] in
+                    await ProfileManager.shared.repairClaudeRedemptionRecord()
+                    self?.rebuildDashboardSnapshot()
                 }
             )
             return NSHostingController(rootView: DashboardView(store: dashboardStore, actions: actions))
@@ -4745,7 +4749,9 @@ private func observeCredentialChanges() {
             preferencesDegraded: profileManager.preferencesDegraded,
             isSwitching: profileManager.isSwitchingProfile,
             now: now,
-            capacity: makeFleetCapacityForecast(now: now)
+            capacity: makeFleetCapacityForecast(now: now),
+            claudeRedemptionRecordUnreadable: profileManager.claudeRedemptionRecordUnreadable,
+            claudeRedemptionRepairOffered: profileManager.claudeRedemptionRepairOffered
         )
     }
 

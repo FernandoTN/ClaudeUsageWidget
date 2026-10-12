@@ -153,7 +153,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         center.delegate = self
         // The one category with an action: "Restart Codex daemon" on the
         // switch notice (docs/specs/codex-daemon-awareness.md).
-        center.setNotificationCategories([NotificationManager.codexDaemonCategory])
+        center.setNotificationCategories([
+            NotificationManager.codexDaemonCategory,
+            NotificationManager.claudeRedemptionRecordCategory,
+        ])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
             // Silently request permissions
         }
@@ -376,6 +379,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         case .restartCodexDaemon:
             Task { @MainActor in
                 await CodexDaemonService.shared.restartDaemon(reason: "notification action")
+                completionHandler()
+            }
+        case .repairClaudeRedemptionRecord:
+            Task { @MainActor in
+                await ProfileManager.shared.repairClaudeRedemptionRecord()
                 completionHandler()
             }
         case nil:

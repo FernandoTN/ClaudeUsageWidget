@@ -38,6 +38,9 @@ struct DashboardActions {
     /// The Codex block's "Restart" while the daemon still holds the previous
     /// login (`CodexDaemonService.restartDaemon`, verified exit).
     var restartCodexDaemon: () async -> Void = {}
+    /// The Claude redemption record banner's "Repair"
+    /// (`ProfileManager.repairClaudeRedemptionRecord`).
+    var repairClaudeRedemptionRecord: () async -> Void = {}
 }
 
 // MARK: - Store
@@ -298,11 +301,16 @@ extension DashboardBanner {
         }
     }
 
-    struct Action { var title: String; var sectionRawValue: String }
+    struct Action {
+        var title: String
+        var sectionRawValue: String?
+        /// Runs the redemption record's Repair instead of opening Settings.
+        var repairsRedemptionRecord = false
+    }
 
     var tier: Tier {
         switch self {
-        case .preferencesDegraded: return .blocking
+        case .preferencesDegraded, .claudeRedemptionRecordUnreadable: return .blocking
         case .deadLogins: return .actionable
         case .noCandidate, .hiddenByOverflow: return .informational
         }
@@ -311,6 +319,7 @@ extension DashboardBanner {
     var icon: String {
         switch self {
         case .preferencesDegraded: return "externaldrive.badge.exclamationmark"
+        case .claudeRedemptionRecordUnreadable: return "lock.trianglebadge.exclamationmark"
         case .deadLogins: return "person.crop.circle.badge.exclamationmark"
         case .noCandidate: return "arrow.right.circle"
         case .hiddenByOverflow: return "eye.slash"
@@ -320,6 +329,7 @@ extension DashboardBanner {
     var message: String {
         switch self {
         case .preferencesDegraded: return "popover.banner.preferences_degraded".localized
+        case .claudeRedemptionRecordUnreadable: return "popover.banner.claude_redemption_record".localized
         case .deadLogins(let count): return "\(count) dead login\(count == 1 ? "" : "s") — repair in Accounts"
         case .noCandidate(let provider): return "\(DashboardFormatting.title(provider)): nowhere to switch to"
         case .hiddenByOverflow(let provider): return "\(DashboardFormatting.title(provider)) is not visible in the menu bar"
@@ -329,6 +339,8 @@ extension DashboardBanner {
     var action: Action? {
         switch self {
         case .deadLogins: return Action(title: "Accounts ›", sectionRawValue: "accounts")
+        case .claudeRedemptionRecordUnreadable(let repairOffered):
+            return repairOffered ? Action(title: "notification.claude_redemption_repair.action".localized, sectionRawValue: nil, repairsRedemptionRecord: true) : nil
         default: return nil
         }
     }
@@ -568,7 +580,13 @@ struct DashboardView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             if let action = banner.action {
-                Button(action.title) { actions.openSettings(action.sectionRawValue) }
+                Button(action.title) {
+                    if action.repairsRedemptionRecord {
+                        Task { await actions.repairClaudeRedemptionRecord() }
+                    } else {
+                        actions.openSettings(action.sectionRawValue)
+                    }
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 9.5, weight: .semibold))
                     .foregroundColor(DesignRole.action.color)

@@ -451,7 +451,9 @@ active account's refreshes to the CLI and only adopt.
   - what anchors the deadline. The recorded deadlines do not sit a whole number of days
     after any of the 38 completed `/login` commands in the transcripts, so it is not simply
     "login plus N days". The lifetime of a fresh login is therefore not known. It may be
-    tied to the browser session that authorized it;
+    tied to the browser session that authorized it. 2026-10-12 confirmed that it is not
+    the `/login` time: three `/login`s into one account within seven minutes got deadlines
+    out of login order (section 8);
   - whether a refresh performed by the CLI (different host, sends `scope`) is treated
     differently from the widget's. It can be watched passively: read
     `refreshTokenExpiresAt` in the shared item before and after a CLI-performed refresh;
@@ -512,17 +514,81 @@ The fix (owner's decision, 2026-10-09: "Fix it, plus deadline check"):
 
    A switch to anything still pending other than the verified owner is deferred.
    Fixes 1 to 3 of section 6, B.
-2. **Newest login wins.** `ClaudeLoginLifetime.isNewer` compares two logins:
-   - The dead-marker is never newer than anything.
-   - Two different logins (deadlines more than 60 s apart): the later deadline wins.
-     Each `/login` gets a fixed deadline that refreshes never move (cause A above).
-   - Within one login: a lapsed deadline loses, then the later access-token expiry wins,
-     and a tie is not newer.
+2. **The login the CLI holds wins** (revised 2026-10-12; first shipped as "newest login
+   wins", ordered by deadline). For one account, the login Claude Code's store holds is
+   authoritative: with fix 1 the widget never redeems a token the CLI holds, so the
+   CLI's copy can only equal the widget's or be newer. `ClaudeLoginLifetime.cliLoginReplaces`
+   decides:
+   - The dead-marker, and a pair this app redeemed (consumed), are never adopted.
+   - The deadline only drops a lapsed login. A lapsed CLI login replaces nothing, and a
+     live one replaces a lapsed stored login.
+   - Two live, different logins: the CLI's wins when the account is verified the same.
+     With no identity evidence on either side, the stored login stays.
+
+   **There is no deadline-first rule.** The first version ranked two logins by deadline
+   (the later deadline was taken as the later `/login`, with a 60 s same-login
+   tolerance). That premise is false. On 2026-10-12 the owner ran three `/login`s into
+   the SAME account within seven minutes, and Claude Code's Keychain recorded:
+
+   | `/login` at (HST) | Recorded deadline |
+   |---|---|
+   | 13:06 | 11-11 06:06:06 |
+   | 13:07 | 11-08 15:43:44 |
+   | 13:13 | 11-11 03:07:57 |
+
+   The deadlines are not in login order, so whatever anchors them (section 7), it is not
+   the `/login` time alone. After the 13:13 `/login` the widget kept the profile's 13:06
+   pair because its deadline was later ("Re-sync kept the stored login … the CLI's copy
+   is not newer"). The profile no longer held the login Claude Code was using.
 
    The store read returns nothing when the Keychain holds the dead-marker, and never
-   falls back to the file. The switch-away re-sync, the Keychain adoption and identity
-   adoption replace a stored login only with a newer one, by compare-and-swap. An
-   ordinary save to the profile store never changes a stored login; only explicit
+   falls back to the file. Otherwise the Keychain wins, and the file is used only when the
+   Keychain item is confirmed absent. The switch-away re-sync, the Keychain adoption and
+   identity adoption all decide by this rule and write by compare-and-swap.
+
+   Two review rounds and a review panel (#186) settled the rule as "v3"; a third round
+   cut its scope:
+   - **Among logins of the same account proven live, the CLI's wins.** No recency
+     ordering of any kind: a non-owner profile can hold an independent second chain of
+     the CLI's account that the widget heals later, which would always look newest.
+   - **Evidence comes only from each side's own access token, freshly read** (the
+     identity cache bypassed). A 2xx means live, with its account. A 401/403 on an
+     unexpired token means dead. An expired token or no answer means unknown, and
+     unknown means no automatic adoption: the stored login stays and explicit Sync is
+     the user's path.
+   - Two states seen live that day explain why nothing weaker counts. After the `/login`,
+     `~/.claude.json`'s `oauthAccount` still named the OLD account. And one profile
+     carried account X's stamp while holding account Y's live login.
+   - Three facts are kept per credential, keyed by a one-way tag and never by profile:
+     the token endpoint refused its grant (dead); the account a fresh read of its own
+     unexpired token reported (the account only, never liveness), which lets an idle
+     owner's expired login be placed when the CLI renews it; and this app sent its
+     grant. The last one (round 3) exists because a redeemed predecessor's access token
+     can keep answering for a while, so a stale copy of it would pass its own read. It
+     is written to disk and confirmed BEFORE the grant goes out, so a crash or a lost
+     answer leaves the credential marked. A marked credential is never adopted, synced
+     or applied. Round 4 tightened it:
+     - only the attempt that wrote a mark may take it back;
+     - the CLI's store is inspected again after the write, right before sending;
+     - a record that cannot be read fails closed (no Claude login is renewed, adopted,
+       synced or applied, with a banner) instead of reading as empty.
+
+     Round 5 added the way out: the damaged record is preserved and replaced by a
+     conservative rebuild that marks every login the widget knows as pending. It runs
+     automatically for a corrupt record, and by Repair for an unreadable one. Each of
+     those logins then renews before it is used again.
+   - The file is read only when the Keychain item is confirmed absent. No incomplete
+     login (missing an access token, refresh token or expiry) is ever adopted, synced
+     or applied.
+   - Identity reads are budgeted: one per credential per operation, none of the stored
+     side when the CLI's login cannot authorize anything, failures held for 10 minutes,
+     and a 429 honoured.
+   - **Accepted residual:** a switch still overwrites a live CLI login that no profile can
+     adopt, as before #186; the repair is `/login`. A parking slot for it was built and
+     removed in round 3 (eviction, unconfirmed writes, races and stale recovery targets);
+     its requirements are recorded in CLAUDE.md for a follow-up card.
+
+   An ordinary save to the profile store never changes a stored login; only explicit
    paths do (compare-and-swap, a sync or import, removal). Fixes 4 and 5 of section 6, B.
 3. **Deadline check.** `refreshTokenExpiresAt` is read in milliseconds or seconds. A login at
    or within one hour of its deadline is not a switch target (`candidateHasHeadroom`, so

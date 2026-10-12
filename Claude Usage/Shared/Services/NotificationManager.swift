@@ -704,11 +704,55 @@ class NotificationManager {
     /// the notice's body does nothing to the daemon.
     enum ResponseAction: Equatable {
         case restartCodexDaemon
+        case repairClaudeRedemptionRecord
     }
 
     nonisolated static func responseAction(actionIdentifier: String, categoryIdentifier: String) -> ResponseAction? {
         if actionIdentifier == restartCodexDaemonActionIdentifier { return .restartCodexDaemon }
+        if actionIdentifier == repairClaudeRedemptionRecordActionIdentifier { return .repairClaudeRedemptionRecord }
         return nil
+    }
+
+    /// The category whose one action repairs the Claude redemption record
+    /// (`ProfileManager.repairClaudeRedemptionRecord`). Registered at launch
+    /// beside the Codex daemon's.
+    nonisolated static let claudeRedemptionRecordCategoryIdentifier = "CLAUDE_REDEMPTION_RECORD"
+    nonisolated static let repairClaudeRedemptionRecordActionIdentifier = "REPAIR_CLAUDE_REDEMPTION_RECORD"
+
+    static var claudeRedemptionRecordCategory: UNNotificationCategory {
+        UNNotificationCategory(
+            identifier: claudeRedemptionRecordCategoryIdentifier,
+            actions: [UNNotificationAction(
+                identifier: repairClaudeRedemptionRecordActionIdentifier,
+                title: "notification.claude_redemption_repair.action".localized,
+                options: []
+            )],
+            intentIdentifiers: [],
+            options: []
+        )
+    }
+
+    /// Repair is available: the record has been unreadable for ten minutes, or
+    /// a rebuild failed (`failure`, log-safe). The button runs the quarantine
+    /// and conservative rebuild.
+    func sendClaudeRedemptionRepairNotification(failure: String?) {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.claude_redemption_repair.title".localized
+        content.body = failure.map { "notification.claude_redemption_repair.message_failed".localized(with: $0) }
+            ?? "notification.claude_redemption_repair.message".localized
+        content.sound = .default
+        content.categoryIdentifier = Self.claudeRedemptionRecordCategoryIdentifier
+
+        let request = UNNotificationRequest(
+            identifier: "claude_redemption_record_repair",
+            content: content,
+            trigger: nil
+        )
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send redemption-record repair notification: \(error)")
+            }
+        }
     }
 
     /// A Codex switch landed while the Codex daemon is running and it was not
@@ -857,6 +901,29 @@ class NotificationManager {
         deliver(request) { error in
             if let error = error {
                 LoggingService.shared.logError("Failed to send preferences-degraded notification: \(error)")
+            }
+        }
+    }
+
+    /// Alerts that the record of the Claude logins this app redeemed cannot be
+    /// read, so every Claude renewal, adoption, Sync and switch is refused
+    /// until it can. Once per episode (`ProfileManager.syncRedemptionRecordState`).
+    func sendClaudeRedemptionRecordUnreadableNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "notification.claude_redemption_record.title".localized
+        content.body = "notification.claude_redemption_record.message".localized
+        content.sound = .default
+        content.categoryIdentifier = "INFO_ALERT"
+
+        let request = UNNotificationRequest(
+            identifier: "claude_redemption_record_unreadable",
+            content: content,
+            trigger: nil
+        )
+
+        deliver(request) { error in
+            if let error = error {
+                LoggingService.shared.logError("Failed to send redemption-record notification: \(error)")
             }
         }
     }
