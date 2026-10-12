@@ -107,7 +107,8 @@ Credentials live **only in the macOS Keychain**, never in UserDefaults:
   never to `.credentials.json` — and this app rewrites that file on every profile switch,
   so reading the file first re-ingests the app's own stale write (this was the bug behind
   "Resync never updates the token" and the forced CLI re-login on every switch). When both
-  sources hold valid JSON, the later-expiring token wins. The read shells out to
+  sources hold valid JSON, the Keychain wins unless its login has lapsed and the file's
+  has not (`chooseSystemLogin`; see "The login the CLI holds wins"). The read shells out to
   `security`, so keep it off the main thread (`readSystemCredentialsOffMain()` exists for
   main-actor callers).
 - `ClaudeCodeSyncService.ensureFreshCredentials` **self-heals stale CLI OAuth tokens**:
@@ -392,7 +393,7 @@ profile whose own login is still usable is REPORTED rather than cleared — only
 byte-identical copies and dead same-account tokens are still wiped.
 
 **Identity-verified credential writes (the mechanism behind that duplicate)**:
-`adoptionAccountMatches` is the guard both AUTOMATIC write paths share — the
+`adoptionAccountMatch` is the guard both AUTOMATIC write paths share — the
 pre-switch re-sync of the OUTGOING profile (`resyncBeforeSwitching`, reached from
 `activateProfileDetailed`) and the Keychain adoption inside
 `ensureFreshCredentials`. It used to return true whenever either side was
@@ -407,7 +408,9 @@ make every comparison trivially agree), then decides:
 `ClaudeCodeSyncService.credentialWriteDecision` returns `.write` on agreement,
 `.refuse` on disagreement, and `.noEvidence` only when neither side can be
 identified at all (unchanged behaviour — refusing there would break every
-legitimate adoption on a network failure). The CLI login's account comes from
+legitimate adoption on a network failure). The guard hands the ordering rule
+`.verified` for `.write` and `.unverified` for `.noEvidence`: unverified, a live
+CLI login still replaces a lapsed one, but never a live one. The CLI login's account comes from
 the identity endpoint, falling back to `~/.claude.json`'s cached
 `oauthAccount.accountUuid` so a refused network call does not silently downgrade
 the guard. A refusal logs once per (profile, refused account) pair and is
@@ -529,18 +532,36 @@ the switch had just applied. These rules now hold (`ClaudeLoginLifetime.swift`,
   it AND the store holds it). Any other pending login returns
   `.handoffDeferred`: nothing claimed, the walk retries, and the queue is not
   consumed.
-- **Newest login wins** (`ClaudeLoginLifetime.isNewer`):
-  - The dead-marker is never newer than anything.
-  - Two logins whose deadlines are more than 60 s apart: the later deadline
-    wins, because each `/login` gets a fixed deadline that refreshes never move.
-  - Within one login (or with a deadline missing), a lapsed deadline loses,
-    then the later `expiresAt` wins. A tie is not newer.
+- **The login the CLI holds wins** (`ClaudeLoginLifetime.cliLoginReplaces`,
+  owner's decision 2026-10-12). For one account, the login Claude Code's store
+  holds is authoritative. Since the widget never redeems a token the CLI holds,
+  the CLI's copy can only equal the widget's or be newer: the CLI renews its
+  own login, and a `/login` replaces it.
+  - **The deadline never ranks two live logins.** The 2026-10-12 counter-example:
+    three `/login`s into one account within seven minutes recorded deadlines
+    11-11 06:06, 11-08 15:43 and 11-11 03:07, not in login order. The old
+    deadline-first rule kept the 13:06 pair after the 13:13 `/login`, so the
+    profile stopped holding the login the CLI used.
+  - The deadline only drops a lapsed login. A lapsed CLI login never replaces
+    a stored one, and a live one replaces a stored one that is lapsed or the
+    dead-marker. The dead-marker is never adopted.
+  - A pair this app redeemed is consumed and never adopted
+    (`ClaudeCodeSyncService.isRedeemedPair`, in memory, bounded). That is the
+    one way the CLI ever held an older pair (2026-10-02), and the redemption
+    policy prevents it.
+  - Two live, different logins: the CLI's wins when the account match is
+    verified. With no identity evidence on either side, the stored login stays.
+  - A known different account never gets this far: the account guard refuses it.
 
   Where it applies:
   - `readSystemCredentials` returns nil for the dead-marker and never falls
-    back to the file. Otherwise the file wins only as a later login by
-    deadline, and the Keychain wins whenever the deadlines cannot decide.
-  - The re-sync and both adoptions replace only with a newer login, by CAS.
+    back to the file. Otherwise the Keychain wins, and the file is used only
+    when the Keychain's login has lapsed and the file's has not.
+  - The outgoing re-sync (`resyncBeforeSwitching`), the Keychain adoption in
+    `ensureFreshCredentials` and `adoptSystemLoginByIdentity` (verified: its
+    owner is routed by the live identity) all decide with it, by CAS.
+  - No path orders two live logins without the CLI's store on one side, so no
+    access-token-expiry fallback remains.
 - **An ordinary `ProfileStore.saveProfiles` never changes a stored Claude login.**
   Logins change only through explicit paths:
   - `replaceCLILogin(_:expected:with:)`, the CAS used by the redemption, the

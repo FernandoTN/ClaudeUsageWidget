@@ -76,44 +76,71 @@ enum ClaudeLoginLifetime {
         return deadline <= now.addingTimeInterval(deadlineMargin)
     }
 
-    // MARK: - Ordering (newest login wins)
+    // MARK: - Ordering (the login the CLI holds wins)
 
-    /// Two deadlines this close belong to ONE login. The deadline is fixed at
-    /// `/login` and refreshes do not move it (2026-10-02 research, cause A), but
-    /// it is computed on the local clock from a relative `*_expires_in`, so two
-    /// copies of one login can disagree by the latency of the call that
-    /// recorded them. Two distinct `/login`s are never this close in practice.
-    nonisolated static let sameLoginDeadlineTolerance: TimeInterval = 60
+    /// Whether the login's server deadline has passed. A credential without
+    /// the field never lapses here.
+    nonisolated static func isLapsed(_ json: String, now: Date) -> Bool {
+        deadline(json).map { $0 <= now } ?? false
+    }
 
-    /// Whether `candidate` is a NEWER login than `current`, so replacing
-    /// `current` with it loses nothing. In order:
+    /// What is known about whether the CLI's login and a stored one belong to
+    /// the same account. A KNOWN different account never reaches the ordering:
+    /// the account guard refuses it first.
+    enum AccountMatch {
+        /// The two resolve to one account: the account guard's `.write`, or
+        /// the profile the CLI login's live identity was routed to.
+        case verified
+        /// Neither side could be identified (the guard's `.noEvidence`).
+        case unverified
+    }
+
+    /// Whether the login the CLI's store holds replaces a profile's stored one.
     ///
-    /// 1. The CLI's dead marker is never newer than anything, and anything
-    ///    else is newer than it — it marks a pair as consumed, it is not one.
-    /// 2. Two DIFFERENT logins (both carry a deadline, more than
-    ///    `sameLoginDeadlineTolerance` apart): the later deadline wins. Each
-    ///    `/login` gets a fresh deadline and refreshes never extend it, so the
-    ///    later deadline is the later `/login` — the one that renews longest,
-    ///    even when an older login's pair was refreshed after it and carries a
-    ///    later access-token expiry.
-    /// 3. One login, or a deadline missing on either side: a login past its
-    ///    deadline loses to one that is not; otherwise the later access-token
-    ///    expiry wins, strictly, and a tie is not newer. Every refresh issues a
-    ///    pair with a fixed lifetime, so within one login the expiry orders
-    ///    pairs by when they were issued, and the older pair is a consumed one.
-    nonisolated static func isNewer(_ candidate: String, than current: String, now: Date) -> Bool {
-        if isDeadMarker(candidate) { return false }
-        if isDeadMarker(current) { return true }
-        let candidateDeadline = deadline(candidate)
-        let currentDeadline = deadline(current)
-        if let candidateDeadline, let currentDeadline,
-           abs(candidateDeadline.timeIntervalSince(currentDeadline)) > sameLoginDeadlineTolerance {
-            return candidateDeadline > currentDeadline
-        }
-        let candidateLapsed = candidateDeadline.map { $0 <= now } ?? false
-        let currentLapsed = currentDeadline.map { $0 <= now } ?? false
-        if candidateLapsed != currentLapsed { return !candidateLapsed }
-        return (accessExpiry(candidate) ?? .distantPast) > (accessExpiry(current) ?? .distantPast)
+    /// For one account, the login the CLI holds is authoritative. The widget
+    /// never redeems a login the CLI holds (`ClaudeRefreshPolicy`), so the
+    /// CLI's copy can only be the widget's or a newer one: the CLI renews its
+    /// own login, and a `/login` replaces it. The one way the CLI ever held an
+    /// OLDER pair was a predecessor the widget had consumed (2026-10-02), which
+    /// that policy prevents and `cliLoginConsumed` still refuses.
+    ///
+    /// The deadline never ranks two live logins. Three `/login`s into one
+    /// account within seven minutes (2026-10-12) recorded deadlines out of
+    /// login order: the second's was the earliest by two and a half days, the
+    /// third's three hours before the first's. Ranking by it kept a superseded
+    /// pair over the one the CLI was using. It only drops a lapsed login.
+    ///
+    /// 1. The CLI's dead marker and a pair this app redeemed are never adopted.
+    /// 2. A profile with no stored login takes the CLI's.
+    /// 3. A lapsed CLI login never replaces a stored one. A live one replaces a
+    ///    stored one that is lapsed or the marker.
+    /// 4. Two live, different logins: the CLI's wins when the account match is
+    ///    verified. Unverified, the stored login stays, so a missing identity
+    ///    never adopts a login the account guard could not place.
+    ///
+    /// No path orders two live logins of one account without this rule (the
+    /// CLI's store is on one side of every comparison), so no access-token
+    /// expiry fallback remains.
+    nonisolated static func cliLoginReplaces(
+        _ stored: String?,
+        with cliLogin: String,
+        account: AccountMatch,
+        cliLoginConsumed: Bool = false,
+        now: Date
+    ) -> Bool {
+        if isDeadMarker(cliLogin) || cliLoginConsumed { return false }
+        guard let stored else { return true }
+        if isSamePair(cliLogin, stored) || isLapsed(cliLogin, now: now) { return false }
+        if isDeadMarker(stored) || isLapsed(stored, now: now) { return true }
+        return account == .verified
+    }
+
+    /// Two copies carrying one token pair are one login, whatever else their
+    /// JSON says (the CLI may rewrite its item with other fields).
+    nonisolated static func isSamePair(_ a: String, _ b: String) -> Bool {
+        guard let left = oauth(a), let right = oauth(b) else { return a == b }
+        return left["accessToken"] as? String == right["accessToken"] as? String
+            && left["refreshToken"] as? String == right["refreshToken"] as? String
     }
 
     /// A log-safe description of a login: its expiries, never a token.
@@ -151,8 +178,9 @@ enum ClaudeLoginLifetime {
 /// CLI holds or is being handed — not even in its last minutes and not even
 /// with the result written back: the CLI process can be redeeming the same
 /// token at that moment, and no lock the widget holds can see it. The CLI
-/// refreshes its own login and the widget adopts the rotated pair (newest login
-/// wins). A hand-off renews BEFORE it applies.
+/// refreshes its own login and the widget adopts the rotated pair (the login
+/// the CLI holds wins, `ClaudeLoginLifetime.cliLoginReplaces`). A hand-off
+/// renews BEFORE it applies.
 enum ClaudeRefreshPolicy {
     /// A login is renewed before it is handed to the CLI unless its access
     /// token has at least this long left — the same window the candidate

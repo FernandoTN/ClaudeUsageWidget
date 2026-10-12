@@ -443,47 +443,65 @@ final class ClaudeLoginRotationTests: XCTestCase {
                        "re-applying the owner")
     }
 
-    // MARK: - Invariant 2: the newest login wins
+    // MARK: - Invariant 2: the login the CLI holds wins
 
-    func testNewerOrdering() {
+    /// The rule itself (`ClaudeLoginLifetime.cliLoginReplaces`): for one
+    /// account the login the CLI holds wins, and the deadline only drops a
+    /// login that has lapsed. It never ranks two live ones.
+    func testTheLoginTheCLIHoldsReplacesTheStoredOne() {
         let now = Date()
-        let older = login("acct", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
-        let newer = login("acct", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
-        XCTAssertTrue(ClaudeLoginLifetime.isNewer(newer, than: older, now: now))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(older, than: newer, now: now))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(newer, than: newer, now: now), "a tie is not newer")
+        typealias L = ClaudeLoginLifetime
+        func replaces(_ stored: String?, with cli: String, _ account: L.AccountMatch = .verified,
+                      consumed: Bool = false) -> Bool {
+            L.cliLoginReplaces(stored, with: cli, account: account, cliLoginConsumed: consumed, now: now)
+        }
+        let logins = threeLoginsOfOneAccount("acct")
+        for stored in logins.indices {
+            for held in logins.indices where held != stored {
+                XCTAssertTrue(replaces(logins[stored], with: logins[held]),
+                              "stored \(stored + 1), CLI \(held + 1): the CLI's wins whichever deadline is later")
+                XCTAssertFalse(replaces(logins[stored], with: logins[held], .unverified),
+                               "stored \(stored + 1), CLI \(held + 1): unverified, two live logins are not reordered")
+            }
+        }
+        // A shorter access-token lifetime does not matter either: the CLI's
+        // copy is authoritative, not the longer-lived one.
+        let refreshedEarlier = login("acct", generation: 5, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        let longer = login("acct", generation: 4, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
+        XCTAssertTrue(replaces(longer, with: refreshedEarlier))
+        XCTAssertFalse(replaces(longer, with: longer), "the same login replaces nothing")
+        var root = try! JSONSerialization.jsonObject(with: Data(longer.utf8)) as! [String: Any]
+        var oauth = root["claudeAiOauth"] as! [String: Any]
+        oauth["scopes"] = ["user:inference"]
+        root["claudeAiOauth"] = oauth
+        let rewritten = String(data: try! JSONSerialization.data(withJSONObject: root), encoding: .utf8)!
+        XCTAssertNotEqual(rewritten, longer)
+        XCTAssertFalse(replaces(longer, with: rewritten), "one token pair is one login, whatever else its JSON says")
 
         let marker = #"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#
-        XCTAssertTrue(ClaudeLoginLifetime.isDeadMarker(marker))
-        XCTAssertFalse(ClaudeLoginLifetime.isDeadMarker(older))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(marker, than: older, now: now), "the marker is never newer")
-        XCTAssertTrue(ClaudeLoginLifetime.isNewer(older, than: marker, now: now), "anything live beats it")
+        XCTAssertTrue(L.isDeadMarker(marker))
+        XCTAssertFalse(L.isDeadMarker(longer))
+        XCTAssertFalse(replaces(longer, with: marker), "the marker is never adopted")
+        XCTAssertFalse(replaces(nil, with: marker))
+        XCTAssertTrue(replaces(marker, with: longer, .unverified), "anything live replaces it")
 
-        // A login past its deadline loses whatever its access token says.
+        // A lapsed login loses to a live one, either way round, verified or not.
         let lapsed = login("acct", generation: 3, expiresIn: 8 * 3600, deadlineIn: -3600)
-        let freshLogin = login("acct", generation: 1, expiresIn: 7 * 3600, deadlineIn: 30 * 86_400)
-        XCTAssertTrue(ClaudeLoginLifetime.isNewer(freshLogin, than: lapsed, now: now))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(lapsed, than: freshLogin, now: now))
+        XCTAssertTrue(L.isLapsed(lapsed, now: now))
+        XCTAssertFalse(L.isLapsed(longer, now: now))
+        XCTAssertFalse(L.isLapsed(login("acct", expiresIn: 3600), now: now), "no field: never lapsed")
+        XCTAssertFalse(replaces(longer, with: lapsed))
+        XCTAssertTrue(replaces(lapsed, with: longer))
+        XCTAssertTrue(replaces(lapsed, with: longer, .unverified))
+        XCTAssertFalse(replaces(lapsed, with: login("acct", generation: 6, expiresIn: 8 * 3600, deadlineIn: -60)),
+                       "a lapsed CLI login replaces nothing")
 
-        // Two live logins: the deadline is fixed at /login and never extended,
-        // so the later deadline is the later /login — it wins even though the
-        // older login's pair was refreshed after it.
-        let earlierLoginRefreshedLater = login("acct", generation: 7, expiresIn: 8 * 3600, deadlineIn: 5 * 86_400)
-        let laterLogin = login("acct", generation: 1, expiresIn: 7 * 3600, deadlineIn: 28 * 86_400)
-        XCTAssertTrue(ClaudeLoginLifetime.isNewer(laterLogin, than: earlierLoginRefreshedLater, now: now))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(earlierLoginRefreshedLater, than: laterLogin, now: now))
+        // A pair this app redeemed is consumed: never adopted.
+        XCTAssertFalse(replaces(longer, with: refreshedEarlier, consumed: true))
+        XCTAssertFalse(replaces(nil, with: refreshedEarlier, consumed: true))
 
-        // One login (deadlines within the tolerance — recorded a few seconds
-        // apart): the access-token expiry decides.
-        let sameLoginLater = login("acct", generation: 2, expiresIn: 8 * 3600,
-                                   deadlineIn: 20 * 86_400 + ClaudeLoginLifetime.sameLoginDeadlineTolerance / 2)
-        XCTAssertTrue(ClaudeLoginLifetime.isNewer(sameLoginLater, than: older, now: now))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(older, than: sameLoginLater, now: now))
-
-        // A deadline missing on either side: the access-token expiry, as before.
-        let noDeadline = login("acct", generation: 4, expiresIn: 9 * 3600)
-        XCTAssertTrue(ClaudeLoginLifetime.isNewer(noDeadline, than: laterLogin, now: now))
-        XCTAssertFalse(ClaudeLoginLifetime.isNewer(laterLogin, than: noDeadline, now: now))
+        // Nothing stored: the profile takes the CLI's login.
+        XCTAssertTrue(replaces(nil, with: longer, .unverified))
     }
 
     func testTheStoreReadNeverServesTheFileOverTheCLIsDeadMarker() {
@@ -495,33 +513,46 @@ final class ClaudeLoginRotationTests: XCTestCase {
         XCTAssertEqual(S.chooseSystemLogin(keychain: marker, file: older, now: now), .keychainDeadMarker,
                        "the file is the pair the CLI just found consumed")
         XCTAssertEqual(S.chooseSystemLogin(keychain: older, file: newer, now: now), .keychain,
-                       "deadlines cannot decide: the Keychain, the CLI's own store, wins")
+                       "the Keychain, the CLI's own store, wins")
         XCTAssertEqual(S.chooseSystemLogin(keychain: newer, file: older, now: now), .keychain)
         XCTAssertEqual(S.chooseSystemLogin(keychain: nil, file: older, now: now), .file)
         XCTAssertEqual(S.chooseSystemLogin(keychain: nil, file: nil, now: now), .none)
-
-        // The file wins only as a DIFFERENT, later login.
-        let laterLogin = login("acct", generation: 1, expiresIn: 7 * 3600, deadlineIn: 28 * 86_400)
-        let earlierLogin = login("acct", generation: 5, expiresIn: 8 * 3600, deadlineIn: 5 * 86_400)
-        XCTAssertEqual(S.chooseSystemLogin(keychain: earlierLogin, file: laterLogin, now: now), .file)
-        XCTAssertEqual(S.chooseSystemLogin(keychain: laterLogin, file: earlierLogin, now: now), .keychain)
+        XCTAssertEqual(S.chooseSystemLogin(keychain: newer, file: marker, now: now), .keychain)
+        XCTAssertEqual(S.chooseSystemLogin(keychain: nil, file: marker, now: now), .none)
 
         cliStore.set(keychain: marker, file: older)
         XCTAssertNil(try sync.readSystemCredentials())
     }
 
-    /// The switch-away re-sync keeps the profile's newer pair when the CLI's
-    /// copy is the older one it was rotated from (2026-10-02 05:24:10).
-    func testTheReSyncNeverReplacesANewerStoredLoginWithAnOlderOne() async throws {
-        let stored = login("outgoing", generation: 2, expiresIn: 8 * 3600, deadlineIn: 20 * 86_400)
-        let outgoing = profile("outgoing", login: stored)
-        seed([outgoing], focused: outgoing.id)
-        let cliCopy = login("outgoing", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
-        cliStore.set(keychain: cliCopy, file: cliCopy)
-
-        try await sync.resyncBeforeSwitching(for: outgoing.id)
-
+    /// The switch-away re-sync keeps the profile's pair when the CLI's copy is
+    /// the one that pair was rotated from: a pair this app redeemed, consumed
+    /// (2026-10-02 05:24:10). The policy keeps the CLI from ever holding one;
+    /// if it did anyway, no adoption path takes it.
+    func testNoAdoptionTakesAPairThisAppRedeemed() async throws {
+        let original = login("outgoing", generation: 1, expiresIn: 30 * 60, deadlineIn: 20 * 86_400)
+        var outgoing = profile("outgoing", login: original)
+        outgoing.claudeAccountUUID = "acct-outgoing"
+        let other = profile("other", login: login("other", expiresIn: 6 * 3600))
+        seed([other, outgoing], focused: other.id)
+        // The profile's login is redeemed while the CLI holds someone else's …
+        manager.claimActiveClaudeOwnership(other.id)
+        cliStore.set(keychain: other.cliCredentialsJSON, file: nil)
+        _ = await sync.ensureFreshCredentials(
+            for: outgoing.id, adoptSystemKeychain: false, freshFor: ClaudeRefreshPolicy.handoffFreshness
+        )
+        XCTAssertEqual(endpoint.redeemed, ["outgoing-refresh-1"])
         XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2")
+        XCTAssertTrue(sync.isRedeemedPair(original))
+
+        // … and the CLI then shows the consumed pair.
+        manager.claimActiveClaudeOwnership(outgoing.id)
+        cliStore.set(keychain: original, file: original)
+        for path in AdoptionPath.allCases {
+            try await adopt(path, into: outgoing.id)
+            XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2",
+                           "\(path.rawValue): the consumed pair never replaces its successor")
+        }
+        XCTAssertEqual(endpoint.redeemed, ["outgoing-refresh-1"], "and nothing is redeemed again")
     }
 
     /// … and with the CLI's dead marker in the Keychain and the consumed pair
@@ -549,6 +580,208 @@ final class ClaudeLoginRotationTests: XCTestCase {
         try await sync.resyncBeforeSwitching(for: outgoing.id)
 
         XCTAssertEqual(refreshToken(storedLogin(outgoing.id)), "outgoing-refresh-2")
+    }
+
+    // MARK: - The login the CLI holds is authoritative (2026-10-12)
+
+    /// Three `/login`s into ONE account seven minutes apart (2026-10-12), with
+    /// the refresh deadlines Claude Code's Keychain recorded for each, measured
+    /// from just after the third (13:13). The deadlines are not in login order:
+    /// the 13:07 login's is the earliest by two and a half days, and the 13:13
+    /// login's is three hours earlier than the 13:06 one's. Each access token
+    /// runs eight hours from its `/login`. In login order.
+    private func threeLoginsOfOneAccount(_ account: String) -> [String] {
+        let day: TimeInterval = 86_400
+        return [
+            // 13:06, deadline 11-11 06:06:06
+            login(account, generation: 1, expiresIn: 8 * 3600 - 7 * 60,
+                  deadlineIn: 29 * day + 16 * 3600 + 53 * 60 + 6),
+            // 13:07, deadline 11-08 15:43:44
+            login(account, generation: 2, expiresIn: 8 * 3600 - 6 * 60,
+                  deadlineIn: 27 * day + 2 * 3600 + 30 * 60 + 44),
+            // 13:13, deadline 11-11 03:07:57
+            login(account, generation: 3, expiresIn: 8 * 3600,
+                  deadlineIn: 29 * day + 13 * 3600 + 54 * 60 + 57)
+        ]
+    }
+
+    /// One profile that owns the CLI's login, stamped with its account.
+    private func seedOwner(_ account: String, holding json: String) -> Profile {
+        var owner = profile("owner", login: json)
+        owner.claudeAccountUUID = "acct-\(account)"
+        seed([owner], focused: owner.id)
+        manager.claimActiveClaudeOwnership(owner.id)
+        return owner
+    }
+
+    private func discard(_ profile: Profile) {
+        sync.markLoginRevived(profile.id)
+        store.deleteProfileCredentials(profileId: profile.id)
+    }
+
+    /// The sweep's last step (`adoptSystemLoginByIdentity`, run at the end of
+    /// every sweep). A pass the app itself started returns this call early, so
+    /// it is retried, bounded.
+    @discardableResult
+    private func runSweepAdoption() async -> String? {
+        for _ in 0..<50 {
+            if let owner = await manager.adoptSystemLoginByIdentity() { return owner }
+            await Task.yield()
+        }
+        return nil
+    }
+
+    /// The three automatic paths that move the CLI's login into a profile.
+    private enum AdoptionPath: String, CaseIterable {
+        case sweep = "sweep adoption"
+        case reSync = "outgoing re-sync"
+        case keychainAdoption = "Keychain adoption"
+    }
+
+    private func adopt(_ path: AdoptionPath, into id: UUID) async throws {
+        switch path {
+        case .sweep: await runSweepAdoption()
+        case .reSync: try await sync.resyncBeforeSwitching(for: id)
+        case .keychainAdoption: _ = await sync.ensureFreshCredentials(for: id, adoptSystemKeychain: true)
+        }
+    }
+
+    /// 2026-10-12, replayed. After the 13:13 `/login` the widget kept the
+    /// profile's 13:06 pair because that pair's deadline is the later one, so
+    /// the profile no longer held the login Claude Code was using. After a
+    /// sweep the profile must hold the CLI's pair: with the file still holding
+    /// this app's last write (the 13:06 pair) and without it.
+    func testAfterASweepTheProfileHoldsTheLoginTheCLIHoldsThoughItsDeadlineIsEarlier() async {
+        let logins = threeLoginsOfOneAccount("account")
+        for file in [logins[0], nil] as [String?] {
+            let owner = seedOwner("account", holding: logins[0])
+            cliStore.set(keychain: logins[2], file: file)
+
+            await runSweepAdoption()
+
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-3",
+                           "file \(file == nil ? "absent" : "holding the 13:06 pair"): the profile must hold the login Claude Code is using")
+            discard(owner)
+        }
+        XCTAssertTrue(endpoint.redeemed.isEmpty)
+    }
+
+    /// Every ordered pair of the three logins, through every automatic path:
+    /// the login the CLI holds wins, whichever deadline is later.
+    func testTheLoginTheCLIHoldsWinsWhicheverDeadlineIsLater() async throws {
+        let logins = threeLoginsOfOneAccount("account")
+        for path in AdoptionPath.allCases {
+            for stored in logins.indices {
+                for held in logins.indices where held != stored {
+                    let owner = seedOwner("account", holding: logins[stored])
+                    cliStore.set(keychain: logins[held], file: nil)
+
+                    try await adopt(path, into: owner.id)
+
+                    XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-\(held + 1)",
+                                   "\(path.rawValue): the profile holds login \(stored + 1), the CLI holds \(held + 1)")
+                    discard(owner)
+                }
+            }
+        }
+        XCTAssertTrue(endpoint.redeemed.isEmpty)
+    }
+
+    /// The deadline still drops a login that has lapsed: a lapsed login the CLI
+    /// holds never replaces a live stored one, and a live one the CLI holds
+    /// always replaces a lapsed stored one.
+    func testALapsedLoginAlwaysLosesToALiveOne() async throws {
+        let live = login("account", generation: 1, expiresIn: 6 * 3600, deadlineIn: 20 * 86_400)
+        let lapsed = login("account", generation: 2, expiresIn: 8 * 3600, deadlineIn: -3600)
+        for path in AdoptionPath.allCases {
+            var owner = seedOwner("account", holding: live)
+            cliStore.set(keychain: lapsed, file: nil)
+            try await adopt(path, into: owner.id)
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1",
+                           "\(path.rawValue): a lapsed CLI login never replaces a live one")
+            discard(owner)
+
+            owner = seedOwner("account", holding: lapsed)
+            cliStore.set(keychain: live, file: nil)
+            try await adopt(path, into: owner.id)
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1",
+                           "\(path.rawValue): a live CLI login replaces a lapsed one")
+            discard(owner)
+        }
+    }
+
+    /// Another account's login is never adopted, however late its deadline.
+    func testAnotherAccountsLoginIsNeverAdopted() async throws {
+        let own = login("account", generation: 1, expiresIn: 6 * 3600, deadlineIn: 5 * 86_400)
+        let others = login("other", generation: 1, expiresIn: 8 * 3600, deadlineIn: 29 * 86_400)
+        for path in AdoptionPath.allCases {
+            let owner = seedOwner("account", holding: own)
+            cliStore.set(keychain: others, file: nil)
+
+            try await adopt(path, into: owner.id)
+
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-1", path.rawValue)
+            discard(owner)
+        }
+    }
+
+    /// With no identity evidence on either side (no stamp, nothing the identity
+    /// endpoint or `~/.claude.json` can tell), the CLI's login is not known to
+    /// be this account's, so the new rule does not apply: two live logins are
+    /// not reordered either way, and only a lapsed stored login is replaced.
+    func testWithoutIdentityEvidenceTwoLiveLoginsAreNotReordered() async throws {
+        sync.setIdentityFetcherForTesting { _ in nil }
+        let logins = threeLoginsOfOneAccount("account")
+        let lapsed = login("account", generation: 4, expiresIn: 6 * 3600, deadlineIn: -3600)
+        // Re-sync and Keychain adoption only: the sweep's adoption needs the
+        // CLI login's identity to do anything at all.
+        for path in [AdoptionPath.reSync, .keychainAdoption] {
+            for (stored, held) in [(0, 2), (2, 0)] {
+                let owner = profile("owner", login: logins[stored])
+                seed([owner], focused: owner.id)
+                manager.claimActiveClaudeOwnership(owner.id)
+                cliStore.set(keychain: logins[held], file: nil)
+
+                try await adopt(path, into: owner.id)
+
+                XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-\(stored + 1)",
+                               "\(path.rawValue): unverified, the stored login \(stored + 1) stays")
+                discard(owner)
+            }
+            let owner = profile("owner", login: lapsed)
+            seed([owner], focused: owner.id)
+            manager.claimActiveClaudeOwnership(owner.id)
+            cliStore.set(keychain: logins[2], file: nil)
+
+            try await adopt(path, into: owner.id)
+
+            XCTAssertEqual(refreshToken(storedLogin(owner.id)), "account-refresh-3",
+                           "\(path.rawValue): a lapsed stored login is replaced, as before")
+            discard(owner)
+        }
+    }
+
+    /// The store read: the Keychain item, which the CLI reads first and writes,
+    /// holds the CLI's login whatever the deadlines say. The file, this app's
+    /// own last write, is used only when the Keychain has no live login: no
+    /// item at all, or one whose deadline has passed.
+    func testTheStoreReadPrefersTheKeychainWhicheverDeadlineIsLater() throws {
+        let now = Date()
+        typealias S = ClaudeCodeSyncService
+        let logins = threeLoginsOfOneAccount("account")
+        for keychain in logins.indices {
+            for file in logins.indices where file != keychain {
+                XCTAssertEqual(S.chooseSystemLogin(keychain: logins[keychain], file: logins[file], now: now), .keychain,
+                               "Keychain holds login \(keychain + 1), the file \(file + 1)")
+            }
+        }
+        let lapsed = login("account", generation: 4, expiresIn: 6 * 3600, deadlineIn: -3600)
+        XCTAssertEqual(S.chooseSystemLogin(keychain: lapsed, file: logins[0], now: now), .file,
+                       "a lapsed Keychain login loses to a live file")
+        XCTAssertEqual(S.chooseSystemLogin(keychain: logins[0], file: lapsed, now: now), .keychain)
+
+        cliStore.set(keychain: logins[2], file: logins[0])
+        XCTAssertEqual(try refreshToken(sync.readSystemCredentials()), "account-refresh-3")
     }
 
     /// The store itself: an ORDINARY save never changes a stored Claude login —

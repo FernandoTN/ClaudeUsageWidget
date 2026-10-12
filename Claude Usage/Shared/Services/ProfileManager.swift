@@ -656,7 +656,7 @@ class ProfileManager: ObservableObject {
             do {
                 // Async + account-matched: the `security` read stays off-main inside,
                 // and the outgoing profile refuses a login known to be another
-                // account's (see adoptionAccountMatches).
+                // account's (see adoptionAccountMatch).
                 try await ClaudeCodeSyncService.shared.resyncBeforeSwitching(for: outgoingId)
                 LoggingService.shared.log("✓ Re-synced outgoing Claude account before switching")
             } catch {
@@ -2332,22 +2332,25 @@ class ProfileManager: ObservableObject {
             }
 
             // Adopt the shared login into its owner when the stored copy is a
-            // DIFFERENT, older token (typical after a manual /login that revived
-            // a dead account). `ClaudeLoginLifetime.isNewer` decides — never
-            // overwrite a newer copy.
+            // DIFFERENT token (a /login, or the CLI's own refresh). The owner
+            // is the profile the shared login's live identity routes to, so
+            // the match is verified, and for one account the login the CLI
+            // holds wins whichever deadline is later
+            // (`ClaudeLoginLifetime.cliLoginReplaces`). A lapsed CLI login
+            // never replaces a live stored one.
             let ownerJSON = reloaded[index].cliCredentialsJSON
             let ownerToken = ownerJSON.flatMap(sync.extractAccessToken(from:))
-            let systemIsNewer = ownerJSON.map { ClaudeLoginLifetime.isNewer(systemJSON, than: $0, now: Date()) } ?? true
+            let cliLoginWins = sync.cliLoginReplaces(ownerJSON, with: systemJSON, account: .verified)
             // Through the compare-and-swap path: an ordinary save never changes
             // a stored Claude login.
-            if ownerToken != systemToken, systemIsNewer,
+            if ownerToken != systemToken, cliLoginWins,
                profileStore.replaceCLILogin(owner.id, expected: ownerJSON, with: systemJSON) {
                 reloaded[index].cliCredentialsJSON = systemJSON
                 reloaded[index].hasCliAccount = true
                 reloaded[index].cliAccountSyncedAt = Date()
                 sync.markLoginRevived(owner.id)
                 changed = true
-                LoggingService.shared.log("ProfileManager: ✓ adopted the CLI's fresh login into '\(owner.name)' (identity-matched)")
+                LoggingService.shared.log("ProfileManager: ✓ adopted the login the CLI holds into '\(owner.name)' (identity-matched; \(ClaudeLoginLifetime.summary(systemJSON)))")
             }
         }
 
