@@ -74,6 +74,26 @@ final class ResetStampHealingTests: XCTestCase {
         XCTAssertEqual(new.sessionResetTime, now.addingTimeInterval(5 * 3600))
     }
 
+    // MARK: No session window
+
+    func testWithoutASessionWindowTheSessionResetFollowsTheWeeklyOne() {
+        // An account without a 5-hour window has no 5-hour boundary: the old
+        // "now + 5 h" fallback put a countdown on a window that does not exist.
+        var new = usage(sessionReset: sentinel, weeklyReset: now.addingTimeInterval(86_400))
+        new.hasSessionWindow = false
+        new.healMissingResetStamps(previous: nil, now: now)
+        XCTAssertEqual(new.sessionResetTime, new.weeklyResetTime)
+    }
+
+    func testWithoutASessionWindowAProjectedWeeklyResetIsFollowedToo() {
+        let prev = usage(sessionReset: now.addingTimeInterval(1800), weeklyReset: now.addingTimeInterval(-3600))
+        var new = usage(sessionReset: sentinel, weeklyReset: sentinel)
+        new.hasSessionWindow = false
+        new.healMissingResetStamps(previous: prev, now: now)
+        XCTAssertEqual(new.weeklyResetTime, prev.weeklyResetTime.addingTimeInterval(7 * 86_400))
+        XCTAssertEqual(new.sessionResetTime, new.weeklyResetTime, "not the previous 5-hour stamp")
+    }
+
     // MARK: Weekly
 
     func testWeeklySentinelProjectsPreviousBoundaryForward() {

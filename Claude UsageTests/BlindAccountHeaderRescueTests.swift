@@ -79,6 +79,55 @@ final class BlindAccountHeaderRescueTests: XCTestCase {
         XCTAssertFalse(ClaudeAPIService.isSessionWindowRejected(headers(sessionStatus: nil)))
     }
 
+    // MARK: - Accounts without a 5-hour window
+
+    /// The live header set of an account Anthropic removed the 5-hour limit
+    /// from (measured 2026-11-02 on a Max 20x account): only `7d-*` counters.
+    private func weeklyOnlyHeaders(utilization: String = "0.98") -> [String: String] {
+        let reset = String(Int(now.addingTimeInterval(2 * 86400).timeIntervalSince1970))
+        return [
+            "anthropic-ratelimit-unified-7d-utilization": utilization,
+            "anthropic-ratelimit-unified-7d-reset": reset,
+            "anthropic-ratelimit-unified-7d-status": "allowed_warning",
+            "anthropic-ratelimit-unified-representative-claim": "seven_day",
+            "anthropic-ratelimit-unified-reset": reset,
+            "anthropic-ratelimit-unified-status": "allowed_warning"
+        ]
+    }
+
+    func testHeadersWithoutFiveHourCountersReadAsWeeklyOnly() {
+        let usage = ClaudeAPIService.usageFromUnifiedHeaders(weeklyOnlyHeaders())
+        XCTAssertEqual(usage.hasSessionWindow, false)
+        XCTAssertEqual(usage.sessionPercentage, 0)
+        XCTAssertEqual(usage.weeklyPercentage, 98, accuracy: 0.001)
+        XCTAssertEqual(usage.sessionResetTime, usage.weeklyResetTime)
+        XCTAssertEqual(ClaudeAPIService.usageFromUnifiedHeaders(headers()).hasSessionWindow, true)
+    }
+
+    func testAWeeklyOnlyRefusalStillCarriesAMeasurement() {
+        // A 429 on the probe is kept as a measurement when counters ride it;
+        // requiring the 5h counter threw away every session-less account's.
+        XCTAssertTrue(ClaudeAPIService.headersCarryUsage(weeklyOnlyHeaders()))
+        XCTAssertTrue(ClaudeAPIService.headersCarryUsage(headers()))
+        XCTAssertFalse(ClaudeAPIService.headersCarryUsage(["anthropic-ratelimit-unified-status": "rejected"]))
+        XCTAssertFalse(ClaudeAPIService.isSessionWindowRejected(weeklyOnlyHeaders()))
+    }
+
+    func testMergeTakesTheHeadersAnswerOnTheSessionWindow() {
+        let merged = cachedUsage().mergingHeaderMeasurement(
+            ClaudeAPIService.usageFromUnifiedHeaders(weeklyOnlyHeaders())
+        )
+        XCTAssertFalse(merged.providesSessionWindow)
+        XCTAssertEqual(merged.sessionPercentage, 0)
+        XCTAssertEqual(merged.weeklyPercentage, 98, accuracy: 0.001)
+        XCTAssertEqual(merged.fableWeeklyPercentage, 99)
+
+        // A measurement that does not say keeps the cached answer.
+        var weeklyOnly = cachedUsage()
+        weeklyOnly.hasSessionWindow = false
+        XCTAssertFalse(weeklyOnly.mergingHeaderMeasurement(ClaudeUsage.empty).providesSessionWindow)
+    }
+
     // MARK: - Merge: headers must not erase per-model weekly data
 
     private func cachedUsage() -> ClaudeUsage {
@@ -182,11 +231,31 @@ final class BlindAccountHeaderRescueTests: XCTestCase {
         ))
     }
 
-    func testNeverProbesAProviderWithoutASessionWindow() {
-        var weeklyOnly = openWindow()
+    func testProbesAnAccountWithoutASessionWindowWhoseWeekIsBurning() {
+        // Anthropic removed the 5-hour limit per account (2026-10-30). Such an
+        // account has no window to open, so its burning week gates the probe;
+        // gating on its permanent 0% session left the rescue dead for it.
+        var weeklyOnly = ClaudeUsage.empty
         weeklyOnly.hasSessionWindow = false
-        XCTAssertFalse(MenuBarManager.shouldProbeMessageHeaders(
+        weeklyOnly.weeklyPercentage = 85
+        weeklyOnly.weeklyResetTime = now.addingTimeInterval(2 * 86400)
+        weeklyOnly.sessionResetTime = weeklyOnly.weeklyResetTime
+        XCTAssertTrue(MenuBarManager.shouldProbeMessageHeaders(
             isActiveClaudeAccount: true, cached: weeklyOnly, lastProbe: nil, now: now
+        ))
+
+        var idle = weeklyOnly
+        idle.weeklyPercentage = 0
+        XCTAssertFalse(MenuBarManager.shouldProbeMessageHeaders(
+            isActiveClaudeAccount: true, cached: idle, lastProbe: nil, now: now
+        ))
+        var rolled = weeklyOnly
+        rolled.weeklyResetTime = now.addingTimeInterval(-1)
+        XCTAssertFalse(MenuBarManager.shouldProbeMessageHeaders(
+            isActiveClaudeAccount: true, cached: rolled, lastProbe: nil, now: now
+        ))
+        XCTAssertFalse(MenuBarManager.shouldProbeMessageHeaders(
+            isActiveClaudeAccount: false, cached: weeklyOnly, lastProbe: nil, now: now
         ))
     }
 

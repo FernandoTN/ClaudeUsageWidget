@@ -207,7 +207,7 @@ class ClaudeAPIService {
             // Headers ride the 429 too. A counter we can read is worth more
             // than the refusal itself — and a non-`allowed` 5h status is the
             // account telling us its sessions are blocked right now.
-            if headers["anthropic-ratelimit-unified-5h-utilization"] != nil {
+            if Self.headersCarryUsage(headers) {
                 var usage = Self.usageFromUnifiedHeaders(headers)
                 if Self.isSessionWindowRejected(headers) {
                     usage.rateLimitedUntil = usage.sessionResetTime > Date()
@@ -401,6 +401,22 @@ class ClaudeAPIService {
                 }
             }
 
+            // Whether the account still HAS a 5-hour window. Anthropic removes it
+            // per account, not per plan: on 2026-11-02, 17 of 23 Max 20x accounts
+            // reported `five_hour: null` with no `session` row in `limits`, while
+            // the other 4 still sent a `five_hour` object and a `session` row.
+            // An idle account that keeps the window still sends the object (zero
+            // utilization, no resets_at), so a missing object is the signal, and
+            // a `session` row keeps the window even then. Without one, mirror the
+            // Codex/Grok convention: 0% with the weekly boundary as its reset.
+            let limitRows = json["limits"] as? [[String: Any]] ?? []
+            let hasSessionWindow = json["five_hour"] is [String: Any]
+                || limitRows.contains { ($0["kind"] as? String) == "session" }
+            if !hasSessionWindow {
+                sessionPercentage = 0
+                sessionResetTime = weeklyResetTime
+            }
+
             // We don't know user's plan, so we use 0 for limits we can't determine
             let weeklyLimit = Constants.weeklyLimit
 
@@ -433,6 +449,7 @@ class ClaudeAPIService {
                 lastUpdated: Date(),
                 userTimezone: .current
             )
+            usage.hasSessionWindow = hasSessionWindow
 
             // Limit resets ride along in this same payload. The decode never
             // throws; a block it cannot read leaves the count unknown and the
@@ -473,6 +490,14 @@ class ClaudeAPIService {
             result[name] = text
         }
         return result
+    }
+
+    /// True when a header probe's response carries a usage counter worth
+    /// keeping even on a 429. An account without a 5-hour window sends only
+    /// the 7d counters, so either window counts.
+    nonisolated static func headersCarryUsage(_ headers: [String: String]) -> Bool {
+        headers["anthropic-ratelimit-unified-5h-utilization"] != nil
+            || headers["anthropic-ratelimit-unified-7d-utilization"] != nil
     }
 
     /// True when the account's 5-hour window is no longer serving requests —
@@ -528,15 +553,21 @@ class ClaudeAPIService {
             ? Date(timeIntervalSince1970: weeklyResetTimestamp)
             : ClaudeUsage.unknownResetSentinel
 
+        // An account without a 5-hour window sends no `5h-*` headers at all
+        // (measured 2026-11-02: only `7d-*`, representative claim `seven_day`).
+        // Same convention as the usage endpoint's parse: 0% with the weekly
+        // boundary as the session reset.
+        let hasSessionWindow = headers["anthropic-ratelimit-unified-5h-utilization"] != nil
+
         // Per-model breakdowns not available in rate limit headers
         let weeklyLimit = Constants.weeklyLimit
         let weeklyTokens = Int(Double(weeklyLimit) * (weeklyPercentage / 100.0))
 
-        return ClaudeUsage(
+        var usage = ClaudeUsage(
             sessionTokensUsed: 0,
             sessionLimit: 0,
-            sessionPercentage: sessionPercentage,
-            sessionResetTime: sessionResetTime,
+            sessionPercentage: hasSessionWindow ? sessionPercentage : 0,
+            sessionResetTime: hasSessionWindow ? sessionResetTime : weeklyResetTime,
             weeklyTokensUsed: weeklyTokens,
             weeklyLimit: weeklyLimit,
             weeklyPercentage: weeklyPercentage,
@@ -554,6 +585,8 @@ class ClaudeAPIService {
             lastUpdated: Date(),
             userTimezone: .current
         )
+        usage.hasSessionWindow = hasSessionWindow
+        return usage
     }
 
     // MARK: - Parsing Helpers

@@ -840,7 +840,9 @@ Guards, because this is the only path in the app that SPENDS quota to measure
 it (`MenuBarManager.shouldProbeMessageHeaders`): provider-active Claude
 account only; its session window must already be OPEN and NON-ZERO — a
 request against an idle account would START its 5-hour window and steal
-headroom from a reserved switch target; at most one probe per 60s; only after
+headroom from a reserved switch target (an account without a 5-hour window,
+below, has none to start, so its weekly window must be open and non-zero
+instead); at most one probe per 60s; only after
 `oauth/usage` refused. Cost per probe is a `max_tokens: 1` Haiku call (~8
 in / 1 out). Header measurements are folded on with
 `ClaudeUsage.mergingHeaderMeasurement` — the headers carry no per-model
@@ -851,6 +853,24 @@ prove nothing about `oauth/usage` for other accounts). A 429 on the header
 probe whose `unified-5h-status` is no longer `allowed` means the account's
 own sessions are being rejected: server-affirmed exhaustion, stamped and
 actionable by the auto-switch.
+
+**Claude accounts without a 5-hour window (2026-10-30).** Anthropic removed
+the 5-hour limit per ACCOUNT, not per plan: on 2026-11-02, 17 of 23 Max 20x
+accounts returned `five_hour: null` from `oauth/usage` with no `session` row
+in `limits`, while 4 still returned a `five_hour` object (an idle one: zero
+utilization, no `resets_at`) and a `session` row. Their Messages-API headers
+carry only `7d-*` counters (`representative-claim: seven_day`). Both parsers
+read this off every response and set `hasSessionWindow`: false when the
+`five_hour` object is missing and no `session` row is present, or when no
+`5h-*` header is present. That is the same flag Codex and Grok use, so the
+tiles, popover, dashboard, notifications and preflight collapse to the one
+weekly gauge with no Claude-specific UI, and an account that keeps or regains
+the window flips back on its next read. Convention, as for Codex: session 0%
+with the weekly boundary as its reset; the healer never invents a `now + 5 h`
+boundary for such an account. Such an account rotates out only on the weekly
+threshold (or a server-affirmed stamp). The CLI's cached bars
+(`readCLICachedUsage`) still require a `session` row; the CLI was not writing
+them on 2026-11-02, so that path is unchanged.
 
 Related: the transcript tripwire's attribution walks PAST Codex/Grok entries
 in the shared switch-history ring (`rateLimitEventOwnerName`) — a Codex
