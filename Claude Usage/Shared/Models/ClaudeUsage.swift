@@ -94,8 +94,12 @@ struct ClaudeUsage: Codable, Equatable {
     /// always been weekly-only, and Codex became weekly-only when OpenAI
     /// collapsed the old 5h primary / weekly secondary pair into a single
     /// 7-day window (observed live 2026-07-29: primary_window
-    /// limit_window_seconds=604800, secondary_window=null). Distinct from
-    /// "session at 0%": tiles and popover collapse to ONE gauge when false.
+    /// limit_window_seconds=604800, secondary_window=null). Claude is per
+    /// ACCOUNT: Anthropic removed the 5-hour limit from some accounts on
+    /// 2026-10-30 and both Claude parsers read it off each response
+    /// (`five_hour` null with no `session` limit row; no `5h-*` headers).
+    /// Distinct from "session at 0%": tiles and popover collapse to ONE gauge
+    /// when false.
     /// Optional with nil default (nil = has a session window) so previously
     /// cached usage JSON still decodes.
     var hasSessionWindow: Bool? = nil
@@ -283,6 +287,11 @@ struct ClaudeUsage: Codable, Equatable {
         if headerUsage.sessionResetTime != Self.unknownResetSentinel {
             merged.sessionResetTime = headerUsage.sessionResetTime
         }
+        // The headers say whether the 5-hour window exists (no `5h-*` headers
+        // means none); a measurement that does not say keeps the cached answer.
+        if let hasSessionWindow = headerUsage.hasSessionWindow {
+            merged.hasSessionWindow = hasSessionWindow
+        }
         merged.weeklyPercentage = headerUsage.weeklyPercentage
         merged.weeklyTokensUsed = headerUsage.weeklyTokensUsed
         if headerUsage.weeklyResetTime != Self.unknownResetSentinel {
@@ -318,7 +327,10 @@ struct ClaudeUsage: Codable, Equatable {
     /// profile's previously cached usage. Idempotent — healing an already-healed
     /// value is a no-op. Call after every fetch, before display or persistence.
     nonisolated mutating func healMissingResetStamps(previous: ClaudeUsage?, now: Date = Date()) {
-        if sessionResetTime == Self.unknownResetSentinel {
+        // Without a session window there is no 5-hour boundary to carry or
+        // invent: the session reset follows the healed weekly one (below).
+        let sessionFollowsWeekly = sessionResetTime == Self.unknownResetSentinel && !providesSessionWindow
+        if sessionResetTime == Self.unknownResetSentinel, !sessionFollowsWeekly {
             if let prev = previous?.sessionResetTime, prev > now {
                 sessionResetTime = prev
             } else {
@@ -361,6 +373,9 @@ struct ClaudeUsage: Codable, Equatable {
            let prev = previous?.fableWeeklyResetTime {
             fableWeeklyResetTime = Self.projectedWeeklyBoundary(prev, after: now)
             fableWeeklyResetProjected = true
+        }
+        if sessionFollowsWeekly {
+            sessionResetTime = weeklyResetTime
         }
     }
 

@@ -3283,7 +3283,9 @@ private func observeCredentialChanges() {
     /// - its session window must already be OPEN AND NON-EMPTY. A request
     ///   against an idle account would START its 5-hour window (windows begin
     ///   at the first request), stealing headroom from an account we are
-    ///   holding in reserve as a switch target;
+    ///   holding in reserve as a switch target. An account without a 5-hour
+    ///   window (removed per account since 2026-10-30) has none to start, so
+    ///   its weekly window must be open and non-empty instead;
     /// - at most one probe per `headerProbeMinInterval` per profile.
     nonisolated static func shouldProbeMessageHeaders(
         isActiveClaudeAccount: Bool,
@@ -3292,10 +3294,13 @@ private func observeCredentialChanges() {
         now: Date = Date()
     ) -> Bool {
         guard isActiveClaudeAccount, let cached else { return false }
-        guard cached.providesSessionWindow else { return false }
         // Window already open and already burning — the probe cannot be what
         // opens it. (A fabricated/healed boundary always pairs with 0%.)
-        guard cached.sessionResetTime > now, cached.sessionPercentage > 0 else { return false }
+        if cached.providesSessionWindow {
+            guard cached.sessionResetTime > now, cached.sessionPercentage > 0 else { return false }
+        } else {
+            guard cached.weeklyResetTime > now, cached.weeklyPercentage > 0 else { return false }
+        }
         guard let lastProbe else { return true }
         return now.timeIntervalSince(lastProbe) >= headerProbeMinInterval
     }
